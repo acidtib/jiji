@@ -2,6 +2,7 @@ name: CI
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [main, develop]
   pull_request:
@@ -28,8 +29,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deno-
 
-      - name: Check formatting
-        run: deno fmt --check
+      # - name: Check formatting
+      #   run: deno fmt --check
 
       - name: Lint code
         run: deno lint

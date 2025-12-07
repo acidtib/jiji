@@ -15,7 +15,7 @@ await build({
   scriptModule: false, // Disable CommonJS/UMD for CLI with top level await
   package: {
     name: "jiji",
-    version: Deno.args[0] || "0.1.0",
+    version: Deno.args[0] || "0.0.1",
     description: "Jiji - Infrastructure management tool",
     license: "MIT",
     repository: {
@@ -92,8 +92,8 @@ SOFTWARE.`,
   },
 });
 
-console.log("\n✅ Build complete!");
-console.log("📦 npm package created in ./build/npm/");
+console.log("\nBuild complete!");
+console.log("npm package created in ./build/npm/");
 console.log("\nTo publish:");
 console.log("  cd build/npm");
 console.log("  npm publish");
