@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "run": "deno run src/main.ts",
+
+    "build:npm": "deno run -A scripts/build_npm.ts",
+
+    "test": "deno test --allow-all",
+    "fmt": "deno fmt",
+    "lint": "deno lint",
+
+    "check": "deno fmt --check && deno lint && deno test --allow-all"
+  },
+  "imports": {
+    "@cliffy/command": "jsr:@cliffy/command@^1.0.0-rc.8",
+    "@deno/dnt": "jsr:@deno/dnt@^0.42.3"
+  }
+}
