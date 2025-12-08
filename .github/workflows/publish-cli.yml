@@ -7,6 +7,10 @@ on:
         type: boolean
         default: true
         description: publish to npm
+      jsr:
+        type: boolean
+        default: true
+        description: publish to jsr
   push:
     tags:
       - "v*"
@@ -23,11 +27,20 @@ jobs:
       id-token: write
       contents: read
 
+  jsr:
+    if: ${{ inputs.jsr || github.event_name == 'push' }}
+    needs: test
+    uses: ./.github/workflows/publish-jsr.yml
+    permissions:
+      id-token: write
+      contents: read
+
   release:
     needs:
       - test
       - npm
-    if: ${{ always() && needs.test.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped') }}
+      - jsr
+    if: ${{ always() && needs.test.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped') && (needs.jsr.result == 'success' || needs.jsr.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

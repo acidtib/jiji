@@ -1,4 +1,4 @@
-name: Publish to NPM
+name: Publish to JSR
 
 on:
   workflow_call:
@@ -30,20 +30,5 @@ jobs:
         id: get_tag_version
         run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24.11.1"
-
-      # Ensure npm 11.5.1 or later for trusted publishing
-      - run: npm install -g npm@latest
-
-      - name: Build npm package
-        run: ./bin/build_npm ${{ steps.get_tag_version.outputs.TAG_VERSION }}
-
-      - name: Publish to npm
-        run: |
-          cd build/npm
-          npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish to jsr
+        run: deno publish
