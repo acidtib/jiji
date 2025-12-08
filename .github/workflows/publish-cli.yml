@@ -88,12 +88,23 @@ jobs:
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           allowUpdates: true
           generateReleaseNotes: true
-          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64,target/jiji-macos-x86_64,target/jiji-macos-arm64,target/jiji-windows-x86_64"
+          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64,target/jiji-macos-x86_64,target/jiji-macos-arm64,target/jiji-windows-x86_64.exe"
           body: |
             ## Installation
 
+            ### NPM
             ```bash
             npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
+            ```
+
+            ### JSR
+            ```bash
+            deno install --allow-all --name jiji jsr:@jiji/cli@${{ steps.get_tag_version.outputs.TAG_VERSION }}
+            ```
+
+            ### Linux/MacOS
+            ```bash
+            curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
             ```
 
             ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}
