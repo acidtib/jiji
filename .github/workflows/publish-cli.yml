@@ -42,6 +42,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          generateReleaseNotes: true
           body: |
             ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ## Installation
@@ -49,5 +50,3 @@ jobs:
             ```bash
             npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ```
-
-            ### TODO: add change log
