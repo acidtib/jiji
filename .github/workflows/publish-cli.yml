@@ -1,0 +1,47 @@
+name: Publish CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      jsr:
+        type: boolean
+        default: true
+        description: publish to JSR
+      npm:
+        type: boolean
+        default: true
+        description: publish to npm
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  npm:
+    if: ${{ inputs.npm }}
+    needs: test
+    uses: ./.github/workflows/publish-npm.yml
+
+  # jsr:
+  #   if: ${{ inputs.jsr }}
+  #   needs: test
+  #   uses: ./.github/workflows/publish-jsr.yml
+
+  # - name: Create GitHub Release
+  #       uses: ncipollo/release-action@v1
+  #       with:
+  #         token: ${{ secrets.GITHUB_TOKEN }}
+  #         tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+  #         name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+  #         body: |
+  #           ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+
+  #           # TODO: add change log
+
+  #           ## Installation
+
+  #           ```bash
+  #           npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
+  #           ```
