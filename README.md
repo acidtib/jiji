@@ -116,6 +116,10 @@ MIT License - see the [LICENSE](LICENSE) file for details.
 - [ ] Server health checks
 - [ ] Logging and monitoring integration
 
+## Documentation
+
+For developers and contributors, additional documentation can be found in the [`docs/`](docs/) directory, which contains detailed information that may be useful for development and contribution workflows.
+
 ## Support
 
 - 📖 [Documentation](https://github.com/acidtib/jiji)
