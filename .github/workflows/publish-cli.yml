@@ -32,6 +32,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
       - name: Get tag version
         id: get_tag_version
         run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
