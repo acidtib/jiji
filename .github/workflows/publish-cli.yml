@@ -58,6 +58,15 @@ jobs:
       - name: Compile to Linux ARM64
         run: deno compile --target aarch64-unknown-linux-gnu --output target/jiji-linux-arm64 src/main.ts
 
+      - name: Compile to macOS x86_64
+        run: deno compile --target x86_64-apple-darwin --output target/jiji-macos-x86_64 src/main.ts
+
+      - name: Compile to macOS ARM64
+        run: deno compile --target aarch64-apple-darwin --output target/jiji-macos-arm64 src/main.ts
+
+      - name: Compile to Windows x86_64
+        run: deno compile --target x86_64-pc-windows-msvc --output target/jiji-windows-x86_64 src/main.ts
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
@@ -68,9 +77,10 @@ jobs:
           generateReleaseNotes: true
           artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64"
           body: |
-            ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ## Installation
 
             ```bash
             npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ```
+
+            ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}
