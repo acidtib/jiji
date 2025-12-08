@@ -36,12 +36,32 @@ jobs:
         id: get_tag_version
         run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+
+      - name: Cache Deno dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/deno
+          key: ${{ runner.os }}-deno-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-deno-
+
+      - name: Compile to Linux x86_64
+        run: deno compile --target x86_64-unknown-linux-gnu --output target/jiji-linux-x86_64 src/main.ts
+
+      - name: Compile to Linux ARM64
+        run: deno compile --target aarch64-unknown-linux-gnu --output target/jiji-linux-arm64 src/main.ts
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          allowUpdates: true
           generateReleaseNotes: true
           body: |
             ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
