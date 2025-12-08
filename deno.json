@@ -1,17 +1,15 @@
 {
   "name": "@jiji/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "exports": "./src/main.ts",
   "tasks": {
     "run": "deno run src/main.ts",
-
     "build:npm": "./bin/build_npm",
-
+    "version": "./bin/version",
     "test": "deno test --allow-all",
     "fmt": "deno fmt",
     "lint": "deno lint",
-
     "check": "deno fmt --check && deno lint && deno test --allow-all"
   },
   "imports": {
