@@ -16,7 +16,19 @@ This will read the version from `./src/version.ts` and print it to the console.
 
 ### Update Version
 
-To update the version:
+To update the version, you have two options:
+
+#### Auto-increment Patch Version
+
+To automatically increment the patch version (e.g., 0.1.6 → 0.1.7):
+
+```bash
+./bin/version --bump
+```
+
+#### Set Specific Version
+
+To set a specific version:
 
 ```bash
 ./bin/version --bump <new-version>
@@ -28,9 +40,11 @@ For example:
 ./bin/version --bump 1.2.3
 ```
 
-This command will:
+Both commands will:
 1. Update the version in `./src/version.ts`
 2. Update the version in `./deno.json`
+
+The auto increment option is useful for regular development releases where you just need to bump the patch version.
 
 ## What It Does
 
