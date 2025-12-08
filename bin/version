@@ -25,6 +25,28 @@ async function updateVersionFile(version: string): Promise<void> {
   await Deno.writeTextFile(VERSION_FILE, content);
 }
 
+// Function to increment patch version
+function incrementPatchVersion(version: string): string {
+  const parts = version.split(".");
+  if (parts.length !== 3) {
+    throw new Error(
+      `Invalid version format: ${version}. Expected format: x.y.z`,
+    );
+  }
+
+  const major = parseInt(parts[0]);
+  const minor = parseInt(parts[1]);
+  const patch = parseInt(parts[2]);
+
+  if (isNaN(major) || isNaN(minor) || isNaN(patch)) {
+    throw new Error(
+      `Invalid version format: ${version}. All parts must be numbers`,
+    );
+  }
+
+  return `${major}.${minor}.${patch + 1}`;
+}
+
 // Function to update version in deno.json
 async function updateDenoConfig(version: string): Promise<void> {
   try {
@@ -53,9 +75,23 @@ async function main() {
     return;
   }
 
-  if (args[0] === "--bump" && args[1]) {
-    const newVersion = args[1];
+  if (args[0] === "--bump") {
     const currentVersion = await getCurrentVersion();
+    let newVersion: string;
+
+    if (args[1]) {
+      // Explicit version provided
+      newVersion = args[1];
+    } else {
+      // Auto-increment patch version
+      try {
+        newVersion = incrementPatchVersion(currentVersion);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Error auto-incrementing version: ${message}`);
+        Deno.exit(1);
+      }
+    }
 
     try {
       console.log(`Updating version from ${currentVersion} to ${newVersion}`);
@@ -75,6 +111,9 @@ async function main() {
   } else {
     console.log("Usage:");
     console.log("  ./bin/version              # Show current version");
+    console.log(
+      "  ./bin/version --bump       # Auto-increment patch version (e.g., 0.1.6 -> 0.1.7)",
+    );
     console.log("  ./bin/version --bump 1.0.5 # Set version to 1.0.5");
   }
 }
