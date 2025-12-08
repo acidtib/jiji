@@ -46,15 +46,16 @@ jobs:
           node-version: "24.11.1"
           registry-url: "https://registry.npmjs.org"
 
+      # Ensure npm 11.5.1 or later for trusted publishing
+      - run: npm install -g npm@latest
+
       - name: Build npm package
         run: deno run -A ./scripts/build_npm.ts ${{ steps.get_tag_version.outputs.TAG_VERSION }}
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd build/npm
-          npm publish --access public
+          npm publish
 
       - name: Create GitHub Release
         uses: elgohr/Github-Release-Action@v5
