@@ -75,7 +75,7 @@ jobs:
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           allowUpdates: true
           generateReleaseNotes: true
-          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64"
+          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64,target/jiji-macos-x86_64,target/jiji-macos-arm64,target/jiji-windows-x86_64"
           body: |
             ## Installation
 
