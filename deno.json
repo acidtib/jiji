@@ -1,4 +1,8 @@
 {
+  "name": "@jiji/cli",
+  "version": "0.1.0",
+  "license": "MIT",
+  "exports": "./src/main.ts",
   "tasks": {
     "run": "deno run src/main.ts",
 
