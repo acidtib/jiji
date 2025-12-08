@@ -3,10 +3,6 @@ name: Publish CLI
 on:
   workflow_dispatch:
     inputs:
-      jsr:
-        type: boolean
-        default: true
-        description: publish to JSR
       npm:
         type: boolean
         default: true
@@ -27,24 +23,29 @@ jobs:
       id-token: write
       contents: read
 
-  # jsr:
-  #   if: ${{ inputs.jsr }}
-  #   needs: test
-  #   uses: ./.github/workflows/publish-jsr.yml
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Get tag version
+        id: get_tag_version
+        run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
 
-  # - name: Create GitHub Release
-  #       uses: ncipollo/release-action@v1
-  #       with:
-  #         token: ${{ secrets.GITHUB_TOKEN }}
-  #         tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
-  #         name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
-  #         body: |
-  #           ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          body: |
+            ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
 
-  #           # TODO: add change log
+            # TODO: add change log
 
-  #           ## Installation
+            ## Installation
 
-  #           ```bash
-  #           npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
-  #           ```
+            ```bash
+            npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
+            ```
