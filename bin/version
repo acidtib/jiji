@@ -1,0 +1,84 @@
+#!/usr/bin/env -S deno run --allow-read --allow-write
+
+const VERSION_FILE = "./src/version.ts";
+const DENO_CONFIG = "./deno.json";
+
+// Function to get current version from version.ts
+async function getCurrentVersion(): Promise<string> {
+  try {
+    const content = await Deno.readTextFile(VERSION_FILE);
+    const match = content.match(/export const VERSION = ["']([^"']+)["'];/);
+    if (!match) {
+      throw new Error("Could not parse version from version.ts");
+    }
+    return match[1];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error reading version: ${message}`);
+    Deno.exit(1);
+  }
+}
+
+// Function to update version in version.ts
+async function updateVersionFile(version: string): Promise<void> {
+  const content = `export const VERSION = "${version}";\n`;
+  await Deno.writeTextFile(VERSION_FILE, content);
+}
+
+// Function to update version in deno.json
+async function updateDenoConfig(version: string): Promise<void> {
+  try {
+    const content = await Deno.readTextFile(DENO_CONFIG);
+    const config = JSON.parse(content);
+    config.version = version;
+    await Deno.writeTextFile(
+      DENO_CONFIG,
+      JSON.stringify(config, null, 2) + "\n",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error updating deno.json: ${message}`);
+    throw error;
+  }
+}
+
+// Main function
+async function main() {
+  const args = Deno.args;
+
+  if (args.length === 0) {
+    // No arguments, just show current version
+    const version = await getCurrentVersion();
+    console.log(version);
+    return;
+  }
+
+  if (args[0] === "--bump" && args[1]) {
+    const newVersion = args[1];
+    const currentVersion = await getCurrentVersion();
+
+    try {
+      console.log(`Updating version from ${currentVersion} to ${newVersion}`);
+
+      await updateVersionFile(newVersion);
+      console.log(`✓ Updated ${VERSION_FILE}`);
+
+      await updateDenoConfig(newVersion);
+      console.log(`✓ Updated ${DENO_CONFIG}`);
+
+      console.log(`🎉 Version updated to ${newVersion}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error: ${message}`);
+      Deno.exit(1);
+    }
+  } else {
+    console.log("Usage:");
+    console.log("  ./bin/version              # Show current version");
+    console.log("  ./bin/version --bump 1.0.5 # Set version to 1.0.5");
+  }
+}
+
+if (import.meta.main) {
+  await main();
+}
