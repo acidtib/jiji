@@ -26,8 +26,8 @@ jobs:
   release:
     needs:
       - test
-    #   - npm
-    # if: ${{ always() && needs.test.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped') }}
+      - npm
+    if: ${{ always() && needs.test.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -63,6 +63,7 @@ jobs:
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           allowUpdates: true
           generateReleaseNotes: true
+          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64"
           body: |
             ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ## Installation
