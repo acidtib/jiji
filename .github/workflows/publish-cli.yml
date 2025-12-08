@@ -24,7 +24,10 @@ jobs:
       contents: read
 
   release:
-    needs: test
+    needs:
+      - test
+      - npm
+    if: ${{ always() && needs.test.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,11 +44,10 @@ jobs:
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           body: |
             ## Changes in ${{ steps.get_tag_version.outputs.TAG_VERSION }}
-
-            # TODO: add change log
-
             ## Installation
 
             ```bash
             npm install -g jiji@${{ steps.get_tag_version.outputs.TAG_VERSION }}
             ```
+
+            ### TODO: add change log
