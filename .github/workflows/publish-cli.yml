@@ -107,4 +107,7 @@ jobs:
             curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
             ```
 
+            ### Windows, exe download below
+            https://github.com/acidtib/jiji/releases/download/v${{ steps.get_tag_version.outputs.TAG_VERSION }}/jiji-windows-x86_64.exe
+
             ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}
