@@ -4,7 +4,8 @@
   "license": "MIT",
   "exports": "./src/main.ts",
   "tasks": {
-    "run": "deno run src/main.ts",
+    "run": "deno run --allow-read --allow-write --allow-net src/main.ts",
+    "build": "deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --output build/jiji src/main.ts",
     "build:npm": "./bin/build_npm",
     "version": "./bin/version",
     "test": "deno test --allow-all",
@@ -14,6 +15,8 @@
   },
   "imports": {
     "@cliffy/command": "jsr:@cliffy/command@^1.0.0-rc.8",
-    "@deno/dnt": "jsr:@deno/dnt@^0.42.3"
+    "@cliffy/prompt": "jsr:@cliffy/prompt@^1.0.0-rc.8",
+    "@deno/dnt": "jsr:@deno/dnt@^0.42.3",
+    "@std/fs": "jsr:@std/fs@^1.0.20"
   }
 }
