@@ -66,19 +66,19 @@ jobs:
             ${{ runner.os }}-deno-
 
       - name: Compile to Linux x86_64
-        run: deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --target x86_64-unknown-linux-gnu --output target/jiji-linux-x86_64 src/main.ts
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --target x86_64-unknown-linux-gnu --output target/jiji-linux-x86_64 src/main.ts
 
       - name: Compile to Linux ARM64
-        run: deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --target aarch64-unknown-linux-gnu --output target/jiji-linux-arm64 src/main.ts
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --target aarch64-unknown-linux-gnu --output target/jiji-linux-arm64 src/main.ts
 
       - name: Compile to macOS x86_64
-        run: deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --target x86_64-apple-darwin --output target/jiji-macos-x86_64 src/main.ts
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --target x86_64-apple-darwin --output target/jiji-macos-x86_64 src/main.ts
 
       - name: Compile to macOS ARM64
-        run: deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --target aarch64-apple-darwin --output target/jiji-macos-arm64 src/main.ts
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --target aarch64-apple-darwin --output target/jiji-macos-arm64 src/main.ts
 
       - name: Compile to Windows x86_64
-        run: deno compile --allow-read --allow-write --allow-net --include src/jiji.yml --target x86_64-pc-windows-msvc --output target/jiji-windows-x86_64 src/main.ts
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --target x86_64-pc-windows-msvc --output target/jiji-windows-x86_64 src/main.ts
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1

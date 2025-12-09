@@ -1,0 +1,9 @@
+# containerization engine to use
+engine: podman
+
+services:
+  web:
+    # using an image
+    image: nginx:latest
+    ports:
+      - "127.0.0.1:80:80"
