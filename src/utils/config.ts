@@ -73,6 +73,32 @@ function validateConfig(config: unknown): JijiConfig {
     throw new Error("Invalid configuration: 'services' must be an object");
   }
 
+  // Validate SSH configuration if present
+  if (cfg.ssh) {
+    if (typeof cfg.ssh !== "object" || Array.isArray(cfg.ssh)) {
+      throw new Error("Invalid configuration: 'ssh' must be an object");
+    }
+
+    const sshCfg = cfg.ssh as Record<string, unknown>;
+
+    if (!sshCfg.user || typeof sshCfg.user !== "string") {
+      throw new Error(
+        "Invalid configuration: 'ssh.user' is required and must be a string",
+      );
+    }
+
+    if (sshCfg.port !== undefined) {
+      if (
+        typeof sshCfg.port !== "number" || sshCfg.port <= 0 ||
+        sshCfg.port > 65535
+      ) {
+        throw new Error(
+          "Invalid configuration: 'ssh.port' must be a valid port number (1-65535)",
+        );
+      }
+    }
+  }
+
   return cfg as unknown as JijiConfig;
 }
 

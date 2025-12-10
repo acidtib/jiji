@@ -1,11 +1,18 @@
 export interface JijiConfig {
   engine: "podman" | "docker";
+  ssh?: SSHConfig;
   services: Record<string, ServiceConfig>;
+}
+
+export interface SSHConfig {
+  user: string;
+  port?: number;
 }
 
 export interface ServiceConfig {
   image?: string;
   build?: string | BuildConfig;
+  hosts?: string[];
   ports?: string[];
   volumes?: string[];
   environment?: Record<string, string> | string[];
@@ -27,4 +34,14 @@ export interface BuildConfig {
 export interface ConfigLoadResult {
   config: JijiConfig;
   configPath: string;
+}
+
+export interface AuditEntry {
+  timestamp: string;
+  action: string;
+  details?: Record<string, any>;
+  user?: string;
+  host?: string;
+  status: "started" | "success" | "failed" | "warning";
+  message?: string;
 }

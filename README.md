@@ -5,7 +5,9 @@ Deploy containerized apps across servers, simple, fast, portable. No infra vendo
 ## Features
 
 - **Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
+- **Remote Command Execution**: Execute custom commands across multiple servers
 - **Configuration Management**: Create and manage infrastructure configurations
+- **Server-Side Audit Trail**: Comprehensive logging of all operations directly on target servers
 - **CLI Interface**: Easy-to-use command-line interface built with Cliffy
 
 ## Installation
@@ -53,6 +55,60 @@ Bootstrap servers with container runtime:
 jiji server bootstrap
 ```
 
+Execute custom commands on remote hosts:
+
+```bash
+# Execute a command on all configured hosts
+jiji server exec "docker ps"
+
+# Execute on specific hosts only
+jiji server exec "systemctl status docker" --hosts "server1.example.com,server2.example.com"
+
+# Execute in parallel across all hosts
+jiji server exec "df -h" --parallel
+
+# Set custom timeout and continue on errors
+jiji server exec "apt update && apt upgrade -y" --timeout 600 --continue-on-error
+```
+
+### Server-Side Audit Trail
+
+View operations history and audit logs from your servers:
+
+```bash
+# View recent audit entries from all servers
+jiji audit
+
+# View entries from a specific server
+jiji audit --host server1.example.com
+
+# Filter by action type across all servers
+jiji audit --filter bootstrap
+
+# Filter by status across all servers
+jiji audit --status failed
+
+# Aggregate logs chronologically from all servers
+jiji audit --aggregate
+
+# View raw log format
+jiji audit --raw
+```
+
+The audit trail tracks all Jiji operations including:
+- Server bootstrapping (start, success, failure)
+- Container engine installations on each server
+- Service deployments per server
+- Configuration changes
+- SSH connections and errors
+
+Audit logs are stored in `.jiji/audit.txt` on each target server and include:
+- Timestamps (ISO 8601 format)
+- Action types and status
+- Server-specific operation context
+- Detailed error messages and troubleshooting information
+- Host identification for multi-server deployments
+
 ### Help
 
 Get help for any command:
@@ -61,6 +117,7 @@ Get help for any command:
 jiji --help
 jiji server --help
 jiji server bootstrap --help
+jiji server exec --help
 ```
 
 ## Development
@@ -109,12 +166,15 @@ MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Roadmap
 
-- [ ] Implement configuration management
-- [ ] Add server bootstrap functionality
-- [ ] Support for multiple container runtimes
+- [x] Server bootstrap functionality
+- [x] Remote command execution across multiple servers
+- [x] Support for multiple container runtimes (Podman/Docker)
+- [x] Server-side audit trail and operation logging
+- [ ] Service deployment and orchestration
 - [ ] Configuration templates
 - [ ] Server health checks
-- [ ] Logging and monitoring integration
+- [ ] Advanced monitoring integration
+- [ ] Multi-environment support
 
 ## Documentation
 
