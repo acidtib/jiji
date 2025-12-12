@@ -50,7 +50,7 @@ jobs:
 
       - name: Test CLI functionality
         run: |
-          deno task run src/main.ts --help
-          deno task run src/main.ts init --help
-          deno task run src/main.ts server --help
-          deno task run src/main.ts version
+          deno task run --help
+          deno task run init --help
+          deno task run server --help
+          deno task run version
