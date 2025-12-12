@@ -1,6 +1,7 @@
 # Logger
 
-A TypeScript/Deno logger utility. This logger provides structured, colorized output with server prefixes, timestamps, and progress tracking.
+A TypeScript/Deno logger utility. This logger provides structured, colorized
+output with server prefixes, timestamps, and progress tracking.
 
 ## Features
 
@@ -65,10 +66,10 @@ Create custom loggers with specific configurations:
 import { Logger } from "./src/utils/logger.ts";
 
 const logger = new Logger({
-  prefix: "deploy",           // Default prefix for all logs
-  showTimestamp: true,        // Show timestamps (default: true)
-  maxPrefixLength: 20,        // Max prefix width (default: 20)
-  colors: true               // Enable colors (default: true)
+  prefix: "deploy", // Default prefix for all logs
+  showTimestamp: true, // Show timestamps (default: true)
+  maxPrefixLength: 20, // Max prefix width (default: 20)
+  colors: true, // Enable colors (default: true)
 });
 ```
 
@@ -111,11 +112,11 @@ await log.group("Deploying Application", async () => {
   log.executing("docker build -t myapp:v1.0.0 .", "local");
   await buildImage();
   log.success("Image built successfully", "local");
-  
+
   // Deploy to servers
   const servers = ["web-1.prod", "web-2.prod"];
   const serverLoggers = Logger.forServers(servers);
-  
+
   for (const server of servers) {
     const logger = serverLoggers.get(server)!;
     logger.executing("docker pull myapp:v1.0.0");
@@ -132,7 +133,7 @@ await log.group("Deploying Application", async () => {
 // File upload with progress
 for (let i = 0; i <= 100; i += 10) {
   log.progress("Uploading assets", i, 100, "cdn");
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, 100));
 }
 ```
 
@@ -154,11 +155,11 @@ try {
 ```typescript
 await log.group("Health Checks", async () => {
   const services = ["web", "api", "database", "cache"];
-  
+
   for (const service of services) {
     log.info(`Checking ${service}...`, "health");
     const isHealthy = await checkServiceHealth(service);
-    
+
     if (isHealthy) {
       log.success(`${service}: healthy ✓`, "health");
     } else {
@@ -194,17 +195,17 @@ Deploying Application
 
 ```typescript
 interface LoggerOptions {
-  prefix?: string;           // Default prefix for all log messages
-  showTimestamp?: boolean;   // Show timestamps (default: true)
-  maxPrefixLength?: number;  // Maximum prefix width (default: 20)
-  colors?: boolean;          // Enable colorized output (default: true)
+  prefix?: string; // Default prefix for all log messages
+  showTimestamp?: boolean; // Show timestamps (default: true)
+  maxPrefixLength?: number; // Maximum prefix width (default: 20)
+  colors?: boolean; // Enable colorized output (default: true)
 }
 ```
 
 ### Log Levels
 
 - `info`: General information (cyan)
-- `success`: Success messages (green)  
+- `success`: Success messages (green)
 - `warn`: Warnings (yellow)
 - `error`: Errors (red)
 - `debug`: Debug information (magenta)
@@ -218,11 +219,13 @@ To see the logger in action, run the included example:
 deno run --allow-all src/logger-example.ts
 ```
 
-This will demonstrate all the logger features with simulated deployment scenarios.
+This will demonstrate all the logger features with simulated deployment
+scenarios.
 
 ## Integration with Deno
 
 The logger is built for Deno and uses:
+
 - `std/fmt/colors` for colorization
 - Native `console` methods for output
 - TypeScript for type safety
