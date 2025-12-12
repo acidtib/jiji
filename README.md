@@ -1,13 +1,15 @@
 # Jiji
 
-Deploy containerized apps across servers, simple, fast, portable. No infra vendor lock in, just run.
+Deploy containerized apps across servers, simple, fast, portable. No infra
+vendor lock in, just run.
 
 ## Features
 
 - **Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
 - **Remote Command Execution**: Execute custom commands across multiple servers
 - **Configuration Management**: Create and manage infrastructure configurations
-- **Server-Side Audit Trail**: Comprehensive logging of all operations directly on target servers
+- **Server-Side Audit Trail**: Comprehensive logging of all operations directly
+  on target servers
 - **CLI Interface**: Easy-to-use command-line interface built with Cliffy
 
 ## Installation
@@ -30,12 +32,12 @@ deno install --allow-all --name jiji jsr:@jiji/cli
 curl -fsSL https://get.jiji.run/install.sh | sh
 ```
 
-You can also install a specific version by setting the VERSION environment variable:
+You can also install a specific version by setting the VERSION environment
+variable:
 
 ```bash
 curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.5 sh
 ```
-
 
 ## Usage
 
@@ -96,6 +98,7 @@ jiji audit --raw
 ```
 
 The audit trail tracks all Jiji operations including:
+
 - Server bootstrapping (start, success, failure)
 - Container engine installations on each server
 - Service deployments per server
@@ -103,6 +106,7 @@ The audit trail tracks all Jiji operations including:
 - SSH connections and errors
 
 Audit logs are stored in `.jiji/audit.txt` on each target server and include:
+
 - Timestamps (ISO 8601 format)
 - Action types and status
 - Server-specific operation context
@@ -178,7 +182,9 @@ MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Documentation
 
-For developers and contributors, additional documentation can be found in the [`docs/`](docs/) directory, which contains detailed information that may be useful for development and contribution workflows.
+For developers and contributors, additional documentation can be found in the
+[`docs/`](docs/) directory, which contains detailed information that may be
+useful for development and contribution workflows.
 
 ## Support
 
