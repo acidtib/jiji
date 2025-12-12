@@ -17,7 +17,7 @@ const command = new Command()
     "-c, --config-file=<CONFIG_FILE:string>",
     "Path to config file",
     {
-      default: "config/jiji.yml",
+      default: ".jiji/development.yml",
     },
   )
   .globalOption(

@@ -55,4 +55,4 @@ temp/
 # Jiji audit trail and local data
 .jiji/
 
-config/jiji.*
+.jiji/*.*
