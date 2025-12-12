@@ -44,9 +44,8 @@ jobs:
       - name: Lint code
         run: deno lint
 
-      # - name: Run tests
-      #   run: deno test --allow-all --allow-scripts=npm:cpu-features,npm:ssh2
-      # Note: Uncomment when tests are added to the project
+      - name: Run tests
+        run: deno test
 
       - name: Test CLI functionality
         run: |
