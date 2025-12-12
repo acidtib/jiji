@@ -9,14 +9,10 @@ import {
 } from "../../utils/ssh.ts";
 import { installEngineOnHosts } from "../../utils/engine.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
-import type { JijiConfig } from "../../types.ts";
+import type { GlobalOptions, JijiConfig } from "../../types.ts";
 
 export const bootstrapCommand = new Command()
   .description("Bootstrap servers with curl and Podman or Docker")
-  .option("-c, --config <path:string>", "Path to jiji.yml config file")
-  .option("--ssh-user <username:string>", "SSH username for remote hosts")
-  .option("--ssh-key <path:string>", "Path to SSH private key")
-  .option("--ssh-port <port:number>", "SSH port (default: 22)")
   .action(async (options) => {
     let uniqueHosts: string[] = [];
     let config: JijiConfig | undefined;
@@ -29,8 +25,11 @@ export const bootstrapCommand = new Command()
     try {
       console.log("Server bootstrap command called!");
 
+      // Cast options to GlobalOptions to access global options
+      const globalOptions = options as unknown as GlobalOptions;
+
       // Load and parse the configuration
-      const configResult = await loadConfig(options.config);
+      const configResult = await loadConfig(globalOptions.configFile);
       config = configResult.config;
       const configPath = configResult.configPath;
       console.log(`Configuration loaded from: ${configPath}`);
@@ -72,11 +71,9 @@ export const bootstrapCommand = new Command()
           Deno.exit(1);
         }
 
-        // Get SSH configuration from config file and command line options
-        const baseSshConfig = createSSHConfigFromJiji(config.ssh);
+        // Get SSH configuration from config file only
         const sshConfig = {
-          username: options.sshUser || baseSshConfig.username,
-          port: options.sshPort || baseSshConfig.port,
+          ...createSSHConfigFromJiji(config.ssh),
           useAgent: true,
         };
 
