@@ -6,8 +6,7 @@
   "nodeModulesDir": "auto",
   "tasks": {
     "run": "deno run --allow-read --allow-write --allow-net --allow-run --allow-env src/main.ts",
-    "build": "deno compile --allow-read --allow-write --allow-net --allow-run --include src/jiji.yml --output build/jiji src/main.ts",
-    "build:npm": "./bin/build_npm",
+    "build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --include src/jiji.yml --output build/jiji src/main.ts",
     "version": "./bin/version",
     "test": "deno test --allow-all",
     "fmt": "deno fmt",
@@ -15,12 +14,15 @@
     "check": "deno fmt --check && deno lint && deno test --allow-all"
   },
   "imports": {
+    "@cliffy/ansi/colors": "jsr:@cliffy/ansi@^1.0.0-rc.8/colors",
     "@cliffy/command": "jsr:@cliffy/command@^1.0.0-rc.8",
     "@cliffy/prompt": "jsr:@cliffy/prompt@^1.0.0-rc.8",
     "@deno/dnt": "jsr:@deno/dnt@^0.42.3",
     "@std/fs": "jsr:@std/fs@^1.0.20",
     "@std/path": "jsr:@std/path@^1.1.3",
     "@std/yaml": "jsr:@std/yaml@^1.0.10",
-    "node-ssh": "npm:node-ssh@^13.2.1"
+    "cpu-features": "npm:cpu-features@^0.0.10",
+    "node-ssh": "npm:node-ssh@^13.2.1",
+    "ssh2": "npm:ssh2@^1.17.0"
   }
 }
