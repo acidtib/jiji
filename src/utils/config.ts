@@ -1,7 +1,11 @@
 import { parse } from "@std/yaml";
-import { exists } from "@std/fs";
+import { ensureDir, exists } from "@std/fs";
 import { dirname, join } from "@std/path";
 import type { ConfigLoadResult, JijiConfig } from "../types.ts";
+
+const TEMPLATE_PATH = import.meta.dirname + "/../jiji.yml";
+const CONFIG_DIR = "config";
+const DEFAULT_CONFIG_FILE = "jiji.yml";
 
 /**
  * Searches for jiji.yml config file starting from current directory
@@ -155,6 +159,57 @@ export async function loadConfig(
  */
 export function getEngineCommand(config: JijiConfig): string {
   return config.engine;
+}
+
+/**
+ * Checks if a config file exists at the specified path
+ */
+export async function configFileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return false;
+    }
+    throw new Error(`Error checking config file existence: ${error.message}`);
+  }
+}
+
+/**
+ * Reads the config template file
+ */
+export async function readConfigTemplate(): Promise<string> {
+  try {
+    return await Deno.readTextFile(TEMPLATE_PATH);
+  } catch (error) {
+    throw new Error(`Failed to read config template: ${error.message}`);
+  }
+}
+
+/**
+ * Builds the config file path based on environment
+ */
+export function buildConfigPath(environment?: string): string {
+  const fileName = environment
+    ? `jiji.${environment}.yml`
+    : DEFAULT_CONFIG_FILE;
+  return `${CONFIG_DIR}/${fileName}`;
+}
+
+/**
+ * Creates a config file with the given content
+ */
+export async function createConfigFile(
+  configPath: string,
+  template: string,
+): Promise<void> {
+  try {
+    await ensureDir(CONFIG_DIR);
+    await Deno.writeTextFile(configPath, template);
+  } catch (error) {
+    throw new Error(`Failed to create config file: ${error.message}`);
+  }
 }
 
 /**
