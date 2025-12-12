@@ -1,5 +1,5 @@
 import { Command } from "@cliffy/command";
-import { colors } from "https://deno.land/x/cliffy@v1.0.0-rc.3/ansi/colors.ts";
+import { colors } from "@cliffy/ansi/colors";
 import { loadConfig } from "../utils/config.ts";
 import {
   createSSHConfigFromJiji,
@@ -153,7 +153,7 @@ export const auditCommand = new Command()
 /**
  * Display audit entries grouped by server
  */
-async function displayServerEntries(
+function displayServerEntries(
   serverLogs: { host: string; entries: string[] }[],
   options: {
     lines: number;
@@ -214,7 +214,7 @@ async function displayServerEntries(
 /**
  * Display audit entries aggregated chronologically
  */
-async function displayAggregatedEntries(
+function displayAggregatedEntries(
   serverLogs: { host: string; entries: string[] }[],
   options: {
     lines: number;

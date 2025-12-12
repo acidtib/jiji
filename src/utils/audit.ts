@@ -1,10 +1,10 @@
-import { join } from "https://deno.land/std@0.208.0/path/mod.ts";
+import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
 
 export interface AuditEntry {
   timestamp: string;
   action: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   user?: string;
   host?: string;
   status: "started" | "success" | "failed" | "warning";
@@ -72,7 +72,7 @@ export class RemoteAuditLogger {
       }
 
       return true;
-    } catch (error) {
+    } catch (_error) {
       // console.warn(
       //   `⚠️  Failed to initialize remote audit: ${
       //     error instanceof Error ? error.message : String(error)
@@ -123,7 +123,7 @@ export class RemoteAuditLogger {
       }
 
       return true;
-    } catch (error) {
+    } catch (_error) {
       // console.warn(
       //   `Failed to log audit entry: ${
       //     error instanceof Error ? error.message : String(error)
@@ -242,7 +242,7 @@ export class AuditAggregator {
 
         const entries = await logger.getRemoteEntries(limit);
         results.push({ host, entries });
-      } catch (error) {
+      } catch (_error) {
         // console.warn(
         //   `⚠️  Failed to get audit entries from ${host}: ${
         //     error instanceof Error ? error.message : String(error)
@@ -539,7 +539,7 @@ export class LocalAuditLogger {
       await Deno.writeTextFile(this.auditFile, formattedEntry + "\n", {
         append: true,
       });
-    } catch (error) {
+    } catch (_error) {
       // console.warn(
       //   `⚠️  Failed to write local audit entry: ${
       //     error instanceof Error ? error.message : String(error)

@@ -39,7 +39,7 @@ export interface ConfigLoadResult {
 export interface AuditEntry {
   timestamp: string;
   action: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   user?: string;
   host?: string;
   status: "started" | "success" | "failed" | "warning";
