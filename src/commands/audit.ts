@@ -161,7 +161,7 @@ function displayServerEntries(
     status?: string;
     raw: boolean;
   },
-): Promise<void> {
+): void {
   let totalEntries = 0;
 
   for (const { host, entries } of serverLogs) {
@@ -222,7 +222,7 @@ function displayAggregatedEntries(
     status?: string;
     raw: boolean;
   },
-): Promise<void> {
+): void {
   // Combine all entries with host information
   const allEntries: { entry: string; host: string; timestamp: string }[] = [];
 

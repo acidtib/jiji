@@ -42,7 +42,10 @@ export const initCommand = new Command()
 
       console.log(`Config file created successfully at ${configPath}`);
     } catch (error) {
-      console.error("Error:", error.message);
+      console.error(
+        "Error:",
+        error instanceof Error ? error.message : String(error),
+      );
       Deno.exit(1);
     }
   });

@@ -172,7 +172,11 @@ export async function configFileExists(path: string): Promise<boolean> {
     if (error instanceof Deno.errors.NotFound) {
       return false;
     }
-    throw new Error(`Error checking config file existence: ${error.message}`);
+    throw new Error(
+      `Error checking config file existence: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -183,7 +187,11 @@ export async function readConfigTemplate(): Promise<string> {
   try {
     return await Deno.readTextFile(TEMPLATE_PATH);
   } catch (error) {
-    throw new Error(`Failed to read config template: ${error.message}`);
+    throw new Error(
+      `Failed to read config template: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -208,7 +216,11 @@ export async function createConfigFile(
     await ensureDir(CONFIG_DIR);
     await Deno.writeTextFile(configPath, template);
   } catch (error) {
-    throw new Error(`Failed to create config file: ${error.message}`);
+    throw new Error(
+      `Failed to create config file: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
