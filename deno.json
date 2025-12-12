@@ -5,7 +5,7 @@
   "exports": "./src/main.ts",
   "nodeModulesDir": "auto",
   "tasks": {
-    "run": "deno run --allow-read --allow-write --allow-net --allow-run --allow-env src/main.ts",
+    "run": "deno run --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env src/main.ts",
     "build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --include src/jiji.yml --output build/jiji src/main.ts",
     "version": "./bin/version",
     "test": "deno test --allow-all",

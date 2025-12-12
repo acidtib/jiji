@@ -27,22 +27,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deno-
 
-      # - name: Check formatting
-      #   run: deno fmt --check
+      - name: Install dependencies with build scripts
+        run: deno install --allow-scripts=npm:cpu-features,npm:ssh2
+
+      - name: Check formatting
+        run: deno fmt --check
 
       - name: Lint code
         run: deno lint
 
       # - name: Run tests
-      #   run: deno test --allow-all
-
-      - name: Test CLI build
-        run: deno task build:npm 0.0.0-dev
+      #   run: deno test --allow-all --allow-scripts=npm:cpu-features,npm:ssh2
+      # Note: Uncomment when tests are added to the project
 
       - name: Test CLI functionality
         run: |
-          cd build/npm
-          node esm/main.js --help
-          node esm/main.js init --help
-          node esm/main.js server --help
-          node esm/main.js server bootstrap --help
+          deno task run src/main.ts --help
+          deno task run src/main.ts init --help
+          deno task run src/main.ts server --help
+          deno task run src/main.ts version
