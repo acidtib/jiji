@@ -45,3 +45,12 @@ export interface AuditEntry {
   status: "started" | "success" | "failed" | "warning";
   message?: string;
 }
+
+export interface GlobalOptions {
+  environment?: string;
+  verbose?: boolean;
+  version?: string;
+  configFile?: string;
+  hosts?: string;
+  services?: string;
+}

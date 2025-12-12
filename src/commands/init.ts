@@ -1,6 +1,7 @@
 import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import { ensureDir } from "@std/fs";
+import type { GlobalOptions } from "../types.ts";
 
 // Read template content from src/jiji.yml
 async function getConfigTemplate(): Promise<string> {
@@ -9,12 +10,19 @@ async function getConfigTemplate(): Promise<string> {
 }
 
 export const initCommand = new Command()
-  .description("Create config stub in config/jiji.yml")
-  .action(async () => {
-    console.log("Init command called!");
-    console.log("This will create a config stub in config/jiji.yml");
+  .description(
+    "Create config stub in config/jiji.yml",
+  )
+  .action(async (options) => {
+    console.log("Initializing jiji configuration...");
 
-    const configPath = "config/jiji.yml";
+    // Determine the config file name based on environment option
+    const globalOptions = options as unknown as GlobalOptions;
+    const environment = globalOptions.environment;
+    const configFileName = environment ? `jiji.${environment}.yml` : "jiji.yml";
+    const configPath = `config/${configFileName}`;
+
+    console.log(`Creating config: ${configPath}`);
 
     // Check if the config file already exists
     let shouldWrite = true;
