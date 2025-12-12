@@ -8,17 +8,29 @@ import { versionCommand } from "./commands/version.ts";
 const command = new Command()
   .name("jiji")
   .description("Jiji - Infrastructure management tool")
-  .option("-v, --verbose", "Detailed logging")
-  .option(
+  .globalOption("-v, --verbose", "Detailed logging")
+  .globalOption(
     "--version=<VERSION:string>",
     "Run commands against a specific app version",
   )
-  .option("-c, --config-file=<CONFIG_FILE:string>", "Path to config file", {
-    default: "config/jiji.yml",
-  })
-  .option(
+  .globalOption(
+    "-c, --config-file=<CONFIG_FILE:string>",
+    "Path to config file",
+    {
+      default: "config/jiji.yml",
+    },
+  )
+  .globalOption(
     "-e, --environment=<ENVIRONMENT:string>",
     "Specify environment to be used for config file (staging -> jiji.staging.yml)",
+  )
+  .globalOption(
+    "-H, --hosts=<HOSTS:string>",
+    "Run commands on these hosts instead of all (separate by comma, supports wildcards with *)",
+  )
+  .globalOption(
+    "-S, --services=<SERVICES:string>",
+    "Run commands on these services instead of all (separate by comma, supports wildcards with *)",
   )
   .action(() => {
     command.showHelp();
