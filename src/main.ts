@@ -8,6 +8,18 @@ import { versionCommand } from "./commands/version.ts";
 const command = new Command()
   .name("jiji")
   .description("Jiji - Infrastructure management tool")
+  .option("-v, --verbose", "Detailed logging")
+  .option(
+    "--version=<VERSION:string>",
+    "Run commands against a specific app version",
+  )
+  .option("-c, --config-file=<CONFIG_FILE:string>", "Path to config file", {
+    default: "config/jiji.yml",
+  })
+  .option(
+    "-e, --environment=<ENVIRONMENT:string>",
+    "Specify environment to be used for config file (staging -> jiji.staging.yml)",
+  )
   .action(() => {
     command.showHelp();
     Deno.exit(0);
