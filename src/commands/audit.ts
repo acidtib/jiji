@@ -38,7 +38,7 @@ export const auditCommand = new Command()
 
       // Load configuration
       const { config, configPath } = await loadConfig(options.config);
-      console.log(`✅ Configuration loaded from: ${configPath}`);
+      console.log(`Configuration loaded from: ${configPath}`);
 
       // Collect all unique hosts from services
       const allHosts = new Set<string>();
@@ -111,7 +111,7 @@ export const auditCommand = new Command()
           `\n⚠️  Skipping unreachable hosts: ${failedHosts.join(", ")}`,
         );
         console.log(
-          `✅ Proceeding with ${connectedHosts.length} reachable host(s): ${
+          `Proceeding with ${connectedHosts.length} reachable host(s): ${
             connectedHosts.join(", ")
           }\n`,
         );
@@ -121,7 +121,7 @@ export const auditCommand = new Command()
       sshManagers = connectedManagers;
       const auditLogger = createServerAuditLogger(sshManagers);
 
-      console.log("🔍 Fetching audit entries...\n");
+      console.log("Fetching audit entries...\n");
 
       // Get audit entries from connected servers
       const serverLogs = await auditLogger.getRecentEntries(options.lines * 2);
@@ -206,7 +206,7 @@ function displayServerEntries(
     console.log("📝 No matching audit entries found.");
   } else {
     console.log(
-      `✅ Total: ${totalEntries} entries from ${serverLogs.length} server(s)`,
+      `Total: ${totalEntries} entries from ${serverLogs.length} server(s)`,
     );
   }
 }
@@ -289,7 +289,7 @@ function displayAggregatedEntries(
     }
   }
 
-  console.log(`\n✅ Total: ${filteredEntries.length} entries`);
+  console.log(`\nTotal: ${filteredEntries.length} entries`);
 }
 
 /**

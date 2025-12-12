@@ -140,7 +140,7 @@ export const execCommand = new Command()
       }
 
       console.log(
-        `✅ Executing on ${connectedHosts.length} reachable host(s): ${
+        `Executing on ${connectedHosts.length} reachable host(s): ${
           connectedHosts.join(", ")
         }\n`,
       );
@@ -186,7 +186,7 @@ export const execCommand = new Command()
             ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
 
             console.log(
-              `[${host}] ✅ Command completed (exit code: ${result.code})`,
+              `[${host}] Command completed (exit code: ${result.code})`,
             );
 
             if (result.stdout.trim()) {
@@ -251,7 +251,7 @@ export const execCommand = new Command()
             ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
 
             console.log(
-              `[${host}] ✅ Command completed (exit code: ${result.code})`,
+              `[${host}] Command completed (exit code: ${result.code})`,
             );
 
             if (result.stdout.trim()) {
@@ -303,7 +303,7 @@ export const execCommand = new Command()
 
       console.log("📊 Execution Summary:");
       console.log(
-        `   ✅ Successful: ${successful.length} host(s) - ${
+        `   Successful: ${successful.length} host(s) - ${
           successful.map((r) => r.host).join(", ")
         }`,
       );
@@ -333,7 +333,7 @@ export const execCommand = new Command()
 
         Deno.exit(1);
       } else if (failed.length === 0) {
-        console.log(`\n✅ Command executed successfully on all hosts`);
+        console.log(`\nCommand executed successfully on all hosts`);
       } else {
         console.log(
           `\n⚠️  Command completed with some failures (${failed.length}/${executionResults.length} hosts failed)`,

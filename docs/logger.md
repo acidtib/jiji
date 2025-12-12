@@ -152,7 +152,7 @@ try {
 ### Health Checks
 
 ```typescript
-await log.group("🔍 Health Checks", async () => {
+await log.group("Health Checks", async () => {
   const services = ["web", "api", "database", "cache"];
   
   for (const service of services) {

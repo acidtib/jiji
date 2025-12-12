@@ -75,7 +75,7 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("podman --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        console.log(`  ✅ Podman installed successfully: ${version}`);
+        console.log(`  Podman installed successfully: ${version}`);
         fullOutput += `\n$ podman --version\n${verifyResult.stdout}\n`;
       } else {
         hasError = true;
@@ -136,7 +136,7 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("docker --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        console.log(`  ✅ Docker installed successfully: ${version}`);
+        console.log(`  Docker installed successfully: ${version}`);
         fullOutput += `\n$ docker --version\n${verifyResult.stdout}\n`;
 
         // Note about group membership

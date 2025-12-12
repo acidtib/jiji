@@ -9,6 +9,7 @@ import {
 } from "../../utils/ssh.ts";
 import { installEngineOnHosts } from "../../utils/engine.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
+import { log, Logger } from "../../utils/logger.ts";
 import type { GlobalOptions, JijiConfig } from "../../types.ts";
 
 export const bootstrapCommand = new Command()
@@ -23,193 +24,257 @@ export const bootstrapCommand = new Command()
       | undefined;
 
     try {
-      console.log("Server bootstrap command called!");
+      await log.group("Server Bootstrap", async () => {
+        log.info("Starting server bootstrap process", "bootstrap");
 
-      // Cast options to GlobalOptions to access global options
-      const globalOptions = options as unknown as GlobalOptions;
+        // Cast options to GlobalOptions to access global options
+        const globalOptions = options as unknown as GlobalOptions;
 
-      // Load and parse the configuration
-      const configResult = await loadConfig(globalOptions.configFile);
-      config = configResult.config;
-      const configPath = configResult.configPath;
-      console.log(`Configuration loaded from: ${configPath}`);
+        // Load and parse the configuration
+        const configResult = await loadConfig(globalOptions.configFile);
+        config = configResult.config;
+        const configPath = configResult.configPath;
+        log.success(`Configuration loaded from: ${configPath}`, "config");
 
-      // Configuration loading will be logged once we have SSH connections
-      console.log(`Container engine: ${config.engine}`);
+        // Configuration loading will be logged once we have SSH connections
+        log.info(`Container engine: ${config.engine}`, "engine");
 
-      // Check if the specified engine is available
-      const engineCommand = getEngineCommand(config);
+        // Check if the specified engine is available
+        const engineCommand = getEngineCommand(config);
 
-      // Collect all unique hosts from services
-      const allHosts = new Set<string>();
-      for (const service of Object.values(config.services)) {
-        if (service.hosts) {
-          service.hosts.forEach((host: string) => allHosts.add(host));
+        // Collect all unique hosts from services
+        const allHosts = new Set<string>();
+        for (const service of Object.values(config.services)) {
+          if (service.hosts) {
+            service.hosts.forEach((host: string) => allHosts.add(host));
+          }
         }
-      }
 
-      uniqueHosts = Array.from(allHosts);
+        uniqueHosts = Array.from(allHosts);
 
-      if (uniqueHosts.length > 0) {
-        console.log(
-          `Found ${uniqueHosts.length} remote host(s): ${
-            uniqueHosts.join(", ")
-          }`,
-        );
-
-        // Always install engine on remote hosts
-        console.log(`\nInstalling ${engineCommand} on remote hosts...`);
-
-        // Validate SSH setup
-        const sshValidation = await validateSSHSetup();
-        if (!sshValidation.valid) {
-          console.error(`SSH setup validation failed:`);
-          console.error(`   ${sshValidation.message}`);
-          console.error(
-            `   Please run 'ssh-agent' and 'ssh-add' before continuing.`,
+        if (uniqueHosts.length > 0) {
+          log.info(
+            `Found ${uniqueHosts.length} remote host(s): ${
+              uniqueHosts.join(", ")
+            }`,
+            "bootstrap",
           );
-          Deno.exit(1);
-        }
 
-        // Get SSH configuration from config file only
-        const sshConfig = {
-          ...createSSHConfigFromJiji(config.ssh),
-          useAgent: true,
-        };
+          await log.group("SSH Connection Setup", async () => {
+            // Validate SSH setup
+            log.status("Validating SSH configuration", "ssh");
+            const sshValidation = await validateSSHSetup();
+            if (!sshValidation.valid) {
+              log.error(`SSH setup validation failed:`, "ssh");
+              log.error(`   ${sshValidation.message}`, "ssh");
+              log.error(
+                `   Please run 'ssh-agent' and 'ssh-add' before continuing.`,
+                "ssh",
+              );
+              Deno.exit(1);
+            }
+            log.success("SSH setup validation passed", "ssh");
 
-        try {
-          // Create SSH managers for all hosts and test connections
-          sshManagers = createSSHManagers(uniqueHosts, sshConfig);
-          const connectionTests = await testConnections(sshManagers);
+            // Get SSH configuration from config file only
+            const sshConfig = {
+              ...createSSHConfigFromJiji(config!.ssh),
+              useAgent: true,
+            };
 
-          const { connectedManagers, connectedHosts, failedHosts } =
-            filterConnectedHosts(sshManagers, connectionTests);
+            // Create SSH managers for all hosts and test connections
+            log.status("Testing connections to all hosts...", "ssh");
+            sshManagers = createSSHManagers(uniqueHosts, sshConfig);
+            const connectionTests = await testConnections(sshManagers);
 
-          if (connectedHosts.length === 0) {
-            console.error(
-              "❌ No hosts are reachable. Cannot proceed with bootstrap.",
-            );
-            Deno.exit(1);
-          }
+            const { connectedManagers, connectedHosts, failedHosts } =
+              filterConnectedHosts(sshManagers, connectionTests);
 
-          if (failedHosts.length > 0) {
-            console.log(
-              `\n⚠️  Skipping unreachable hosts: ${failedHosts.join(", ")}`,
-            );
-            console.log(
-              `✅ Proceeding with ${connectedHosts.length} reachable host(s): ${
+            if (connectedHosts.length === 0) {
+              log.error(
+                "❌ No hosts are reachable. Cannot proceed with bootstrap.",
+                "ssh",
+              );
+              Deno.exit(1);
+            }
+
+            if (failedHosts.length > 0) {
+              log.warn(
+                `Skipping unreachable hosts: ${failedHosts.join(", ")}`,
+                "ssh",
+              );
+            }
+
+            log.success(
+              `Connected to ${connectedHosts.length} host(s): ${
                 connectedHosts.join(", ")
-              }\n`,
+              }`,
+              "ssh",
             );
-          }
 
-          // Use only connected SSH managers
-          sshManagers = connectedManagers;
-
-          // Update uniqueHosts to only connected hosts for consistent reporting
-          uniqueHosts = connectedHosts;
+            // Use only connected SSH managers
+            sshManagers = connectedManagers;
+            uniqueHosts = connectedHosts;
+          });
 
           // Create audit logger for connected servers only
-          auditLogger = createServerAuditLogger(sshManagers);
+          auditLogger = createServerAuditLogger(sshManagers!);
 
           // Log bootstrap start to connected servers
           await auditLogger.logBootstrapStart(
-            connectedHosts,
-            config.engine,
+            uniqueHosts,
+            config!.engine,
           );
 
           // Log configuration loading to connected servers
           await auditLogger.logConfigChange(configPath, "loaded");
 
-          installResults = await installEngineOnHosts(
-            sshManagers,
-            config.engine,
-          );
+          await log.group(`${engineCommand} Installation`, async () => {
+            log.status(
+              `Installing ${engineCommand} on remote hosts...`,
+              "install",
+            );
 
-          // Log engine installation results to each respective server
-          for (const result of installResults) {
-            const hostSsh = sshManagers.find((
-              ssh: ReturnType<typeof createSSHManagers>[0],
-            ) => ssh.getHost() === result.host);
-            if (hostSsh) {
-              const hostLogger = createServerAuditLogger(hostSsh);
-              await hostLogger.logEngineInstall(
-                config.engine,
-                result.success ? "success" : "failed",
-                result.message ||
-                  (result.success ? "Installation successful" : result.error),
+            try {
+              installResults = await installEngineOnHosts(
+                sshManagers!,
+                config!.engine,
               );
-            }
-          }
 
-          // SSH connections will be cleaned up in finally block
-        } catch (error) {
-          const errorMessage = error instanceof Error
-            ? error.message
-            : String(error);
-          console.error(`Engine installation failed: ${errorMessage}`);
+              // Create server loggers for individual host reporting
+              const serverLoggers = Logger.forServers(uniqueHosts, {
+                maxPrefixLength: 25,
+              });
 
-          // Log engine installation failure
-          if (auditLogger && sshManagers) {
-            for (const host of uniqueHosts) {
-              const hostSsh = sshManagers.find((
-                ssh: ReturnType<typeof createSSHManagers>[0],
-              ) => ssh.getHost() === host);
-              if (hostSsh) {
-                const hostLogger = createServerAuditLogger(hostSsh);
-                await hostLogger.logEngineInstall(
-                  config.engine,
-                  "failed",
-                  errorMessage,
+              // Log engine installation results to each respective server
+              for (const result of installResults) {
+                const hostLogger = serverLoggers.get(result.host);
+                if (hostLogger) {
+                  if (result.success) {
+                    hostLogger.success(
+                      result.message || "Installation successful",
+                    );
+                  } else {
+                    hostLogger.error(
+                      result.error || result.message || "Installation failed",
+                    );
+                  }
+                }
+
+                // Also log to audit trail
+                const hostSsh = sshManagers!.find((
+                  ssh: ReturnType<typeof createSSHManagers>[0],
+                ) => ssh.getHost() === result.host);
+                if (hostSsh) {
+                  const hostAuditLogger = createServerAuditLogger(hostSsh);
+                  await hostAuditLogger.logEngineInstall(
+                    config!.engine,
+                    result.success ? "success" : "failed",
+                    result.message ||
+                      (result.success
+                        ? "Installation successful"
+                        : result.error),
+                  );
+                }
+              }
+
+              const successfulInstalls = installResults.filter((r) =>
+                r.success
+              ).length;
+              const failedInstalls = installResults.filter((r) =>
+                !r.success
+              ).length;
+
+              if (successfulInstalls > 0) {
+                log.success(
+                  `${engineCommand} installed successfully on ${successfulInstalls} host(s)`,
+                  "install",
                 );
               }
+
+              if (failedInstalls > 0) {
+                log.warn(
+                  `${engineCommand} installation failed on ${failedInstalls} host(s)`,
+                  "install",
+                );
+              }
+            } catch (error) {
+              const errorMessage = error instanceof Error
+                ? error.message
+                : String(error);
+              log.error(
+                `Engine installation failed: ${errorMessage}`,
+                "install",
+              );
+
+              // Log engine installation failure
+              if (auditLogger && sshManagers) {
+                for (const host of uniqueHosts) {
+                  const hostSsh = sshManagers.find((
+                    ssh: ReturnType<typeof createSSHManagers>[0],
+                  ) => ssh.getHost() === host);
+                  if (hostSsh) {
+                    const hostLogger = createServerAuditLogger(hostSsh);
+                    await hostLogger.logEngineInstall(
+                      config!.engine,
+                      "failed",
+                      errorMessage,
+                    );
+                  }
+                }
+              }
+
+              log.status(`Continuing with bootstrap process...`, "bootstrap");
             }
-          }
-
-          console.log(`Continuing with bootstrap process...`);
+          });
+        } else {
+          log.error(
+            `No remote hosts found in configuration at: ${configPath}`,
+            "config",
+          );
+          log.error(
+            `Could not find any hosts. Please update your jiji config to include hosts for services.`,
+            "config",
+          );
+          Deno.exit(1);
         }
-      } else {
-        console.log(`No remote hosts found in configuration at: ${configPath}`);
-        console.log(
-          `Could not find any hosts. Please update your jiji config to include hosts for services.`,
-        );
-        Deno.exit(1);
-      }
 
-      // Log successful bootstrap completion to connected servers
-      if (auditLogger) {
-        const auditResults = await auditLogger.logBootstrapSuccess(
-          uniqueHosts,
-          config.engine,
-        );
+        // Log successful bootstrap completion to connected servers
+        if (auditLogger) {
+          const auditResults = await auditLogger.logBootstrapSuccess(
+            uniqueHosts,
+            config!.engine,
+          );
 
-        // Report successful audit logging (should match connected hosts)
-        const successfulHosts = auditResults
-          .filter((result) => result.success)
-          .map((result) => result.host);
+          // Report successful audit logging (should match connected hosts)
+          const successfulHosts = auditResults
+            .filter((result) => result.success)
+            .map((result) => result.host);
 
-        console.log(
-          `\n✅ Bootstrap completed successfully on ${uniqueHosts.length} server(s)`,
-        );
-        console.log(
-          `📋 Audit trail updated on ${successfulHosts.length} server(s): ${
-            successfulHosts.join(", ")
-          }`,
-        );
-      }
+          log.success(
+            `Bootstrap completed successfully on ${uniqueHosts.length} server(s)`,
+            "bootstrap",
+          );
+          log.info(
+            `📋 Audit trail updated on ${successfulHosts.length} server(s): ${
+              successfulHosts.join(", ")
+            }`,
+            "audit",
+          );
+        }
+      });
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      console.error("Bootstrap failed:");
-      console.error(errorMessage);
+      log.error("Bootstrap failed:", "bootstrap");
+      log.error(errorMessage, "bootstrap");
 
       // Log bootstrap failure to servers if possible
       if (auditLogger) {
         const failureResults = await auditLogger.logBootstrapFailure(
           errorMessage,
           uniqueHosts,
-          config ? config.engine : undefined,
+          config?.engine,
         );
 
         // Report which servers received the failure log
@@ -218,10 +283,11 @@ export const bootstrapCommand = new Command()
           .map((result) => result.host);
 
         if (successfulFailureLogs.length > 0) {
-          console.log(
+          log.info(
             `Failure logged to ${successfulFailureLogs.length} server(s): ${
               successfulFailureLogs.join(", ")
             }`,
+            "audit",
           );
         }
       }
@@ -235,7 +301,7 @@ export const bootstrapCommand = new Command()
             ssh.dispose();
           } catch (error) {
             // Ignore cleanup errors, but log them for debugging
-            console.debug(`Failed to dispose SSH connection: ${error}`);
+            log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
           }
         });
       }

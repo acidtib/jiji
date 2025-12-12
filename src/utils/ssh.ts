@@ -303,13 +303,13 @@ export async function validateSSHSetup(): Promise<
 export async function testConnections(
   sshManagers: SSHManager[],
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  console.log("🔍 Testing connections to all hosts...");
+  console.log("Testing connections to all hosts...");
 
   const connectionTests = await Promise.all(
     sshManagers.map(async (ssh) => {
       try {
         await ssh.connect();
-        console.log(`✅ Connected to ${ssh.getHost()}`);
+        console.log(`Connected to ${ssh.getHost()}`);
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
