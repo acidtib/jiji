@@ -146,16 +146,6 @@ deno task run
 deno run src/main.ts
 ```
 
-### Building for npm
-
-```bash
-# Build npm package
-deno task build:npm
-
-# Or with version
-deno task build:npm 1.0.0
-```
-
 ## Contributing
 
 1. Fork the repository
