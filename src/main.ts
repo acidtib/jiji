@@ -1,12 +1,45 @@
 import { Command } from "@cliffy/command";
+import { HelpCommand } from "@cliffy/command/help";
 import { initCommand } from "./commands/init.ts";
 import { serverCommand } from "./commands/server/index.ts";
-import { VERSION } from "./version.ts";
+import { auditCommand } from "./commands/audit.ts";
+import { versionCommand } from "./commands/version.ts";
 
-await new Command()
+const command = new Command()
   .name("jiji")
-  .version(VERSION)
-  .description("Jiji CLI - Infrastructure management tool")
+  .description("Jiji - Infrastructure management tool")
+  .globalOption("-v, --verbose", "Detailed logging")
+  .globalOption(
+    "--version=<VERSION:string>",
+    "Run commands against a specific app version",
+  )
+  .globalOption(
+    "-c, --config-file=<CONFIG_FILE:string>",
+    "Path to config file",
+    {
+      default: "config/jiji.yml",
+    },
+  )
+  .globalOption(
+    "-e, --environment=<ENVIRONMENT:string>",
+    "Specify environment to be used for config file (staging -> jiji.staging.yml)",
+  )
+  .globalOption(
+    "-H, --hosts=<HOSTS:string>",
+    "Run commands on these hosts instead of all (separate by comma, supports wildcards with *)",
+  )
+  .globalOption(
+    "-S, --services=<SERVICES:string>",
+    "Run commands on these services instead of all (separate by comma, supports wildcards with *)",
+  )
+  .action(() => {
+    command.showHelp();
+    Deno.exit(0);
+  })
   .command("init", initCommand)
   .command("server", serverCommand)
-  .parse(Deno.args);
+  .command("audit", auditCommand)
+  .command("version", versionCommand)
+  .command("help", new HelpCommand());
+
+await command.parse(Deno.args);

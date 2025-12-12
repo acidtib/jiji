@@ -1,0 +1,15 @@
+# containerization engine to use
+engine: podman
+
+ssh:
+  user: root
+  port: 22
+
+services:
+  web:
+    # using an image
+    image: nginx:latest
+    hosts:
+      - 192.168.1.100
+    ports:
+      - "127.0.0.1:80:80"

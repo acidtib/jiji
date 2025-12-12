@@ -14,6 +14,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.11.1"
+
+      # Ensure npm 11.5.1 or later for trusted publishing
+      - run: npm install -g npm@latest node-gyp
+
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
@@ -27,22 +35,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deno-
 
-      # - name: Check formatting
-      #   run: deno fmt --check
+      - name: Install dependencies with build scripts
+        run: deno install --allow-scripts=npm:cpu-features,npm:ssh2
+
+      - name: Check formatting
+        run: deno fmt --check
 
       - name: Lint code
         run: deno lint
 
       # - name: Run tests
-      #   run: deno test --allow-all
-
-      - name: Test CLI build
-        run: deno task build:npm 0.0.0-dev
+      #   run: deno test --allow-all --allow-scripts=npm:cpu-features,npm:ssh2
+      # Note: Uncomment when tests are added to the project
 
       - name: Test CLI functionality
         run: |
-          cd build/npm
-          node esm/main.js --help
-          node esm/main.js init --help
-          node esm/main.js server --help
-          node esm/main.js server bootstrap --help
+          deno task run --help
+          deno task run init --help
+          deno task run server --help
+          deno task run version
