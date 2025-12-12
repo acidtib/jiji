@@ -16,7 +16,7 @@ async function promptForOverwrite(configPath: string): Promise<boolean> {
 }
 
 export const initCommand = new Command()
-  .description("Create config stub in .jiji/development.yml")
+  .description("Create config stub in .jiji/deploy.yml")
   .action(async (options) => {
     console.log("Initializing jiji configuration...");
 

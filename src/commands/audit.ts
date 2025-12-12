@@ -62,7 +62,7 @@ export const auditCommand = new Command()
       if (targetHosts.length === 0) {
         console.log("📝 No remote hosts found in configuration.");
         console.log(
-          "💡 Add hosts to your services in .jiji/development.yml to view remote audit trails.",
+          "💡 Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
         );
         return;
       }

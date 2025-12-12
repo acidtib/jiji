@@ -5,7 +5,7 @@ import type { ConfigLoadResult, JijiConfig } from "../types.ts";
 
 const TEMPLATE_PATH = import.meta.dirname + "/../jiji.yml";
 const CONFIG_DIR = ".jiji";
-const DEFAULT_CONFIG_FILE = "development.yml";
+const DEFAULT_CONFIG_FILE = "deploy.yml";
 
 /**
  * Searches for jiji.yml config file starting from current directory
@@ -15,8 +15,8 @@ async function findConfigFile(
   startPath: string = Deno.cwd(),
 ): Promise<string | null> {
   const configFilenames = [
-    ".jiji/development.yml",
-    ".jiji/development.yaml",
+    ".jiji/deploy.yml",
+    ".jiji/deploy.yaml",
     ".jiji/production.yml",
     ".jiji/production.yaml",
     ".jiji/staging.yml",
@@ -126,7 +126,7 @@ export async function loadConfig(
     if (!foundPath) {
       throw new Error(
         "No jiji configuration file found. " +
-          "Please create a .jiji/development.yml file or specify a config file path.",
+          "Please create a .jiji/deploy.yml file or specify a config file path.",
       );
     }
     actualConfigPath = foundPath;
@@ -200,7 +200,7 @@ export async function readConfigTemplate(): Promise<string> {
  */
 export function buildConfigPath(environment?: string): string {
   const fileName = environment
-    ? `jiji.${environment}.yml`
+    ? `deploy.${environment}.yml`
     : DEFAULT_CONFIG_FILE;
   return `${CONFIG_DIR}/${fileName}`;
 }

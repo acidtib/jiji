@@ -43,7 +43,7 @@ curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.5 sh
 
 ### Initialize Configuration
 
-Create a configuration stub in `.jiji/development.yml`:
+Create a configuration stub in `.jiji/deploy.yml`:
 
 ```bash
 jiji init
