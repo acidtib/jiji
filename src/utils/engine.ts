@@ -41,7 +41,7 @@ export class EngineInstaller {
    */
   async installPodman(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    console.log(`📦 Installing Podman on ${host}...`);
+    console.log(`Installing Podman on ${host}...`);
 
     const commands = [
       "sudo apt update",
@@ -101,7 +101,7 @@ export class EngineInstaller {
    */
   async installDocker(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    console.log(`🐳 Installing Docker on ${host}...`);
+    console.log(`Installing Docker on ${host}...`);
 
     const commands = [
       "sudo apt update",

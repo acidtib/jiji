@@ -98,4 +98,4 @@ if ! $SUDO install "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/jiji"; then
 fi
 
 echo "Successfully installed jiji binary ${VERSION} to ${INSTALL_DIR}/jiji"
-echo "Run 'jiji --help' to get started ✨"
+echo "Run 'jiji --help' to get started"

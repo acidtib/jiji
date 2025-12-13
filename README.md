@@ -178,6 +178,6 @@ useful for development and contribution workflows.
 
 ## Support
 
-- 📖 [Documentation](https://github.com/acidtib/jiji)
-- 🐛 [Issues](https://github.com/acidtib/jiji/issues)
-- 💬 [Discussions](https://github.com/acidtib/jiji/discussions)
+- [Documentation](https://github.com/acidtib/jiji)
+- [Issues](https://github.com/acidtib/jiji/issues)
+- [Discussions](https://github.com/acidtib/jiji/discussions)

@@ -32,7 +32,7 @@ async function validateEngine(engine: string): Promise<void> {
       `Please install ${engine} or edit the config to use a different engine`,
     );
   } else {
-    initLogger.success(`${engine} is available ✓`);
+    initLogger.success(`${engine} is available`);
   }
 }
 
@@ -44,7 +44,7 @@ async function validateConfiguration(configPath: string): Promise<void> {
     const validationResult = await Configuration.validateFile(configPath);
 
     if (validationResult.valid) {
-      initLogger.success("Configuration is valid ✓");
+      initLogger.success("Configuration is valid");
 
       if (validationResult.warnings.length > 0) {
         initLogger.warn(

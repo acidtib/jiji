@@ -161,9 +161,9 @@ await log.group("Health Checks", async () => {
     const isHealthy = await checkServiceHealth(service);
 
     if (isHealthy) {
-      log.success(`${service}: healthy ✓`, "health");
+      log.success(`${service}: healthy`, "health");
     } else {
-      log.error(`${service}: unhealthy ✗`, "health");
+      log.error(`${service}: unhealthy`, "health");
     }
   }
 });
