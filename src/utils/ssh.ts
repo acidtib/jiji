@@ -30,46 +30,14 @@ export class SSHManager {
   }
 
   /**
-   * Establish SSH connection to the remote host
+   * Establish SSH connection to the remote host using NodeSSH
+   * This is the primary connection method for command execution
    */
   async connect(): Promise<void> {
-    const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
-    if (!sshAuthSock) {
-      throw new Error("SSH_AUTH_SOCK environment variable not set");
-    }
-
     try {
+      const config = this.getSSHConnectionConfig();
       await this.ssh.connect({
-        host: this.config.host,
-        username: this.config.username,
-        port: this.config.port || 22,
-        agent: sshAuthSock,
-        algorithms: {
-          serverHostKey: [
-            "ssh-rsa",
-            "ecdsa-sha2-nistp256",
-            "ecdsa-sha2-nistp384",
-            "ecdsa-sha2-nistp521",
-            "ssh-ed25519",
-          ],
-          kex: [
-            "ecdh-sha2-nistp256",
-            "ecdh-sha2-nistp384",
-            "ecdh-sha2-nistp521",
-            "diffie-hellman-group14-sha256",
-            "diffie-hellman-group16-sha512",
-            "diffie-hellman-group1-sha1",
-          ],
-          cipher: [
-            "aes128-ctr",
-            "aes256-ctr",
-            "aes128-cbc",
-          ],
-          hmac: ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha1"],
-          compress: ["none"],
-        },
-        readyTimeout: 60000,
-        keepaliveInterval: 30000,
+        ...config,
         debug: (msg: string) => {
           if (msg.includes("error") || msg.includes("fail")) {
             console.log(`SSH Debug: ${msg}`);
@@ -139,70 +107,83 @@ export class SSHManager {
   }
 
   /**
-   * Connect using ssh2 client for interactive sessions
+   * Create and connect ssh2 client for interactive sessions (on-demand)
    */
-  private connectSsh2Client(): Promise<void> {
+  private ensureSsh2Client(): Promise<void> {
+    if (this.ssh2Client) {
+      return Promise.resolve(); // Already connected
+    }
+
     return new Promise((resolve, reject) => {
-      const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
-      if (!sshAuthSock) {
-        reject(new Error("SSH_AUTH_SOCK environment variable not set"));
-        return;
+      try {
+        const config = this.getSSHConnectionConfig();
+
+        this.ssh2Client = new Client();
+
+        this.ssh2Client.on("ready", () => {
+          resolve();
+        });
+
+        this.ssh2Client.on("error", (err: Error) => {
+          reject(new Error(`SSH connection failed: ${err.message}`));
+        });
+
+        this.ssh2Client.connect(config);
+      } catch (error) {
+        reject(error);
       }
-
-      this.ssh2Client = new Client();
-
-      this.ssh2Client.on("ready", () => {
-        resolve();
-      });
-
-      this.ssh2Client.on("error", (err: Error) => {
-        reject(new Error(`SSH connection failed: ${err.message}`));
-      });
-
-      // Reuse the same connection configuration as the main connect method
-      this.ssh2Client.connect({
-        host: this.config.host,
-        username: this.config.username,
-        port: this.config.port || 22,
-        agent: sshAuthSock,
-        algorithms: {
-          serverHostKey: [
-            "ssh-rsa",
-            "ecdsa-sha2-nistp256",
-            "ecdsa-sha2-nistp384",
-            "ecdsa-sha2-nistp521",
-            "ssh-ed25519",
-          ],
-          kex: [
-            "ecdh-sha2-nistp256",
-            "ecdh-sha2-nistp384",
-            "ecdh-sha2-nistp521",
-            "diffie-hellman-group14-sha256",
-            "diffie-hellman-group16-sha512",
-            "diffie-hellman-group1-sha1",
-          ],
-          cipher: [
-            "aes128-ctr",
-            "aes256-ctr",
-            "aes128-cbc",
-          ],
-          hmac: ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha1"],
-          compress: ["none"],
-        },
-        readyTimeout: 60000,
-        keepaliveInterval: 30000,
-      });
     });
+  }
+
+  /**
+   * Get the shared SSH connection configuration
+   */
+  private getSSHConnectionConfig() {
+    const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
+    if (!sshAuthSock) {
+      throw new Error("SSH_AUTH_SOCK environment variable not set");
+    }
+
+    return {
+      host: this.config.host,
+      username: this.config.username,
+      port: this.config.port || 22,
+      agent: sshAuthSock,
+      algorithms: {
+        serverHostKey: [
+          "ssh-rsa",
+          "ecdsa-sha2-nistp256",
+          "ecdsa-sha2-nistp384",
+          "ecdsa-sha2-nistp521",
+          "ssh-ed25519",
+        ],
+        kex: [
+          "ecdh-sha2-nistp256",
+          "ecdh-sha2-nistp384",
+          "ecdh-sha2-nistp521",
+          "diffie-hellman-group14-sha256",
+          "diffie-hellman-group16-sha512",
+          "diffie-hellman-group1-sha1",
+        ],
+        cipher: [
+          "aes128-ctr",
+          "aes256-ctr",
+          "aes128-cbc",
+        ],
+        hmac: ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha1"],
+        compress: ["none"],
+      },
+      readyTimeout: 60000,
+      keepaliveInterval: 30000,
+    };
   }
 
   /**
    * Start an interactive shell session
    */
   async startInteractiveSession(command: string): Promise<void> {
-    // Connect using ssh2 client if not already connected
-    if (!this.ssh2Client) {
-      await this.connectSsh2Client();
-    }
+    // Ensure ssh2 client is connected for interactive sessions
+    await this.ensureSsh2Client();
 
     return new Promise((resolve, reject) => {
       console.log(`\nConnected to ${this.config.host}`);
