@@ -45,7 +45,7 @@ jobs:
         run: deno lint
 
       - name: Run tests
-        run: deno test
+        run: deno test --allow-all
 
       - name: Test CLI functionality
         run: |
