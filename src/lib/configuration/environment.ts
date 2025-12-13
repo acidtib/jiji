@@ -31,13 +31,24 @@ export class EnvironmentConfiguration extends BaseConfiguration
    */
   get variables(): Record<string, string> {
     if (!this._variables) {
-      this._variables = this.has("variables")
-        ? this.validateObject(
+      if (this.has("variables")) {
+        // Structured format: { variables: { KEY: "value" } }
+        this._variables = this.validateObject(
           this.get("variables"),
           "variables",
           this.name,
-        ) as Record<string, string>
-        : {};
+        ) as Record<string, string>;
+      } else {
+        // Flat format: treat all top-level key-value pairs as variables
+        // Exclude known structured keys (secrets, files)
+        this._variables = {};
+        const excludeKeys = new Set(["secrets", "files"]);
+        for (const [key, value] of Object.entries(this.raw)) {
+          if (!excludeKeys.has(key) && typeof value === "string") {
+            this._variables[key] = value;
+          }
+        }
+      }
     }
     return this._variables;
   }

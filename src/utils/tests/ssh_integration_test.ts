@@ -1,10 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { SSHConfiguration } from "../../lib/configuration/ssh.ts";
-import {
-  createSSHConfigFromJiji,
-  createSSHManagers,
-  type SSHConnectionConfig,
-} from "../ssh.ts";
+import { createSSHConfigFromJiji, createSSHManagers } from "../ssh.ts";
 
 Deno.test("SSH Integration - configuration to utils bridge", () => {
   // Create SSH configuration from config file data
@@ -268,7 +264,7 @@ Deno.test("SSH Integration - configuration validation prevents bad utils config"
     let validationFailed = false;
     try {
       sshConfig.validate();
-    } catch (error) {
+    } catch (_error) {
       validationFailed = true;
     }
 

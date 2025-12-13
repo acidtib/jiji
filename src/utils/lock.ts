@@ -403,14 +403,14 @@ export function createLockManager(
 /**
  * Lock decorator for functions that need exclusive access
  */
-export function withLock<T extends any[], R>(
+export function withLock<T extends unknown[], R>(
   lockManager: LockManager,
   message: string,
 ) {
   return function (
-    target: any,
-    propertyKey: string,
-    descriptor: TypedPropertyDescriptor<(...args: T) => Promise<R>>,
+    _target: unknown,
+    _propertyKey: string,
+    descriptor: PropertyDescriptor,
   ) {
     const originalMethod = descriptor.value!;
 

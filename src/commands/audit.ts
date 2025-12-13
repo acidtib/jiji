@@ -12,6 +12,14 @@ import {
 } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
 
+interface AuditEntry {
+  timestamp: string;
+  status: string;
+  action: string;
+  host?: string;
+  message: string;
+}
+
 export const auditCommand = new Command()
   .description("Show audit trail of deployments and operations")
   .option("-n, --lines <number:number>", "Number of recent entries to show", {
@@ -217,7 +225,9 @@ async function showLocalAuditLog(options: {
 /**
  * Follow audit logs in real-time
  */
-async function followAuditLogs(options: any) {
+async function followAuditLogs(
+  _options: { hosts?: string[]; follow?: boolean },
+) {
   console.log(
     colors.bold("Following Jiji Audit Trail (Press Ctrl+C to stop)\n"),
   );
@@ -259,7 +269,7 @@ async function followAuditLogs(options: any) {
 /**
  * Output audit entries in JSON format
  */
-async function outputJsonFormat(
+function outputJsonFormat(
   serverLogs: { host: string; entries: string[] }[],
   options: {
     lines: number;
@@ -269,7 +279,7 @@ async function outputJsonFormat(
     until?: string;
   },
 ) {
-  const allEntries: any[] = [];
+  const allEntries: AuditEntry[] = [];
 
   for (const { host, entries } of serverLogs) {
     for (const entry of entries) {
@@ -421,7 +431,7 @@ function displayAggregatedEntries(
 /**
  * Parse an audit entry string into structured data
  */
-function parseAuditEntry(entry: string, host: string): any | null {
+function parseAuditEntry(entry: string, host: string): AuditEntry | null {
   // Parse the entry format: [TIMESTAMP] [STATUS] ACTION [HOST] - MESSAGE
   const match = entry.match(
     /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*([^\[\-]*?)(\[([^\]]+)\])?\s*-?\s*(.*)?$/,
@@ -446,7 +456,7 @@ function parseAuditEntry(entry: string, host: string): any | null {
 /**
  * Check if an entry should be included based on filters
  */
-function shouldIncludeEntry(entry: any, options: {
+function shouldIncludeEntry(entry: AuditEntry, options: {
   filter?: string;
   status?: string;
   since?: string;
