@@ -8,7 +8,7 @@ import {
   validateSSHSetup,
 } from "../../utils/ssh.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
-import type { JijiConfig } from "../../types.ts";
+import type { Configuration } from "../../lib/configuration.ts";
 
 export const execCommand = new Command()
   .description("Execute a custom command on remote hosts")
@@ -35,7 +35,7 @@ export const execCommand = new Command()
     { default: 300 },
   )
   .action(async (options, command: string) => {
-    let config: JijiConfig | undefined;
+    let config: Configuration | undefined;
     let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
     let auditLogger: ReturnType<typeof createServerAuditLogger> | undefined;
     let targetHosts: string[] = [];
@@ -51,8 +51,8 @@ export const execCommand = new Command()
 
       // Collect all unique hosts from services
       const allHosts = new Set<string>();
-      for (const service of Object.values(config.services)) {
-        if (service.hosts) {
+      for (const [, service] of config.services) {
+        if (service.hosts && service.hosts.length > 0) {
           service.hosts.forEach((host: string) => allHosts.add(host));
         }
       }
@@ -110,7 +110,10 @@ export const execCommand = new Command()
       }
 
       // Get SSH configuration from config file and command line options
-      const baseSshConfig = createSSHConfigFromJiji(config.ssh);
+      const baseSshConfig = createSSHConfigFromJiji({
+        user: config.ssh.user,
+        port: config.ssh.port,
+      });
       const sshConfig = {
         username: options.sshUser || baseSshConfig.username,
         port: options.sshPort || baseSshConfig.port,

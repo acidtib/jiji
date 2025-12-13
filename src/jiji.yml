@@ -1,15 +1,84 @@
-# containerization engine to use
+# Jiji Deployment Configuration Template
+# =====================================
+
+# Container engine to use (docker or podman)
 engine: podman
 
+# SSH configuration for remote connections
 ssh:
   user: root
   port: 22
+  # Optional: Path to SSH private key
+  # key_path: ~/.ssh/id_rsa
+  # Optional: SSH key passphrase
+  # key_passphrase: "your-passphrase"
+  # Optional: Connection timeout in seconds (default: 30)
+  # connect_timeout: 30
+  # Optional: Command timeout in seconds (default: 300)
+  # command_timeout: 300
+  # Optional: Additional SSH options
+  # options:
+  #   StrictHostKeyChecking: "no"
+  #   UserKnownHostsFile: "/dev/null"
 
+# Services configuration
 services:
+  # Example web service using a pre-built image
   web:
-    # using an image
     image: nginx:latest
     hosts:
       - 192.168.1.100
+      - 192.168.1.101
     ports:
-      - "127.0.0.1:80:80"
+      - "3000:80"
+    volumes:
+      - "/etc/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "/var/www/html:/usr/share/nginx/html:ro"
+
+  # Example application service using build configuration
+  # app:
+  #   build:
+  #     context: ./app
+  #     dockerfile: Dockerfile
+  #     args:
+  #       NODE_ENV: production
+  #       BUILD_VERSION: "1.0.0"
+  #   hosts:
+  #     - 192.168.1.100
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     NODE_ENV: production
+  #     DATABASE_URL: "postgresql://user:pass@db:5432/myapp"
+  #   command: ["node", "server.js"]
+  #   volumes:
+  #     - "/app/logs:/var/log/app"
+
+  # Example database service
+  # database:
+  #   image: postgres:15
+  #   hosts:
+  #     - 192.168.1.102
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     POSTGRES_DB: myapp
+  #     POSTGRES_USER: dbuser
+  #     POSTGRES_PASSWORD: dbpass
+  #   volumes:
+  #     - "/data/postgres:/var/lib/postgresql/data"
+
+# Optional: Environment-specific configuration
+# env:
+#   variables:
+#     APP_ENV: production
+#     LOG_LEVEL: info
+#     DEBUG: "false"
+#   # Secrets to load from environment variables
+#   secrets:
+#     - DATABASE_PASSWORD
+#     - API_SECRET_KEY
+#   # Files to load as environment variables
+#   # files:
+#   #   SSL_CERT: /etc/ssl/cert.pem
+#   #   SSL_KEY: /etc/ssl/key.pem

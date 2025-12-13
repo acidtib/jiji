@@ -1,41 +1,3 @@
-export interface JijiConfig {
-  engine: "podman" | "docker";
-  ssh?: SSHConfig;
-  services: Record<string, ServiceConfig>;
-}
-
-export interface SSHConfig {
-  user: string;
-  port?: number;
-}
-
-export interface ServiceConfig {
-  image?: string;
-  build?: string | BuildConfig;
-  hosts?: string[];
-  ports?: string[];
-  volumes?: string[];
-  environment?: Record<string, string> | string[];
-  depends_on?: string[];
-  command?: string | string[];
-  working_dir?: string;
-  restart?: "no" | "always" | "on-failure" | "unless-stopped";
-  labels?: Record<string, string>;
-  networks?: string[];
-}
-
-export interface BuildConfig {
-  context: string;
-  dockerfile?: string;
-  args?: Record<string, string>;
-  target?: string;
-}
-
-export interface ConfigLoadResult {
-  config: JijiConfig;
-  configPath: string;
-}
-
 export interface AuditEntry {
   timestamp: string;
   action: string;
@@ -54,3 +16,36 @@ export interface GlobalOptions {
   hosts?: string;
   services?: string;
 }
+
+// Configuration system types
+export interface ValidationError {
+  path: string;
+  message: string;
+  code?: string;
+}
+
+export interface ValidationWarning {
+  path: string;
+  message: string;
+  code?: string;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+}
+
+export interface ConfigurationContext {
+  environment?: string;
+  configPath?: string;
+  [key: string]: unknown;
+}
+
+// Re-export types from configuration system
+export type { ContainerEngine } from "./lib/configuration.ts";
+export type { Configuration } from "./lib/configuration.ts";
+export type { ServiceConfiguration } from "./lib/configuration.ts";
+export type { SSHConfiguration } from "./lib/configuration.ts";
+export type { EnvironmentConfiguration } from "./lib/configuration.ts";
+export { ConfigurationError } from "./lib/configuration.ts";

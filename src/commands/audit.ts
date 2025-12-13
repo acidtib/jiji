@@ -9,6 +9,7 @@ import {
   validateSSHSetup,
 } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
+import type { Configuration } from "../lib/configuration.ts";
 
 export const auditCommand = new Command()
   .description("View audit trail from remote servers")
@@ -31,8 +32,6 @@ export const auditCommand = new Command()
     default: false,
   })
   .action(async (options) => {
-    let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
-
     try {
       console.log("📋 Loading audit trail from remote servers...\n");
 
@@ -42,8 +41,8 @@ export const auditCommand = new Command()
 
       // Collect all unique hosts from services
       const allHosts = new Set<string>();
-      for (const service of Object.values(config.services)) {
-        if (service.hosts) {
+      for (const [, service] of config.services) {
+        if (service.hosts && service.hosts.length > 0) {
           service.hosts.forEach((host: string) => allHosts.add(host));
         }
       }
@@ -85,7 +84,10 @@ export const auditCommand = new Command()
       }
 
       // Get SSH configuration
-      const baseSshConfig = createSSHConfigFromJiji(config.ssh);
+      const baseSshConfig = createSSHConfigFromJiji({
+        user: config.ssh.user,
+        port: config.ssh.port,
+      });
       const sshConfig = {
         username: options.sshUser || baseSshConfig.username,
         port: options.sshPort || baseSshConfig.port,

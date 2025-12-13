@@ -1,5 +1,6 @@
 import { Command } from "@cliffy/command";
-import { getEngineCommand, loadConfig } from "../../utils/config.ts";
+import { getEngineCommand } from "../../utils/config.ts";
+import { Configuration } from "../../lib/configuration.ts";
 import {
   createSSHConfigFromJiji,
   createSSHManagers,
@@ -10,13 +11,13 @@ import {
 import { installEngineOnHosts } from "../../utils/engine.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log, Logger } from "../../utils/logger.ts";
-import type { GlobalOptions, JijiConfig } from "../../types.ts";
+import type { GlobalOptions } from "../../types.ts";
 
 export const bootstrapCommand = new Command()
-  .description("Bootstrap servers with curl and Podman or Docker")
+  .description("Bootstrap servers")
   .action(async (options) => {
     let uniqueHosts: string[] = [];
-    let config: JijiConfig | undefined;
+    let config: Configuration | undefined;
     let auditLogger: ReturnType<typeof createServerAuditLogger> | undefined;
     let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
     let installResults:
@@ -30,10 +31,12 @@ export const bootstrapCommand = new Command()
         // Cast options to GlobalOptions to access global options
         const globalOptions = options as unknown as GlobalOptions;
 
-        // Load and parse the configuration
-        const configResult = await loadConfig(globalOptions.configFile);
-        config = configResult.config;
-        const configPath = configResult.configPath;
+        // Load and parse the configuration using new system
+        config = await Configuration.load(
+          globalOptions.environment,
+          globalOptions.configFile,
+        );
+        const configPath = config.configPath || "unknown";
         log.success(`Configuration loaded from: ${configPath}`, "config");
 
         // Configuration loading will be logged once we have SSH connections
@@ -42,15 +45,10 @@ export const bootstrapCommand = new Command()
         // Check if the specified engine is available
         const engineCommand = getEngineCommand(config);
 
-        // Collect all unique hosts from services
-        const allHosts = new Set<string>();
-        for (const service of Object.values(config.services)) {
-          if (service.hosts) {
-            service.hosts.forEach((host: string) => allHosts.add(host));
-          }
-        }
+        // Collect all unique hosts from services using new system
+        const allHosts = config.getAllHosts();
 
-        uniqueHosts = Array.from(allHosts);
+        uniqueHosts = allHosts;
 
         if (uniqueHosts.length > 0) {
           log.info(
@@ -77,7 +75,10 @@ export const bootstrapCommand = new Command()
 
             // Get SSH configuration from config file only
             const sshConfig = {
-              ...createSSHConfigFromJiji(config!.ssh),
+              ...createSSHConfigFromJiji({
+                user: config!.ssh.user,
+                port: config!.ssh.port,
+              }),
               useAgent: true,
             };
 

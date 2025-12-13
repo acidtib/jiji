@@ -1,154 +1,34 @@
-import { parse } from "@std/yaml";
-import { ensureDir, exists } from "@std/fs";
-import { dirname, join } from "@std/path";
-import type { ConfigLoadResult, JijiConfig } from "../types.ts";
+import { Configuration, ConfigurationError } from "../lib/configuration.ts";
+import { ensureDir } from "@std/fs";
 
 const TEMPLATE_PATH = import.meta.dirname + "/../jiji.yml";
 const CONFIG_DIR = ".jiji";
 const DEFAULT_CONFIG_FILE = "deploy.yml";
 
 /**
- * Searches for jiji.yml config file starting from current directory
- * and moving up the directory tree
+ * Configuration load result interface
  */
-async function findConfigFile(
-  startPath: string = Deno.cwd(),
-): Promise<string | null> {
-  const configFilenames = [
-    ".jiji/deploy.yml",
-    ".jiji/deploy.yaml",
-    ".jiji/production.yml",
-    ".jiji/production.yaml",
-    ".jiji/staging.yml",
-    ".jiji/staging.yaml",
-  ];
-  let currentPath = startPath;
-
-  while (true) {
-    for (const filename of configFilenames) {
-      const configPath = join(currentPath, filename);
-      if (await exists(configPath)) {
-        return configPath;
-      }
-    }
-
-    const parentPath = dirname(currentPath);
-    if (parentPath === currentPath) {
-      // Reached filesystem root
-      break;
-    }
-    currentPath = parentPath;
-  }
-
-  return null;
+export interface ConfigLoadResult {
+  config: Configuration;
+  configPath: string;
 }
 
 /**
- * Validates the configuration object structure
- */
-function validateConfig(config: unknown): JijiConfig {
-  if (!config || typeof config !== "object") {
-    throw new Error("Invalid configuration: must be an object");
-  }
-
-  const cfg = config as Record<string, unknown>;
-
-  // Validate engine
-  if (!cfg.engine) {
-    throw new Error("Invalid configuration: 'engine' is required");
-  }
-
-  if (typeof cfg.engine !== "string") {
-    throw new Error("Invalid configuration: 'engine' must be a string");
-  }
-
-  if (!["podman", "docker"].includes(cfg.engine)) {
-    throw new Error(
-      "Invalid configuration: 'engine' must be either 'podman' or 'docker'",
-    );
-  }
-
-  // Validate services
-  if (!cfg.services) {
-    throw new Error("Invalid configuration: 'services' is required");
-  }
-
-  if (typeof cfg.services !== "object" || Array.isArray(cfg.services)) {
-    throw new Error("Invalid configuration: 'services' must be an object");
-  }
-
-  // Validate SSH configuration if present
-  if (cfg.ssh) {
-    if (typeof cfg.ssh !== "object" || Array.isArray(cfg.ssh)) {
-      throw new Error("Invalid configuration: 'ssh' must be an object");
-    }
-
-    const sshCfg = cfg.ssh as Record<string, unknown>;
-
-    if (!sshCfg.user || typeof sshCfg.user !== "string") {
-      throw new Error(
-        "Invalid configuration: 'ssh.user' is required and must be a string",
-      );
-    }
-
-    if (sshCfg.port !== undefined) {
-      if (
-        typeof sshCfg.port !== "number" || sshCfg.port <= 0 ||
-        sshCfg.port > 65535
-      ) {
-        throw new Error(
-          "Invalid configuration: 'ssh.port' must be a valid port number (1-65535)",
-        );
-      }
-    }
-  }
-
-  return cfg as unknown as JijiConfig;
-}
-
-/**
- * Loads and parses the jiji.yml configuration file
+ * Loads and parses the jiji configuration file using the new configuration system
  */
 export async function loadConfig(
   configPath?: string,
+  environment?: string,
 ): Promise<ConfigLoadResult> {
-  let actualConfigPath: string;
-
-  if (configPath) {
-    // Use provided path
-    if (!await exists(configPath)) {
-      throw new Error(`Configuration file not found: ${configPath}`);
-    }
-    actualConfigPath = configPath;
-  } else {
-    // Search for config file
-    const foundPath = await findConfigFile();
-    if (!foundPath) {
-      throw new Error(
-        "No jiji configuration file found. " +
-          "Please create a .jiji/deploy.yml file or specify a config file path.",
-      );
-    }
-    actualConfigPath = foundPath;
-  }
-
   try {
-    // Read and parse the YAML file
-    const yamlContent = await Deno.readTextFile(actualConfigPath);
-    const parsedConfig = parse(yamlContent);
-
-    // Validate the configuration
-    const config = validateConfig(parsedConfig);
-
+    const config = await Configuration.load(environment, configPath);
     return {
       config,
-      configPath: actualConfigPath,
+      configPath: config.configPath || "",
     };
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(
-        `Failed to load configuration from ${actualConfigPath}: ${error.message}`,
-      );
+    if (error instanceof ConfigurationError) {
+      throw new Error(error.message);
     }
     throw error;
   }
@@ -157,7 +37,7 @@ export async function loadConfig(
 /**
  * Gets the container engine command based on the configuration
  */
-export function getEngineCommand(config: JijiConfig): string {
+export function getEngineCommand(config: Configuration): string {
   return config.engine;
 }
 
@@ -242,4 +122,51 @@ export async function checkEngineAvailability(
   } catch {
     return false;
   }
+}
+
+/**
+ * Validates a configuration file
+ */
+export async function validateConfigFile(configPath: string): Promise<void> {
+  try {
+    const validationResult = await Configuration.validateFile(configPath);
+
+    if (!validationResult.valid) {
+      const errorMessages = validationResult.errors
+        .map((err) => `${err.path}: ${err.message}`)
+        .join("\n");
+
+      throw new Error(`Configuration validation failed:\n${errorMessages}`);
+    }
+
+    // Log warnings if any
+    if (validationResult.warnings.length > 0) {
+      const warningMessages = validationResult.warnings
+        .map((warn) => `${warn.path}: ${warn.message}`)
+        .join("\n");
+
+      console.warn(`Configuration warnings:\n${warningMessages}`);
+    }
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      throw new Error(error.message);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Gets all available configuration files
+ */
+export async function getAvailableConfigs(
+  searchPath?: string,
+): Promise<string[]> {
+  return await Configuration.getAvailableConfigs(searchPath);
+}
+
+/**
+ * Creates a configuration with sensible defaults
+ */
+export function createDefaultConfig(): Configuration {
+  return Configuration.withDefaults();
 }

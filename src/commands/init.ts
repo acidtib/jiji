@@ -7,8 +7,10 @@ import {
   checkEngineAvailability,
   configFileExists,
   createConfigFile,
+  getAvailableConfigs,
   readConfigTemplate,
 } from "../utils/config.ts";
+import { Configuration, ConfigurationError } from "../lib/configuration.ts";
 
 async function promptForOverwrite(configPath: string): Promise<boolean> {
   return await Confirm.prompt({
@@ -34,6 +36,45 @@ async function validateEngine(engine: string): Promise<void> {
   }
 }
 
+async function validateConfiguration(configPath: string): Promise<void> {
+  const initLogger = new Logger({ prefix: "init" });
+
+  try {
+    initLogger.info("Validating configuration...");
+    const validationResult = await Configuration.validateFile(configPath);
+
+    if (validationResult.valid) {
+      initLogger.success("Configuration is valid ✓");
+
+      if (validationResult.warnings.length > 0) {
+        initLogger.warn(
+          `Found ${validationResult.warnings.length} warning(s):`,
+        );
+        validationResult.warnings.forEach((warning) => {
+          initLogger.warn(`  - ${warning.path}: ${warning.message}`);
+        });
+      }
+    } else {
+      initLogger.error(
+        `Configuration validation failed with ${validationResult.errors.length} error(s):`,
+      );
+      validationResult.errors.forEach((error) => {
+        initLogger.error(`  - ${error.path}: ${error.message}`);
+      });
+      throw new Error("Configuration validation failed");
+    }
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      throw error;
+    }
+    throw new Error(
+      `Configuration validation error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 export const initCommand = new Command()
   .description("Create config stub in .jiji/deploy.yml")
   .action(async (options) => {
@@ -47,7 +88,18 @@ export const initCommand = new Command()
         initLogger.info("Setting up deployment configuration...");
         initLogger.status(`Target config: ${configPath}`, "config");
 
-        // Check if config file exists and handle accordingly
+        // Check for existing configurations
+        const existingConfigs = await getAvailableConfigs();
+        if (existingConfigs.length > 0) {
+          initLogger.info(
+            `Found ${existingConfigs.length} existing configuration(s):`,
+          );
+          existingConfigs.forEach((config) => {
+            initLogger.info(`  - ${config}`);
+          });
+        }
+
+        // Check if target config file exists and handle accordingly
         const fileExists = await configFileExists(configPath);
         if (fileExists) {
           initLogger.warn(`Configuration already exists at ${configPath}`);
@@ -61,14 +113,17 @@ export const initCommand = new Command()
           initLogger.info("Proceeding with overwrite...");
         }
 
-        // Read template and create config file
-        initLogger.info("Loading configuration template...");
+        // Use default template
+        initLogger.info("Loading default configuration template...");
         const configTemplate = await readConfigTemplate();
 
         initLogger.info("Creating configuration file...");
         await createConfigFile(configPath, configTemplate);
 
         initLogger.success(`Config file created at ${configPath}`);
+
+        // Validate the template configuration
+        await validateConfiguration(configPath);
 
         // Parse and validate the template to check the engine
         const templateLines = configTemplate.split("\n");
@@ -83,12 +138,20 @@ export const initCommand = new Command()
 
       // Final success message
       console.log();
-      log.success("Jiji configuration initialized successfully!");
+      log.success("🎉 Jiji configuration initialized successfully!");
       log.info("Next steps:");
-      log.info("  1. Edit the config file to match your deployment needs");
-      log.info("  2. Configure your services and hosts");
-      log.info("  3. Run 'jiji server bootstrap' to setup the server");
-      log.info("  4. Run 'jiji deploy' to start deploying");
+      log.info("  1. Review and customize the configuration file");
+      log.info("  2. Configure your services and deployment targets");
+      log.info("  3. Set up any required environment variables or secrets");
+      log.info("  4. Run 'jiji server bootstrap' to prepare your servers");
+      log.info("  5. Run 'jiji deploy' to start deploying your services");
+
+      console.log();
+      log.info(
+        `📝 Configuration file: ${
+          buildConfigPath((options as unknown as GlobalOptions).environment)
+        }`,
+      );
     } catch (error) {
       console.log();
       log.error(
@@ -96,7 +159,15 @@ export const initCommand = new Command()
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      log.warn("Please check the error above and try again");
+
+      if (error instanceof ConfigurationError) {
+        log.warn(
+          "Configuration validation failed. Please check the template or try again.",
+        );
+      } else {
+        log.warn("Please check the error above and try again");
+      }
+
       Deno.exit(1);
     }
   });
