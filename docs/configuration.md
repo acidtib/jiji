@@ -1,13 +1,17 @@
 # Jiji Configuration System
 
-The Jiji configuration system has been completely refactored to provide a more robust, extensible, and maintainable approach to managing deployment configurations. This document explains the new architecture and how to use it.
+The Jiji configuration system has been completely refactored to provide a more
+robust, extensible, and maintainable approach to managing deployment
+configurations. This document explains the new architecture and how to use it.
 
 ## Overview
 
-The new configuration system is inspired by [Kamal's configuration architecture](https://github.com/basecamp/kamal) and follows these key principles:
+The new configuration system is inspired by
+[Kamal's configuration architecture](https://github.com/basecamp/kamal) and
+follows these key principles:
 
 - **Modular Design**: Each configuration aspect has its own class
-- **Validation First**: Comprehensive validation with clear error messages  
+- **Validation First**: Comprehensive validation with clear error messages
 - **Environment Support**: First-class support for multiple environments
 - **Type Safety**: Full TypeScript support with proper typing
 - **Extensibility**: Easy to add new configuration options
@@ -18,6 +22,7 @@ The new configuration system is inspired by [Kamal's configuration architecture]
 ### Core Classes
 
 #### `Configuration`
+
 The main configuration class that orchestrates all sub-configurations:
 
 ```typescript
@@ -27,12 +32,13 @@ import { Configuration } from "./src/lib/configuration.ts";
 const config = await Configuration.load();
 
 // Access properties
-console.log(config.engine); // "podman" | "docker" 
+console.log(config.engine); // "podman" | "docker"
 console.log(config.ssh.user); // SSH user
 console.log(config.getServiceNames()); // ["web", "api", "db"]
 ```
 
 #### `SSHConfiguration`
+
 Handles SSH connection settings:
 
 ```typescript
@@ -44,6 +50,7 @@ console.log(ssh.buildSSHArgs("hostname")); // Returns SSH command args
 ```
 
 #### `ServiceConfiguration`
+
 Manages individual service definitions:
 
 ```typescript
@@ -55,6 +62,7 @@ console.log(webService.requiresBuild()); // true if uses build config
 ```
 
 #### `EnvironmentConfiguration`
+
 Handles environment variables and secrets:
 
 ```typescript
@@ -96,7 +104,7 @@ const config = await Configuration.load(undefined, "/path/to/config.yml");
 
 ```yaml
 # Container engine to use
-engine: podman  # or "docker"
+engine: podman # or "docker"
 
 # SSH configuration
 ssh:
@@ -144,6 +152,7 @@ env:
 ### Service Configuration Options
 
 #### Image-based Service
+
 ```yaml
 services:
   web:
@@ -156,6 +165,7 @@ services:
 ```
 
 #### Build-based Service
+
 ```yaml
 services:
   app:
@@ -174,6 +184,7 @@ services:
 ```
 
 #### Advanced Service Configuration
+
 ```yaml
 services:
   api:
@@ -225,18 +236,22 @@ The configuration system includes comprehensive validation:
 You can add custom validation rules:
 
 ```typescript
-import { ConfigurationValidator, ValidationRules } from "./src/lib/configuration.ts";
+import {
+  ConfigurationValidator,
+  ValidationRules,
+} from "./src/lib/configuration.ts";
 
 const validator = new ConfigurationValidator();
 
 // Add custom rule
-validator.addRule("services.web.image", 
-  ValidationRules.pattern(/^nginx:/, "Web service must use nginx image")
+validator.addRule(
+  "services.web.image",
+  ValidationRules.pattern(/^nginx:/, "Web service must use nginx image"),
 );
 
 const result = validator.validate(configData);
 if (!result.valid) {
-  result.errors.forEach(error => {
+  result.errors.forEach((error) => {
     console.error(`${error.path}: ${error.message}`);
   });
 }
@@ -276,10 +291,10 @@ env:
     APP_ENV: production
     LOG_LEVEL: info
   secrets:
-    - DATABASE_PASSWORD  # Loaded from env var
+    - DATABASE_PASSWORD # Loaded from env var
     - API_SECRET_KEY
   files:
-    SSL_CERT: /path/to/cert.pem  # Loaded from file
+    SSL_CERT: /path/to/cert.pem # Loaded from file
 ```
 
 Access in code:
@@ -295,6 +310,7 @@ console.log(resolved.DATABASE_PASSWORD); // From environment
 The new system maintains backwards compatibility:
 
 ### Legacy Code
+
 ```typescript
 import { loadConfig } from "./src/utils/config.ts";
 
@@ -302,7 +318,8 @@ const { config } = await loadConfig();
 console.log(config.engine);
 ```
 
-### New Code  
+### New Code
+
 ```typescript
 import { Configuration } from "./src/lib/configuration.ts";
 
@@ -324,6 +341,7 @@ const legacyConfig = toLegacyConfig(newConfig);
 ## Best Practices
 
 ### 1. Environment-specific Configurations
+
 ```bash
 # Use environment-specific files
 .jiji/deploy.production.yml   # Production settings
@@ -332,6 +350,7 @@ const legacyConfig = toLegacyConfig(newConfig);
 ```
 
 ### 2. Secret Management
+
 ```yaml
 # Don't store secrets in config files
 env:
@@ -342,6 +361,7 @@ env:
 ```
 
 ### 3. Service Organization
+
 ```yaml
 # Group related services
 services:
@@ -349,13 +369,13 @@ services:
   web:
     image: nginx:latest
     hosts: ["web1.example.com", "web2.example.com"]
-  
-  # Backend services  
+
+  # Backend services
   api:
     image: myapp/api:latest
     hosts: ["api1.example.com", "api2.example.com"]
     depends_on: ["database"]
-  
+
   # Data services
   database:
     image: postgres:15
@@ -363,6 +383,7 @@ services:
 ```
 
 ### 4. Health Checks
+
 ```yaml
 services:
   api:
@@ -375,16 +396,17 @@ services:
 ```
 
 ### 5. Proper Restart Policies
+
 ```yaml
 services:
   # Critical services
   api:
     restart: always
-  
+
   # One-time jobs
   migration:
     restart: "no"
-  
+
   # Services that should restart unless manually stopped
   worker:
     restart: unless-stopped
@@ -435,7 +457,7 @@ In code:
 const result = await Configuration.validateFile("config.yml");
 
 if (!result.valid) {
-  result.errors.forEach(error => {
+  result.errors.forEach((error) => {
     console.error(`${error.path}: ${error.message}`);
   });
 }
@@ -478,7 +500,7 @@ export class MonitoringConfiguration extends BaseConfiguration {
   get enabled(): boolean {
     return this.get("enabled", false);
   }
-  
+
   get endpoint(): string {
     return this.getRequired("endpoint");
   }

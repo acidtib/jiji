@@ -1,4 +1,5 @@
-import { BaseConfiguration, ConfigurationError, Validatable } from "./base.ts";
+import { BaseConfiguration, ConfigurationError } from "./base.ts";
+import type { Validatable } from "./base.ts";
 
 /**
  * SSH configuration for connecting to remote hosts

@@ -1,5 +1,3 @@
-import { ConfigurationError } from "./base.ts";
-
 /**
  * Validation result interface
  */
@@ -518,7 +516,7 @@ export class ValidatorPresets {
     // Image or build required
     validator.addRule(
       "image",
-      ValidationRules.custom("image_or_build", (value, path, context) => {
+      ValidationRules.custom("image_or_build", (value, _path, context) => {
         const errors: ValidationError[] = [];
         const config = context.config as Record<string, unknown>;
 

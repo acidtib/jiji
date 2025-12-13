@@ -9,7 +9,6 @@ import {
   validateSSHSetup,
 } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
-import type { Configuration } from "../lib/configuration.ts";
 
 export const auditCommand = new Command()
   .description("View audit trail from remote servers")
