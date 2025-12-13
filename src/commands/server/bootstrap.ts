@@ -256,7 +256,7 @@ export const bootstrapCommand = new Command()
             "bootstrap",
           );
           log.info(
-            `📋 Audit trail updated on ${successfulHosts.length} server(s): ${
+            `Audit trail updated on ${successfulHosts.length} server(s): ${
               successfulHosts.join(", ")
             }`,
             "audit",

@@ -32,8 +32,10 @@ export const auditCommand = new Command()
     default: false,
   })
   .action(async (options) => {
+    let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+
     try {
-      console.log("📋 Loading audit trail from remote servers...\n");
+      console.log("Loading audit trail from remote servers...\n");
 
       // Load configuration
       const { config, configPath } = await loadConfig(options.config);
@@ -59,9 +61,9 @@ export const auditCommand = new Command()
       }
 
       if (targetHosts.length === 0) {
-        console.log("📝 No remote hosts found in configuration.");
+        console.log("No remote hosts found in configuration.");
         console.log(
-          "💡 Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
+          "Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
         );
         return;
       }
@@ -140,7 +142,7 @@ export const auditCommand = new Command()
     } finally {
       // Always clean up SSH connections to prevent hanging
       if (sshManagers) {
-        sshManagers.forEach((ssh) => {
+        sshManagers.forEach((ssh: ReturnType<typeof createSSHManagers>[0]) => {
           try {
             ssh.dispose();
           } catch (error) {
@@ -188,7 +190,7 @@ function displayServerEntries(
     filteredEntries = filteredEntries.slice(-options.lines);
 
     if (filteredEntries.length > 0) {
-      console.log(`${colors.bold(colors.cyan(`📍 ${host}`))}`);
+      console.log(`${colors.bold(colors.cyan(`Host: ${host}`))}`);
       console.log(`${"─".repeat(50)}`);
 
       for (const entry of filteredEntries) {
@@ -199,13 +201,13 @@ function displayServerEntries(
         }
       }
 
-      console.log(`\n📊 ${filteredEntries.length} entries from ${host}\n`);
+      console.log(`\n${filteredEntries.length} entries from ${host}\n`);
       totalEntries += filteredEntries.length;
     }
   }
 
   if (totalEntries === 0) {
-    console.log("📝 No matching audit entries found.");
+    console.log("No matching audit entries found.");
   } else {
     console.log(
       `Total: ${totalEntries} entries from ${serverLogs.length} server(s)`,
@@ -272,7 +274,7 @@ function displayAggregatedEntries(
   filteredEntries = filteredEntries.slice(-options.lines);
 
   if (filteredEntries.length === 0) {
-    console.log("📝 No matching audit entries found.");
+    console.log("No matching audit entries found.");
     return;
   }
 

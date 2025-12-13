@@ -1,4 +1,5 @@
 import { NodeSSH } from "node-ssh";
+import { Client, type ClientChannel } from "ssh2";
 
 export interface SSHConnectionConfig {
   host: string;
@@ -19,6 +20,7 @@ export interface CommandResult {
  */
 export class SSHManager {
   private ssh: NodeSSH;
+  private ssh2Client?: Client;
   private config: SSHConnectionConfig;
   private connected = false;
 
@@ -137,6 +139,249 @@ export class SSHManager {
   }
 
   /**
+   * Connect using ssh2 client for interactive sessions
+   */
+  private connectSsh2Client(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
+      if (!sshAuthSock) {
+        reject(new Error("SSH_AUTH_SOCK environment variable not set"));
+        return;
+      }
+
+      this.ssh2Client = new Client();
+
+      this.ssh2Client.on("ready", () => {
+        resolve();
+      });
+
+      this.ssh2Client.on("error", (err: Error) => {
+        reject(new Error(`SSH connection failed: ${err.message}`));
+      });
+
+      // Reuse the same connection configuration as the main connect method
+      this.ssh2Client.connect({
+        host: this.config.host,
+        username: this.config.username,
+        port: this.config.port || 22,
+        agent: sshAuthSock,
+        algorithms: {
+          serverHostKey: [
+            "ssh-rsa",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "ssh-ed25519",
+          ],
+          kex: [
+            "ecdh-sha2-nistp256",
+            "ecdh-sha2-nistp384",
+            "ecdh-sha2-nistp521",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group16-sha512",
+            "diffie-hellman-group1-sha1",
+          ],
+          cipher: [
+            "aes128-ctr",
+            "aes256-ctr",
+            "aes128-cbc",
+          ],
+          hmac: ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha1"],
+          compress: ["none"],
+        },
+        readyTimeout: 60000,
+        keepaliveInterval: 30000,
+      });
+    });
+  }
+
+  /**
+   * Start an interactive shell session
+   */
+  async startInteractiveSession(command: string): Promise<void> {
+    // Connect using ssh2 client if not already connected
+    if (!this.ssh2Client) {
+      await this.connectSsh2Client();
+    }
+
+    return new Promise((resolve, reject) => {
+      console.log(`\nConnected to ${this.config.host}`);
+      console.log(`Starting interactive session: ${command}`);
+      console.log(
+        `To disconnect: Press Ctrl+C, Ctrl+D, Ctrl+\\, or type 'exit'\n`,
+      );
+
+      this.ssh2Client!.shell(
+        { pty: true },
+        (err: Error | undefined, stream: ClientChannel) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          // Handle terminal resize
+          const resizeHandler = () => {
+            if (Deno.stdout.isTerminal()) {
+              const size = Deno.consoleSize();
+              stream.setWindow(size.rows, size.columns);
+            }
+          };
+
+          // Set initial size
+          resizeHandler();
+
+          // Handle data from remote host
+          stream.on("data", (data: Uint8Array) => {
+            Deno.stdout.writeSync(data);
+          });
+
+          stream.stderr.on("data", (data: Uint8Array) => {
+            Deno.stderr.writeSync(data);
+          });
+
+          // Handle stream close
+          stream.on("close", () => {
+            cleanup();
+            if (this.ssh2Client) {
+              this.ssh2Client.end();
+              this.ssh2Client = undefined;
+            }
+            resolve();
+          });
+
+          stream.on("error", (err: Error) => {
+            cleanup();
+            if (this.ssh2Client) {
+              this.ssh2Client.end();
+              this.ssh2Client = undefined;
+            }
+            reject(err);
+          });
+
+          // Send the initial command
+          stream.write(`${command}\r`);
+
+          // Handle user input
+          Deno.stdin.setRaw(true);
+          let inputActive = true;
+
+          // Set up a connection timeout (5 minutes)
+          const connectionTimeout = setTimeout(() => {
+            console.log(
+              "\n⏰ Interactive session timed out after 5 minutes of inactivity",
+            );
+            inputActive = false;
+            cleanup();
+            stream.end();
+          }, 5 * 60 * 1000);
+
+          // Clear timeout on any activity
+          stream.on("data", () => {
+            clearTimeout(connectionTimeout);
+          });
+
+          const cleanup = () => {
+            if (!inputActive) return; // Already cleaned up
+            inputActive = false;
+            try {
+              Deno.stdin.setRaw(false);
+            } catch {
+              // Terminal may already be reset
+            }
+            try {
+              clearTimeout(connectionTimeout);
+            } catch {
+              // Timeout may not be set
+            }
+            try {
+              Deno.removeSignalListener("SIGINT", signalHandler);
+              Deno.removeSignalListener("SIGTERM", signalHandler);
+            } catch {
+              // Signal listeners may already be removed
+            }
+          };
+
+          const handleInput = async () => {
+            const buffer = new Uint8Array(1024);
+            try {
+              while (inputActive) {
+                const n = await Deno.stdin.read(buffer);
+                if (n === null || !inputActive) break;
+
+                const input = buffer.subarray(0, n);
+
+                // Check for Ctrl+C (0x03), Ctrl+D (0x04), or Ctrl+\ (0x1C)
+                if (
+                  input.length === 1 &&
+                  (input[0] === 3 || input[0] === 4 || input[0] === 28)
+                ) {
+                  inputActive = false;
+                  cleanup();
+                  stream.end();
+                  setTimeout(() => {
+                    if (this.ssh2Client) {
+                      this.ssh2Client.end();
+                      this.ssh2Client = undefined;
+                    }
+                    resolve();
+                  }, 100);
+                  break;
+                }
+
+                // Check for exit command (when user types "exit" followed by Enter)
+                const inputStr = new TextDecoder().decode(input);
+                if (
+                  inputStr.includes("exit\r") || inputStr.includes("exit\n")
+                ) {
+                  inputActive = false;
+                  cleanup();
+                  stream.end();
+                  setTimeout(() => {
+                    if (this.ssh2Client) {
+                      this.ssh2Client.end();
+                      this.ssh2Client = undefined;
+                    }
+                    resolve();
+                  }, 100);
+                  break;
+                }
+
+                if (inputActive) {
+                  stream.write(input);
+                }
+              }
+            } catch (_error) {
+              // Input stream closed or interrupted
+            }
+          };
+
+          // Handle process signals
+          const signalHandler = () => {
+            if (!inputActive) return; // Already handled
+            inputActive = false;
+            cleanup();
+            stream.destroy(); // Force close the stream
+            if (this.ssh2Client) {
+              this.ssh2Client.end();
+              this.ssh2Client = undefined;
+            }
+            resolve();
+          };
+
+          Deno.addSignalListener("SIGINT", signalHandler);
+          Deno.addSignalListener("SIGTERM", signalHandler);
+
+          // Start handling input
+          handleInput().catch(() => {
+            // Input handling error, ensure cleanup
+            cleanup();
+          });
+        },
+      );
+    });
+  }
+
+  /**
    * Check if a command exists on the remote system
    */
   async commandExists(command: string): Promise<boolean> {
@@ -196,6 +441,10 @@ export class SSHManager {
     if (this.ssh) {
       this.ssh.dispose();
       this.connected = false;
+    }
+    if (this.ssh2Client) {
+      this.ssh2Client.end();
+      this.ssh2Client = undefined;
     }
   }
 }
@@ -366,7 +615,7 @@ export function getSSHTroubleshootingTips(error: string): string[] {
     error.includes("setAutoPadding") || error.includes("Aes128Gcm") ||
     error.includes("Unsupported algorithm") || error.includes("cipher")
   ) {
-    tips.push("🔧 Cipher/algorithm compatibility issue detected");
+    tips.push("Cipher/algorithm compatibility issue detected");
     tips.push("   The server may be using unsupported encryption methods");
     tips.push("   Try connecting manually first: ssh -v user@host");
     tips.push("   Or add to your SSH client config (~/.ssh/config):");
@@ -387,7 +636,7 @@ export function getSSHTroubleshootingTips(error: string): string[] {
   }
 
   if (error.includes("auth") || error.includes("permission")) {
-    tips.push("🔑 Authentication failed - try:");
+    tips.push("Authentication failed - try:");
     tips.push("   • ssh-add -l (verify keys are loaded)");
     tips.push("   • ssh-add ~/.ssh/id_rsa (add your key)");
     tips.push("   • ssh -T user@host (test connection manually)");

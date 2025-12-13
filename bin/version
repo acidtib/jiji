@@ -102,7 +102,7 @@ async function main() {
       await updateDenoConfig(newVersion);
       console.log(`✓ Updated ${DENO_CONFIG}`);
 
-      console.log(`🎉 Version updated to ${newVersion}`);
+      console.log(`Version updated to ${newVersion}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Error: ${message}`);

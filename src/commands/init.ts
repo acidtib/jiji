@@ -138,7 +138,7 @@ export const initCommand = new Command()
 
       // Final success message
       console.log();
-      log.success("🎉 Jiji configuration initialized successfully!");
+      log.success("Jiji configuration initialized successfully!");
       log.info("Next steps:");
       log.info("  1. Review and customize the configuration file");
       log.info("  2. Configure your services and deployment targets");
@@ -148,7 +148,7 @@ export const initCommand = new Command()
 
       console.log();
       log.info(
-        `📝 Configuration file: ${
+        `Configuration file: ${
           buildConfigPath((options as unknown as GlobalOptions).environment)
         }`,
       );

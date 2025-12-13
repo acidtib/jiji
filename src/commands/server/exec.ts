@@ -17,6 +17,13 @@ export const execCommand = new Command()
   .option("--ssh-user <username:string>", "SSH username for remote hosts")
   .option("--ssh-key <path:string>", "Path to SSH private key")
   .option("--ssh-port <port:number>", "SSH port (default: 22)")
+  .option(
+    "-i, --interactive",
+    "Run the command interactively (use for console/bash)",
+    {
+      default: false,
+    },
+  )
   .option("--parallel", "Execute commands in parallel on all hosts", {
     default: false,
   })
@@ -171,12 +178,45 @@ export const execCommand = new Command()
         auditLogger = createServerAuditLogger(sshManagers!);
 
         await log.group("Command Execution", async () => {
+          log.info(`Interactive mode: ${options.interactive}`, "exec");
           log.info(
             `Execution mode: ${options.parallel ? "parallel" : "sequential"}`,
             "exec",
           );
           log.info(`Timeout: ${options.timeout} seconds`, "exec");
           log.info(`Continue on error: ${options.continueOnError}`, "exec");
+
+          // Handle interactive mode
+          if (options.interactive) {
+            if (sshManagers!.length > 1) {
+              log.error(
+                "Interactive mode only supports single host execution",
+                "exec",
+              );
+              log.info(
+                `Found ${
+                  sshManagers!.length
+                } hosts. Please specify a single host for interactive mode.`,
+                "exec",
+              );
+              return;
+            }
+
+            log.status("Starting interactive session...", "exec");
+            const ssh = sshManagers![0];
+
+            try {
+              await ssh.startInteractiveSession(command);
+              // Interactive session completed, exit quietly
+              Deno.exit(0);
+            } catch (error) {
+              const errorMessage = error instanceof Error
+                ? error.message
+                : String(error);
+              log.error(`Interactive session failed: ${errorMessage}`, "exec");
+              Deno.exit(1);
+            }
+          }
 
           // Create server loggers for individual host reporting
           const serverLoggers = Logger.forServers(targetHosts, {
@@ -457,7 +497,7 @@ export const execCommand = new Command()
 
       // Final success message
       console.log();
-      log.success("🚀 Remote command execution completed!");
+      log.success("Remote command execution completed!");
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message

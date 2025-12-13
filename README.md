@@ -69,6 +69,14 @@ jiji server exec "systemctl status docker" --hosts "server1.example.com,server2.
 # Execute in parallel across all hosts
 jiji server exec "df -h" --parallel
 
+# Run commands interactively (for console/bash sessions)
+jiji server exec "bash" --interactive --hosts "server1.example.com"
+
+# Interactive sessions support multiple ways to disconnect:
+# - Press Ctrl+C, Ctrl+D, or Ctrl+\ to terminate
+# - Type 'exit' and press Enter
+# - Sessions auto-timeout after 5 minutes of inactivity
+
 # Set custom timeout and continue on errors
 jiji server exec "apt update && apt upgrade -y" --timeout 600 --continue-on-error
 ```
