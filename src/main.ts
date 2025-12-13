@@ -3,6 +3,7 @@ import { HelpCommand } from "@cliffy/command/help";
 import { initCommand } from "./commands/init.ts";
 import { serverCommand } from "./commands/server/index.ts";
 import { auditCommand } from "./commands/audit.ts";
+import { lockCommand } from "./commands/lock.ts";
 import { versionCommand } from "./commands/version.ts";
 
 const command = new Command()
@@ -39,6 +40,7 @@ const command = new Command()
   .command("init", initCommand)
   .command("server", serverCommand)
   .command("audit", auditCommand)
+  .command("lock", lockCommand)
   .command("version", versionCommand)
   .command("help", new HelpCommand());
 

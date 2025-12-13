@@ -272,6 +272,71 @@ export class ServerAuditLogger {
   }
 
   /**
+   * Log deployment lock acquisition
+   */
+  async logLockAcquired(
+    message: string,
+    hosts: string[],
+    acquiredBy?: string,
+  ): Promise<{ host: string; success: boolean }[]> {
+    const entry = {
+      action: "deployment_lock",
+      status: "success" as const,
+      message: `Lock acquired: ${message}`,
+      details: {
+        message,
+        hosts,
+        acquiredBy: acquiredBy || "unknown",
+        lockType: "exclusive",
+      },
+    };
+
+    return await this.logEntryWithResults(entry);
+  }
+
+  /**
+   * Log deployment lock release
+   */
+  async logLockReleased(
+    hosts: string[],
+    releasedBy?: string,
+  ): Promise<{ host: string; success: boolean }[]> {
+    const entry = {
+      action: "deployment_unlock",
+      status: "success" as const,
+      message: `Lock released from ${hosts.length} host(s)`,
+      details: {
+        hosts,
+        releasedBy: releasedBy || "unknown",
+        lockType: "exclusive",
+      },
+    };
+
+    return await this.logEntryWithResults(entry);
+  }
+
+  /**
+   * Log lock acquisition failure
+   */
+  async logLockFailure(
+    error: string,
+    hosts: string[],
+  ): Promise<{ host: string; success: boolean }[]> {
+    const entry = {
+      action: "deployment_lock",
+      status: "failed" as const,
+      message: `Failed to acquire lock: ${error}`,
+      details: {
+        error,
+        hosts,
+        lockType: "exclusive",
+      },
+    };
+
+    return await this.logEntryWithResults(entry);
+  }
+
+  /**
    * Log a server bootstrap start event
    */
   async logBootstrapStart(
@@ -360,6 +425,7 @@ export class ServerAuditLogger {
     serviceName: string,
     status: "started" | "success" | "failed",
     message?: string,
+    version?: string,
   ): Promise<void> {
     const entry = {
       action: "service_deploy",
@@ -367,6 +433,54 @@ export class ServerAuditLogger {
       message: message || `Service ${serviceName} deployment ${status}`,
       details: {
         serviceName,
+        version,
+        deploymentMethod: "rolling",
+      },
+    };
+
+    await this.logEntry(entry);
+  }
+
+  /**
+   * Log service rollback events
+   */
+  async logServiceRollback(
+    serviceName: string,
+    status: "started" | "success" | "failed",
+    fromVersion?: string,
+    toVersion?: string,
+    message?: string,
+  ): Promise<void> {
+    const entry = {
+      action: "service_rollback",
+      status,
+      message: message || `Service ${serviceName} rollback ${status}`,
+      details: {
+        serviceName,
+        fromVersion,
+        toVersion,
+      },
+    };
+
+    await this.logEntry(entry);
+  }
+
+  /**
+   * Log app events (inspired by Kamal's app auditor)
+   */
+  async logAppEvent(
+    action: "boot" | "stop" | "start" | "restart" | "remove",
+    serviceName: string,
+    status: "started" | "success" | "failed",
+    message?: string,
+  ): Promise<void> {
+    const entry = {
+      action: `app_${action}`,
+      status,
+      message: message || `App ${action} ${status} for ${serviceName}`,
+      details: {
+        serviceName,
+        appAction: action,
       },
     };
 
@@ -400,6 +514,7 @@ export class ServerAuditLogger {
     command: string,
     status: "started" | "success" | "failed",
     message?: string,
+    exitCode?: number,
   ): Promise<void> {
     const entry = {
       action: "custom_command",
@@ -407,6 +522,49 @@ export class ServerAuditLogger {
       message: message || `Custom command ${status}: ${command}`,
       details: {
         command,
+        exitCode,
+      },
+    };
+
+    await this.logEntry(entry);
+  }
+
+  /**
+   * Log container events
+   */
+  async logContainerEvent(
+    action: "start" | "stop" | "remove" | "create",
+    containerName: string,
+    status: "started" | "success" | "failed",
+    message?: string,
+  ): Promise<void> {
+    const entry = {
+      action: `container_${action}`,
+      status,
+      message: message || `Container ${action} ${status}: ${containerName}`,
+      details: {
+        containerName,
+        containerAction: action,
+      },
+    };
+
+    await this.logEntry(entry);
+  }
+
+  /**
+   * Log proxy events (inspired by Kamal's proxy management)
+   */
+  async logProxyEvent(
+    action: "boot" | "deploy" | "remove",
+    status: "started" | "success" | "failed",
+    message?: string,
+  ): Promise<void> {
+    const entry = {
+      action: `proxy_${action}`,
+      status,
+      message: message || `Proxy ${action} ${status}`,
+      details: {
+        proxyAction: action,
       },
     };
 
@@ -549,26 +707,59 @@ export class LocalAuditLogger {
   }
 
   /**
-   * Format an audit entry for writing to file
+   * Format an audit entry for writing to file (enhanced for better readability)
    */
   private formatEntry(entry: AuditEntry): string {
     const timestamp = entry.timestamp;
     const status = entry.status.toUpperCase().padEnd(8);
-    const action = entry.action.toUpperCase();
+    const action = entry.action.toUpperCase().replace(/_/g, " ");
     const host = entry.host ? ` [${entry.host}]` : "";
+    const user = entry.user ? ` by ${entry.user}` : "";
     const message = entry.message || "";
 
-    let line = `[${timestamp}] [${status}] ${action}${host}`;
+    let line = `[${timestamp}] [${status}] ${action}${host}${user}`;
     if (message) {
       line += ` - ${message}`;
     }
 
+    // Format details in a more readable way
     if (entry.details && Object.keys(entry.details).length > 0) {
-      const details = JSON.stringify(entry.details, null, 0);
-      line += `\n    Details: ${details}`;
+      const importantDetails = this.extractImportantDetails(entry.details);
+      if (importantDetails.length > 0) {
+        line += `\n    ${importantDetails.join(", ")}`;
+      }
+
+      // Add full details as JSON for complex cases
+      const detailsJson = JSON.stringify(entry.details, null, 0);
+      if (detailsJson.length > 100) {
+        line += `\n    Details: ${detailsJson}`;
+      }
     }
 
     return line;
+  }
+
+  /**
+   * Extract important details for display
+   */
+  private extractImportantDetails(details: Record<string, unknown>): string[] {
+    const important: string[] = [];
+
+    if (details.serviceName) important.push(`service=${details.serviceName}`);
+    if (details.version) important.push(`version=${details.version}`);
+    if (details.engine) important.push(`engine=${details.engine}`);
+    if (details.command) important.push(`command="${details.command}"`);
+    if (details.exitCode !== undefined) {
+      important.push(`exit=${details.exitCode}`);
+    }
+    if (details.containerName) {
+      important.push(`container=${details.containerName}`);
+    }
+    if (details.hosts && Array.isArray(details.hosts)) {
+      important.push(`hosts=${details.hosts.length}`);
+    }
+
+    return important;
   }
 
   /**

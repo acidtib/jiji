@@ -170,3 +170,33 @@ export async function getAvailableConfigs(
 export function createDefaultConfig(): Configuration {
   return Configuration.withDefaults();
 }
+
+/**
+ * Filter hosts based on patterns with wildcard support
+ * @param allHosts - All available hosts
+ * @param hostPatterns - Comma-separated host patterns (supports wildcards with *)
+ * @returns Array of matching hosts
+ */
+export function filterHostsByPatterns(
+  allHosts: string[],
+  hostPatterns: string,
+): string[] {
+  const requestedHosts = hostPatterns.split(",").map((h) => h.trim());
+  const matchingHosts: string[] = [];
+
+  for (const pattern of requestedHosts) {
+    if (pattern.includes("*")) {
+      // Simple wildcard matching
+      const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
+      matchingHosts.push(...allHosts.filter((host) => regex.test(host)));
+    } else {
+      // Exact match
+      if (allHosts.includes(pattern)) {
+        matchingHosts.push(pattern);
+      }
+    }
+  }
+
+  // Remove duplicates
+  return [...new Set(matchingHosts)];
+}

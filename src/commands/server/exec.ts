@@ -14,9 +14,6 @@ import type { GlobalOptions } from "../../types.ts";
 export const execCommand = new Command()
   .description("Execute a custom command on remote hosts")
   .arguments("<command:string>")
-  .option("--ssh-user <username:string>", "SSH username for remote hosts")
-  .option("--ssh-key <path:string>", "Path to SSH private key")
-  .option("--ssh-port <port:number>", "SSH port (default: 22)")
   .option(
     "-i, --interactive",
     "Run the command interactively (use for console/bash)",
@@ -127,16 +124,11 @@ export const execCommand = new Command()
           }
           log.success("SSH setup validation passed", "ssh");
 
-          // Get SSH configuration from config file and command line options
-          const baseSshConfig = createSSHConfigFromJiji({
+          // Get SSH configuration
+          const sshConfig = createSSHConfigFromJiji({
             user: config!.ssh.user,
             port: config!.ssh.port,
           });
-          const sshConfig = {
-            username: options.sshUser || baseSshConfig.username,
-            port: options.sshPort || baseSshConfig.port,
-            useAgent: true,
-          };
 
           // Create SSH managers for all hosts and test connections
           log.status("Testing connections to all hosts...", "ssh");
