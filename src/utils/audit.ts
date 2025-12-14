@@ -466,7 +466,7 @@ export class ServerAuditLogger {
   }
 
   /**
-   * Log app events (inspired by Kamal's app auditor)
+   * Log app events
    */
   async logAppEvent(
     action: "boot" | "stop" | "start" | "restart" | "remove",
@@ -552,7 +552,7 @@ export class ServerAuditLogger {
   }
 
   /**
-   * Log proxy events (inspired by Kamal's proxy management)
+   * Log proxy events
    */
   async logProxyEvent(
     action: "boot" | "deploy" | "remove",

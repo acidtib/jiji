@@ -1,22 +1,5 @@
 # Jiji Configuration System
 
-The Jiji configuration system has been completely refactored to provide a more
-robust, extensible, and maintainable approach to managing deployment
-configurations. This document explains the new architecture and how to use it.
-
-## Overview
-
-The new configuration system is inspired by
-[Kamal's configuration architecture](https://github.com/basecamp/kamal) and
-follows these key principles:
-
-- **Modular Design**: Each configuration aspect has its own class
-- **Validation First**: Comprehensive validation with clear error messages
-- **Environment Support**: First-class support for multiple environments
-- **Type Safety**: Full TypeScript support with proper typing
-- **Extensibility**: Easy to add new configuration options
-- **Backwards Compatibility**: Legacy configuration still works
-
 ## Architecture
 
 ### Core Classes
