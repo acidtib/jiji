@@ -5,6 +5,7 @@ import { serverCommand } from "./commands/server/index.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { lockCommand } from "./commands/lock.ts";
 import { versionCommand } from "./commands/version.ts";
+import { deployCommand } from "./commands/deploy.ts";
 
 const command = new Command()
   .name("jiji")
@@ -38,6 +39,7 @@ const command = new Command()
     Deno.exit(0);
   })
   .command("init", initCommand)
+  .command("deploy", deployCommand)
   .command("server", serverCommand)
   .command("audit", auditCommand)
   .command("lock", lockCommand)

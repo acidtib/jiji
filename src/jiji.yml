@@ -34,10 +34,18 @@ services:
       - 192.168.1.100
       - 192.168.1.101
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     volumes:
       - "/etc/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
       - "/var/www/html:/usr/share/nginx/html:ro"
+    # Optional: Proxy configuration
+    # Enables automatic SSL termination and routing
+    # proxy:
+    #   ssl: false
+    #   host: myproject.example.com
+    #   healthcheck:
+    #     path: /health
+    #     interval: 10s
 
   # Example application service using build configuration
   # app:
@@ -57,6 +65,12 @@ services:
   #   command: ["node", "server.js"]
   #   volumes:
   #     - "/app/logs:/var/log/app"
+  #   proxy:
+  #     ssl: true
+  #     host: app.example.com
+  #     healthcheck:
+  #       path: /up
+  #       interval: 10s
 
   # Example database service
   # database:

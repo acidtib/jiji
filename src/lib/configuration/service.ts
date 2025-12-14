@@ -3,6 +3,7 @@ import {
   ConfigurationError,
   type Validatable,
 } from "./base.ts";
+import { ProxyConfiguration } from "./proxy.ts";
 
 /**
  * Build configuration for a service
@@ -28,6 +29,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _volumes?: string[];
   private _environment?: Record<string, string> | string[];
   private _command?: string | string[];
+  private _proxy?: ProxyConfiguration;
 
   constructor(name: string, config: Record<string, unknown>, project: string) {
     super(config);
@@ -175,6 +177,25 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
+   * Proxy configuration
+   */
+  get proxy(): ProxyConfiguration | undefined {
+    if (!this._proxy && this.has("proxy")) {
+      const proxyValue = this.get("proxy");
+      if (typeof proxyValue === "object" && proxyValue !== null) {
+        this._proxy = new ProxyConfiguration(
+          proxyValue as Record<string, unknown>,
+        );
+      } else {
+        throw new ConfigurationError(
+          `'proxy' for service '${this.name}' must be an object`,
+        );
+      }
+    }
+    return this._proxy;
+  }
+
+  /**
    * Validates the service configuration
    */
   validate(): void {
@@ -240,6 +261,11 @@ export class ServiceConfiguration extends BaseConfiguration
     // Validate each host
     for (const host of this.hosts) {
       this.validateHost(host, "hosts", this.name);
+    }
+
+    // Validate proxy configuration if present
+    if (this.proxy) {
+      this.proxy.validate();
     }
   }
 

@@ -393,6 +393,10 @@ export {
 export { EnvironmentConfiguration } from "./configuration/environment.ts";
 export { ConfigurationLoader } from "./configuration/loader.ts";
 export {
+  ProxyConfiguration,
+  type ProxyHealthcheckConfig,
+} from "./configuration/proxy.ts";
+export {
   ConfigurationValidator,
   type ValidationError,
   type ValidationResult,
