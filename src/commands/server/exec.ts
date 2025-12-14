@@ -167,7 +167,7 @@ export const execCommand = new Command()
         });
 
         // Create audit logger for connected servers
-        auditLogger = createServerAuditLogger(sshManagers!);
+        auditLogger = createServerAuditLogger(sshManagers!, config.project);
 
         await log.group("Command Execution", async () => {
           log.info(`Interactive mode: ${options.interactive}`, "exec");

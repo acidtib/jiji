@@ -2,7 +2,9 @@
 
 ## Overview
 
-The audit system tracks all operations performed by Jiji, storing logs both locally and on remote servers. This provides transparency, accountability, and debugging capabilities for your deployment infrastructure.
+The audit system tracks all operations performed by Jiji, storing logs both
+locally and on remote servers. This provides transparency, accountability, and
+debugging capabilities for your deployment infrastructure.
 
 ## Basic Usage
 
@@ -105,18 +107,25 @@ Audit logs are automatically created in:
 ## Best Practices
 
 ### Regular Review
-Check audit logs regularly for unusual activity or patterns that might indicate issues.
+
+Check audit logs regularly for unusual activity or patterns that might indicate
+issues.
 
 ### Retention Policy
-Archive old audit logs for compliance and historical analysis. Consider implementing log rotation for long-running systems.
+
+Archive old audit logs for compliance and historical analysis. Consider
+implementing log rotation for long-running systems.
 
 ### Filtering for Focus
+
 Use specific filters to focus on relevant information:
+
 - Filter by status to identify failures
 - Filter by action type during troubleshooting
 - Use date ranges for incident investigation
 
 ### Integration with Monitoring
+
 Parse JSON output in monitoring and alerting systems:
 
 ```bash
@@ -151,16 +160,19 @@ jiji server exec "ls -la .jiji/audit.txt"
 ### Common Issues
 
 #### Missing Audit Entries
+
 - Verify SSH connectivity to target hosts
 - Check file permissions on `.jiji/audit.txt`
 - Ensure the `.jiji` directory exists on remote hosts
 
 #### Performance with Large Logs
+
 - Use date filtering to reduce data volume
 - Consider implementing log rotation
 - Use `--raw` format for faster parsing
 
 #### Timestamp Issues
+
 - Ensure server clocks are synchronized
 - Use UTC timestamps for consistency across hosts
 
@@ -204,7 +216,9 @@ jiji audit --json --since 2024-01-01 > audit_archive_2024.json
 
 ## Integration with Jiji Operations
 
-The audit system automatically logs all Jiji operations without requiring manual intervention. Every command that modifies state or performs remote operations will generate audit entries.
+The audit system automatically logs all Jiji operations without requiring manual
+intervention. Every command that modifies state or performs remote operations
+will generate audit entries.
 
 ### Automatic Logging
 

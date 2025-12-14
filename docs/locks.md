@@ -2,7 +2,9 @@
 
 ## Overview
 
-The lock system provides exclusive access control for deployment operations by creating locks across all target hosts. This prevents multiple deployments from running simultaneously and causing conflicts or inconsistent states.
+The lock system provides exclusive access control for deployment operations by
+creating locks across all target hosts. This prevents multiple deployments from
+running simultaneously and causing conflicts or inconsistent states.
 
 ## Key Features
 
@@ -106,21 +108,21 @@ Locks are stored as `.jiji/deploy.lock` files on each host containing:
 
 When you run deployment commands, Jiji automatically manages locks:
 
-1. **Pre-deployment**: 
+1. **Pre-deployment**:
    - Attempts to acquire deployment lock
    - Fails fast if lock cannot be acquired
    - Provides clear error message about who holds the lock
 
-2. **During deployment**: 
+2. **During deployment**:
    - Maintains lock throughout operation
    - Periodically refreshes lock to prevent timeout
    - Handles lock renewal on long-running operations
 
-3. **Post-deployment**: 
+3. **Post-deployment**:
    - Releases lock when deployment completes successfully
    - Logs lock release in audit trail
 
-4. **On failure**: 
+4. **On failure**:
    - Cleans up lock even if deployment fails
    - Ensures no stale locks are left behind
    - Logs failure and cleanup actions
@@ -169,6 +171,7 @@ services:
 ### Lock Storage Location
 
 Lock files are created in:
+
 - **Remote hosts**: `.jiji/deploy.lock` on each target host
 - **Local tracking**: `.jiji/local_locks.json` for local lock state
 
@@ -177,9 +180,9 @@ Lock files are created in:
 ```yaml
 # .jiji/deploy.yml
 locks:
-  default_timeout: 3600  # 1 hour in seconds
-  max_timeout: 7200      # 2 hours maximum
-  cleanup_interval: 300   # Check for stale locks every 5 minutes
+  default_timeout: 3600 # 1 hour in seconds
+  max_timeout: 7200 # 2 hours maximum
+  cleanup_interval: 300 # Check for stale locks every 5 minutes
 ```
 
 ## Safety Features

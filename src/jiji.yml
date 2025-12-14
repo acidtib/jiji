@@ -1,6 +1,10 @@
 # Jiji Deployment Configuration Template
 # =====================================
 
+# Project name (required) used for organizing services
+# All audit logs and deployment locks will be stored under .jiji/{project}/ on remote hosts
+project: myproject
+
 # Container engine to use (docker or podman)
 engine: podman
 

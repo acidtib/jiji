@@ -118,7 +118,7 @@ export const bootstrapCommand = new Command()
           });
 
           // Create audit logger for connected servers only
-          auditLogger = createServerAuditLogger(sshManagers!);
+          auditLogger = createServerAuditLogger(sshManagers!, config!.project);
 
           // Log bootstrap start to connected servers
           await auditLogger.logBootstrapStart(
@@ -166,7 +166,10 @@ export const bootstrapCommand = new Command()
                   ssh: ReturnType<typeof createSSHManagers>[0],
                 ) => ssh.getHost() === result.host);
                 if (hostSsh) {
-                  const hostAuditLogger = createServerAuditLogger(hostSsh);
+                  const hostAuditLogger = createServerAuditLogger(
+                    hostSsh,
+                    config!.project,
+                  );
                   await hostAuditLogger.logEngineInstall(
                     config!.engine,
                     result.success ? "success" : "failed",
@@ -214,7 +217,10 @@ export const bootstrapCommand = new Command()
                     ssh: ReturnType<typeof createSSHManagers>[0],
                   ) => ssh.getHost() === host);
                   if (hostSsh) {
-                    const hostLogger = createServerAuditLogger(hostSsh);
+                    const hostLogger = createServerAuditLogger(
+                      hostSsh,
+                      config!.project,
+                    );
                     await hostLogger.logEngineInstall(
                       config!.engine,
                       "failed",

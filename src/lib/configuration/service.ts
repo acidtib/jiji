@@ -20,6 +20,7 @@ export interface BuildConfig {
 export class ServiceConfiguration extends BaseConfiguration
   implements Validatable {
   private _name: string;
+  private _project: string;
   private _image?: string;
   private _build?: string | BuildConfig;
   private _hosts?: string[];
@@ -28,9 +29,10 @@ export class ServiceConfiguration extends BaseConfiguration
   private _environment?: Record<string, string> | string[];
   private _command?: string | string[];
 
-  constructor(name: string, config: Record<string, unknown> = {}) {
+  constructor(name: string, config: Record<string, unknown>, project: string) {
     super(config);
     this._name = name;
+    this._project = project;
   }
 
   /**
@@ -38,6 +40,13 @@ export class ServiceConfiguration extends BaseConfiguration
    */
   get name(): string {
     return this._name;
+  }
+
+  /**
+   * Project name
+   */
+  get project(): string {
+    return this._project;
   }
 
   /**
@@ -269,9 +278,7 @@ export class ServiceConfiguration extends BaseConfiguration
       result.build = this.build;
     }
 
-    if (this.hosts.length > 0) {
-      result.hosts = this.hosts;
-    }
+    result.hosts = this.hosts;
 
     if (this.ports.length > 0) {
       result.ports = this.ports;
@@ -281,7 +288,7 @@ export class ServiceConfiguration extends BaseConfiguration
       result.volumes = this.volumes;
     }
 
-    if (this.environment && Object.keys(this.environment).length > 0) {
+    if (Object.keys(this.environment).length > 0) {
       result.environment = this.environment;
     }
 
@@ -307,8 +314,16 @@ export class ServiceConfiguration extends BaseConfiguration
       return this.image;
     }
 
-    // Generate image name from service name
-    const imageName = `${this.name}:latest`;
+    // Generate image name from project and service name
+    const imageName = `${this.project}-${this.name}:latest`;
     return registry ? `${registry}/${imageName}` : imageName;
+  }
+
+  /**
+   * Generate container name using project and service name
+   */
+  getContainerName(suffix?: string): string {
+    const baseName = `${this.project}-${this.name}`;
+    return suffix ? `${baseName}-${suffix}` : baseName;
   }
 }

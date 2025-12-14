@@ -147,7 +147,7 @@ export const auditCommand = new Command()
 
       // Use only connected SSH managers
       sshManagers = connectedManagers;
-      const auditLogger = createServerAuditLogger(sshManagers);
+      const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
       console.log("Fetching audit entries...\n");
 

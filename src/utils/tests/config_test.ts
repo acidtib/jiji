@@ -15,7 +15,8 @@ import {
 import { Configuration } from "../../lib/configuration.ts";
 
 // Test data
-const VALID_CONFIG_YAML = `engine: docker
+const VALID_CONFIG_YAML = `project: testproject
+engine: docker
 ssh:
   user: testuser
   port: 22
@@ -39,7 +40,8 @@ env:
   GLOBAL_VAR: value1
 `;
 
-const INVALID_CONFIG_YAML = `engine: invalid_engine
+const INVALID_CONFIG_YAML = `project: testproject
+engine: invalid_engine
 ssh:
   user: testuser
   port: "not_a_number"

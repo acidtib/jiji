@@ -23,10 +23,15 @@ export interface LockManager {
  */
 export class RemoteLockManager implements LockManager {
   private sshManager: SSHManager;
-  private lockFile: string = ".jiji/deploy.lock";
+  private projectName: string;
+  private lockDir: string;
+  private lockFile: string;
 
-  constructor(sshManager: SSHManager) {
+  constructor(sshManager: SSHManager, projectName: string) {
     this.sshManager = sshManager;
+    this.projectName = projectName;
+    this.lockDir = `.jiji/${projectName}`;
+    this.lockFile = `.jiji/${projectName}/deploy.lock`;
   }
 
   async acquire(message: string): Promise<boolean> {
@@ -140,9 +145,13 @@ export class RemoteLockManager implements LockManager {
   }
 
   private async ensureDirectory(): Promise<void> {
-    const result = await this.sshManager.executeCommand("mkdir -p .jiji");
+    const result = await this.sshManager.executeCommand(
+      `mkdir -p ${this.lockDir}`,
+    );
     if (!result.success) {
-      throw new Error(`Failed to create .jiji directory: ${result.stderr}`);
+      throw new Error(
+        `Failed to create ${this.lockDir} directory: ${result.stderr}`,
+      );
     }
   }
 
@@ -169,9 +178,11 @@ export class RemoteLockManager implements LockManager {
 export class LocalLockManager implements LockManager {
   private lockFile: string;
   private lockDir: string;
+  private projectName: string;
 
-  constructor(projectRoot: string = Deno.cwd()) {
-    this.lockDir = join(projectRoot, ".jiji");
+  constructor(projectName: string, projectRoot: string = Deno.cwd()) {
+    this.projectName = projectName;
+    this.lockDir = join(projectRoot, ".jiji", projectName);
     this.lockFile = join(this.lockDir, "deploy.lock");
   }
 
@@ -268,9 +279,13 @@ export class LocalLockManager implements LockManager {
  */
 export class MultiHostLockManager {
   private lockManagers: RemoteLockManager[];
+  private projectName: string;
 
-  constructor(sshManagers: SSHManager[]) {
-    this.lockManagers = sshManagers.map((ssh) => new RemoteLockManager(ssh));
+  constructor(sshManagers: SSHManager[], projectName: string) {
+    this.projectName = projectName;
+    this.lockManagers = sshManagers.map((ssh) =>
+      new RemoteLockManager(ssh, projectName)
+    );
   }
 
   async acquireAll(message: string): Promise<{
@@ -383,21 +398,22 @@ export class MultiHostLockManager {
  * Create appropriate lock manager based on context
  */
 export function createLockManager(
+  projectName: string,
   sshManagers?: SSHManager | SSHManager[],
   projectRoot?: string,
 ): LockManager | MultiHostLockManager {
   if (!sshManagers) {
-    return new LocalLockManager(projectRoot);
+    return new LocalLockManager(projectName, projectRoot);
   }
 
   if (Array.isArray(sshManagers)) {
     if (sshManagers.length === 1) {
-      return new RemoteLockManager(sshManagers[0]);
+      return new RemoteLockManager(sshManagers[0], projectName);
     }
-    return new MultiHostLockManager(sshManagers);
+    return new MultiHostLockManager(sshManagers, projectName);
   }
 
-  return new RemoteLockManager(sshManagers);
+  return new RemoteLockManager(sshManagers, projectName);
 }
 
 /**

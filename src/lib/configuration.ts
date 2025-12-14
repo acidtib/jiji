@@ -12,6 +12,7 @@ export type ContainerEngine = "docker" | "podman";
  * Main configuration class orchestrating all jiji configuration aspects
  */
 export class Configuration extends BaseConfiguration {
+  private _project?: string;
   private _engine?: ContainerEngine;
   private _ssh?: SSHConfiguration;
   private _services?: Map<string, ServiceConfiguration>;
@@ -27,6 +28,17 @@ export class Configuration extends BaseConfiguration {
     super(config);
     this._configPath = configPath;
     this._environmentName = environment;
+  }
+
+  /**
+   * Project name for organizing services
+   */
+  get project(): string {
+    if (!this._project) {
+      this._project = this.getRequired<string>("project");
+      this.validateString(this._project, "project");
+    }
+    return this._project;
   }
 
   /**
@@ -73,7 +85,10 @@ export class Configuration extends BaseConfiguration {
           config,
           `services.${name}`,
         );
-        this._services.set(name, new ServiceConfiguration(name, serviceConfig));
+        this._services.set(
+          name,
+          new ServiceConfiguration(name, serviceConfig, this.project),
+        );
       }
     }
     return this._services;
@@ -257,6 +272,7 @@ export class Configuration extends BaseConfiguration {
    */
   toObject(): Record<string, unknown> {
     const result: Record<string, unknown> = {
+      project: this.project,
       engine: this.engine,
     };
 
@@ -328,6 +344,7 @@ export class Configuration extends BaseConfiguration {
    */
   static withDefaults(overrides: Record<string, unknown> = {}): Configuration {
     const defaultConfig = {
+      project: "default",
       engine: "podman",
       ssh: {
         user: "root",

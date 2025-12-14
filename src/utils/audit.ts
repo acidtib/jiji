@@ -19,11 +19,15 @@ export interface RemoteAuditResult {
 
 export class RemoteAuditLogger {
   private sshManager: SSHManager;
-  private auditDir: string = ".jiji";
-  private auditFile: string = ".jiji/audit.txt";
+  private projectName: string;
+  private auditDir: string;
+  private auditFile: string;
 
-  constructor(sshManager: SSHManager) {
+  constructor(sshManager: SSHManager, projectName: string) {
     this.sshManager = sshManager;
+    this.projectName = projectName;
+    this.auditDir = `.jiji/${projectName}`;
+    this.auditFile = `.jiji/${projectName}/audit.txt`;
   }
 
   /**
@@ -187,9 +191,11 @@ export class RemoteAuditLogger {
 
 export class AuditAggregator {
   private sshManagers: SSHManager[];
+  private projectName: string;
 
-  constructor(sshManagers: SSHManager[]) {
+  constructor(sshManagers: SSHManager[], projectName: string) {
     this.sshManagers = sshManagers;
+    this.projectName = projectName;
   }
 
   /**
@@ -201,7 +207,7 @@ export class AuditAggregator {
     const results: RemoteAuditResult[] = [];
 
     for (const sshManager of this.sshManagers) {
-      const logger = new RemoteAuditLogger(sshManager);
+      const logger = new RemoteAuditLogger(sshManager, this.projectName);
       const host = sshManager.getHost();
 
       try {
@@ -232,7 +238,7 @@ export class AuditAggregator {
     const results: { host: string; entries: string[] }[] = [];
 
     for (const sshManager of this.sshManagers) {
-      const logger = new RemoteAuditLogger(sshManager);
+      const logger = new RemoteAuditLogger(sshManager, this.projectName);
       const host = sshManager.getHost();
 
       try {
@@ -263,11 +269,11 @@ export class ServerAuditLogger {
   private auditAggregator?: AuditAggregator;
   private singleLogger?: RemoteAuditLogger;
 
-  constructor(sshManagers: SSHManager | SSHManager[]) {
+  constructor(sshManagers: SSHManager | SSHManager[], projectName: string) {
     if (Array.isArray(sshManagers)) {
-      this.auditAggregator = new AuditAggregator(sshManagers);
+      this.auditAggregator = new AuditAggregator(sshManagers, projectName);
     } else {
-      this.singleLogger = new RemoteAuditLogger(sshManagers);
+      this.singleLogger = new RemoteAuditLogger(sshManagers, projectName);
     }
   }
 
@@ -641,8 +647,9 @@ export class ServerAuditLogger {
  */
 export const createServerAuditLogger = (
   sshManagers: SSHManager | SSHManager[],
+  projectName: string,
 ): ServerAuditLogger => {
-  return new ServerAuditLogger(sshManagers);
+  return new ServerAuditLogger(sshManagers, projectName);
 };
 
 /**
@@ -651,9 +658,11 @@ export const createServerAuditLogger = (
 export class LocalAuditLogger {
   private auditDir: string;
   private auditFile: string;
+  private projectName: string;
 
-  constructor(projectRoot: string = Deno.cwd()) {
-    this.auditDir = join(projectRoot, ".jiji");
+  constructor(projectName: string, projectRoot: string = Deno.cwd()) {
+    this.projectName = projectName;
+    this.auditDir = join(projectRoot, ".jiji", projectName);
     this.auditFile = join(this.auditDir, "audit.txt");
   }
 
@@ -774,7 +783,8 @@ export class LocalAuditLogger {
  * Create a local audit logger
  */
 export const createLocalAuditLogger = (
+  projectName: string,
   projectRoot?: string,
 ): LocalAuditLogger => {
-  return new LocalAuditLogger(projectRoot);
+  return new LocalAuditLogger(projectName, projectRoot);
 };

@@ -91,7 +91,7 @@ async function acquireLock(
     );
     sshManagers = managers;
 
-    const auditLogger = createServerAuditLogger(sshManagers);
+    const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
     // Check if any locks exist
     const lockStatuses = await checkLockStatus(sshManagers);
@@ -222,7 +222,7 @@ async function releaseLock(
       );
     sshManagers = managers;
 
-    const auditLogger = createServerAuditLogger(sshManagers);
+    const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
     // Check if locks exist
     const lockStatuses = await checkLockStatus(sshManagers);

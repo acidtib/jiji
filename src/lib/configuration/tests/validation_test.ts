@@ -7,6 +7,7 @@ import {
 
 // Test data
 const VALID_CONFIG_DATA = {
+  project: "testapp",
   engine: "docker",
   ssh: {
     user: "deploy",
@@ -37,6 +38,7 @@ const VALID_CONFIG_DATA = {
 };
 
 const _INVALID_CONFIG_DATA = {
+  project: "testapp",
   engine: "invalid_engine",
   ssh: {
     user: "",
@@ -58,6 +60,7 @@ const _INVALID_CONFIG_DATA = {
 };
 
 const MINIMAL_VALID_CONFIG = {
+  project: "minimal",
   engine: "docker",
   services: {
     simple: {

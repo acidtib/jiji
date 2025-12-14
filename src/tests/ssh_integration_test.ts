@@ -1,6 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { SSHConfiguration } from "../../lib/configuration/ssh.ts";
-import { createSSHConfigFromJiji, createSSHManagers } from "../ssh.ts";
+import { SSHConfiguration } from "../lib/configuration/ssh.ts";
+import { createSSHConfigFromJiji, createSSHManagers } from "../utils/ssh.ts";
 
 Deno.test("SSH Integration - configuration to utils bridge", () => {
   // Create SSH configuration from config file data

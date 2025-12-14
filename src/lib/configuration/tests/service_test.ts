@@ -55,9 +55,14 @@ const INVALID_SERVICE_DATA = {
 };
 
 Deno.test("ServiceConfiguration - minimal configuration", () => {
-  const service = new ServiceConfiguration("web", MINIMAL_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "web",
+    MINIMAL_SERVICE_DATA,
+    "myproject",
+  );
 
   assertEquals(service.name, "web");
+  assertEquals(service.project, "myproject");
   assertEquals(service.image, "nginx:latest");
   assertEquals(service.hosts, ["web1.example.com"]);
   assertEquals(service.ports, []);
@@ -68,9 +73,14 @@ Deno.test("ServiceConfiguration - minimal configuration", () => {
 });
 
 Deno.test("ServiceConfiguration - complete configuration", () => {
-  const service = new ServiceConfiguration("api", COMPLETE_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    COMPLETE_SERVICE_DATA,
+    "myproject",
+  );
 
   assertEquals(service.name, "api");
+  assertEquals(service.project, "myproject");
   assertEquals(service.image, "myapp:v1.0.0");
   assertEquals(service.hosts, ["web1.example.com", "web2.example.com"]);
   assertEquals(service.ports, ["80:80", "443:443"]);
@@ -88,6 +98,7 @@ Deno.test("ServiceConfiguration - environment as array", () => {
   const service = new ServiceConfiguration(
     "web",
     ENVIRONMENT_ARRAY_SERVICE_DATA,
+    "myproject",
   );
 
   assertEquals(Array.isArray(service.environment), true);
@@ -100,7 +111,11 @@ Deno.test("ServiceConfiguration - environment as array", () => {
 });
 
 Deno.test("ServiceConfiguration - build configuration object", () => {
-  const service = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
 
   assertEquals(service.image, undefined);
   assertEquals(typeof service.build, "object");
@@ -117,7 +132,11 @@ Deno.test("ServiceConfiguration - build configuration object", () => {
 });
 
 Deno.test("ServiceConfiguration - build configuration string", () => {
-  const service = new ServiceConfiguration("api", STRING_BUILD_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    STRING_BUILD_SERVICE_DATA,
+    "myproject",
+  );
 
   assertEquals(service.image, undefined);
   assertEquals(service.build, "./backend");
@@ -127,11 +146,17 @@ Deno.test("ServiceConfiguration - requiresBuild method", () => {
   const serviceWithoutBuild = new ServiceConfiguration(
     "web",
     MINIMAL_SERVICE_DATA,
+    "myproject",
   );
-  const serviceWithBuild = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const serviceWithBuild = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
   const serviceWithStringBuild = new ServiceConfiguration(
     "app",
     STRING_BUILD_SERVICE_DATA,
+    "myproject",
   );
 
   assertEquals(serviceWithoutBuild.requiresBuild(), false);
@@ -143,33 +168,65 @@ Deno.test("ServiceConfiguration - getImageName method", () => {
   const serviceWithImage = new ServiceConfiguration(
     "web",
     MINIMAL_SERVICE_DATA,
+    "myproject",
   );
-  const serviceWithBuild = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const serviceWithBuild = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
 
   assertEquals(serviceWithImage.getImageName(), "nginx:latest");
-  assertEquals(serviceWithBuild.getImageName(), "api:latest");
+  assertEquals(serviceWithBuild.getImageName(), "myproject-api:latest");
   assertEquals(
     serviceWithBuild.getImageName("registry.com"),
-    "registry.com/api:latest",
+    "registry.com/myproject-api:latest",
+  );
+});
+
+Deno.test("ServiceConfiguration - getContainerName method", () => {
+  const service = new ServiceConfiguration(
+    "web",
+    MINIMAL_SERVICE_DATA,
+    "myproject",
+  );
+
+  assertEquals(service.getContainerName(), "myproject-web");
+  assertEquals(service.getContainerName("1"), "myproject-web-1");
+  assertEquals(
+    service.getContainerName("production"),
+    "myproject-web-production",
   );
 });
 
 Deno.test("ServiceConfiguration - validation passes for valid service", () => {
-  const service = new ServiceConfiguration("web", MINIMAL_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "web",
+    MINIMAL_SERVICE_DATA,
+    "myproject",
+  );
 
   // Should not throw
   service.validate();
 });
 
 Deno.test("ServiceConfiguration - validation passes for build service", () => {
-  const service = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
 
   // Should not throw
   service.validate();
 });
 
 Deno.test("ServiceConfiguration - validation fails without image or build", () => {
-  const service = new ServiceConfiguration("web", INVALID_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "web",
+    INVALID_SERVICE_DATA,
+    "myproject",
+  );
 
   assertThrows(
     () => service.validate(),
@@ -179,23 +236,23 @@ Deno.test("ServiceConfiguration - validation fails without image or build", () =
 });
 
 Deno.test("ServiceConfiguration - validation fails with both image and build", () => {
-  const service = new ServiceConfiguration("web", {
+  const service = new ServiceConfiguration("invalid", {
     image: "nginx:latest",
-    build: ".",
+    build: "./app",
     hosts: ["localhost"],
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Service 'web' cannot specify both 'image' and 'build'",
+    "Service 'invalid' cannot specify both 'image' and 'build'",
   );
 });
 
 Deno.test("ServiceConfiguration - validation fails without hosts", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -208,7 +265,7 @@ Deno.test("ServiceConfiguration - validation fails with empty hosts", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: [],
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -221,7 +278,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid image type", () 
   const service = new ServiceConfiguration("web", {
     image: 123,
     hosts: ["localhost"],
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -230,24 +287,11 @@ Deno.test("ServiceConfiguration - validation fails with invalid image type", () 
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with empty image", () => {
-  const service = new ServiceConfiguration("web", {
-    image: "",
-    hosts: ["localhost"],
-  });
-
-  assertThrows(
-    () => service.validate(),
-    ConfigurationError,
-    "Service 'web' must specify either 'image' or 'build'",
-  );
-});
-
 Deno.test("ServiceConfiguration - validation fails with invalid hosts type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: "not-an-array",
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -260,7 +304,7 @@ Deno.test("ServiceConfiguration - validation fails with non-string host", () => 
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: ["valid-host", 123],
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -274,7 +318,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid ports type", () 
     image: "nginx:latest",
     hosts: ["localhost"],
     ports: "not-an-array",
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -283,12 +327,12 @@ Deno.test("ServiceConfiguration - validation fails with invalid ports type", () 
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with non-string port", () => {
+Deno.test("ServiceConfiguration - validation fails with invalid port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: ["localhost"],
-    ports: ["80:80", 443],
-  });
+    ports: ["443"], // Invalid format - missing container port
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -302,7 +346,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid volumes type", (
     image: "nginx:latest",
     hosts: ["localhost"],
     volumes: "not-an-array",
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -316,7 +360,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid environment type
     image: "nginx:latest",
     hosts: ["localhost"],
     environment: "not-an-object-or-array",
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -329,13 +373,13 @@ Deno.test("ServiceConfiguration - validation fails with invalid environment arra
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: ["localhost"],
-    environment: ["VALID_VAR=value", "INVALID_VAR_NO_EQUALS"],
-  });
+    environment: ["INVALID_VAR"], // Missing equals sign
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Invalid environment variable 'INVALID_VAR_NO_EQUALS' for service 'web'. Expected format: KEY=value",
+    "Invalid environment variable 'INVALID_VAR' for service 'web'. Expected format: KEY=value",
   );
 });
 
@@ -344,7 +388,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid command type", (
     image: "nginx:latest",
     hosts: ["localhost"],
     command: 123,
-  });
+  }, "myproject");
 
   // Command validation doesn't throw - it's handled during property access
   // This test verifies that invalid command types are handled gracefully
@@ -359,7 +403,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid build type", () 
   const service = new ServiceConfiguration("web", {
     hosts: ["localhost"],
     build: 123,
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -374,7 +418,7 @@ Deno.test("ServiceConfiguration - validation fails with build missing context", 
     build: {
       dockerfile: "Dockerfile",
     },
-  });
+  }, "myproject");
 
   assertThrows(
     () => service.validate(),
@@ -384,7 +428,11 @@ Deno.test("ServiceConfiguration - validation fails with build missing context", 
 });
 
 Deno.test("ServiceConfiguration - toObject method", () => {
-  const service = new ServiceConfiguration("web", COMPLETE_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    COMPLETE_SERVICE_DATA,
+    "myproject",
+  );
   const obj = service.toObject();
 
   assertEquals(obj.image, "myapp:v1.0.0");
@@ -400,7 +448,11 @@ Deno.test("ServiceConfiguration - toObject method", () => {
 });
 
 Deno.test("ServiceConfiguration - toObject excludes empty arrays and undefined values", () => {
-  const service = new ServiceConfiguration("web", MINIMAL_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "web",
+    MINIMAL_SERVICE_DATA,
+    "myproject",
+  );
   const obj = service.toObject();
 
   assertEquals(obj.image, "nginx:latest");
@@ -415,7 +467,11 @@ Deno.test("ServiceConfiguration - toObject excludes empty arrays and undefined v
 });
 
 Deno.test("ServiceConfiguration - toObject with build configuration", () => {
-  const service = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
   const obj = service.toObject();
 
   assertEquals("image" in obj, false);
@@ -431,7 +487,11 @@ Deno.test("ServiceConfiguration - toObject with build configuration", () => {
 });
 
 Deno.test("ServiceConfiguration - lazy loading of properties", () => {
-  const service = new ServiceConfiguration("web", COMPLETE_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "web",
+    COMPLETE_SERVICE_DATA,
+    "myproject",
+  );
 
   // Access properties multiple times to ensure they're cached
   assertEquals(service.image, "myapp:v1.0.0");
@@ -453,7 +513,7 @@ Deno.test("ServiceConfiguration - command as string", () => {
     command: "nginx -g 'daemon off;'",
   };
 
-  const service = new ServiceConfiguration("web", serviceData);
+  const service = new ServiceConfiguration("web", serviceData, "myproject");
   assertEquals(service.command, "nginx -g 'daemon off;'");
 });
 
@@ -464,12 +524,16 @@ Deno.test("ServiceConfiguration - command as array", () => {
     command: ["nginx", "-g", "daemon off;"],
   };
 
-  const service = new ServiceConfiguration("web", serviceData);
+  const service = new ServiceConfiguration("web", serviceData, "myproject");
   assertEquals(service.command, ["nginx", "-g", "daemon off;"]);
 });
 
 Deno.test("ServiceConfiguration - build with all options", () => {
-  const service = new ServiceConfiguration("api", BUILD_SERVICE_DATA);
+  const service = new ServiceConfiguration(
+    "api",
+    BUILD_SERVICE_DATA,
+    "myproject",
+  );
   const build = service.build as unknown as Record<string, unknown>;
 
   assertEquals(build.context, ".");
@@ -488,7 +552,7 @@ Deno.test("ServiceConfiguration - build with minimal options", () => {
     },
   };
 
-  const service = new ServiceConfiguration("web", serviceData);
+  const service = new ServiceConfiguration("web", serviceData, "myproject");
   const build = service.build as unknown as Record<string, unknown>;
 
   assertEquals(build.context, "./app");

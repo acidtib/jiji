@@ -1,12 +1,10 @@
 import { assertEquals, assertThrows } from "@std/assert";
 
-import {
-  Configuration,
-  ConfigurationError,
-} from "../../../lib/configuration.ts";
+import { Configuration, ConfigurationError } from "../../configuration.ts";
 
 // Test data
 const VALID_CONFIG_DATA = {
+  project: "myapp",
   engine: "docker" as const,
   ssh: {
     user: "testuser",
@@ -41,6 +39,7 @@ const VALID_CONFIG_DATA = {
 };
 
 const INVALID_CONFIG_DATA = {
+  project: "testproject",
   engine: "invalid_engine",
   ssh: {
     user: "testuser",
@@ -55,6 +54,7 @@ const INVALID_CONFIG_DATA = {
 };
 
 const MINIMAL_CONFIG_DATA = {
+  project: "testproject",
   engine: "podman" as const,
   ssh: {
     user: "root",
@@ -70,6 +70,7 @@ const MINIMAL_CONFIG_DATA = {
 Deno.test("Configuration - basic construction", () => {
   const config = new Configuration(VALID_CONFIG_DATA);
 
+  assertEquals(config.project, "myapp");
   assertEquals(config.engine, "docker");
   assertEquals(config.ssh.user, "testuser");
   assertEquals(config.ssh.port, 22);
@@ -88,7 +89,11 @@ Deno.test("Configuration - construction with path and environment", () => {
 });
 
 Deno.test("Configuration - engine property", () => {
-  const config = new Configuration({ engine: "podman", services: {} });
+  const config = new Configuration({
+    project: "test",
+    engine: "podman",
+    services: {},
+  });
   assertEquals(config.engine, "podman");
 });
 
@@ -114,6 +119,7 @@ Deno.test("Configuration - ssh configuration", () => {
 
 Deno.test("Configuration - ssh configuration with defaults", () => {
   const config = new Configuration({
+    project: "test",
     engine: "docker",
     ssh: {
       user: "root",
@@ -122,9 +128,8 @@ Deno.test("Configuration - ssh configuration with defaults", () => {
   });
   const ssh = config.ssh;
 
-  // Should use defaults from SSHConfiguration
   assertEquals(ssh.user, "root");
-  assertEquals(ssh.port, 22);
+  assertEquals(ssh.port, 22); // Default port
 });
 
 Deno.test("Configuration - services property", () => {
@@ -242,6 +247,7 @@ Deno.test("Configuration - validation fails for invalid config", () => {
 
 Deno.test("Configuration - validation includes service validation", () => {
   const invalidServiceConfig = {
+    project: "test",
     engine: "docker",
     services: {
       invalid: {
@@ -259,6 +265,7 @@ Deno.test("Configuration - validation includes service validation", () => {
 
 Deno.test("Configuration - validation checks host consistency", () => {
   const noHostsConfig = {
+    project: "test",
     engine: "docker",
     services: {
       web: {
@@ -287,6 +294,7 @@ Deno.test("Configuration - validation warns about many hosts", () => {
   }
 
   const manyHostsConfig = {
+    project: "test",
     engine: "docker",
     services: manyHostsServices,
   };
@@ -301,6 +309,7 @@ Deno.test("Configuration - toObject method", () => {
   const config = new Configuration(MINIMAL_CONFIG_DATA);
   const obj = config.toObject();
 
+  assertEquals(obj.project, "testproject");
   assertEquals(obj.engine, "podman");
   assertEquals(typeof obj.services, "object");
   assertEquals(typeof obj.ssh, "object");
@@ -310,6 +319,7 @@ Deno.test("Configuration - toObject method", () => {
 Deno.test("Configuration - withDefaults static method", () => {
   const config = Configuration.withDefaults();
 
+  assertEquals(config.project, "default");
   assertEquals(config.engine, "podman");
   assertEquals(config.ssh.user, "root");
   assertEquals(config.ssh.port, 22);
@@ -317,12 +327,14 @@ Deno.test("Configuration - withDefaults static method", () => {
   assertEquals(config.services.has("web"), true);
 });
 
-Deno.test("Configuration - withDefaults accepts overrides", () => {
+Deno.test("Configuration - withDefaults overrides", () => {
   const config = Configuration.withDefaults({
+    project: "override-project",
     engine: "docker",
     ssh: { user: "deploy" },
   });
 
+  assertEquals(config.project, "override-project");
   assertEquals(config.engine, "docker");
   assertEquals(config.ssh.user, "deploy");
 });
@@ -331,6 +343,8 @@ Deno.test("Configuration - lazy loading of properties", () => {
   const config = new Configuration(VALID_CONFIG_DATA);
 
   // Access properties multiple times to ensure they're cached properly
+  assertEquals(config.project, "myapp");
+  assertEquals(config.project, "myapp");
   assertEquals(config.engine, "docker");
   assertEquals(config.engine, "docker");
 
@@ -345,6 +359,7 @@ Deno.test("Configuration - lazy loading of properties", () => {
 
 Deno.test("Configuration - handles missing optional sections", () => {
   const minimalConfig = {
+    project: "test",
     engine: "docker",
     ssh: {
       user: "root",
@@ -381,7 +396,7 @@ Deno.test("Configuration - environment name from constructor", () => {
 });
 
 Deno.test("Configuration - missing required engine throws", () => {
-  const config = new Configuration({ services: {} });
+  const config = new Configuration({ project: "test" });
 
   assertThrows(
     () => config.engine,
@@ -391,7 +406,7 @@ Deno.test("Configuration - missing required engine throws", () => {
 });
 
 Deno.test("Configuration - missing required services throws", () => {
-  const config = new Configuration({ engine: "docker" });
+  const config = new Configuration({ project: "test", engine: "docker" });
 
   assertThrows(
     () => config.services,
@@ -400,8 +415,9 @@ Deno.test("Configuration - missing required services throws", () => {
   );
 });
 
-Deno.test("Configuration - invalid services structure throws", () => {
+Deno.test("Configuration - invalid services type throws", () => {
   const config = new Configuration({
+    project: "test",
     engine: "docker",
     services: "not an object",
   });

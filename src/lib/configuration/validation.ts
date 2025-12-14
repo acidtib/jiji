@@ -479,6 +479,17 @@ export class ValidatorPresets {
   static createJijiValidator(): ConfigurationValidator {
     const validator = new ConfigurationValidator();
 
+    // Project validation
+    validator.addRules("project", [
+      ValidationRules.required(),
+      ValidationRules.string(),
+      ValidationRules.length(1, 50, "Project name must be 1-50 characters"),
+      ValidationRules.pattern(
+        /^[a-z0-9]+([_-][a-z0-9]+)*$/,
+        "Project name must contain only lowercase letters, numbers, hyphens, and underscores",
+      ),
+    ]);
+
     // Engine validation
     validator.addRules("engine", [
       ValidationRules.required(),
