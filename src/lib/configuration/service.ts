@@ -16,6 +16,37 @@ export interface BuildConfig {
 }
 
 /**
+ * Mount options for files and directories
+ */
+type MountOptions = "ro" | "z" | "Z";
+
+/**
+ * File mount configuration - supports both string and hash formats
+ * String format: "local:remote" or "local:remote:options"
+ * Hash format: { local: string, remote: string, mode?: string, owner?: string, options?: string }
+ */
+export type FileMountConfig = string | {
+  local: string;
+  remote: string;
+  mode?: string;
+  owner?: string;
+  options?: MountOptions | string;
+};
+
+/**
+ * Directory mount configuration - supports both string and hash formats
+ * String format: "local:remote" or "local:remote:options"
+ * Hash format: { local: string, remote: string, mode?: string, owner?: string, options?: string }
+ */
+export type DirectoryMountConfig = string | {
+  local: string;
+  remote: string;
+  mode?: string;
+  owner?: string;
+  options?: MountOptions | string;
+};
+
+/**
  * Service configuration representing a single deployable service
  */
 export class ServiceConfiguration extends BaseConfiguration
@@ -27,6 +58,8 @@ export class ServiceConfiguration extends BaseConfiguration
   private _hosts?: string[];
   private _ports?: string[];
   private _volumes?: string[];
+  private _files?: FileMountConfig[];
+  private _directories?: DirectoryMountConfig[];
   private _environment?: Record<string, string> | string[];
   private _command?: string | string[];
   private _proxy?: ProxyConfiguration;
@@ -141,6 +174,38 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
+   * File mounts
+   */
+  get files(): FileMountConfig[] {
+    if (!this._files) {
+      this._files = this.has("files")
+        ? this.validateArray<FileMountConfig>(
+          this.get("files"),
+          "files",
+          this.name,
+        )
+        : [];
+    }
+    return this._files;
+  }
+
+  /**
+   * Directory mounts
+   */
+  get directories(): DirectoryMountConfig[] {
+    if (!this._directories) {
+      this._directories = this.has("directories")
+        ? this.validateArray<DirectoryMountConfig>(
+          this.get("directories"),
+          "directories",
+          this.name,
+        )
+        : [];
+    }
+    return this._directories;
+  }
+
+  /**
    * Environment variables
    */
   get environment(): Record<string, string> | string[] {
@@ -240,6 +305,28 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
 
+    // Validate file mounts
+    for (const file of this.files) {
+      if (!this.isValidMountConfig(file, "file")) {
+        const fileStr = typeof file === "string" ? file : JSON.stringify(file);
+        throw new ConfigurationError(
+          `Invalid file mount '${fileStr}' for service '${this.name}'. Expected format: local:remote[:options] or { local, remote, mode?, owner?, options? }`,
+        );
+      }
+    }
+
+    // Validate directory mounts
+    for (const directory of this.directories) {
+      if (!this.isValidMountConfig(directory, "directory")) {
+        const dirStr = typeof directory === "string"
+          ? directory
+          : JSON.stringify(directory);
+        throw new ConfigurationError(
+          `Invalid directory mount '${dirStr}' for service '${this.name}'. Expected format: local:remote[:options] or { local, remote, mode?, owner?, options? }`,
+        );
+      }
+    }
+
     // Validate environment variables
     if (Array.isArray(this.environment)) {
       for (const env of this.environment) {
@@ -291,6 +378,53 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
+   * Validates file or directory mount configuration
+   */
+  private isValidMountConfig(
+    mount: FileMountConfig | DirectoryMountConfig,
+    _type: "file" | "directory",
+  ): boolean {
+    if (typeof mount === "string") {
+      // String format: "local:remote" or "local:remote:options"
+      const parts = mount.split(":");
+      if (parts.length < 2 || parts.length > 3) {
+        return false;
+      }
+      // Check that local and remote are not empty
+      if (!parts[0] || !parts[1]) {
+        return false;
+      }
+      // If options are provided, validate they're valid
+      if (parts.length === 3 && parts[2]) {
+        const validOptions = ["ro", "z", "Z"];
+        return validOptions.includes(parts[2]);
+      }
+      return true;
+    } else if (typeof mount === "object" && mount !== null) {
+      // Hash format validation
+      if (!mount.local || !mount.remote) {
+        return false;
+      }
+      // Validate mode format if provided (should be octal like "0644")
+      if (mount.mode && !/^[0-7]{3,4}$/.test(mount.mode)) {
+        return false;
+      }
+      // Validate owner format if provided (should be "user:group" or "uid:gid")
+      if (mount.owner && !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(mount.owner)) {
+        return false;
+      }
+      // Validate options if provided
+      if (mount.options) {
+        const validOptions = ["ro", "z", "Z"];
+        const options = mount.options.split(",").map((o) => o.trim());
+        return options.every((opt) => validOptions.includes(opt));
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Returns the service configuration as a plain object
    */
   toObject(): Record<string, unknown> {
@@ -312,6 +446,14 @@ export class ServiceConfiguration extends BaseConfiguration
 
     if (this.volumes.length > 0) {
       result.volumes = this.volumes;
+    }
+
+    if (this.files.length > 0) {
+      result.files = this.files;
+    }
+
+    if (this.directories.length > 0) {
+      result.directories = this.directories;
     }
 
     if (Object.keys(this.environment).length > 0) {

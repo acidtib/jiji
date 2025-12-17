@@ -140,9 +140,32 @@ services:
       - 192.168.1.101
     ports:
       - "127.0.0.1:8080:80"
+    # Volumes: Docker/Podman named volumes or host paths
     volumes:
-      - "/etc/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"
-      - "/var/www/html:/usr/share/nginx/html:ro"
+      - "web_storage:/opt/uploads"
+      - "./data:/opt/extra_data:ro"
+    # Files: Upload from local repo to host .jiji/{project}/files/ before mounting
+    # String format: local:remote[:options] where options can be ro, z, or Z
+    files:
+      - "nginx.conf:/etc/nginx/nginx.conf:ro"
+    # Or use hash format for custom permissions and ownership:
+    # files:
+    #   - local: config/secret.key
+    #     remote: /etc/app/secret.key
+    #     mode: "0600"
+    #     owner: "nginx:nginx"
+    #     options: "ro"
+    # Directories: Created on host .jiji/{project}/directories/ before mounting
+    # String format: local:remote[:options] where options can be ro, z, or Z
+    directories:
+      - "html:/usr/share/nginx/html:ro"
+    # Or use hash format for custom permissions and ownership:
+    # directories:
+    #   - local: logs
+    #     remote: /var/log/nginx
+    #     mode: "0755"
+    #     owner: "nginx:nginx"
+    #     options: "z"
     environment:
       NGINX_WORKER_PROCESSES: auto
       NGINX_WORKER_CONNECTIONS: "1024"

@@ -751,6 +751,25 @@ export class SSHManager {
   }
 
   /**
+   * Upload a directory to the remote host
+   */
+  async uploadDirectory(localPath: string, remotePath: string): Promise<void> {
+    if (!this.isConnected()) {
+      throw new Error("SSH connection not established. Call connect() first.");
+    }
+
+    try {
+      await this.ssh.putDirectory(localPath, remotePath);
+    } catch (error) {
+      throw new Error(
+        `Failed to upload directory to ${this.config.host}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Download a file from the remote host
    */
   async downloadFile(remotePath: string, localPath: string): Promise<void> {

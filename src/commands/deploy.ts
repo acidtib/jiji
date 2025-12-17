@@ -4,6 +4,11 @@ import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
 import { log } from "../utils/logger.ts";
 import { extractAppPort, ProxyCommands } from "../utils/proxy.ts";
+import {
+  buildAllMountArgs,
+  prepareMountDirectories,
+  prepareMountFiles,
+} from "../utils/mount_manager.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -233,6 +238,59 @@ export const deployCommand = new Command()
                   const containerName = service.getContainerName();
                   const imageName = service.getImageName();
 
+                  // Prepare files and directories before deployment
+                  if (service.files.length > 0) {
+                    log.status(
+                      `Uploading ${service.files.length} file(s) for ${service.name} on ${host}`,
+                      "deploy",
+                    );
+                    try {
+                      await prepareMountFiles(
+                        hostSsh,
+                        service.files,
+                        config!.project,
+                      );
+                      log.success(
+                        `Files uploaded for ${service.name} on ${host}`,
+                        "deploy",
+                      );
+                    } catch (error) {
+                      log.error(
+                        `Failed to upload files: ${
+                          error instanceof Error ? error.message : String(error)
+                        }`,
+                        "deploy",
+                      );
+                      throw error;
+                    }
+                  }
+
+                  if (service.directories.length > 0) {
+                    log.status(
+                      `Creating ${service.directories.length} director(ies) for ${service.name} on ${host}`,
+                      "deploy",
+                    );
+                    try {
+                      await prepareMountDirectories(
+                        hostSsh,
+                        service.directories,
+                        config!.project,
+                      );
+                      log.success(
+                        `Directories created for ${service.name} on ${host}`,
+                        "deploy",
+                      );
+                    } catch (error) {
+                      log.error(
+                        `Failed to create directories: ${
+                          error instanceof Error ? error.message : String(error)
+                        }`,
+                        "deploy",
+                      );
+                      throw error;
+                    }
+                  }
+
                   // For Podman, ensure image has full registry path
                   const fullImageName = imageName.includes("/")
                     ? imageName
@@ -263,9 +321,12 @@ export const deployCommand = new Command()
                   const portArgs = service.ports
                     .map((p) => `-p ${p}`)
                     .join(" ");
-                  const volumeArgs = service.volumes
-                    .map((v) => `-v ${v}`)
-                    .join(" ");
+                  const mountArgs = buildAllMountArgs(
+                    service.files,
+                    service.directories,
+                    service.volumes,
+                    config!.project,
+                  );
                   const envArgs = service.environment
                     ? (Array.isArray(service.environment)
                       ? service.environment.map((e) => `-e "${e}"`).join(" ")
@@ -276,7 +337,7 @@ export const deployCommand = new Command()
 
                   const runCommand = `${
                     config!.engine
-                  } run --name ${containerName} --network jiji --detach --restart unless-stopped ${portArgs} ${volumeArgs} ${envArgs} ${fullImageName}`;
+                  } run --name ${containerName} --network jiji --detach --restart unless-stopped ${portArgs} ${mountArgs} ${envArgs} ${fullImageName}`;
 
                   log.status(
                     `Starting container ${containerName} on ${host}`,
