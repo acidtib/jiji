@@ -423,6 +423,10 @@ Deno.test("ConfigurationLoader - extractEnvironment method", () => {
     "production",
   );
   assertEquals(
+    ConfigurationLoader.extractEnvironment(".jiji/deploy.staging.yml"),
+    "staging",
+  );
+  assertEquals(
     ConfigurationLoader.extractEnvironment(".jiji/deploy.staging.yaml"),
     "staging",
   );
@@ -431,8 +435,8 @@ Deno.test("ConfigurationLoader - extractEnvironment method", () => {
     undefined,
   );
   assertEquals(
-    ConfigurationLoader.extractEnvironment(".jiji/config.yml"),
-    undefined,
+    ConfigurationLoader.extractEnvironment(".jiji/production.yml"),
+    "production",
   );
 });
 
@@ -530,7 +534,7 @@ Deno.test("ConfigurationLoader - handles different config file names", async () 
   await withTempDir(async (tempDir) => {
     const jijiDir = `${tempDir}/.jiji`;
     await ensureDir(jijiDir);
-    await Deno.writeTextFile(`${jijiDir}/config.yml`, VALID_YAML);
+    await Deno.writeTextFile(`${jijiDir}/deploy.yml`, VALID_YAML);
 
     const originalCwd = Deno.cwd();
     Deno.chdir(tempDir);
@@ -538,7 +542,7 @@ Deno.test("ConfigurationLoader - handles different config file names", async () 
     try {
       const result = await ConfigurationLoader.loadConfig();
 
-      assertEquals(result.path, `${tempDir}/.jiji/config.yml`);
+      assertEquals(result.path, `${tempDir}/.jiji/deploy.yml`);
       assertEquals(result.config.engine, "docker");
     } finally {
       Deno.chdir(originalCwd);

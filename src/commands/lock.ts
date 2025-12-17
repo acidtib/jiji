@@ -582,10 +582,9 @@ async function getLockInfo(
       ...lockData,
     };
   } catch {
-    // If we can't parse the lock file, assume it's locked with basic info
+    // If we can't parse the lock file, treat it as unlocked
     return {
-      locked: true,
-      message: "Legacy lock file",
+      locked: false,
     };
   }
 }

@@ -288,37 +288,22 @@ const resolved = await env.resolveVariables();
 console.log(resolved.DATABASE_PASSWORD); // From environment
 ```
 
-## Migration from Legacy System
+## Configuration Loading
 
-The new system maintains backwards compatibility:
-
-### Legacy Code
-
-```typescript
-import { loadConfig } from "./src/utils/config.ts";
-
-const { config } = await loadConfig();
-console.log(config.engine);
-```
-
-### New Code
+Load configuration using the Configuration class:
 
 ```typescript
 import { Configuration } from "./src/lib/configuration.ts";
 
+// Load default configuration
 const config = await Configuration.load();
 console.log(config.engine);
-```
 
-### Converting Legacy Config
+// Load environment-specific configuration
+const config = await Configuration.load("production");
 
-Use the conversion utility:
-
-```typescript
-import { toLegacyConfig } from "./src/utils/config.ts";
-
-const newConfig = await Configuration.load();
-const legacyConfig = toLegacyConfig(newConfig);
+// Load from specific file path
+const config = await Configuration.load(undefined, "./custom/config.yml");
 ```
 
 ## Best Practices

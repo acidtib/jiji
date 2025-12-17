@@ -128,12 +128,8 @@ export class RemoteLockManager implements LockManager {
           host: this.sshManager.getHost(),
         };
       } catch {
-        // If we can't parse the lock file, assume it's locked with basic info
-        return {
-          locked: true,
-          message: "Legacy lock file",
-          host: this.sshManager.getHost(),
-        };
+        // If we can't parse the lock file, treat it as unlocked
+        return { locked: false, host: this.sshManager.getHost() };
       }
     } catch {
       return { locked: false, host: this.sshManager.getHost() };

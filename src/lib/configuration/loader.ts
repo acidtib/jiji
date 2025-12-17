@@ -11,8 +11,6 @@ export class ConfigurationLoader {
   private static readonly CONFIG_EXTENSIONS = [".yml", ".yaml"];
   private static readonly DEFAULT_CONFIG_FILES = [
     "deploy",
-    "config",
-    "jiji",
   ];
 
   /**
@@ -145,10 +143,13 @@ export class ConfigurationLoader {
     const exampleFiles = environment
       ? [
         `.jiji/deploy.${environment}.yml`,
+        `.jiji/deploy.${environment}.yaml`,
         `.jiji/${environment}.yml`,
+        `.jiji/${environment}.yaml`,
         ".jiji/deploy.yml",
+        ".jiji/deploy.yaml",
       ]
-      : [".jiji/deploy.yml", ".jiji/config.yml"];
+      : [".jiji/deploy.yml", ".jiji/deploy.yaml"];
 
     return `No jiji configuration file found${envStr}. ` +
       `Please create one of the following files:\n${
