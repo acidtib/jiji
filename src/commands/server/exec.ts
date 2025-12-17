@@ -1,12 +1,6 @@
 import { Command } from "@cliffy/command";
 import { Configuration } from "../../lib/configuration.ts";
-import {
-  createSSHConfigFromJiji,
-  createSSHManagers,
-  filterConnectedHosts,
-  testConnections,
-  validateSSHSetup,
-} from "../../utils/ssh.ts";
+import { setupSSHConnections, type SSHManager } from "../../utils/ssh.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log, Logger } from "../../utils/logger.ts";
 import { executeHostOperations } from "../../utils/promise_helpers.ts";
@@ -37,7 +31,7 @@ export const execCommand = new Command()
   )
   .action(async (options, command: string) => {
     let config: Configuration | undefined;
-    let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+    let sshManagers: SSHManager[] | undefined;
     let auditLogger: ReturnType<typeof createServerAuditLogger> | undefined;
     let targetHosts: string[] = [];
 
@@ -148,68 +142,25 @@ export const execCommand = new Command()
         );
 
         await log.group("SSH Connection Setup", async () => {
-          // Validate SSH setup
-          log.status("Validating SSH configuration", "ssh");
-          const sshValidation = await validateSSHSetup();
-          if (!sshValidation.valid) {
-            log.error(`SSH setup validation failed:`, "ssh");
-            log.error(`   ${sshValidation.message}`, "ssh");
-            log.error(
-              `   Please run 'ssh-agent' and 'ssh-add' before continuing.`,
-              "ssh",
-            );
-            Deno.exit(1);
-          }
-          log.success("SSH setup validation passed", "ssh");
-
-          // Get SSH configuration
-          const sshConfig = createSSHConfigFromJiji({
-            user: config!.ssh.user,
-            port: config!.ssh.port,
-            proxy: config!.ssh.proxy,
-            proxy_command: config!.ssh.proxyCommand,
-            keys: config!.ssh.allKeys.length > 0
-              ? config!.ssh.allKeys
-              : undefined,
-            keyData: config!.ssh.keyData,
-            keysOnly: config!.ssh.keysOnly,
-            dnsRetries: config!.ssh.dnsRetries,
-          });
-
-          // Create SSH managers for all hosts and test connections
-          log.status("Testing connections to all hosts...", "ssh");
-          sshManagers = createSSHManagers(uniqueHosts, sshConfig);
-          const connectionTests = await testConnections(sshManagers);
-
-          const { connectedManagers, connectedHosts, failedHosts } =
-            filterConnectedHosts(sshManagers, connectionTests);
-
-          if (connectedHosts.length === 0) {
-            log.error("No hosts are reachable. Cannot execute command.", "ssh");
-            Deno.exit(1);
-          }
-
-          if (failedHosts.length > 0) {
-            log.warn(`Unreachable hosts: ${failedHosts.join(", ")}`, "ssh");
-            if (!options.continueOnError) {
-              log.error(
-                "Stopping due to unreachable hosts (use --continue-on-error to override)",
-                "ssh",
-              );
-              Deno.exit(1);
-            }
-          }
-
-          log.success(
-            `Connected to ${connectedHosts.length} host(s): ${
-              connectedHosts.join(", ")
-            }`,
-            "ssh",
+          const result = await setupSSHConnections(
+            uniqueHosts,
+            {
+              user: config!.ssh.user,
+              port: config!.ssh.port,
+              proxy: config!.ssh.proxy,
+              proxy_command: config!.ssh.proxyCommand,
+              keys: config!.ssh.allKeys.length > 0
+                ? config!.ssh.allKeys
+                : undefined,
+              keyData: config!.ssh.keyData,
+              keysOnly: config!.ssh.keysOnly,
+              dnsRetries: config!.ssh.dnsRetries,
+            },
+            { allowPartialConnection: options.continueOnError },
           );
 
-          // Use only connected SSH managers
-          sshManagers = connectedManagers;
-          targetHosts = connectedHosts;
+          sshManagers = result.managers;
+          targetHosts = result.connectedHosts;
         });
 
         // Create audit logger for connected servers

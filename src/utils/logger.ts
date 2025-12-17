@@ -28,6 +28,23 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   trace: 5,
 };
 
+// Global log level that can be set once for all loggers
+let globalMinLevel: LogLevel | undefined = undefined;
+
+/**
+ * Set the global minimum log level for all loggers
+ */
+export function setGlobalLogLevel(level: LogLevel): void {
+  globalMinLevel = level;
+}
+
+/**
+ * Get the current global log level
+ */
+export function getGlobalLogLevel(): LogLevel | undefined {
+  return globalMinLevel;
+}
+
 export class Logger {
   private prefix: string;
   private showTimestamp: boolean;
@@ -40,7 +57,8 @@ export class Logger {
     this.showTimestamp = options.showTimestamp ?? true;
     this.maxPrefixLength = options.maxPrefixLength || 20;
     this.useColors = options.colors ?? true;
-    this.minLevel = options.minLevel || "info";
+    // Use global level if set, otherwise use provided or default to "info"
+    this.minLevel = options.minLevel || globalMinLevel || "info";
   }
 
   private formatTimestamp(): string {

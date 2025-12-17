@@ -1,3 +1,5 @@
+import { Logger } from "./logger.ts";
+
 interface SSHConfigHost {
   pattern: string;
   config: Record<string, string>;
@@ -12,6 +14,7 @@ interface SSHConfigHost {
  */
 export class SSHConfigParser {
   private hosts: SSHConfigHost[] = [];
+  private logger = new Logger({ prefix: "ssh-config" });
 
   /**
    * Parse an SSH config file
@@ -22,7 +25,7 @@ export class SSHConfigParser {
       this.parseContent(content);
     } catch (_error) {
       // File doesn't exist or not readable - that's OK
-      console.debug(`Could not read SSH config file: ${filePath}`);
+      this.logger.debug(`Could not read SSH config file: ${filePath}`);
     }
   }
 

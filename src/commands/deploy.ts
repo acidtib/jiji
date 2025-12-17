@@ -1,12 +1,6 @@
 import { Command } from "@cliffy/command";
 import { Configuration } from "../lib/configuration.ts";
-import {
-  createSSHConfigFromJiji,
-  createSSHManagers,
-  filterConnectedHosts,
-  testConnections,
-  validateSSHSetup,
-} from "../utils/ssh.ts";
+import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
 import { log } from "../utils/logger.ts";
 import { extractAppPort, ProxyCommands } from "../utils/proxy.ts";
@@ -18,7 +12,7 @@ export const deployCommand = new Command()
   .action(async (options) => {
     let uniqueHosts: string[] = [];
     let config: Configuration | undefined;
-    let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+    let sshManagers: SSHManager[] | undefined;
 
     try {
       await log.group("Service Deployment", async () => {
@@ -56,19 +50,9 @@ export const deployCommand = new Command()
         );
 
         await log.group("SSH Connection Setup", async () => {
-          // Validate SSH setup
-          log.status("Validating SSH configuration", "ssh");
-          const sshValidation = await validateSSHSetup();
-          if (!sshValidation.valid) {
-            log.error(`SSH setup validation failed:`, "ssh");
-            log.error(`   ${sshValidation.message}`, "ssh");
-            Deno.exit(1);
-          }
-          log.success("SSH setup validation passed", "ssh");
-
-          // Get SSH configuration
-          const sshConfig = {
-            ...createSSHConfigFromJiji({
+          const result = await setupSSHConnections(
+            uniqueHosts,
+            {
               user: config!.ssh.user,
               port: config!.ssh.port,
               proxy: config!.ssh.proxy,
@@ -79,42 +63,12 @@ export const deployCommand = new Command()
               keyData: config!.ssh.keyData,
               keysOnly: config!.ssh.keysOnly,
               dnsRetries: config!.ssh.dnsRetries,
-            }),
-            useAgent: true,
-          };
-
-          // Create SSH managers and test connections
-          log.status("Testing connections to all hosts...", "ssh");
-          sshManagers = createSSHManagers(uniqueHosts, sshConfig);
-          const connectionTests = await testConnections(sshManagers);
-
-          const { connectedManagers, connectedHosts, failedHosts } =
-            filterConnectedHosts(sshManagers, connectionTests);
-
-          if (connectedHosts.length === 0) {
-            log.error(
-              "❌ No hosts are reachable. Cannot proceed with deployment.",
-              "ssh",
-            );
-            Deno.exit(1);
-          }
-
-          if (failedHosts.length > 0) {
-            log.warn(
-              `Skipping unreachable hosts: ${failedHosts.join(", ")}`,
-              "ssh",
-            );
-          }
-
-          log.success(
-            `Connected to ${connectedHosts.length} host(s): ${
-              connectedHosts.join(", ")
-            }`,
-            "ssh",
+            },
+            { allowPartialConnection: true },
           );
 
-          sshManagers = connectedManagers;
-          uniqueHosts = connectedHosts;
+          sshManagers = result.managers;
+          uniqueHosts = result.connectedHosts;
         });
 
         // Check which services have proxy configuration

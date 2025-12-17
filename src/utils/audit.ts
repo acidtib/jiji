@@ -24,12 +24,14 @@ export class RemoteAuditLogger {
   private projectName: string;
   private auditDir: string;
   private auditFile: string;
+  private logger: Logger;
 
   constructor(sshManager: SSHManager, projectName: string) {
     this.sshManager = sshManager;
     this.projectName = projectName;
     this.auditDir = `.jiji/${projectName}`;
     this.auditFile = `.jiji/${projectName}/audit.txt`;
+    this.logger = new Logger({ prefix: "audit" });
   }
 
   /**
@@ -45,9 +47,9 @@ export class RemoteAuditLogger {
       );
 
       if (!checkDirResult.success) {
-        // console.warn(
-        //   `⚠️  Failed to create audit directory on ${host}: ${checkDirResult.stderr}`,
-        // );
+        this.logger.warn(
+          `Failed to create audit directory on ${host}: ${checkDirResult.stderr}`,
+        );
         return false;
       }
 
@@ -70,20 +72,20 @@ export class RemoteAuditLogger {
         );
 
         if (!createFileResult.success) {
-          // console.warn(
-          //   `⚠️  Failed to create audit file on ${host}: ${createFileResult.stderr}`,
-          // );
+          this.logger.warn(
+            `Failed to create audit file on ${host}: ${createFileResult.stderr}`,
+          );
           return false;
         }
       }
 
       return true;
-    } catch (_error) {
-      // console.warn(
-      //   `⚠️  Failed to initialize remote audit: ${
-      //     error instanceof Error ? error.message : String(error)
-      //   }`,
-      // );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to initialize remote audit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       return false;
     }
   }
@@ -122,19 +124,19 @@ export class RemoteAuditLogger {
       );
 
       if (!result.success) {
-        // console.warn(
-        //   `⚠️  Failed to write audit entry to ${host}: ${result.stderr}`,
-        // );
+        this.logger.warn(
+          `Failed to write audit entry to ${host}: ${result.stderr}`,
+        );
         return false;
       }
 
       return true;
-    } catch (_error) {
-      // console.warn(
-      //   `Failed to log audit entry: ${
-      //     error instanceof Error ? error.message : String(error)
-      //   }`,
-      // );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to log audit entry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       return false;
     }
   }
@@ -303,6 +305,7 @@ export class AuditAggregator {
 export class ServerAuditLogger {
   private auditAggregator?: AuditAggregator;
   private singleLogger?: RemoteAuditLogger;
+  private logger: Logger;
 
   constructor(sshManagers: SSHManager | SSHManager[], projectName: string) {
     if (Array.isArray(sshManagers)) {
@@ -310,6 +313,7 @@ export class ServerAuditLogger {
     } else {
       this.singleLogger = new RemoteAuditLogger(sshManagers, projectName);
     }
+    this.logger = new Logger({ prefix: "audit" });
   }
 
   /**
@@ -630,12 +634,12 @@ export class ServerAuditLogger {
       const failures = results.filter((r) => !r.success);
 
       if (failures.length > 0) {
-        // console.warn(
-        //   `Failed to log audit entry to ${failures.length} server(s):`,
-        // );
-        // failures.forEach((f) =>
-        //   console.warn(`   • ${f.host}: ${f.error || "Unknown error"}`)
-        // );
+        this.logger.warn(
+          `Failed to log audit entry to ${failures.length} server(s):`,
+        );
+        failures.forEach((f) =>
+          this.logger.warn(`   • ${f.host}: ${f.error || "Unknown error"}`)
+        );
       }
       return results.map((r) => ({ host: r.host, success: r.success }));
     } else if (this.singleLogger) {
@@ -694,11 +698,13 @@ export class LocalAuditLogger {
   private auditDir: string;
   private auditFile: string;
   private projectName: string;
+  private logger: Logger;
 
   constructor(projectName: string, projectRoot: string = Deno.cwd()) {
     this.projectName = projectName;
     this.auditDir = join(projectRoot, ".jiji", projectName);
     this.auditFile = join(this.auditDir, "audit.txt");
+    this.logger = new Logger({ prefix: "audit" });
   }
 
   /**
@@ -741,12 +747,12 @@ export class LocalAuditLogger {
       await Deno.writeTextFile(this.auditFile, formattedEntry + "\n", {
         append: true,
       });
-    } catch (_error) {
-      // console.warn(
-      //   `⚠️  Failed to write local audit entry: ${
-      //     error instanceof Error ? error.message : String(error)
-      //   }`,
-      // );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to write local audit entry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 

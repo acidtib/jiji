@@ -80,6 +80,25 @@ export class ProxyConfiguration extends BaseConfiguration {
       throw new Error("Proxy host is required when proxy is configured");
     }
 
+    // Validate host format if present
+    if (this.host) {
+      // Check for valid hostname/domain format
+      const hostPattern =
+        /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+      if (!hostPattern.test(this.host)) {
+        throw new Error(
+          `Invalid proxy host format: ${this.host}. Must be a valid domain name.`,
+        );
+      }
+
+      // Warn about localhost/127.0.0.1 which won't work for public proxying
+      if (this.host === "localhost" || this.host === "127.0.0.1") {
+        console.warn(
+          `Warning: Proxy host "${this.host}" is localhost - this will not be accessible externally`,
+        );
+      }
+    }
+
     // Validate healthcheck interval format if present
     const healthcheck = this.healthcheck;
     if (healthcheck?.interval) {
@@ -88,12 +107,51 @@ export class ProxyConfiguration extends BaseConfiguration {
           `Invalid healthcheck interval format: ${healthcheck.interval}. Must be like "10s", "5m", or "1h"`,
         );
       }
+
+      // Validate reasonable interval values
+      const match = healthcheck.interval.match(/^(\d+)([smh])$/);
+      if (match) {
+        const value = parseInt(match[1]);
+        const unit = match[2];
+
+        if (unit === "s" && value < 1) {
+          throw new Error(
+            `Healthcheck interval too short: ${healthcheck.interval}. Minimum is 1s.`,
+          );
+        }
+        if (unit === "s" && value > 300) {
+          console.warn(
+            `Warning: Healthcheck interval "${healthcheck.interval}" is very long. Consider using minutes instead.`,
+          );
+        }
+        if (unit === "m" && value > 60) {
+          console.warn(
+            `Warning: Healthcheck interval "${healthcheck.interval}" is very long. Consider using hours instead.`,
+          );
+        }
+      }
     }
 
     // Validate healthcheck path if present
-    if (healthcheck?.path && !healthcheck.path.startsWith("/")) {
+    if (healthcheck?.path) {
+      if (!healthcheck.path.startsWith("/")) {
+        throw new Error(
+          `Healthcheck path must start with /: ${healthcheck.path}`,
+        );
+      }
+
+      // Validate path doesn't have invalid characters
+      if (/[<>"|?*]/.test(healthcheck.path)) {
+        throw new Error(
+          `Healthcheck path contains invalid characters: ${healthcheck.path}`,
+        );
+      }
+    }
+
+    // Validate SSL configuration
+    if (this.ssl && !this.host) {
       throw new Error(
-        `Healthcheck path must start with /: ${healthcheck.path}`,
+        "SSL is enabled but no proxy host is configured. SSL requires a host.",
       );
     }
   }

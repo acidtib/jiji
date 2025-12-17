@@ -6,6 +6,7 @@ import { auditCommand } from "./commands/audit.ts";
 import { lockCommand } from "./commands/lock.ts";
 import { versionCommand } from "./commands/version.ts";
 import { deployCommand } from "./commands/deploy.ts";
+import { setGlobalLogLevel } from "./utils/logger.ts";
 
 const command = new Command()
   .name("jiji")
@@ -46,4 +47,10 @@ const command = new Command()
   .command("version", versionCommand)
   .command("help", new HelpCommand());
 
-await command.parse(Deno.args);
+// Parse arguments
+const options = await command.parse(Deno.args);
+
+// Set global log level based on --verbose flag
+if (options.options.verbose) {
+  setGlobalLogLevel("debug");
+}

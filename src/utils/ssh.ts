@@ -4,6 +4,39 @@ import { SSHProxy } from "./ssh_proxy.ts";
 import { SSHConfigParser } from "./ssh_config_parser.ts";
 import { Logger, type LogLevel } from "./logger.ts";
 
+/**
+ * Default SSH algorithms for compatibility with various SSH servers
+ * These can be customized if needed for specific server configurations
+ */
+export const SSH_ALGORITHMS = {
+  serverHostKey: [
+    "ssh-rsa",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "ssh-ed25519",
+  ],
+  kex: [
+    "ecdh-sha2-nistp256",
+    "ecdh-sha2-nistp384",
+    "ecdh-sha2-nistp521",
+    "diffie-hellman-group14-sha256",
+    "diffie-hellman-group16-sha512",
+    "diffie-hellman-group1-sha1",
+  ],
+  cipher: [
+    "aes128-ctr",
+    "aes256-ctr",
+    "aes128-cbc",
+  ],
+  hmac: [
+    "hmac-sha2-256",
+    "hmac-sha2-512",
+    "hmac-sha1",
+  ],
+  compress: ["none"],
+} as const;
+
 export interface SSHConnectionConfig {
   host: string;
   username: string;
@@ -269,30 +302,7 @@ export class SSHManager {
       host: this.config.host,
       username: this.config.username,
       port: this.config.port || 22,
-      algorithms: {
-        serverHostKey: [
-          "ssh-rsa",
-          "ecdsa-sha2-nistp256",
-          "ecdsa-sha2-nistp384",
-          "ecdsa-sha2-nistp521",
-          "ssh-ed25519",
-        ],
-        kex: [
-          "ecdh-sha2-nistp256",
-          "ecdh-sha2-nistp384",
-          "ecdh-sha2-nistp521",
-          "diffie-hellman-group14-sha256",
-          "diffie-hellman-group16-sha512",
-          "diffie-hellman-group1-sha1",
-        ],
-        cipher: [
-          "aes128-ctr",
-          "aes256-ctr",
-          "aes128-cbc",
-        ],
-        hmac: ["hmac-sha2-256", "hmac-sha2-512", "hmac-sha1"],
-        compress: ["none"],
-      },
+      algorithms: SSH_ALGORITHMS,
       readyTimeout: 60000,
       keepaliveInterval: 30000,
     };
@@ -982,11 +992,15 @@ export function getSSHTroubleshootingTips(error: string): string[] {
     tips.push("   Try connecting manually first: ssh -v user@host");
     tips.push("   Or add to your SSH client config (~/.ssh/config):");
     tips.push("   Host *");
-    tips.push("     Ciphers aes128-ctr,aes256-ctr,aes128-cbc");
+    tips.push(`     Ciphers ${SSH_ALGORITHMS.cipher.join(",")}`);
     tips.push(
-      "     KexAlgorithms ecdh-sha2-nistp256,diffie-hellman-group14-sha256",
+      `     KexAlgorithms ${SSH_ALGORITHMS.kex.slice(0, 2).join(",")}`,
     );
-    tips.push("     HostKeyAlgorithms ssh-rsa,ecdsa-sha2-nistp256,ssh-ed25519");
+    tips.push(
+      `     HostKeyAlgorithms ${
+        SSH_ALGORITHMS.serverHostKey.slice(0, 3).join(",")
+      }`,
+    );
   }
 
   if (error.includes("ECONNREFUSED") || error.includes("connect")) {
@@ -1019,4 +1033,101 @@ export function getSSHTroubleshootingTips(error: string): string[] {
   }
 
   return tips;
+}
+
+/**
+ * Setup SSH connections with validation and testing
+ * This consolidates the common SSH setup pattern used across commands
+ */
+export async function setupSSHConnections(
+  hosts: string[],
+  sshConfig: {
+    user: string;
+    port?: number;
+    proxy?: string;
+    proxy_command?: string;
+    keys?: string[];
+    keyData?: string[];
+    keysOnly?: boolean;
+    dnsRetries?: number;
+    logLevel?: LogLevel;
+  },
+  options: {
+    skipValidation?: boolean;
+    allowPartialConnection?: boolean;
+  } = {},
+): Promise<{
+  managers: SSHManager[];
+  connectedHosts: string[];
+  failedHosts: string[];
+}> {
+  const log = new Logger({ prefix: "ssh" });
+
+  // Validate SSH setup unless explicitly skipped
+  if (!options.skipValidation) {
+    log.debug("Validating SSH configuration");
+    const sshValidation = await validateSSHSetup();
+    if (!sshValidation.valid) {
+      log.error(`SSH setup validation failed:`);
+      log.error(`   ${sshValidation.message}`);
+      throw new Error(`SSH validation failed: ${sshValidation.message}`);
+    }
+    log.success("SSH setup validation passed");
+  }
+
+  // Create SSH connection configuration
+  const connectionConfig = {
+    ...createSSHConfigFromJiji({
+      user: sshConfig.user,
+      port: sshConfig.port,
+      proxy: sshConfig.proxy,
+      proxy_command: sshConfig.proxy_command,
+      keys: sshConfig.keys && sshConfig.keys.length > 0
+        ? sshConfig.keys
+        : undefined,
+      keyData: sshConfig.keyData,
+      keysOnly: sshConfig.keysOnly,
+      dnsRetries: sshConfig.dnsRetries,
+    }),
+    logLevel: sshConfig.logLevel,
+    useAgent: true,
+  };
+
+  // Create SSH managers and test connections
+  log.debug(`Testing connections to ${hosts.length} host(s)...`);
+  const sshManagers = createSSHManagers(hosts, connectionConfig);
+  const connectionTests = await testConnections(sshManagers);
+
+  const { connectedManagers, connectedHosts, failedHosts } =
+    filterConnectedHosts(sshManagers, connectionTests);
+
+  // Handle connection results
+  if (connectedHosts.length === 0) {
+    log.error("No hosts are reachable. Cannot proceed.");
+    throw new Error("No SSH connections could be established");
+  }
+
+  if (failedHosts.length > 0) {
+    const message = `Some hosts are unreachable: ${failedHosts.join(", ")}`;
+
+    if (options.allowPartialConnection) {
+      log.warn(message);
+      log.warn(`Continuing with ${connectedHosts.length} connected host(s)`);
+    } else {
+      log.error(message);
+      throw new Error(message);
+    }
+  }
+
+  log.success(
+    `Connected to ${connectedHosts.length} host(s): ${
+      connectedHosts.join(", ")
+    }`,
+  );
+
+  return {
+    managers: connectedManagers,
+    connectedHosts,
+    failedHosts,
+  };
 }

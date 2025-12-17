@@ -3,14 +3,9 @@ import { colors } from "@cliffy/ansi/colors";
 
 import { filterHostsByPatterns, loadConfig } from "../utils/config.ts";
 import type { GlobalOptions } from "../types.ts";
-import {
-  createSSHConfigFromJiji,
-  createSSHManagers,
-  filterConnectedHosts,
-  testConnections,
-  validateSSHSetup,
-} from "../utils/ssh.ts";
+import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
+import { Logger } from "../utils/logger.ts";
 
 interface AuditEntry {
   timestamp: string;
@@ -54,7 +49,7 @@ export const auditCommand = new Command()
     default: true,
   })
   .action(async (options) => {
-    let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+    let sshManagers: SSHManager[] | undefined;
 
     try {
       if (options.follow) {
@@ -104,55 +99,22 @@ export const auditCommand = new Command()
 
       console.log(`Hosts: ${colors.cyan(targetHosts.join(", "))}`);
 
-      // Validate SSH setup
-      const sshValidation = await validateSSHSetup();
-      if (!sshValidation.valid) {
-        console.error(
-          `\nERROR: SSH setup validation failed: ${sshValidation.message}`,
-        );
-        console.error(`   Run 'ssh-agent' and 'ssh-add' before continuing.\n`);
-        Deno.exit(1);
-      }
+      const result = await setupSSHConnections(
+        targetHosts,
+        {
+          user: config.ssh.user,
+          port: config.ssh.port,
+          proxy: config.ssh.proxy,
+          proxy_command: config.ssh.proxyCommand,
+          keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
+          keyData: config.ssh.keyData,
+          keysOnly: config.ssh.keysOnly,
+          dnsRetries: config.ssh.dnsRetries,
+        },
+        { allowPartialConnection: true },
+      );
 
-      // Get SSH configuration
-      const sshConfig = createSSHConfigFromJiji({
-        user: config.ssh.user,
-        port: config.ssh.port,
-        proxy: config.ssh.proxy,
-        proxy_command: config.ssh.proxyCommand,
-        keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-        keyData: config.ssh.keyData,
-        keysOnly: config.ssh.keysOnly,
-        dnsRetries: config.ssh.dnsRetries,
-      });
-
-      // Create SSH managers for target hosts and test connections
-      sshManagers = createSSHManagers(targetHosts, sshConfig);
-      const connectionTests = await testConnections(sshManagers);
-
-      const { connectedManagers, connectedHosts, failedHosts } =
-        filterConnectedHosts(sshManagers, connectionTests);
-
-      if (connectedHosts.length === 0) {
-        console.error(
-          "\nERROR: No hosts are reachable. Cannot fetch audit entries.",
-        );
-        await showLocalAuditLog(options);
-        Deno.exit(1);
-      }
-
-      if (failedHosts.length > 0) {
-        console.log(
-          `\n${colors.yellow("WARNING")}  Unreachable hosts: ${
-            colors.red(failedHosts.join(", "))
-          }`,
-        );
-      }
-
-      console.log(`Connected: ${colors.green(connectedHosts.join(", "))}\n`);
-
-      // Use only connected SSH managers
-      sshManagers = connectedManagers;
+      sshManagers = result.managers;
       const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
       console.log("Fetching audit entries...\n");
@@ -176,12 +138,13 @@ export const auditCommand = new Command()
     } finally {
       // Always clean up SSH connections to prevent hanging
       if (sshManagers) {
-        sshManagers.forEach((ssh: ReturnType<typeof createSSHManagers>[0]) => {
+        const cleanupLogger = new Logger({ prefix: "cleanup" });
+        sshManagers.forEach((ssh) => {
           try {
             ssh.dispose();
           } catch (error) {
             // Ignore cleanup errors, but log them for debugging
-            console.debug(`Failed to dispose SSH connection: ${error}`);
+            cleanupLogger.debug(`Failed to dispose SSH connection: ${error}`);
           }
         });
       }

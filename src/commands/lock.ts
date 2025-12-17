@@ -3,13 +3,7 @@ import { colors } from "@cliffy/ansi/colors";
 import { filterHostsByPatterns, loadConfig } from "../utils/config.ts";
 import type { GlobalOptions } from "../types.ts";
 import type { Configuration } from "../lib/configuration.ts";
-import {
-  createSSHConfigFromJiji,
-  createSSHManagers,
-  filterConnectedHosts,
-  testConnections,
-  validateSSHSetup,
-} from "../utils/ssh.ts";
+import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
 
 export const lockCommand = new Command()
@@ -77,7 +71,7 @@ async function acquireLock(
     timeout: number;
   },
 ): Promise<void> {
-  let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+  let sshManagers: SSHManager[] | undefined;
 
   try {
     console.log(colors.bold("Acquiring deployment lock...\n"));
@@ -85,10 +79,11 @@ async function acquireLock(
     // Cast options to GlobalOptions to access global options
     const globalOptions = options as unknown as GlobalOptions;
     const { config } = await loadConfig(globalOptions.configFile);
-    const { targetHosts, sshManagers: managers } = await setupSSHConnections(
-      config,
-      globalOptions,
-    );
+    const { targetHosts, sshManagers: managers } =
+      await setupLockSSHConnections(
+        config,
+        globalOptions,
+      );
     sshManagers = managers;
 
     const auditLogger = createServerAuditLogger(sshManagers, config.project);
@@ -207,7 +202,7 @@ async function releaseLock(
     host?: string;
   } = {},
 ): Promise<void> {
-  let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+  let sshManagers: SSHManager[] | undefined;
 
   try {
     console.log(colors.bold("Releasing deployment lock...\n"));
@@ -303,7 +298,7 @@ async function showLockStatus(
     json: boolean;
   },
 ): Promise<void> {
-  let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+  let sshManagers: SSHManager[] | undefined;
 
   try {
     // Cast options to GlobalOptions to access global options
@@ -389,7 +384,7 @@ async function showDetailedLockInfo(
     host?: string;
   } = {},
 ): Promise<void> {
-  let sshManagers: ReturnType<typeof createSSHManagers> | undefined;
+  let sshManagers: SSHManager[] | undefined;
 
   try {
     console.log(colors.bold("Detailed Lock Information\n"));
@@ -451,11 +446,11 @@ async function showDetailedLockInfo(
 /**
  * Setup SSH connections to target hosts
  */
-async function setupSSHConnections(
+async function setupLockSSHConnections(
   config: Configuration,
   globalOptions: GlobalOptions,
 ): Promise<
-  { targetHosts: string[]; sshManagers: ReturnType<typeof createSSHManagers> }
+  { targetHosts: string[]; sshManagers: SSHManager[] }
 > {
   // Collect all unique hosts from services
   const allHosts = new Set<string>();
@@ -482,48 +477,26 @@ async function setupSSHConnections(
     throw new Error("No remote hosts found in configuration");
   }
 
-  // Validate SSH setup
-  const sshValidation = await validateSSHSetup();
-  if (!sshValidation.valid) {
-    throw new Error(`SSH setup validation failed: ${sshValidation.message}`);
-  }
+  const result = await setupSSHConnections(
+    targetHosts,
+    {
+      user: config.ssh.user,
+      port: config.ssh.port,
+      proxy: config.ssh.proxy,
+      proxy_command: config.ssh.proxyCommand,
+      keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
+      keyData: config.ssh.keyData,
+      keysOnly: config.ssh.keysOnly,
+      dnsRetries: config.ssh.dnsRetries,
+    },
+    { allowPartialConnection: true },
+  );
 
-  // Get SSH configuration
-  const sshConfig = createSSHConfigFromJiji({
-    user: config.ssh.user,
-    port: config.ssh.port,
-    proxy: config.ssh.proxy,
-    proxy_command: config.ssh.proxyCommand,
-    keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-    keyData: config.ssh.keyData,
-    keysOnly: config.ssh.keysOnly,
-    dnsRetries: config.ssh.dnsRetries,
-  });
-
-  // Create SSH managers and test connections
-  const allSshManagers = createSSHManagers(targetHosts, sshConfig);
-  const connectionTests = await testConnections(allSshManagers);
-
-  const { connectedManagers, connectedHosts, failedHosts } =
-    filterConnectedHosts(allSshManagers, connectionTests);
-
-  if (connectedHosts.length === 0) {
-    throw new Error("No hosts are reachable");
-  }
-
-  if (failedHosts.length > 0) {
-    console.log(
-      `${colors.yellow("WARNING")} Unreachable hosts: ${
-        colors.red(failedHosts.join(", "))
-      }`,
-    );
-  }
-
-  console.log(`Connected: ${colors.green(connectedHosts.join(", "))}\n`);
+  console.log(`Connected: ${colors.green(result.connectedHosts.join(", "))}\n`);
 
   return {
-    targetHosts: connectedHosts,
-    sshManagers: connectedManagers,
+    targetHosts: result.connectedHosts,
+    sshManagers: result.managers,
   };
 }
 
@@ -531,7 +504,7 @@ async function setupSSHConnections(
  * Check lock status on all hosts
  */
 async function checkLockStatus(
-  sshManagers: ReturnType<typeof createSSHManagers>,
+  sshManagers: SSHManager[],
 ): Promise<LockInfo[]> {
   const results = await Promise.all(
     sshManagers.map(async (sshManager) => {
@@ -556,7 +529,7 @@ async function checkLockStatus(
  * Get lock information from a single host
  */
 async function getLockInfo(
-  sshManager: ReturnType<typeof createSSHManagers>[0],
+  sshManager: SSHManager,
 ): Promise<LockInfo> {
   const lockFile = ".jiji/deploy.lock";
 
@@ -593,7 +566,7 @@ async function getLockInfo(
  * Create lock file on remote host
  */
 async function createLockFile(
-  sshManager: ReturnType<typeof createSSHManagers>[0],
+  sshManager: SSHManager,
   lockData: LockInfo,
 ): Promise<boolean> {
   const lockFile = ".jiji/deploy.lock";
@@ -621,7 +594,7 @@ async function createLockFile(
  * Remove lock file from remote host
  */
 async function removeLockFile(
-  sshManager: ReturnType<typeof createSSHManagers>[0],
+  sshManager: SSHManager,
 ): Promise<boolean> {
   const lockFile = ".jiji/deploy.lock";
 
@@ -637,7 +610,7 @@ async function removeLockFile(
  * Clean up partial locks in case of failure
  */
 async function cleanupPartialLocks(
-  sshManagers: ReturnType<typeof createSSHManagers>,
+  sshManagers: SSHManager[],
 ): Promise<void> {
   await Promise.all(
     sshManagers.map(async (sshManager) => {
@@ -675,7 +648,7 @@ async function getCurrentUser(): Promise<string> {
  * Clean up SSH connections
  */
 function cleanupSSHConnections(
-  sshManagers?: ReturnType<typeof createSSHManagers>,
+  sshManagers?: SSHManager[],
 ): void {
   if (sshManagers) {
     sshManagers.forEach((ssh) => {
