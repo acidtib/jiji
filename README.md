@@ -1,5 +1,7 @@
 # Jiji
 
+> **WIP**: Under heavy development, not production ready.
+
 Deploy containerized apps across servers, simple, fast, portable. No infra
 vendor lock in, just run.
 
