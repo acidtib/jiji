@@ -1,5 +1,6 @@
 import type { SSHManager } from "./ssh.ts";
 import { getSSHTroubleshootingTips } from "./ssh.ts";
+import { executeHostOperations } from "./promise_helpers.ts";
 
 export interface EngineInstallResult {
   success: boolean;
@@ -201,7 +202,7 @@ export class EngineInstaller {
 }
 
 /**
- * Install container engine on multiple hosts in parallel
+ * Install container engine on multiple hosts with enhanced error collection
  */
 export async function installEngineOnHosts(
   sshManagers: SSHManager[],
@@ -209,43 +210,65 @@ export async function installEngineOnHosts(
 ): Promise<EngineInstallResult[]> {
   console.log(`Installing ${engine} on ${sshManagers.length} host(s)...`);
 
-  // Process hosts in parallel
-  const promises = sshManagers.map(async (ssh) => {
-    const installer = new EngineInstaller(ssh);
-    const host = ssh.getHost();
+  // Create host operations for error collection
+  const hostOperations = sshManagers.map((ssh) => ({
+    host: ssh.getHost(),
+    operation: async () => {
+      const installer = new EngineInstaller(ssh);
+      const host = ssh.getHost();
 
-    try {
-      if (!ssh.isConnected()) {
-        await ssh.connect();
-        console.log(`Connected to ${host}`);
+      try {
+        if (!ssh.isConnected()) {
+          await ssh.connect();
+          console.log(`Connected to ${host}`);
+        }
+
+        const result = await installer.installEngine(engine);
+        return result;
+      } catch (error) {
+        const errorMessage = error instanceof Error
+          ? error.message
+          : String(error);
+        const troubleshootingTips = getSSHTroubleshootingTips(errorMessage);
+
+        console.log(`Connection failed for ${host}:`);
+        console.log(`   ${errorMessage}`);
+        console.log(`\nTroubleshooting suggestions:`);
+        troubleshootingTips.forEach((tip) => console.log(`   ${tip}`));
+        console.log("");
+
+        // Return a failed result instead of throwing
+        return {
+          success: false,
+          host,
+          output: "",
+          error: errorMessage,
+          message: `Connection failed: ${errorMessage}`,
+        } as EngineInstallResult;
       }
+    },
+  }));
 
-      const result = await installer.installEngine(engine);
-      return result;
-    } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      const troubleshootingTips = getSSHTroubleshootingTips(errorMessage);
+  // Execute with error collection
+  const aggregatedResults = await executeHostOperations(hostOperations);
 
-      console.log(`Connection failed for ${host}:`);
-      console.log(`   ${errorMessage}`);
-      console.log(`\nTroubleshooting suggestions:`);
-      troubleshootingTips.forEach((tip) => console.log(`   ${tip}`));
-      console.log("");
+  // Extract the actual installation results
+  const results = aggregatedResults.results;
 
-      return {
+  // Handle any operation-level errors (shouldn't occur with current implementation)
+  if (aggregatedResults.hostErrors.length > 0) {
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      results.push({
         success: false,
         host,
         output: "",
-        error: errorMessage,
-        message: `Connection failed: ${errorMessage}`,
-      };
+        error: error.message,
+        message: `Operation failed: ${error.message}`,
+      });
     }
-  });
+  }
 
-  const results = await Promise.all(promises);
-
+  // Log comprehensive results
   const successful = results.filter((r) => r.success);
   const failed = results.filter((r) => !r.success);
 
@@ -265,21 +288,28 @@ export async function installEngineOnHosts(
     }
   }
 
+  // Log aggregated summary
+  console.log(
+    `\n${engine} installation summary: ${successful.length} succeeded, ${failed.length} failed (total: ${results.length})`,
+  );
+
   return results;
 }
 
 /**
- * Check if container engine is available on multiple hosts
+ * Check if container engine is available on multiple hosts with error collection
  */
 export async function checkEngineOnHosts(
   sshManagers: SSHManager[],
   engine: "podman" | "docker",
 ): Promise<{ host: string; available: boolean; version?: string }[]> {
-  const promises = sshManagers.map(async (ssh) => {
-    const installer = new EngineInstaller(ssh);
-    const host = ssh.getHost();
+  // Create host operations for error collection
+  const hostOperations = sshManagers.map((ssh) => ({
+    host: ssh.getHost(),
+    operation: async () => {
+      const installer = new EngineInstaller(ssh);
+      const host = ssh.getHost();
 
-    try {
       if (!ssh.isConnected()) {
         await ssh.connect();
       }
@@ -294,14 +324,30 @@ export async function checkEngineOnHosts(
         available,
         version: version || undefined,
       };
-    } catch (_error) {
-      return {
-        host,
-        available: false,
-        version: undefined,
-      };
-    }
-  });
+    },
+  }));
 
-  return await Promise.all(promises);
+  // Execute with error collection
+  const aggregatedResults = await executeHostOperations(hostOperations);
+
+  // Extract successful results
+  const results = aggregatedResults.results;
+
+  // Handle failed operations - treat as engine not available
+  for (const { host } of aggregatedResults.hostErrors) {
+    results.push({
+      host,
+      available: false,
+      version: undefined,
+    });
+  }
+
+  // Log summary if there were errors
+  if (aggregatedResults.errorCount > 0) {
+    console.log(
+      `Engine check completed with ${aggregatedResults.errorCount} connection failures - treating as engine not available`,
+    );
+  }
+
+  return results;
 }

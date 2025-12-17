@@ -10,6 +10,7 @@ import {
 import { createServerAuditLogger } from "../utils/audit.ts";
 import { log } from "../utils/logger.ts";
 import { extractAppPort, ProxyCommands } from "../utils/proxy.ts";
+
 import type { GlobalOptions } from "../types.ts";
 
 export const deployCommand = new Command()

@@ -1,5 +1,7 @@
 import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
+import { executeHostOperations } from "./promise_helpers.ts";
+import { Logger } from "./logger.ts";
 
 export interface AuditEntry {
   timestamp: string;
@@ -199,63 +201,96 @@ export class AuditAggregator {
   }
 
   /**
-   * Log an entry to all connected servers
+   * Log an entry to all connected servers with enhanced error collection
    */
   async logToAllServers(
     entry: Omit<AuditEntry, "timestamp" | "host">,
   ): Promise<RemoteAuditResult[]> {
-    const results: RemoteAuditResult[] = [];
+    // Create host operations for error collection
+    const hostOperations = this.sshManagers.map((sshManager) => ({
+      host: sshManager.getHost(),
+      operation: async (): Promise<RemoteAuditResult> => {
+        const logger = new RemoteAuditLogger(sshManager, this.projectName);
+        const host = sshManager.getHost();
 
-    for (const sshManager of this.sshManagers) {
-      const logger = new RemoteAuditLogger(sshManager, this.projectName);
-      const host = sshManager.getHost();
-
-      try {
         if (!sshManager.isConnected()) {
           await sshManager.connect();
         }
 
         const success = await logger.logRemote(entry);
-        results.push({ host, success });
-      } catch (error) {
-        results.push({
-          host,
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+        return { host, success };
+      },
+    }));
+
+    // Execute with error collection
+    const aggregatedResults = await executeHostOperations(hostOperations);
+
+    // Combine successful results with failed operations
+    const results = [...aggregatedResults.results];
+
+    // Convert failed operations to RemoteAuditResult format
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      results.push({
+        host,
+        success: false,
+        error: error.message,
+      });
+    }
+
+    // Log summary if there were errors
+    if (aggregatedResults.errorCount > 0) {
+      Logger.getInstance().warn(
+        `Audit logging completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
+        "audit",
+      );
     }
 
     return results;
   }
 
   /**
-   * Get aggregated audit entries from all servers
+   * Get aggregated audit entries from all servers with enhanced error collection
    */
   async getAggregatedEntries(
     limit: number = 50,
   ): Promise<{ host: string; entries: string[] }[]> {
-    const results: { host: string; entries: string[] }[] = [];
+    // Create host operations for error collection
+    const hostOperations = this.sshManagers.map((sshManager) => ({
+      host: sshManager.getHost(),
+      operation: async (): Promise<{ host: string; entries: string[] }> => {
+        const logger = new RemoteAuditLogger(sshManager, this.projectName);
+        const host = sshManager.getHost();
 
-    for (const sshManager of this.sshManagers) {
-      const logger = new RemoteAuditLogger(sshManager, this.projectName);
-      const host = sshManager.getHost();
-
-      try {
         if (!sshManager.isConnected()) {
           await sshManager.connect();
         }
 
         const entries = await logger.getRemoteEntries(limit);
-        results.push({ host, entries });
-      } catch (_error) {
-        // console.warn(
-        //   `⚠️  Failed to get audit entries from ${host}: ${
-        //     error instanceof Error ? error.message : String(error)
-        //   }`,
-        // );
-        results.push({ host, entries: [] });
-      }
+        return { host, entries };
+      },
+    }));
+
+    // Execute with error collection
+    const aggregatedResults = await executeHostOperations(hostOperations);
+
+    // Combine successful results with failed operations (empty entries)
+    const results = [...aggregatedResults.results];
+
+    // Add failed operations with empty entries
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      Logger.getInstance().warn(
+        `Failed to get audit entries from ${host}: ${error.message}`,
+        "audit",
+      );
+      results.push({ host, entries: [] });
+    }
+
+    // Log summary if there were errors
+    if (aggregatedResults.errorCount > 0) {
+      Logger.getInstance().warn(
+        `Audit retrieval completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
+        "audit",
+      );
     }
 
     return results;

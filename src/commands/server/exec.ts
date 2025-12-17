@@ -9,6 +9,7 @@ import {
 } from "../../utils/ssh.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log, Logger } from "../../utils/logger.ts";
+import { executeHostOperations } from "../../utils/promise_helpers.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const execCommand = new Command()
@@ -229,88 +230,115 @@ export const execCommand = new Command()
           if (options.parallel) {
             log.status("Executing command in parallel...", "exec");
 
-            // Execute in parallel
-            const execPromises = sshManagers!.map(async (ssh) => {
-              const host = ssh.getHost();
-              const hostLogger = serverLoggers.get(host);
+            // Create host operations for enhanced error collection
+            const hostOperations = sshManagers!.map((ssh) => ({
+              host: ssh.getHost(),
+              operation: async () => {
+                const host = ssh.getHost();
+                const hostLogger = serverLoggers.get(host);
 
-              if (hostLogger) {
-                hostLogger.executing(command);
-              }
+                if (hostLogger) {
+                  hostLogger.executing(command);
+                }
 
-              let timerId: number | undefined;
+                let timerId: number | undefined;
 
-              try {
-                // Create a timeout promise
-                const timeoutPromise = new Promise((_, reject) => {
-                  timerId = setTimeout(
-                    () =>
-                      reject(
-                        new Error(
-                          `Command timed out after ${options.timeout} seconds`,
+                try {
+                  // Create a timeout promise
+                  const timeoutPromise = new Promise((_, reject) => {
+                    timerId = setTimeout(
+                      () =>
+                        reject(
+                          new Error(
+                            `Command timed out after ${options.timeout} seconds`,
+                          ),
                         ),
-                      ),
-                    options.timeout * 1000,
-                  );
-                });
-
-                // Race the command execution against the timeout
-                const result = await Promise.race([
-                  ssh.executeCommand(command),
-                  timeoutPromise,
-                ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
-
-                if (hostLogger) {
-                  if (result.success) {
-                    hostLogger.success(
-                      `Command completed (exit code: ${result.code})`,
+                      options.timeout * 1000,
                     );
-                  } else {
-                    hostLogger.error(
-                      `Command failed (exit code: ${result.code})`,
-                    );
+                  });
+
+                  // Race the command execution against the timeout
+                  const result = await Promise.race([
+                    ssh.executeCommand(command),
+                    timeoutPromise,
+                  ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
+
+                  if (hostLogger) {
+                    if (result.success) {
+                      hostLogger.success(
+                        `Command completed (exit code: ${result.code})`,
+                      );
+                    } else {
+                      hostLogger.error(
+                        `Command failed (exit code: ${result.code})`,
+                      );
+                    }
+
+                    if (result.stdout.trim()) {
+                      result.stdout.trim().split("\n").forEach((line) => {
+                        hostLogger.info(`STDOUT: ${line}`);
+                      });
+                    }
+                    if (result.stderr.trim()) {
+                      result.stderr.trim().split("\n").forEach((line) => {
+                        hostLogger.error(`STDERR: ${line}`);
+                      });
+                    }
                   }
 
-                  if (result.stdout.trim()) {
-                    result.stdout.trim().split("\n").forEach((line) => {
-                      hostLogger.info(`STDOUT: ${line}`);
-                    });
-                  }
-                  if (result.stderr.trim()) {
-                    result.stderr.trim().split("\n").forEach((line) => {
-                      hostLogger.warn(`STDERR: ${line}`);
-                    });
+                  return {
+                    host,
+                    success: result.success,
+                    code: result.code,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                  };
+                } finally {
+                  if (timerId !== undefined) {
+                    clearTimeout(timerId);
                   }
                 }
+              },
+            }));
 
-                return { host, result, success: result.success };
-              } catch (error) {
-                const errorMessage = error instanceof Error
-                  ? error.message
-                  : String(error);
+            // Execute with enhanced error collection
+            const aggregatedResults = await executeHostOperations(
+              hostOperations,
+            );
 
-                if (hostLogger) {
-                  hostLogger.error(`Command failed: ${errorMessage}`);
-                }
+            // Combine successful results with failed operations
+            const results = [...aggregatedResults.results];
 
-                return {
-                  host,
-                  result: {
-                    stdout: "",
-                    stderr: errorMessage,
-                    success: false,
-                    code: null,
-                  },
-                  success: false,
-                  error: errorMessage,
-                };
-              } finally {
-                if (timerId !== undefined) clearTimeout(timerId);
+            // Convert failed operations to execution result format
+            for (const { host, error } of aggregatedResults.hostErrors) {
+              const hostLogger = serverLoggers.get(host);
+              if (hostLogger) {
+                hostLogger.error(`Command execution failed: ${error.message}`);
               }
-            });
 
-            const results = await Promise.all(execPromises);
+              results.push({
+                host,
+                success: false,
+                code: -1,
+                stdout: "",
+                stderr: error.message,
+              });
+            }
+
             executionResults.push(...results);
+
+            // Log summary for parallel execution
+            if (aggregatedResults.errorCount > 0) {
+              log.warn(
+                `Parallel execution completed with ${aggregatedResults.errorCount} failures out of ${results.length} hosts`,
+                "exec",
+              );
+            } else {
+              log.success(
+                `Parallel execution completed successfully on all ${results.length} hosts`,
+                "exec",
+              );
+            }
           } else {
             log.status("Executing command sequentially...", "exec");
 

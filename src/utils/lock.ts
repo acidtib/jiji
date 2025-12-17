@@ -1,5 +1,6 @@
 import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
+import { executeHostOperations } from "./promise_helpers.ts";
 
 export interface LockInfo {
   locked: boolean;
@@ -292,23 +293,30 @@ export class MultiHostLockManager {
     success: boolean;
     results: { host: string; success: boolean; error?: string }[];
   }> {
-    const results: { host: string; success: boolean; error?: string }[] = [];
-
-    // Try to acquire all locks
-    for (const manager of this.lockManagers) {
-      try {
+    // Create host operations for error collection
+    const hostOperations = this.lockManagers.map((manager) => ({
+      host: manager.getHost(),
+      operation: async () => {
         const success = await manager.acquire(message);
-        results.push({
-          host: manager.getHost(),
-          success,
-        });
-      } catch (error) {
-        results.push({
-          host: manager.getHost(),
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+        return { host: manager.getHost(), success };
+      },
+    }));
+
+    // Execute with error collection
+    const aggregatedResults = await executeHostOperations(hostOperations);
+
+    // Combine successful results with failed operations
+    const results: { host: string; success: boolean; error?: string }[] = [
+      ...aggregatedResults.results,
+    ];
+
+    // Convert failed operations to lock result format
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      results.push({
+        host,
+        success: false,
+        error: error.message,
+      });
     }
 
     const failures = results.filter((r) => !r.success);
@@ -326,22 +334,30 @@ export class MultiHostLockManager {
     success: boolean;
     results: { host: string; success: boolean; error?: string }[];
   }> {
-    const results: { host: string; success: boolean; error?: string }[] = [];
-
-    for (const manager of this.lockManagers) {
-      try {
+    // Create host operations for error collection
+    const hostOperations = this.lockManagers.map((manager) => ({
+      host: manager.getHost(),
+      operation: async () => {
         const success = await manager.release();
-        results.push({
-          host: manager.getHost(),
-          success,
-        });
-      } catch (error) {
-        results.push({
-          host: manager.getHost(),
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+        return { host: manager.getHost(), success };
+      },
+    }));
+
+    // Execute with error collection
+    const aggregatedResults = await executeHostOperations(hostOperations);
+
+    // Combine successful results with failed operations
+    const results: { host: string; success: boolean; error?: string }[] = [
+      ...aggregatedResults.results,
+    ];
+
+    // Convert failed operations to lock result format
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      results.push({
+        host,
+        success: false,
+        error: error.message,
+      });
     }
 
     return {
@@ -351,19 +367,26 @@ export class MultiHostLockManager {
   }
 
   async statusAll(): Promise<LockInfo[]> {
-    const results = await Promise.all(
-      this.lockManagers.map(async (manager) => {
-        try {
-          return await manager.status();
-        } catch (error) {
-          return {
-            locked: false,
-            host: manager.getHost(),
-            error: error instanceof Error ? error.message : String(error),
-          } as LockInfo;
-        }
-      }),
-    );
+    // Create host operations for error collection
+    const hostOperations = this.lockManagers.map((manager) => ({
+      host: manager.getHost(),
+      operation: async () => await manager.status(),
+    }));
+
+    // Execute with error collection
+    const aggregatedResults = await executeHostOperations(hostOperations);
+
+    // Combine successful results with failed operations
+    const results: LockInfo[] = [...aggregatedResults.results];
+
+    // Convert failed operations to LockInfo format
+    for (const { host, error } of aggregatedResults.hostErrors) {
+      results.push({
+        locked: false,
+        host,
+        error: error.message,
+      } as LockInfo);
+    }
 
     return results;
   }
