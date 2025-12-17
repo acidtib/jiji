@@ -57,7 +57,44 @@ export const execCommand = new Command()
         log.success(`Configuration loaded from: ${configPath}`, "config");
 
         // Collect all unique hosts from services using new system
-        const allHosts = config.getAllHosts();
+        let allHosts = config.getAllHosts();
+
+        // Filter by services if requested
+        if (globalOptions.services) {
+          const requestedServices = globalOptions.services.split(",").map((s) =>
+            s.trim()
+          );
+
+          // Get matching service names (supports wildcards)
+          const matchingServices = config.getMatchingServiceNames(
+            requestedServices,
+          );
+
+          if (matchingServices.length === 0) {
+            log.error(
+              `No services found matching: ${requestedServices.join(", ")}`,
+              "exec",
+            );
+            log.info(
+              `Available services: ${config.getServiceNames().join(", ")}`,
+              "exec",
+            );
+            Deno.exit(1);
+          }
+
+          // Get hosts from matching services
+          allHosts = config.getHostsFromServices(matchingServices);
+
+          log.info(
+            `Targeting services: ${matchingServices.join(", ")}`,
+            "exec",
+          );
+          log.info(
+            `Service hosts: ${allHosts.join(", ")}`,
+            "exec",
+          );
+        }
+
         let uniqueHosts = allHosts;
 
         // Filter hosts if specific hosts are requested

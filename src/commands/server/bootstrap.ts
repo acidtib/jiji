@@ -46,7 +46,76 @@ export const bootstrapCommand = new Command()
         const engineCommand = getEngineCommand(config);
 
         // Collect all unique hosts from services using new system
-        const allHosts = config.getAllHosts();
+        let allHosts = config.getAllHosts();
+
+        // Filter by services if requested
+        if (globalOptions.services) {
+          const requestedServices = globalOptions.services.split(",").map((s) =>
+            s.trim()
+          );
+
+          // Get matching service names (supports wildcards)
+          const matchingServices = config.getMatchingServiceNames(
+            requestedServices,
+          );
+
+          if (matchingServices.length === 0) {
+            log.error(
+              `No services found matching: ${requestedServices.join(", ")}`,
+              "bootstrap",
+            );
+            log.info(
+              `Available services: ${config.getServiceNames().join(", ")}`,
+              "bootstrap",
+            );
+            Deno.exit(1);
+          }
+
+          // Get hosts from matching services
+          allHosts = config.getHostsFromServices(matchingServices);
+
+          log.info(
+            `Targeting services: ${matchingServices.join(", ")}`,
+            "bootstrap",
+          );
+          log.info(
+            `Service hosts: ${allHosts.join(", ")}`,
+            "bootstrap",
+          );
+        }
+
+        // Filter by hosts if requested
+        if (globalOptions.hosts) {
+          const requestedHosts = globalOptions.hosts.split(",").map((h) =>
+            h.trim()
+          );
+          const validHosts = requestedHosts.filter((host) =>
+            allHosts.includes(host)
+          );
+          const invalidHosts = requestedHosts.filter((host) =>
+            !allHosts.includes(host)
+          );
+
+          if (invalidHosts.length > 0) {
+            log.warn(
+              `Invalid hosts specified (not in config): ${
+                invalidHosts.join(", ")
+              }`,
+              "bootstrap",
+            );
+          }
+
+          if (validHosts.length === 0) {
+            log.error("No valid hosts specified", "bootstrap");
+            Deno.exit(1);
+          }
+
+          allHosts = validHosts;
+          log.info(
+            `Targeting specific hosts: ${allHosts.join(", ")}`,
+            "bootstrap",
+          );
+        }
 
         uniqueHosts = allHosts;
 

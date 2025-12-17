@@ -4,8 +4,7 @@ import type { SSHManager } from "./ssh.ts";
 /**
  * ProxyCommands generates container engine commands for managing kamal-proxy
  *
- * Inspired by Kamal's proxy command structure, this class provides
- * methods to generate and execute shell commands over SSH for:
+ * This class provides methods to generate and execute shell commands over SSH for:
  * - Installing/booting kamal-proxy
  * - Starting/stopping the proxy container
  * - Deploying service targets

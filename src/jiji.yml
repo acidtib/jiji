@@ -105,6 +105,20 @@ ssh:
 # Services Configuration
 # Services are the deployable units in Jiji - each service represents a containerized application
 # Use service filtering during deployment to target specific services or groups
+#
+# Service Filtering:
+# Target specific services with the --services flag:
+#   jiji server bootstrap --services web-frontend
+#   jiji server bootstrap --services web-frontend,api-backend
+#   jiji server exec "docker ps" --services web-*
+#
+# Service filters support wildcards (* pattern matching):
+#   --services "web-*"           # Matches: web-frontend, web-api, web-worker
+#   --services "api-*,worker-*"  # Multiple wildcard patterns
+#
+# Combine with host filtering for precise targeting:
+#   jiji server exec "systemctl status docker" --services web-* --hosts 192.168.1.100
+#
 services:
   # Example: Web frontend service using pre-built image
   web-frontend:

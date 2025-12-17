@@ -171,6 +171,81 @@ export class Configuration extends BaseConfiguration {
   }
 
   /**
+   * Gets hosts from specific services
+   * Supports wildcards with * pattern matching
+   *
+   * @param serviceNames - Array of service names (supports wildcards)
+   * @returns Array of unique hosts from matching services
+   */
+  getHostsFromServices(serviceNames: string[]): string[] {
+    const hosts = new Set<string>();
+    const allServiceNames = this.getServiceNames();
+
+    for (const pattern of serviceNames) {
+      // Support wildcard patterns
+      const matchingServices = this.matchServicePattern(
+        pattern,
+        allServiceNames,
+      );
+
+      for (const serviceName of matchingServices) {
+        const service = this.services.get(serviceName);
+        if (service) {
+          service.hosts.forEach((host) => hosts.add(host));
+        }
+      }
+    }
+
+    return Array.from(hosts).sort();
+  }
+
+  /**
+   * Match service names against a pattern (supports wildcards)
+   *
+   * @param pattern - Pattern to match (supports * and ? wildcards)
+   * @param serviceNames - Array of service names to match against
+   * @returns Array of matching service names
+   */
+  private matchServicePattern(
+    pattern: string,
+    serviceNames: string[],
+  ): string[] {
+    // Exact match first
+    if (serviceNames.includes(pattern)) {
+      return [pattern];
+    }
+
+    // Wildcard matching (supports * and ?)
+    if (pattern.includes("*") || pattern.includes("?")) {
+      const regex = new RegExp(
+        "^" + pattern.replace(/\*/g, ".*").replace(/\?/g, ".") + "$",
+      );
+      return serviceNames.filter((name) => regex.test(name));
+    }
+
+    // No match
+    return [];
+  }
+
+  /**
+   * Gets matching service names based on pattern (supports wildcards)
+   *
+   * @param patterns - Array of patterns to match
+   * @returns Array of matching service names
+   */
+  getMatchingServiceNames(patterns: string[]): string[] {
+    const allServiceNames = this.getServiceNames();
+    const matchingNames = new Set<string>();
+
+    for (const pattern of patterns) {
+      const matches = this.matchServicePattern(pattern, allServiceNames);
+      matches.forEach((name) => matchingNames.add(name));
+    }
+
+    return Array.from(matchingNames).sort();
+  }
+
+  /**
    * Gets services that require building
    */
   getBuildServices(): ServiceConfiguration[] {
