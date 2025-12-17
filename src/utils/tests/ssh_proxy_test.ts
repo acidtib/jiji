@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { SSHProxy } from "../ssh_proxy.ts";
 
 Deno.test("SSHProxy - parseProxyString with hostname only", () => {

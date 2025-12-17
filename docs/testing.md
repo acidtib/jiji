@@ -22,7 +22,8 @@ deno task check
 
 ### Local Testing Without DNS
 
-When testing kamal-proxy deployments without setting up DNS, use the `Host` header to route requests:
+When testing kamal-proxy deployments without setting up DNS, use the `Host`
+header to route requests:
 
 ```bash
 # Test from your local machine
@@ -37,6 +38,7 @@ curl -H "Host: myproject.example.com" http://localhost
 For easier testing in browsers, add an entry to your hosts file:
 
 **Linux/Mac:**
+
 ```bash
 sudo nano /etc/hosts
 
@@ -45,6 +47,7 @@ sudo nano /etc/hosts
 ```
 
 **Windows:**
+
 ```powershell
 # Edit C:\Windows\System32\drivers\etc\hosts as Administrator
 # Add this line:
@@ -52,6 +55,7 @@ sudo nano /etc/hosts
 ```
 
 Then access directly:
+
 ```bash
 curl http://myproject.example.com
 # or visit http://myproject.example.com in your browser
@@ -113,15 +117,18 @@ podman pull docker.io/library/nginx:latest
 
 ### "Permission denied" on port 80
 
-For rootless Podman, kamal-proxy runs on high ports (8080/8443) internally and maps to host ports 80/443. Ensure the container has the right configuration.
+For rootless Podman, kamal-proxy runs on high ports (8080/8443) internally and
+maps to host ports 80/443. Ensure the container has the right configuration.
 
 ### Proxy health check timeouts
 
 Ensure your service container:
+
 - Is running on the same network as kamal-proxy (`jiji`)
 - Has the correct health check path configured
 - Is actually responding to HTTP requests
 
 ### "No such object" errors
 
-The container may not have been deployed yet. Run the deploy command to create and start service containers before configuring the proxy.
+The container may not have been deployed yet. Run the deploy command to create
+and start service containers before configuring the proxy.

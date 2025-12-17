@@ -15,7 +15,7 @@ export class SSHProxy {
    * @param agentSocket - Optional SSH agent socket path
    * @returns A stream that can be used as a socket for the final SSH connection
    */
-  async createProxySocket(
+  createProxySocket(
     proxyHost: string,
     proxyPort: number,
     proxyUser: string,
@@ -59,7 +59,7 @@ export class SSHProxy {
       });
 
       // Connect to the bastion host
-      const connectConfig: any = {
+      const connectConfig: Record<string, unknown> = {
         host: proxyHost,
         port: proxyPort,
         username: proxyUser,

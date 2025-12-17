@@ -9,7 +9,7 @@ class Semaphore {
     this.permits = permits;
   }
 
-  async acquire(): Promise<void> {
+  acquire(): Promise<void> {
     if (this.permits > 0) {
       this.permits--;
       return Promise.resolve();
@@ -68,7 +68,7 @@ export class SSHConnectionPool {
    * @param operations - Array of async operations to execute
    * @returns Promise that resolves with all results
    */
-  async executeConcurrent<T>(
+  executeConcurrent<T>(
     operations: (() => Promise<T>)[],
   ): Promise<T[]> {
     return Promise.all(

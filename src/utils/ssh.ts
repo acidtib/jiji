@@ -1,6 +1,7 @@
 import { NodeSSH } from "node-ssh";
 import { Client, type ClientChannel } from "ssh2";
 import { SSHProxy } from "./ssh_proxy.ts";
+import { SSHConfigParser } from "./ssh_config_parser.ts";
 
 export interface SSHConnectionConfig {
   host: string;
@@ -13,6 +14,9 @@ export interface SSHConnectionConfig {
   keyData?: string[];
   keysOnly?: boolean;
   dnsRetries?: number;
+  sshConfigFiles?: string[] | false;
+  connectTimeout?: number;
+  keyPath?: string;
 }
 
 export interface CommandResult {
@@ -184,15 +188,13 @@ export class SSHManager {
   /**
    * Create and connect ssh2 client for interactive sessions (on-demand)
    */
-  private async ensureSsh2Client(): Promise<void> {
+  private ensureSsh2Client(): Promise<void> {
     if (this.ssh2Client) {
-      return Promise.resolve(); // Already connected
+      return Promise.resolve();
     }
 
-    return new Promise(async (resolve, reject) => {
-      try {
-        const config = await this.getSSHConnectionConfig();
-
+    return new Promise((resolve, reject) => {
+      this.getSSHConnectionConfig().then((config) => {
         this.ssh2Client = new Client();
 
         this.ssh2Client.on("ready", () => {
@@ -204,9 +206,9 @@ export class SSHManager {
         });
 
         this.ssh2Client.connect(config);
-      } catch (error) {
+      }).catch((error) => {
         reject(error);
-      }
+      });
     });
   }
 
@@ -216,7 +218,7 @@ export class SSHManager {
   private async getSSHConnectionConfig() {
     const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
 
-    const baseConfig: any = {
+    let baseConfig: Record<string, unknown> = {
       host: this.config.host,
       username: this.config.username,
       port: this.config.port || 22,
@@ -248,6 +250,11 @@ export class SSHManager {
       keepaliveInterval: 30000,
     };
 
+    // Load and merge SSH config file settings
+    if (this.config.sshConfigFiles) {
+      baseConfig = await this.mergeSSHConfigFiles(baseConfig);
+    }
+
     // Handle private keys
     await this.configurePrivateKeys(baseConfig, sshAuthSock);
 
@@ -267,18 +274,106 @@ export class SSHManager {
       return { ...baseConfig, ...proxyConfig };
     }
 
+    // Handle SSH config proxy settings if no Jiji proxy specified
+    if (
+      baseConfig._sshConfigProxyJump &&
+      typeof baseConfig._sshConfigProxyJump === "string"
+    ) {
+      const proxyConfig = await this.buildProxyJumpConfig(
+        baseConfig._sshConfigProxyJump,
+        sshAuthSock || "",
+      );
+      // Clean up temporary property
+      delete baseConfig._sshConfigProxyJump;
+      return { ...baseConfig, ...proxyConfig };
+    }
+
+    if (
+      baseConfig._sshConfigProxyCommand &&
+      typeof baseConfig._sshConfigProxyCommand === "string"
+    ) {
+      const proxyConfig = this.buildProxyCommandConfig(
+        baseConfig._sshConfigProxyCommand,
+      );
+      // Clean up temporary property
+      delete baseConfig._sshConfigProxyCommand;
+      return { ...baseConfig, ...proxyConfig };
+    }
+
     return baseConfig;
+  }
+
+  /**
+   * Load SSH config files and merge with Jiji configuration
+   * Jiji config takes precedence over SSH config files
+   */
+  private async mergeSSHConfigFiles(
+    jijiConfig: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (this.config.sshConfigFiles === false || !this.config.sshConfigFiles) {
+      return jijiConfig;
+    }
+
+    const parser = new SSHConfigParser();
+
+    // Parse all specified config files
+    for (const file of this.config.sshConfigFiles) {
+      await parser.parseFile(file);
+    }
+
+    // Get SSH config for this host
+    const fileConfig = parser.getJijiRelevantConfig(this.config.host);
+
+    // Merge configurations (Jiji config takes precedence)
+    return {
+      ...jijiConfig,
+
+      // Only apply file config if not already set by Jiji
+      hostname: jijiConfig.host, // Always use Jiji's host
+      port: jijiConfig.port || fileConfig.port || 22,
+      username: jijiConfig.username || fileConfig.user,
+
+      // Connection settings from SSH config
+      ...(fileConfig.connectTimeout && !this.config.connectTimeout
+        ? {
+          readyTimeout: fileConfig.connectTimeout * 1000, // Convert to milliseconds
+        }
+        : {}),
+
+      // Proxy settings from SSH config (only if not set in Jiji)
+      ...(fileConfig.proxyJump && !this.config.proxy &&
+          !this.config.proxyCommand
+        ? {
+          _sshConfigProxyJump: fileConfig.proxyJump,
+        }
+        : {}),
+
+      ...(fileConfig.proxyCommand && !this.config.proxy &&
+          !this.config.proxyCommand
+        ? {
+          _sshConfigProxyCommand: fileConfig.proxyCommand,
+        }
+        : {}),
+
+      // Private key from SSH config (only if no keys specified in Jiji)
+      ...(fileConfig.identityFile && !this.config.keys && !this.config.keyPath
+        ? {
+          _sshConfigIdentityFile: fileConfig.identityFile,
+        }
+        : {}),
+    };
   }
 
   /**
    * Configure private keys for SSH connection
    */
   private async configurePrivateKeys(
-    config: any,
+    config: Record<string, unknown>,
     sshAuthSock: string | undefined,
   ): Promise<void> {
     const hasExplicitKeys = (this.config.keys && this.config.keys.length > 0) ||
-      (this.config.keyData && this.config.keyData.length > 0);
+      (this.config.keyData && this.config.keyData.length > 0) ||
+      config._sshConfigIdentityFile;
 
     if (hasExplicitKeys) {
       const privateKeys: string[] = [];
@@ -304,10 +399,34 @@ export class SSHManager {
         privateKeys.push(...this.config.keyData);
       }
 
+      // Add SSH config identity file if no Jiji keys specified
+      if (
+        config._sshConfigIdentityFile &&
+        typeof config._sshConfigIdentityFile === "string" &&
+        (!this.config.keys || this.config.keys.length === 0) &&
+        (!this.config.keyData || this.config.keyData.length === 0)
+      ) {
+        try {
+          const keyContent = await Deno.readTextFile(
+            config._sshConfigIdentityFile,
+          );
+          privateKeys.push(keyContent);
+        } catch (error) {
+          console.warn(
+            `Failed to read SSH config identity file '${config._sshConfigIdentityFile}': ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
       // Set private keys in config
       if (privateKeys.length > 0) {
         config.privateKey = privateKeys;
       }
+
+      // Clean up SSH config temporary properties
+      delete config._sshConfigIdentityFile;
 
       // Handle keys_only flag
       if (this.config.keysOnly) {
@@ -657,6 +776,9 @@ export function createSSHConfigFromJiji(
     keyData?: string[];
     keysOnly?: boolean;
     dnsRetries?: number;
+    sshConfigFiles?: string[] | false;
+    connectTimeout?: number;
+    keyPath?: string;
   },
 ): Omit<SSHConnectionConfig, "host"> {
   const defaults = getDefaultSSHConfig();
@@ -678,6 +800,11 @@ export function createSSHConfigFromJiji(
       { keysOnly: jijiSSHConfig.keysOnly }),
     ...(jijiSSHConfig.dnsRetries !== undefined &&
       { dnsRetries: jijiSSHConfig.dnsRetries }),
+    ...(jijiSSHConfig.sshConfigFiles !== undefined &&
+      { sshConfigFiles: jijiSSHConfig.sshConfigFiles }),
+    ...(jijiSSHConfig.connectTimeout !== undefined &&
+      { connectTimeout: jijiSSHConfig.connectTimeout }),
+    ...(jijiSSHConfig.keyPath && { keyPath: jijiSSHConfig.keyPath }),
   };
 }
 

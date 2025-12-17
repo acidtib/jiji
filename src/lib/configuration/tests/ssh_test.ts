@@ -603,7 +603,7 @@ Deno.test("SSHConfiguration - keys array with multiple keys", () => {
 Deno.test("SSHConfiguration - keys array validation fails for non-array", () => {
   const config = new SSHConfiguration({
     user: "testuser",
-    keys: "not-an-array" as any,
+    keys: "not-an-array" as unknown as string[],
   });
 
   assertThrows(
@@ -616,7 +616,7 @@ Deno.test("SSHConfiguration - keys array validation fails for non-array", () => 
 Deno.test("SSHConfiguration - keys array validation fails for non-string elements", () => {
   const config = new SSHConfiguration({
     user: "testuser",
-    keys: [123, "valid"] as any,
+    keys: [123, "valid"] as unknown as string[],
   });
 
   assertThrows(
@@ -661,7 +661,7 @@ Deno.test("SSHConfiguration - key_data validation fails for missing env var", ()
 Deno.test("SSHConfiguration - key_data validation fails for non-array", () => {
   const config = new SSHConfiguration({
     user: "testuser",
-    key_data: "not-an-array" as any,
+    key_data: "not-an-array" as unknown as string[],
   });
 
   assertThrows(
@@ -674,7 +674,7 @@ Deno.test("SSHConfiguration - key_data validation fails for non-array", () => {
 Deno.test("SSHConfiguration - key_data validation fails for non-string elements", () => {
   const config = new SSHConfiguration({
     user: "testuser",
-    key_data: [123] as any,
+    key_data: [123] as unknown as string[],
   });
 
   assertThrows(
@@ -713,7 +713,7 @@ Deno.test("SSHConfiguration - keys_only can be set to false", () => {
 Deno.test("SSHConfiguration - keys_only validation fails for non-boolean", () => {
   const config = new SSHConfiguration({
     user: "testuser",
-    keys_only: "yes" as any,
+    keys_only: "yes" as unknown as boolean,
   });
 
   assertThrows(
@@ -785,4 +785,117 @@ Deno.test("SSHConfiguration - toObject excludes keys_only when false", () => {
 
   const obj = config.toObject();
   assertEquals(obj.keys_only, undefined);
+});
+
+Deno.test("SSHConfiguration - SSH config file support - boolean true", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: true,
+  });
+
+  const configFiles = config.sshConfigFiles;
+  assertEquals(Array.isArray(configFiles), true);
+  if (Array.isArray(configFiles)) {
+    assertEquals(configFiles.length >= 1, true);
+    assertEquals(configFiles.some((f) => f.includes("/.ssh/config")), true);
+  }
+});
+
+Deno.test("SSHConfiguration - SSH config file support - single string", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: "~/.ssh/custom_config",
+  });
+
+  const configFiles = config.sshConfigFiles;
+  assertEquals(Array.isArray(configFiles), true);
+  if (Array.isArray(configFiles)) {
+    assertEquals(configFiles.length, 1);
+    assertEquals(configFiles[0].endsWith("/.ssh/custom_config"), true);
+  }
+});
+
+Deno.test("SSHConfiguration - SSH config file support - array", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: ["~/.ssh/config1", "/etc/ssh/config2"],
+  });
+
+  const configFiles = config.sshConfigFiles;
+  assertEquals(Array.isArray(configFiles), true);
+  if (Array.isArray(configFiles)) {
+    assertEquals(configFiles.length, 2);
+    assertEquals(configFiles[0].endsWith("/.ssh/config1"), true);
+    assertEquals(configFiles[1], "/etc/ssh/config2");
+  }
+});
+
+Deno.test("SSHConfiguration - SSH config file support - false", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: false,
+  });
+
+  const configFiles = config.sshConfigFiles;
+  assertEquals(configFiles, false);
+});
+
+Deno.test("SSHConfiguration - SSH config file support - undefined", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+  });
+
+  const configFiles = config.sshConfigFiles;
+  assertEquals(configFiles, false);
+});
+
+Deno.test("SSHConfiguration - SSH config file support - invalid type", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: 123,
+  });
+
+  assertThrows(
+    () => config.sshConfigFiles,
+    ConfigurationError,
+    "'config' in ssh must be boolean, string, or array of strings",
+  );
+});
+
+Deno.test("SSHConfiguration - SSH config file support - invalid array element", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: ["valid.config", 123],
+  });
+
+  assertThrows(
+    () => config.sshConfigFiles,
+    ConfigurationError,
+    "'config' in ssh must be boolean, string, or array of strings",
+  );
+});
+
+Deno.test("SSHConfiguration - SSH config file support - toObject", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: ["~/.ssh/config1", "~/.ssh/config2"],
+  });
+
+  const obj = config.toObject();
+  assertEquals(Array.isArray(obj.config), true);
+  if (Array.isArray(obj.config)) {
+    assertEquals(obj.config.length, 2);
+    assertEquals(obj.config[0].endsWith("/.ssh/config1"), true);
+    assertEquals(obj.config[1].endsWith("/.ssh/config2"), true);
+  }
+});
+
+Deno.test("SSHConfiguration - SSH config file support - toObject false", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    config: false,
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.config, undefined);
 });

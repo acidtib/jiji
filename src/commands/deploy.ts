@@ -77,7 +77,7 @@ export const deployCommand = new Command()
                 : undefined,
               keyData: config!.ssh.keyData,
               keysOnly: config!.ssh.keysOnly,
-                dnsRetries: config!.ssh.dnsRetries,
+              dnsRetries: config!.ssh.dnsRetries,
             }),
             useAgent: true,
           };

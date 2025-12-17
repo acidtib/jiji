@@ -20,6 +20,8 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   private _maxConcurrentStarts?: number;
   private _poolIdleTimeout?: number;
   private _dnsRetries?: number;
+  private _configFiles?: string[] | false;
+  private _sshConfigFiles?: string[] | false;
 
   /**
    * SSH user for connections
@@ -299,6 +301,60 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * SSH config files to load
+   * - true: Load default files (~/.ssh/config, /etc/ssh/ssh_config)
+   * - string: Load specific file
+   * - string[]: Load multiple files
+   * - false/undefined: Don't load config files (default)
+   */
+  get sshConfigFiles(): string[] | false {
+    if (this._sshConfigFiles === undefined) {
+      const configValue = this.get("config");
+
+      if (configValue === undefined || configValue === false) {
+        this._sshConfigFiles = false;
+      } else if (configValue === true) {
+        this._sshConfigFiles = this.getDefaultConfigFiles();
+      } else if (typeof configValue === "string") {
+        this._sshConfigFiles = [this.expandPath(configValue)];
+      } else if (Array.isArray(configValue)) {
+        this._sshConfigFiles = configValue.map((f) => {
+          if (typeof f !== "string") {
+            throw new ConfigurationError(
+              "'config' in ssh must be boolean, string, or array of strings",
+            );
+          }
+          return this.expandPath(f);
+        });
+      } else {
+        throw new ConfigurationError(
+          "'config' in ssh must be boolean, string, or array of strings",
+        );
+      }
+    }
+    return this._sshConfigFiles;
+  }
+
+  /**
+   * Get default SSH config files
+   */
+  private getDefaultConfigFiles(): string[] {
+    const home = Deno.env.get("HOME") || Deno.env.get("USERPROFILE");
+    const files: string[] = [];
+
+    if (home) {
+      files.push(`${home}/.ssh/config`);
+    }
+
+    // Unix/Linux system config
+    if (Deno.build.os !== "windows") {
+      files.push("/etc/ssh/ssh_config");
+    }
+
+    return files;
+  }
+
+  /**
    * Expand ~ in file paths to home directory
    */
   private expandPath(path: string): string {
@@ -469,6 +525,10 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
 
     if (this.dnsRetries !== 3) {
       result.dns_retries = this.dnsRetries;
+    }
+
+    if (this.sshConfigFiles !== false) {
+      result.config = this.sshConfigFiles;
     }
 
     return result;

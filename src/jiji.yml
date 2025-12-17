@@ -71,6 +71,27 @@ ssh:
   # proxy_command: "ssh -W %h:%p -i ~/.ssh/bastion_key bastion.example.com"
   # proxy_command: "nc -X connect -x proxy.example.com:3128 %h %p"
 
+  # SSH Configuration File Support
+  # Load SSH configuration from ~/.ssh/config files to leverage existing SSH setups
+  # This allows Jiji to inherit host-specific settings like ProxyJump, IdentityFile, etc.
+  # Jiji configuration takes precedence over SSH config file settings
+
+  # Load SSH config files:
+  # config: true                    # Load default files (~/.ssh/config, /etc/ssh/ssh_config)
+  # config: "~/.ssh/custom_config"  # Load specific file
+  # config:                         # Load multiple files
+  #   - ~/.ssh/config
+  #   - ~/.ssh/work_config
+  # config: false                   # Don't load config files (default)
+
+  # When enabled, Jiji will:
+  # - Parse SSH config files for host-specific settings
+  # - Apply matching Host patterns (supports wildcards * and ?)
+  # - Use ProxyJump/ProxyCommand from config if not set in Jiji
+  # - Use IdentityFile from config if no keys specified in Jiji
+  # - Apply connection timeouts and other SSH options
+  # - Always prioritize Jiji configuration over SSH config file settings
+
 # Services configuration
 services:
   # Example web service using a pre-built image
