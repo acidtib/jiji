@@ -2,6 +2,11 @@ import { BaseConfiguration, ConfigurationError } from "./base.ts";
 import type { Validatable } from "./base.ts";
 
 /**
+ * Valid log levels for SSH operations
+ */
+export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
+
+/**
  * SSH configuration for connecting to remote hosts
  */
 export class SSHConfiguration extends BaseConfiguration implements Validatable {
@@ -22,6 +27,7 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   private _dnsRetries?: number;
   private _configFiles?: string[] | false;
   private _sshConfigFiles?: string[] | false;
+  private _logLevel?: LogLevel;
 
   /**
    * SSH user for connections
@@ -301,6 +307,25 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * Log level for SSH operations (default: "error")
+   */
+  get logLevel(): LogLevel {
+    if (!this._logLevel && this.has("log_level")) {
+      const level = this.get("log_level");
+      if (typeof level !== "string") {
+        throw new ConfigurationError("'log_level' in ssh must be a string");
+      }
+      if (!this.isValidLogLevel(level)) {
+        throw new ConfigurationError(
+          `'log_level' in ssh must be one of: debug, info, warn, error, fatal. Got: ${level}`,
+        );
+      }
+      this._logLevel = level as LogLevel;
+    }
+    return this._logLevel ?? "error";
+  }
+
+  /**
    * SSH config files to load
    * - true: Load default files (~/.ssh/config, /etc/ssh/ssh_config)
    * - string: Load specific file
@@ -443,6 +468,14 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * Validates if a string is a valid log level
+   */
+  private isValidLogLevel(level: string): boolean {
+    const validLevels: LogLevel[] = ["debug", "info", "warn", "error", "fatal"];
+    return validLevels.includes(level as LogLevel);
+  }
+
+  /**
    * Validates proxy format: [user@]hostname[:port]
    */
   private validateProxyFormat(proxy: string): void {
@@ -529,6 +562,10 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
 
     if (this.sshConfigFiles !== false) {
       result.config = this.sshConfigFiles;
+    }
+
+    if (this.logLevel !== "error") {
+      result.log_level = this.logLevel;
     }
 
     return result;

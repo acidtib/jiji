@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { SSHConfiguration } from "../ssh.ts";
 import { ConfigurationError } from "../base.ts";
 
@@ -897,5 +897,113 @@ Deno.test("SSHConfiguration - SSH config file support - toObject false", () => {
   });
 
   const obj = config.toObject();
-  assertEquals(obj.config, undefined);
+  assert(!("config" in obj));
+});
+
+Deno.test("SSHConfiguration - log level defaults to error", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+  });
+
+  assertEquals(config.logLevel, "error");
+});
+
+Deno.test("SSHConfiguration - log level can be set to debug", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "debug",
+  });
+
+  assertEquals(config.logLevel, "debug");
+});
+
+Deno.test("SSHConfiguration - log level can be set to info", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "info",
+  });
+
+  assertEquals(config.logLevel, "info");
+});
+
+Deno.test("SSHConfiguration - log level can be set to warn", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "warn",
+  });
+
+  assertEquals(config.logLevel, "warn");
+});
+
+Deno.test("SSHConfiguration - log level can be set to error", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "error",
+  });
+
+  assertEquals(config.logLevel, "error");
+});
+
+Deno.test("SSHConfiguration - log level can be set to fatal", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "fatal",
+  });
+
+  assertEquals(config.logLevel, "fatal");
+});
+
+Deno.test("SSHConfiguration - log level validation fails for non-string", () => {
+  assertThrows(
+    () => {
+      new SSHConfiguration({
+        user: "testuser",
+        log_level: 123,
+      }).logLevel;
+    },
+    ConfigurationError,
+    "'log_level' in ssh must be a string",
+  );
+});
+
+Deno.test("SSHConfiguration - log level validation fails for invalid level", () => {
+  assertThrows(
+    () => {
+      new SSHConfiguration({
+        user: "testuser",
+        log_level: "invalid",
+      }).logLevel;
+    },
+    ConfigurationError,
+    "'log_level' in ssh must be one of: debug, info, warn, error, fatal. Got: invalid",
+  );
+});
+
+Deno.test("SSHConfiguration - toObject includes log_level when not default", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "debug",
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.log_level, "debug");
+});
+
+Deno.test("SSHConfiguration - toObject excludes log_level when default", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    log_level: "error",
+  });
+
+  const obj = config.toObject();
+  assert(!("log_level" in obj));
+});
+
+Deno.test("SSHConfiguration - toObject excludes log_level when not set", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+  });
+
+  const obj = config.toObject();
+  assert(!("log_level" in obj));
 });

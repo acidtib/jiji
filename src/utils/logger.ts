@@ -5,27 +5,42 @@ export interface LoggerOptions {
   showTimestamp?: boolean;
   maxPrefixLength?: number;
   colors?: boolean;
+  minLevel?: LogLevel;
 }
 
 export type LogLevel =
+  | "debug"
   | "info"
   | "warn"
   | "error"
+  | "fatal"
   | "success"
-  | "debug"
   | "trace";
+
+// Log level hierarchy for filtering (lower numbers = higher priority)
+const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+  fatal: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  success: 3, // Same as info
+  debug: 4,
+  trace: 5,
+};
 
 export class Logger {
   private prefix: string;
   private showTimestamp: boolean;
   private maxPrefixLength: number;
   private useColors: boolean;
+  private minLevel: LogLevel;
 
   constructor(options: LoggerOptions = {}) {
     this.prefix = options.prefix || "";
     this.showTimestamp = options.showTimestamp ?? true;
     this.maxPrefixLength = options.maxPrefixLength || 20;
     this.useColors = options.colors ?? true;
+    this.minLevel = options.minLevel || "info";
   }
 
   private formatTimestamp(): string {
@@ -65,6 +80,8 @@ export class Logger {
         return colors.magenta(text);
       case "trace":
         return colors.gray(text);
+      case "fatal":
+        return colors.brightRed(text);
       default:
         return text;
     }
@@ -104,9 +121,15 @@ export class Logger {
   }
 
   private log(level: LogLevel, message: string, prefix?: string): void {
+    // Check if this level should be logged based on minLevel
+    if (!this.shouldLog(level)) {
+      return;
+    }
+
     const formattedMessage = this.formatMessage(level, message, prefix);
 
     switch (level) {
+      case "fatal":
       case "error":
         console.error(formattedMessage);
         break;
@@ -117,6 +140,13 @@ export class Logger {
         console.log(formattedMessage);
         break;
     }
+  }
+
+  /**
+   * Check if a log level should be output based on the minimum level
+   */
+  private shouldLog(level: LogLevel): boolean {
+    return LOG_LEVEL_PRIORITY[level] <= LOG_LEVEL_PRIORITY[this.minLevel];
   }
 
   info(message: string, prefix?: string): void {
@@ -143,6 +173,10 @@ export class Logger {
     this.log("trace", message, prefix);
   }
 
+  fatal(message: string, prefix?: string): void {
+    this.log("fatal", message, prefix);
+  }
+
   // command execution logging
   executing(command: string, server?: string): void {
     const prefix = server || "local";
@@ -165,6 +199,20 @@ export class Logger {
       showTimestamp: this.showTimestamp,
       maxPrefixLength: this.maxPrefixLength,
       colors: this.useColors,
+      minLevel: this.minLevel,
+    });
+  }
+
+  /**
+   * Create a logger with a specific minimum level
+   */
+  withLevel(level: LogLevel): Logger {
+    return new Logger({
+      prefix: this.prefix,
+      showTimestamp: this.showTimestamp,
+      maxPrefixLength: this.maxPrefixLength,
+      colors: this.useColors,
+      minLevel: level,
     });
   }
 
@@ -186,6 +234,20 @@ export class Logger {
     }
 
     return loggers;
+  }
+
+  /**
+   * Create a logger configured for SSH operations with the specified log level
+   */
+  static forSSH(
+    logLevel: LogLevel = "error",
+    options: LoggerOptions = {},
+  ): Logger {
+    return new Logger({
+      ...options,
+      minLevel: logLevel,
+      prefix: options.prefix || "ssh",
+    });
   }
 
   // Progress indicator for long-running tasks
@@ -248,6 +310,7 @@ export const log = {
     logger.success(message, prefix),
   warn: (message: string, prefix?: string) => logger.warn(message, prefix),
   error: (message: string, prefix?: string) => logger.error(message, prefix),
+  fatal: (message: string, prefix?: string) => logger.fatal(message, prefix),
   debug: (message: string, prefix?: string) => logger.debug(message, prefix),
   trace: (message: string, prefix?: string) => logger.trace(message, prefix),
   executing: (command: string, server?: string) =>

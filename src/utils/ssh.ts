@@ -2,6 +2,7 @@ import { NodeSSH } from "node-ssh";
 import { Client, type ClientChannel } from "ssh2";
 import { SSHProxy } from "./ssh_proxy.ts";
 import { SSHConfigParser } from "./ssh_config_parser.ts";
+import { Logger, type LogLevel } from "./logger.ts";
 
 export interface SSHConnectionConfig {
   host: string;
@@ -17,6 +18,7 @@ export interface SSHConnectionConfig {
   sshConfigFiles?: string[] | false;
   connectTimeout?: number;
   keyPath?: string;
+  logLevel?: LogLevel;
 }
 
 export interface CommandResult {
@@ -34,10 +36,14 @@ export class SSHManager {
   private ssh2Client?: Client;
   private config: SSHConnectionConfig;
   private connected = false;
+  private logger: Logger;
 
   constructor(config: SSHConnectionConfig) {
     this.ssh = new NodeSSH();
     this.config = config;
+    this.logger = Logger.forSSH(config.logLevel || "error", {
+      prefix: config.host,
+    });
   }
 
   /**
@@ -46,22 +52,24 @@ export class SSHManager {
    */
   async connect(): Promise<void> {
     try {
+      this.logger.debug(
+        `Connecting to ${this.config.host}:${this.config.port || 22}`,
+      );
       const config = await this.getSSHConnectionConfig();
       await this.ssh.connect({
         ...config,
         debug: (msg: string) => {
-          if (msg.includes("error") || msg.includes("fail")) {
-            console.log(`SSH Debug: ${msg}`);
-          }
+          this.logger.debug(`SSH: ${msg}`);
         },
       });
       this.connected = true;
+      this.logger.info(`Connected to ${this.config.host}`);
     } catch (error) {
-      throw new Error(
-        `Failed to connect to ${this.config.host}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      const errorMsg = `Failed to connect to ${this.config.host}: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      this.logger.error(errorMsg);
+      throw new Error(errorMsg);
     }
   }
 
@@ -87,7 +95,7 @@ export class SSHManager {
 
         if (attempt < maxRetries) {
           const delay = this.calculateRetryDelay(attempt);
-          console.log(
+          this.logger.warn(
             `DNS retry ${attempt}/${maxRetries} for ${this.config.host} in ${delay}ms`,
           );
           await this.sleep(delay);
@@ -145,11 +153,32 @@ export class SSHManager {
    */
   async executeCommand(command: string): Promise<CommandResult> {
     if (!this.isConnected()) {
-      throw new Error("SSH connection not established. Call connect() first.");
+      const errorMsg = "SSH connection not established. Call connect() first.";
+      this.logger.error(errorMsg);
+      throw new Error(errorMsg);
     }
+
+    this.logger.debug(`Executing command: ${command}`);
+    const startTime = Date.now();
 
     try {
       const result = await this.ssh.execCommand(command);
+      const duration = Date.now() - startTime;
+
+      if (result.code === 0) {
+        this.logger.debug(`Command completed successfully in ${duration}ms`);
+        if (result.stdout) {
+          this.logger.trace(`Command stdout: ${result.stdout.trim()}`);
+        }
+      } else {
+        this.logger.warn(
+          `Command failed with exit code ${result.code} in ${duration}ms`,
+        );
+        if (result.stderr) {
+          this.logger.warn(`Command stderr: ${result.stderr.trim()}`);
+        }
+      }
+
       return {
         stdout: result.stdout,
         stderr: result.stderr,
@@ -157,9 +186,15 @@ export class SSHManager {
         code: result.code,
       };
     } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Command execution failed after ${duration}ms: ${errorMsg}`,
+      );
+
       return {
         stdout: "",
-        stderr: error instanceof Error ? error.message : String(error),
+        stderr: errorMsg,
         success: false,
         code: null,
       };
@@ -170,18 +205,30 @@ export class SSHManager {
    * Execute multiple commands in sequence
    */
   async executeCommands(commands: string[]): Promise<CommandResult[]> {
+    this.logger.info(`Executing ${commands.length} commands in sequence`);
     const results: CommandResult[] = [];
+    let successCount = 0;
 
-    for (const command of commands) {
+    for (let i = 0; i < commands.length; i++) {
+      const command = commands[i];
+      this.logger.debug(`Command ${i + 1}/${commands.length}: ${command}`);
+
       const result = await this.executeCommand(command);
       results.push(result);
 
-      // Stop on first failure
-      if (!result.success) {
+      if (result.success) {
+        successCount++;
+      } else {
+        this.logger.error(
+          `Command sequence stopped at step ${i + 1} due to failure`,
+        );
         break;
       }
     }
 
+    this.logger.info(
+      `Command sequence completed: ${successCount}/${commands.length} successful`,
+    );
     return results;
   }
 
