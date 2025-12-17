@@ -127,16 +127,17 @@ export async function prepareMountDirectories(
 }
 
 /**
- * Build container mount arguments for files
+ * Build container mount arguments for a specific mount type
  */
-export function buildFileMountArgs(
-  files: FileMountConfig[],
+function buildMountArgs(
+  mounts: FileMountConfig[] | DirectoryMountConfig[],
   project: string,
+  type: "files" | "directories",
 ): string[] {
-  return files.map((fileMount) => {
-    const parsed = parseMountConfig(fileMount);
-    const remoteFilePath = `.jiji/${project}/files/${parsed.local}`;
-    let mountArg = `${remoteFilePath}:${parsed.remote}`;
+  return mounts.map((mount) => {
+    const parsed = parseMountConfig(mount);
+    const remotePath = `.jiji/${project}/${type}/${parsed.local}`;
+    let mountArg = `${remotePath}:${parsed.remote}`;
 
     // Add options if specified
     if (parsed.options) {
@@ -148,24 +149,23 @@ export function buildFileMountArgs(
 }
 
 /**
+ * Build container mount arguments for files
+ */
+export function buildFileMountArgs(
+  files: FileMountConfig[],
+  project: string,
+): string[] {
+  return buildMountArgs(files, project, "files");
+}
+
+/**
  * Build container mount arguments for directories
  */
 export function buildDirectoryMountArgs(
   directories: DirectoryMountConfig[],
   project: string,
 ): string[] {
-  return directories.map((dirMount) => {
-    const parsed = parseMountConfig(dirMount);
-    const remoteDirPath = `.jiji/${project}/directories/${parsed.local}`;
-    let mountArg = `${remoteDirPath}:${parsed.remote}`;
-
-    // Add options if specified
-    if (parsed.options) {
-      mountArg += `:${parsed.options}`;
-    }
-
-    return `-v ${mountArg}`;
-  });
+  return buildMountArgs(directories, project, "directories");
 }
 
 /**
@@ -177,8 +177,8 @@ export function buildAllMountArgs(
   volumes: string[],
   project: string,
 ): string {
-  const fileArgs = buildFileMountArgs(files, project);
-  const directoryArgs = buildDirectoryMountArgs(directories, project);
+  const fileArgs = buildMountArgs(files, project, "files");
+  const directoryArgs = buildMountArgs(directories, project, "directories");
   const volumeArgs = volumes.map((v) => `-v ${v}`);
 
   return [...fileArgs, ...directoryArgs, ...volumeArgs].join(" ");

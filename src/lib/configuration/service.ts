@@ -21,11 +21,11 @@ export interface BuildConfig {
 type MountOptions = "ro" | "z" | "Z";
 
 /**
- * File mount configuration - supports both string and hash formats
+ * Mount configuration - supports both string and hash formats
  * String format: "local:remote" or "local:remote:options"
  * Hash format: { local: string, remote: string, mode?: string, owner?: string, options?: string }
  */
-export type FileMountConfig = string | {
+export type MountConfig = string | {
   local: string;
   remote: string;
   mode?: string;
@@ -34,17 +34,14 @@ export type FileMountConfig = string | {
 };
 
 /**
- * Directory mount configuration - supports both string and hash formats
- * String format: "local:remote" or "local:remote:options"
- * Hash format: { local: string, remote: string, mode?: string, owner?: string, options?: string }
+ * File mount configuration
  */
-export type DirectoryMountConfig = string | {
-  local: string;
-  remote: string;
-  mode?: string;
-  owner?: string;
-  options?: MountOptions | string;
-};
+export type FileMountConfig = MountConfig;
+
+/**
+ * Directory mount configuration
+ */
+export type DirectoryMountConfig = MountConfig;
 
 /**
  * Service configuration representing a single deployable service
@@ -305,27 +302,9 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
 
-    // Validate file mounts
-    for (const file of this.files) {
-      if (!this.isValidMountConfig(file, "file")) {
-        const fileStr = typeof file === "string" ? file : JSON.stringify(file);
-        throw new ConfigurationError(
-          `Invalid file mount '${fileStr}' for service '${this.name}'. Expected format: local:remote[:options] or { local, remote, mode?, owner?, options? }`,
-        );
-      }
-    }
-
-    // Validate directory mounts
-    for (const directory of this.directories) {
-      if (!this.isValidMountConfig(directory, "directory")) {
-        const dirStr = typeof directory === "string"
-          ? directory
-          : JSON.stringify(directory);
-        throw new ConfigurationError(
-          `Invalid directory mount '${dirStr}' for service '${this.name}'. Expected format: local:remote[:options] or { local, remote, mode?, owner?, options? }`,
-        );
-      }
-    }
+    // Validate file and directory mounts
+    this.validateMounts(this.files, "file");
+    this.validateMounts(this.directories, "directory");
 
     // Validate environment variables
     if (Array.isArray(this.environment)) {
@@ -375,6 +354,25 @@ export class ServiceConfiguration extends BaseConfiguration
     // Examples: "/host/path:/container/path", "/host/path:/container/path:ro"
     const parts = volume.split(":");
     return parts.length >= 2 && parts.length <= 3;
+  }
+
+  /**
+   * Validates mounts (files or directories)
+   */
+  private validateMounts(
+    mounts: MountConfig[],
+    type: "file" | "directory",
+  ): void {
+    for (const mount of mounts) {
+      if (!this.isValidMountConfig(mount, type)) {
+        const mountStr = typeof mount === "string"
+          ? mount
+          : JSON.stringify(mount);
+        throw new ConfigurationError(
+          `Invalid ${type} mount '${mountStr}' for service '${this.name}'. Expected format: local:remote[:options] or { local, remote, mode?, owner?, options? }`,
+        );
+      }
+    }
   }
 
   /**
