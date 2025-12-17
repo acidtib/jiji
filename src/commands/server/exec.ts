@@ -135,6 +135,7 @@ export const execCommand = new Command()
               : undefined,
             keyData: config!.ssh.keyData,
             keysOnly: config!.ssh.keysOnly,
+            dnsRetries: config!.ssh.dnsRetries,
           });
 
           // Create SSH managers for all hosts and test connections

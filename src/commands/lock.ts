@@ -497,6 +497,7 @@ async function setupSSHConnections(
     keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
     keyData: config.ssh.keyData,
     keysOnly: config.ssh.keysOnly,
+    dnsRetries: config.ssh.dnsRetries,
   });
 
   // Create SSH managers and test connections

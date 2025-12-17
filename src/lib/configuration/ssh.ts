@@ -17,6 +17,9 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   private _keys?: string[];
   private _keyData?: string[];
   private _keysOnly?: boolean;
+  private _maxConcurrentStarts?: number;
+  private _poolIdleTimeout?: number;
+  private _dnsRetries?: number;
 
   /**
    * SSH user for connections
@@ -227,6 +230,75 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * Maximum concurrent SSH connections (default: 30)
+   */
+  get maxConcurrentStarts(): number {
+    if (this._maxConcurrentStarts === undefined) {
+      if (this.has("max_concurrent_starts")) {
+        this._maxConcurrentStarts = this.validateNumber(
+          this.get("max_concurrent_starts"),
+          "max_concurrent_starts",
+          "ssh",
+        );
+        if (this._maxConcurrentStarts < 1) {
+          throw new ConfigurationError(
+            "'max_concurrent_starts' in ssh must be at least 1",
+          );
+        }
+      } else {
+        this._maxConcurrentStarts = 30;
+      }
+    }
+    return this._maxConcurrentStarts;
+  }
+
+  /**
+   * Connection pool idle timeout in seconds (default: 900)
+   */
+  get poolIdleTimeout(): number {
+    if (this._poolIdleTimeout === undefined) {
+      if (this.has("pool_idle_timeout")) {
+        this._poolIdleTimeout = this.validateNumber(
+          this.get("pool_idle_timeout"),
+          "pool_idle_timeout",
+          "ssh",
+        );
+        if (this._poolIdleTimeout < 0) {
+          throw new ConfigurationError(
+            "'pool_idle_timeout' in ssh must be at least 0",
+          );
+        }
+      } else {
+        this._poolIdleTimeout = 900;
+      }
+    }
+    return this._poolIdleTimeout;
+  }
+
+  /**
+   * DNS lookup retry attempts (default: 3)
+   */
+  get dnsRetries(): number {
+    if (this._dnsRetries === undefined) {
+      if (this.has("dns_retries")) {
+        this._dnsRetries = this.validateNumber(
+          this.get("dns_retries"),
+          "dns_retries",
+          "ssh",
+        );
+        if (this._dnsRetries < 0 || this._dnsRetries > 10) {
+          throw new ConfigurationError(
+            "'dns_retries' in ssh must be between 0 and 10",
+          );
+        }
+      } else {
+        this._dnsRetries = 3;
+      }
+    }
+    return this._dnsRetries;
+  }
+
+  /**
    * Expand ~ in file paths to home directory
    */
   private expandPath(path: string): string {
@@ -385,6 +457,18 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
 
     if (this.keysOnly) {
       result.keys_only = this.keysOnly;
+    }
+
+    if (this.maxConcurrentStarts !== 30) {
+      result.max_concurrent_starts = this.maxConcurrentStarts;
+    }
+
+    if (this.poolIdleTimeout !== 900) {
+      result.pool_idle_timeout = this.poolIdleTimeout;
+    }
+
+    if (this.dnsRetries !== 3) {
+      result.dns_retries = this.dnsRetries;
     }
 
     return result;

@@ -85,6 +85,7 @@ export const bootstrapCommand = new Command()
                   : undefined,
                 keyData: config!.ssh.keyData,
                 keysOnly: config!.ssh.keysOnly,
+                dnsRetries: config!.ssh.dnsRetries,
               }),
               useAgent: true,
             };
@@ -92,7 +93,10 @@ export const bootstrapCommand = new Command()
             // Create SSH managers for all hosts and test connections
             log.status("Testing connections to all hosts...", "ssh");
             sshManagers = createSSHManagers(uniqueHosts, sshConfig);
-            const connectionTests = await testConnections(sshManagers);
+            const connectionTests = await testConnections(
+              sshManagers,
+              config!.ssh.maxConcurrentStarts,
+            );
 
             const { connectedManagers, connectedHosts, failedHosts } =
               filterConnectedHosts(sshManagers, connectionTests);

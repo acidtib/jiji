@@ -42,6 +42,16 @@ ssh:
   # Set to true to disable ssh-agent and use only keys specified above
   # keys_only: false
 
+  # Concurrency Control
+  # Limit concurrent SSH connections to prevent overwhelming servers
+  # max_concurrent_starts: 30
+
+  # Connection pool idle timeout in seconds
+  # pool_idle_timeout: 900
+
+  # DNS lookup retry attempts (with exponential backoff)
+  # dns_retries: 3
+
   # SSH Proxy/Jump Host Configuration
   # Use either 'proxy' (ProxyJump) or 'proxy_command' (ProxyCommand), not both
 

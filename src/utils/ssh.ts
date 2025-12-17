@@ -12,6 +12,7 @@ export interface SSHConnectionConfig {
   keys?: string[];
   keyData?: string[];
   keysOnly?: boolean;
+  dnsRetries?: number;
 }
 
 export interface CommandResult {
@@ -58,6 +59,74 @@ export class SSHManager {
         }`,
       );
     }
+  }
+
+  /**
+   * Connect with DNS retry logic
+   * Retries connection on DNS-related errors
+   */
+  async connectWithRetry(): Promise<void> {
+    const maxRetries = this.config.dnsRetries ?? 3;
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.connect();
+        return; // Success
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Check if it's a DNS error
+        if (!this.isDNSError(lastError)) {
+          throw lastError; // Non-DNS error, don't retry
+        }
+
+        if (attempt < maxRetries) {
+          const delay = this.calculateRetryDelay(attempt);
+          console.log(
+            `DNS retry ${attempt}/${maxRetries} for ${this.config.host} in ${delay}ms`,
+          );
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new Error("Failed to connect after retries");
+  }
+
+  /**
+   * Check if an error is DNS-related
+   */
+  private isDNSError(error: Error): boolean {
+    const dnsErrorPatterns = [
+      /getaddrinfo/i,
+      /ENOTFOUND/i,
+      /ENOENT/i,
+      /temporary failure in name resolution/i,
+      /name or service not known/i,
+      /EAI_AGAIN/i,
+    ];
+
+    return dnsErrorPatterns.some((pattern) => pattern.test(error.message));
+  }
+
+  /**
+   * Calculate retry delay with exponential backoff and jitter
+   */
+  private calculateRetryDelay(attempt: number): number {
+    const baseDelay = 100; // 100ms base
+    const maxDelay = 2000; // 2s max
+    const jitter = Math.random() * 100; // 0-100ms jitter
+
+    const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+    return delay + jitter;
+  }
+
+  /**
+   * Sleep for specified milliseconds
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -587,6 +656,7 @@ export function createSSHConfigFromJiji(
     keys?: string[];
     keyData?: string[];
     keysOnly?: boolean;
+    dnsRetries?: number;
   },
 ): Omit<SSHConnectionConfig, "host"> {
   const defaults = getDefaultSSHConfig();
@@ -606,6 +676,8 @@ export function createSSHConfigFromJiji(
     ...(jijiSSHConfig.keyData && { keyData: jijiSSHConfig.keyData }),
     ...(jijiSSHConfig.keysOnly !== undefined &&
       { keysOnly: jijiSSHConfig.keysOnly }),
+    ...(jijiSSHConfig.dnsRetries !== undefined &&
+      { dnsRetries: jijiSSHConfig.dnsRetries }),
   };
 }
 
@@ -660,17 +732,23 @@ export async function validateSSHSetup(): Promise<
 
 /**
  * Test connections to multiple hosts and return results
+ * Uses DNS retry logic and connection pooling
  */
 export async function testConnections(
   sshManagers: SSHManager[],
+  maxConcurrent?: number,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
   console.log("Testing connections to all hosts...");
 
-  const connectionTests = await Promise.all(
-    sshManagers.map(async (ssh) => {
+  // Import the pool dynamically to avoid circular dependencies
+  const { SSHConnectionPool } = await import("./ssh_pool.ts");
+  const pool = new SSHConnectionPool(maxConcurrent || 30);
+
+  return pool.executeConcurrent(
+    sshManagers.map((ssh) => async () => {
       try {
-        await ssh.connect();
-        console.log(`Connected to ${ssh.getHost()}`);
+        await ssh.connectWithRetry(); // Use retry logic
+        console.log(`✓ Connected to ${ssh.getHost()}`);
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
@@ -687,8 +765,6 @@ export async function testConnections(
       }
     }),
   );
-
-  return connectionTests;
 }
 
 /**
