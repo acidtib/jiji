@@ -1,11 +1,14 @@
 import { NodeSSH } from "node-ssh";
 import { Client, type ClientChannel } from "ssh2";
+import { SSHProxy } from "./ssh_proxy.ts";
 
 export interface SSHConnectionConfig {
   host: string;
   username: string;
   port?: number;
   useAgent?: boolean;
+  proxy?: string;
+  proxyCommand?: string;
 }
 
 export interface CommandResult {
@@ -35,7 +38,7 @@ export class SSHManager {
    */
   async connect(): Promise<void> {
     try {
-      const config = this.getSSHConnectionConfig();
+      const config = await this.getSSHConnectionConfig();
       await this.ssh.connect({
         ...config,
         debug: (msg: string) => {
@@ -109,14 +112,14 @@ export class SSHManager {
   /**
    * Create and connect ssh2 client for interactive sessions (on-demand)
    */
-  private ensureSsh2Client(): Promise<void> {
+  private async ensureSsh2Client(): Promise<void> {
     if (this.ssh2Client) {
       return Promise.resolve(); // Already connected
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       try {
-        const config = this.getSSHConnectionConfig();
+        const config = await this.getSSHConnectionConfig();
 
         this.ssh2Client = new Client();
 
@@ -138,13 +141,13 @@ export class SSHManager {
   /**
    * Get the shared SSH connection configuration
    */
-  private getSSHConnectionConfig() {
+  private async getSSHConnectionConfig() {
     const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
     if (!sshAuthSock) {
       throw new Error("SSH_AUTH_SOCK environment variable not set");
     }
 
-    return {
+    const baseConfig = {
       host: this.config.host,
       username: this.config.username,
       port: this.config.port || 22,
@@ -175,6 +178,61 @@ export class SSHManager {
       },
       readyTimeout: 60000,
       keepaliveInterval: 30000,
+    };
+
+    // Add proxy support
+    if (this.config.proxy) {
+      const proxyConfig = await this.buildProxyJumpConfig(
+        this.config.proxy,
+        sshAuthSock,
+      );
+      return { ...baseConfig, ...proxyConfig };
+    }
+
+    if (this.config.proxyCommand) {
+      const proxyConfig = this.buildProxyCommandConfig(
+        this.config.proxyCommand,
+      );
+      return { ...baseConfig, ...proxyConfig };
+    }
+
+    return baseConfig;
+  }
+
+  /**
+   * Build configuration for ProxyJump (SSH connection through bastion)
+   */
+  private async buildProxyJumpConfig(proxy: string, agentSocket: string) {
+    const proxyInfo = SSHProxy.parseProxyString(proxy, this.config.username);
+    const sshProxy = new SSHProxy();
+
+    // Create the tunnel through the bastion host
+    const sock = await sshProxy.createProxySocket(
+      proxyInfo.host,
+      proxyInfo.port,
+      proxyInfo.user,
+      this.config.host,
+      this.config.port || 22,
+      agentSocket,
+    );
+
+    return { sock };
+  }
+
+  /**
+   * Build configuration for ProxyCommand (custom proxy command)
+   */
+  private buildProxyCommandConfig(proxyCommand: string) {
+    // Replace %h and %p with actual host/port
+    const command = proxyCommand
+      .replace(/%h/g, this.config.host)
+      .replace(/%p/g, String(this.config.port || 22));
+
+    return {
+      sock: {
+        type: "exec",
+        command,
+      },
     };
   }
 
@@ -463,7 +521,12 @@ export function createSSHManagers(
  * Create SSH configuration from Jiji config
  */
 export function createSSHConfigFromJiji(
-  jijiSSHConfig?: { user: string; port?: number },
+  jijiSSHConfig?: {
+    user: string;
+    port?: number;
+    proxy?: string;
+    proxy_command?: string;
+  },
 ): Omit<SSHConnectionConfig, "host"> {
   const defaults = getDefaultSSHConfig();
 
@@ -475,6 +538,9 @@ export function createSSHConfigFromJiji(
     username: jijiSSHConfig.user,
     port: jijiSSHConfig.port || defaults.port,
     useAgent: true,
+    ...(jijiSSHConfig.proxy && { proxy: jijiSSHConfig.proxy }),
+    ...(jijiSSHConfig.proxy_command &&
+      { proxyCommand: jijiSSHConfig.proxy_command }),
   };
 }
 

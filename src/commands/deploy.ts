@@ -70,6 +70,8 @@ export const deployCommand = new Command()
             ...createSSHConfigFromJiji({
               user: config!.ssh.user,
               port: config!.ssh.port,
+              proxy: config!.ssh.proxy,
+              proxy_command: config!.ssh.proxyCommand,
             }),
             useAgent: true,
           };

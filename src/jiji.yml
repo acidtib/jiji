@@ -25,6 +25,25 @@ ssh:
   #   StrictHostKeyChecking: "no"
   #   UserKnownHostsFile: "/dev/null"
 
+  # SSH Proxy/Jump Host Configuration
+  # Use either 'proxy' (ProxyJump) or 'proxy_command' (ProxyCommand), not both
+
+  # ProxyJump - Simple bastion/jump host
+  # Automatically tunnels SSH connections through the specified proxy host
+  # Format: [user@]hostname[:port]
+  # Examples:
+  # proxy: root@bastion.example.com
+  # proxy: bastion.example.com:2222
+  # proxy: deploy@jump-host
+
+  # ProxyCommand - Custom proxy command with full control
+  # Executes a custom command to establish the SSH connection
+  # Use %h for target hostname and %p for target port
+  # Examples:
+  # proxy_command: "ssh -W %h:%p user@proxy.example.com"
+  # proxy_command: "ssh -W %h:%p -i ~/.ssh/bastion_key bastion.example.com"
+  # proxy_command: "nc -X connect -x proxy.example.com:3128 %h %p"
+
 # Services configuration
 services:
   # Example web service using a pre-built image

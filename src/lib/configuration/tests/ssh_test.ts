@@ -336,3 +336,240 @@ Deno.test("SSHConfiguration - optional properties return undefined when not set"
   assertEquals(config.keyPassphrase, undefined);
   assertEquals(Object.keys(config.options).length, 0);
 });
+
+// ============================================================================
+// Proxy Configuration Tests
+// ============================================================================
+
+Deno.test("SSHConfiguration - proxy with hostname only", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com",
+  });
+
+  assertEquals(config.proxy, "bastion.example.com");
+  assertEquals(config.proxyCommand, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy with user and hostname", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "root@bastion.example.com",
+  });
+
+  assertEquals(config.proxy, "root@bastion.example.com");
+  assertEquals(config.proxyCommand, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy with user, hostname, and port", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "deploy@bastion.example.com:2222",
+  });
+
+  assertEquals(config.proxy, "deploy@bastion.example.com:2222");
+  assertEquals(config.proxyCommand, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy with hostname and port", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com:2222",
+  });
+
+  assertEquals(config.proxy, "bastion.example.com:2222");
+  assertEquals(config.proxyCommand, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy_command with placeholders", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "ssh -W %h:%p user@proxy.example.com",
+  });
+
+  assertEquals(config.proxyCommand, "ssh -W %h:%p user@proxy.example.com");
+  assertEquals(config.proxy, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy_command with netcat", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "nc -X connect -x proxy.example.com:3128 %h %p",
+  });
+
+  assertEquals(
+    config.proxyCommand,
+    "nc -X connect -x proxy.example.com:3128 %h %p",
+  );
+  assertEquals(config.proxy, undefined);
+});
+
+Deno.test("SSHConfiguration - proxy validation accepts various hostname formats", () => {
+  // The regex is permissive and accepts various formats
+  // Real validation happens during connection
+  const validFormats = [
+    "bastion.example.com",
+    "root@bastion.example.com",
+    "deploy@bastion.example.com:2222",
+    "192.168.1.1",
+    "user@192.168.1.1:22",
+  ];
+
+  for (const proxy of validFormats) {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      proxy,
+    });
+    // Should not throw
+    config.validate();
+  }
+});
+
+Deno.test("SSHConfiguration - proxy validation fails with invalid port", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com:70000",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Invalid proxy port: 70000",
+  );
+});
+
+Deno.test("SSHConfiguration - proxy validation fails with port 0", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com:0",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Invalid proxy port: 0",
+  );
+});
+
+Deno.test("SSHConfiguration - proxy_command validation fails without %h", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "ssh -W proxy.example.com:%p",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "'proxy_command' in ssh must contain %h and %p placeholders",
+  );
+});
+
+Deno.test("SSHConfiguration - proxy_command validation fails without %p", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "ssh -W %h:22 user@proxy.example.com",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "'proxy_command' in ssh must contain %h and %p placeholders",
+  );
+});
+
+Deno.test("SSHConfiguration - proxy_command validation fails without both placeholders", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "ssh user@proxy.example.com",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "'proxy_command' in ssh must contain %h and %p placeholders",
+  );
+});
+
+Deno.test("SSHConfiguration - mutual exclusivity: proxy and proxy_command", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com",
+    proxy_command: "ssh -W %h:%p user@proxy.example.com",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Cannot specify both 'proxy' and 'proxy_command'",
+  );
+});
+
+Deno.test("SSHConfiguration - proxy validation passes with valid proxy", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "root@bastion.example.com:2222",
+  });
+
+  // Should not throw
+  config.validate();
+});
+
+Deno.test("SSHConfiguration - proxy_command validation passes with valid command", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy_command: "ssh -W %h:%p -i ~/.ssh/bastion_key bastion.example.com",
+  });
+
+  // Should not throw
+  config.validate();
+});
+
+Deno.test("SSHConfiguration - toObject includes proxy when set", () => {
+  const config = new SSHConfiguration({
+    user: "admin",
+    proxy: "bastion.example.com:2222",
+  });
+
+  const obj = config.toObject();
+
+  assertEquals(obj, {
+    user: "admin",
+    port: 22,
+    proxy: "bastion.example.com:2222",
+  });
+});
+
+Deno.test("SSHConfiguration - toObject includes proxy_command when set", () => {
+  const config = new SSHConfiguration({
+    user: "admin",
+    proxy_command: "ssh -W %h:%p user@proxy.example.com",
+  });
+
+  const obj = config.toObject();
+
+  assertEquals(obj, {
+    user: "admin",
+    port: 22,
+    proxy_command: "ssh -W %h:%p user@proxy.example.com",
+  });
+});
+
+Deno.test("SSHConfiguration - proxy with IP address", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "root@192.168.1.1:2222",
+  });
+
+  assertEquals(config.proxy, "root@192.168.1.1:2222");
+  config.validate(); // Should not throw
+});
+
+Deno.test("SSHConfiguration - proxy without user defaults to SSH config", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    proxy: "bastion.example.com",
+  });
+
+  assertEquals(config.proxy, "bastion.example.com");
+  config.validate(); // Should not throw
+});

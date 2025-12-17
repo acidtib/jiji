@@ -492,6 +492,8 @@ async function setupSSHConnections(
   const sshConfig = createSSHConfigFromJiji({
     user: config.ssh.user,
     port: config.ssh.port,
+    proxy: config.ssh.proxy,
+    proxy_command: config.ssh.proxyCommand,
   });
 
   // Create SSH managers and test connections

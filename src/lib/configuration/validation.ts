@@ -509,6 +509,62 @@ export class ValidatorPresets {
       ValidationRules.port(),
     ]);
 
+    // SSH Proxy validation
+    validator.addRule("ssh.proxy", ValidationRules.string());
+    validator.addRule(
+      "ssh.proxy",
+      ValidationRules.pattern(
+        /^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/,
+        "Proxy must be in format: [user@]hostname[:port]",
+      ),
+    );
+
+    validator.addRule("ssh.proxy_command", ValidationRules.string());
+    validator.addRule(
+      "ssh.proxy_command",
+      ValidationRules.custom(
+        "proxy_command_placeholders",
+        (value, path) => {
+          const errors: ValidationError[] = [];
+
+          if (typeof value === "string") {
+            if (!value.includes("%h") || !value.includes("%p")) {
+              errors.push({
+                path,
+                message: "proxy_command must contain %h and %p placeholders",
+                code: "MISSING_PLACEHOLDERS",
+              });
+            }
+          }
+
+          return { valid: errors.length === 0, errors, warnings: [] };
+        },
+      ),
+    );
+
+    // Mutual exclusivity check for proxy and proxy_command
+    validator.addRule(
+      "ssh.proxy",
+      ValidationRules.custom(
+        "proxy_mutual_exclusivity",
+        (value, _path, context) => {
+          const errors: ValidationError[] = [];
+          const sshConfig = context.config.ssh as Record<string, unknown>;
+
+          if (value && sshConfig?.proxy_command) {
+            errors.push({
+              path: "ssh.proxy",
+              message:
+                "Cannot specify both 'proxy' and 'proxy_command' - use only one",
+              code: "PROXY_MUTUAL_EXCLUSIVITY",
+            });
+          }
+
+          return { valid: errors.length === 0, errors, warnings: [] };
+        },
+      ),
+    );
+
     // Services validation
     validator.addRules("services", [
       ValidationRules.required(),

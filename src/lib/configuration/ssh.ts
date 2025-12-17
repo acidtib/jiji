@@ -12,6 +12,8 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   private _connectTimeout?: number;
   private _commandTimeout?: number;
   private _options?: Record<string, string>;
+  private _proxy?: string;
+  private _proxyCommand?: string;
 
   /**
    * SSH user for connections
@@ -111,6 +113,47 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * SSH proxy/jump host (format: [user@]hostname[:port])
+   */
+  get proxy(): string | undefined {
+    if (!this._proxy && this.has("proxy")) {
+      this._proxy = this.validateString(
+        this.get("proxy"),
+        "proxy",
+        "ssh",
+      );
+      if (!this._proxy || this._proxy.trim().length === 0) {
+        throw new ConfigurationError("'proxy' in ssh cannot be empty");
+      }
+    }
+    return this._proxy;
+  }
+
+  /**
+   * SSH proxy command (must contain %h and %p placeholders)
+   */
+  get proxyCommand(): string | undefined {
+    if (!this._proxyCommand && this.has("proxy_command")) {
+      this._proxyCommand = this.validateString(
+        this.get("proxy_command"),
+        "proxy_command",
+        "ssh",
+      );
+      // Validate contains %h and %p
+      if (
+        this._proxyCommand &&
+        (!this._proxyCommand.includes("%h") ||
+          !this._proxyCommand.includes("%p"))
+      ) {
+        throw new ConfigurationError(
+          "'proxy_command' in ssh must contain %h and %p placeholders",
+        );
+      }
+    }
+    return this._proxyCommand;
+  }
+
+  /**
    * Validates the SSH configuration
    */
   validate(): void {
@@ -163,6 +206,46 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
         }
       }
     }
+
+    // Validate proxy configuration
+    if (this.proxy && this.proxyCommand) {
+      throw new ConfigurationError(
+        "Cannot specify both 'proxy' and 'proxy_command' in ssh configuration",
+      );
+    }
+
+    // Validate proxy format if present
+    if (this.proxy) {
+      this.validateProxyFormat(this.proxy);
+    }
+
+    // Trigger proxy_command validation (already validates in getter)
+    if (this.proxyCommand) {
+      // Validation happens in the getter
+    }
+  }
+
+  /**
+   * Validates proxy format: [user@]hostname[:port]
+   */
+  private validateProxyFormat(proxy: string): void {
+    const proxyRegex = /^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/;
+    if (!proxyRegex.test(proxy)) {
+      throw new ConfigurationError(
+        `Invalid proxy format: '${proxy}'. Expected format: [user@]hostname[:port]`,
+      );
+    }
+
+    // Validate port if specified
+    const match = proxy.match(proxyRegex);
+    if (match && match[3]) {
+      const port = parseInt(match[3]);
+      if (port < 1 || port > 65535) {
+        throw new ConfigurationError(
+          `Invalid proxy port: ${port}. Port must be between 1 and 65535`,
+        );
+      }
+    }
   }
 
   /**
@@ -192,6 +275,14 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
 
     if (Object.keys(this.options).length > 0) {
       result.options = this.options;
+    }
+
+    if (this.proxy) {
+      result.proxy = this.proxy;
+    }
+
+    if (this.proxyCommand) {
+      result.proxy_command = this.proxyCommand;
     }
 
     return result;
