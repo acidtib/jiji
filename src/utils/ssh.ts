@@ -9,6 +9,9 @@ export interface SSHConnectionConfig {
   useAgent?: boolean;
   proxy?: string;
   proxyCommand?: string;
+  keys?: string[];
+  keyData?: string[];
+  keysOnly?: boolean;
 }
 
 export interface CommandResult {
@@ -143,15 +146,11 @@ export class SSHManager {
    */
   private async getSSHConnectionConfig() {
     const sshAuthSock = Deno.env.get("SSH_AUTH_SOCK");
-    if (!sshAuthSock) {
-      throw new Error("SSH_AUTH_SOCK environment variable not set");
-    }
 
-    const baseConfig = {
+    const baseConfig: any = {
       host: this.config.host,
       username: this.config.username,
       port: this.config.port || 22,
-      agent: sshAuthSock,
       algorithms: {
         serverHostKey: [
           "ssh-rsa",
@@ -180,11 +179,14 @@ export class SSHManager {
       keepaliveInterval: 30000,
     };
 
+    // Handle private keys
+    await this.configurePrivateKeys(baseConfig, sshAuthSock);
+
     // Add proxy support
     if (this.config.proxy) {
       const proxyConfig = await this.buildProxyJumpConfig(
         this.config.proxy,
-        sshAuthSock,
+        sshAuthSock || "",
       );
       return { ...baseConfig, ...proxyConfig };
     }
@@ -197,6 +199,62 @@ export class SSHManager {
     }
 
     return baseConfig;
+  }
+
+  /**
+   * Configure private keys for SSH connection
+   */
+  private async configurePrivateKeys(
+    config: any,
+    sshAuthSock: string | undefined,
+  ): Promise<void> {
+    const hasExplicitKeys = (this.config.keys && this.config.keys.length > 0) ||
+      (this.config.keyData && this.config.keyData.length > 0);
+
+    if (hasExplicitKeys) {
+      const privateKeys: string[] = [];
+
+      // Load private key files
+      if (this.config.keys && this.config.keys.length > 0) {
+        for (const keyPath of this.config.keys) {
+          try {
+            const keyContent = await Deno.readTextFile(keyPath);
+            privateKeys.push(keyContent);
+          } catch (error) {
+            throw new Error(
+              `Failed to read SSH key file '${keyPath}': ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
+
+      // Add inline key data
+      if (this.config.keyData && this.config.keyData.length > 0) {
+        privateKeys.push(...this.config.keyData);
+      }
+
+      // Set private keys in config
+      if (privateKeys.length > 0) {
+        config.privateKey = privateKeys;
+      }
+
+      // Handle keys_only flag
+      if (this.config.keysOnly) {
+        // Don't use ssh-agent
+        delete config.agent;
+      } else if (sshAuthSock) {
+        // Use both agent and explicit keys
+        config.agent = sshAuthSock;
+      }
+    } else {
+      // No explicit keys - use ssh-agent (existing behavior)
+      if (!sshAuthSock) {
+        throw new Error("SSH_AUTH_SOCK environment variable not set");
+      }
+      config.agent = sshAuthSock;
+    }
   }
 
   /**
@@ -526,6 +584,9 @@ export function createSSHConfigFromJiji(
     port?: number;
     proxy?: string;
     proxy_command?: string;
+    keys?: string[];
+    keyData?: string[];
+    keysOnly?: boolean;
   },
 ): Omit<SSHConnectionConfig, "host"> {
   const defaults = getDefaultSSHConfig();
@@ -541,6 +602,10 @@ export function createSSHConfigFromJiji(
     ...(jijiSSHConfig.proxy && { proxy: jijiSSHConfig.proxy }),
     ...(jijiSSHConfig.proxy_command &&
       { proxyCommand: jijiSSHConfig.proxy_command }),
+    ...(jijiSSHConfig.keys && { keys: jijiSSHConfig.keys }),
+    ...(jijiSSHConfig.keyData && { keyData: jijiSSHConfig.keyData }),
+    ...(jijiSSHConfig.keysOnly !== undefined &&
+      { keysOnly: jijiSSHConfig.keysOnly }),
   };
 }
 

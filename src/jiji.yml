@@ -25,6 +25,23 @@ ssh:
   #   StrictHostKeyChecking: "no"
   #   UserKnownHostsFile: "/dev/null"
 
+  # Multiple Private Keys Support
+  # Specify multiple key files (paths are expanded automatically, ~ supported)
+  # keys:
+  #   - ~/.ssh/id_rsa
+  #   - ~/.ssh/deploy_key
+  #   - /path/to/special_key
+
+  # Inline Key Data from Environment Variables
+  # Useful for CI/CD where keys are stored as secrets
+  # key_data:
+  #   - SSH_PRIVATE_KEY_1
+  #   - SSH_PRIVATE_KEY_2
+
+  # Keys Only Mode - ignore ssh-agent, use only specified keys
+  # Set to true to disable ssh-agent and use only keys specified above
+  # keys_only: false
+
   # SSH Proxy/Jump Host Configuration
   # Use either 'proxy' (ProxyJump) or 'proxy_command' (ProxyCommand), not both
 

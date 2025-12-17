@@ -573,3 +573,216 @@ Deno.test("SSHConfiguration - proxy without user defaults to SSH config", () => 
   assertEquals(config.proxy, "bastion.example.com");
   config.validate(); // Should not throw
 });
+
+// ============================================================================
+// Multiple Private Keys Tests
+// ============================================================================
+
+Deno.test("SSHConfiguration - keys array with single key", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: ["~/.ssh/id_rsa"],
+  });
+
+  assertEquals(config.keys?.length, 1);
+  assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
+});
+
+Deno.test("SSHConfiguration - keys array with multiple keys", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key", "/path/to/key"],
+  });
+
+  assertEquals(config.keys?.length, 3);
+  assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
+  assertEquals(config.keys?.[1].endsWith("/.ssh/deploy_key"), true);
+  assertEquals(config.keys?.[2], "/path/to/key");
+});
+
+Deno.test("SSHConfiguration - keys array validation fails for non-array", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: "not-an-array" as any,
+  });
+
+  assertThrows(
+    () => config.keys,
+    ConfigurationError,
+    "'keys' in ssh must be an array",
+  );
+});
+
+Deno.test("SSHConfiguration - keys array validation fails for non-string elements", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: [123, "valid"] as any,
+  });
+
+  assertThrows(
+    () => config.keys,
+    ConfigurationError,
+    "'keys' in ssh must be an array of strings",
+  );
+});
+
+Deno.test("SSHConfiguration - key_data array with environment variables", () => {
+  // Set test environment variables
+  Deno.env.set("TEST_SSH_KEY_1", "fake-key-content-1");
+  Deno.env.set("TEST_SSH_KEY_2", "fake-key-content-2");
+
+  const config = new SSHConfiguration({
+    user: "testuser",
+    key_data: ["TEST_SSH_KEY_1", "TEST_SSH_KEY_2"],
+  });
+
+  assertEquals(config.keyData?.length, 2);
+  assertEquals(config.keyData?.[0], "fake-key-content-1");
+  assertEquals(config.keyData?.[1], "fake-key-content-2");
+
+  // Cleanup
+  Deno.env.delete("TEST_SSH_KEY_1");
+  Deno.env.delete("TEST_SSH_KEY_2");
+});
+
+Deno.test("SSHConfiguration - key_data validation fails for missing env var", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    key_data: ["NONEXISTENT_ENV_VAR"],
+  });
+
+  assertThrows(
+    () => config.keyData,
+    ConfigurationError,
+    "Environment variable 'NONEXISTENT_ENV_VAR' not found for key_data",
+  );
+});
+
+Deno.test("SSHConfiguration - key_data validation fails for non-array", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    key_data: "not-an-array" as any,
+  });
+
+  assertThrows(
+    () => config.keyData,
+    ConfigurationError,
+    "'key_data' in ssh must be an array",
+  );
+});
+
+Deno.test("SSHConfiguration - key_data validation fails for non-string elements", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    key_data: [123] as any,
+  });
+
+  assertThrows(
+    () => config.keyData,
+    ConfigurationError,
+    "'key_data' in ssh must be an array of environment variable names",
+  );
+});
+
+Deno.test("SSHConfiguration - keys_only flag defaults to false", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+  });
+
+  assertEquals(config.keysOnly, false);
+});
+
+Deno.test("SSHConfiguration - keys_only can be set to true", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys_only: true,
+  });
+
+  assertEquals(config.keysOnly, true);
+});
+
+Deno.test("SSHConfiguration - keys_only can be set to false", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys_only: false,
+  });
+
+  assertEquals(config.keysOnly, false);
+});
+
+Deno.test("SSHConfiguration - keys_only validation fails for non-boolean", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys_only: "yes" as any,
+  });
+
+  assertThrows(
+    () => config.keysOnly,
+    ConfigurationError,
+    "'keys_only' in ssh must be a boolean",
+  );
+});
+
+Deno.test("SSHConfiguration - allKeys returns keys array", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
+  });
+
+  const allKeys = config.allKeys;
+  assertEquals(allKeys.length, 2);
+  assertEquals(allKeys[0].endsWith("/.ssh/id_rsa"), true);
+  assertEquals(allKeys[1].endsWith("/.ssh/deploy_key"), true);
+});
+
+Deno.test("SSHConfiguration - allKeys returns empty array when no keys", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+  });
+
+  assertEquals(config.allKeys, []);
+});
+
+Deno.test("SSHConfiguration - toObject includes keys", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.keys, config.keys);
+});
+
+Deno.test("SSHConfiguration - toObject masks key_data for security", () => {
+  Deno.env.set("TEST_KEY", "secret-content");
+
+  const config = new SSHConfiguration({
+    user: "testuser",
+    key_data: ["TEST_KEY"],
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.key_data, "[1 key(s) from environment]");
+
+  Deno.env.delete("TEST_KEY");
+});
+
+Deno.test("SSHConfiguration - toObject includes keys_only when true", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys_only: true,
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.keys_only, true);
+});
+
+Deno.test("SSHConfiguration - toObject excludes keys_only when false", () => {
+  const config = new SSHConfiguration({
+    user: "testuser",
+    keys_only: false,
+  });
+
+  const obj = config.toObject();
+  assertEquals(obj.keys_only, undefined);
+});

@@ -130,6 +130,11 @@ export const execCommand = new Command()
             port: config!.ssh.port,
             proxy: config!.ssh.proxy,
             proxy_command: config!.ssh.proxyCommand,
+            keys: config!.ssh.allKeys.length > 0
+              ? config!.ssh.allKeys
+              : undefined,
+            keyData: config!.ssh.keyData,
+            keysOnly: config!.ssh.keysOnly,
           });
 
           // Create SSH managers for all hosts and test connections

@@ -14,6 +14,9 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   private _options?: Record<string, string>;
   private _proxy?: string;
   private _proxyCommand?: string;
+  private _keys?: string[];
+  private _keyData?: string[];
+  private _keysOnly?: boolean;
 
   /**
    * SSH user for connections
@@ -154,6 +157,92 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
   }
 
   /**
+   * Array of SSH private key file paths
+   */
+  get keys(): string[] | undefined {
+    if (!this._keys && this.has("keys")) {
+      const keysValue = this.get("keys");
+      if (!Array.isArray(keysValue)) {
+        throw new ConfigurationError("'keys' in ssh must be an array");
+      }
+      this._keys = keysValue.map((key) => {
+        if (typeof key !== "string") {
+          throw new ConfigurationError(
+            "'keys' in ssh must be an array of strings",
+          );
+        }
+        return this.expandPath(key);
+      });
+    }
+    return this._keys;
+  }
+
+  /**
+   * Array of environment variable names containing SSH key data
+   */
+  get keyData(): string[] | undefined {
+    if (!this._keyData && this.has("key_data")) {
+      const keyDataValue = this.get("key_data");
+      if (!Array.isArray(keyDataValue)) {
+        throw new ConfigurationError("'key_data' in ssh must be an array");
+      }
+
+      this._keyData = keyDataValue.map((envVarName) => {
+        if (typeof envVarName !== "string") {
+          throw new ConfigurationError(
+            "'key_data' in ssh must be an array of environment variable names",
+          );
+        }
+        const keyContent = Deno.env.get(envVarName);
+        if (!keyContent) {
+          throw new ConfigurationError(
+            `Environment variable '${envVarName}' not found for key_data`,
+          );
+        }
+        return keyContent;
+      });
+    }
+    return this._keyData;
+  }
+
+  /**
+   * If true, ignore ssh-agent and use only specified keys
+   */
+  get keysOnly(): boolean {
+    if (this._keysOnly === undefined && this.has("keys_only")) {
+      const value = this.get("keys_only");
+      if (typeof value !== "boolean") {
+        throw new ConfigurationError("'keys_only' in ssh must be a boolean");
+      }
+      this._keysOnly = value;
+    }
+    return this._keysOnly ?? false;
+  }
+
+  /**
+   * Get all keys (returns keys array or empty array)
+   */
+  get allKeys(): string[] {
+    return this.keys || [];
+  }
+
+  /**
+   * Expand ~ in file paths to home directory
+   */
+  private expandPath(path: string): string {
+    if (path.startsWith("~/")) {
+      const home = Deno.env.get("HOME") || Deno.env.get("USERPROFILE");
+      if (!home) {
+        throw new ConfigurationError(
+          "Cannot expand ~ without HOME environment variable",
+        );
+      }
+      return path.replace("~", home);
+    }
+    return path;
+  }
+
+  /**
    * Validates the SSH configuration
    */
   validate(): void {
@@ -283,6 +372,19 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
 
     if (this.proxyCommand) {
       result.proxy_command = this.proxyCommand;
+    }
+
+    if (this.keys && this.keys.length > 0) {
+      result.keys = this.keys;
+    }
+
+    if (this.keyData && this.keyData.length > 0) {
+      // Don't serialize actual key data, just indicate it's set
+      result.key_data = `[${this.keyData.length} key(s) from environment]`;
+    }
+
+    if (this.keysOnly) {
+      result.keys_only = this.keysOnly;
     }
 
     return result;
