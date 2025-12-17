@@ -6,6 +6,7 @@ import { auditCommand } from "./commands/audit.ts";
 import { lockCommand } from "./commands/lock.ts";
 import { versionCommand } from "./commands/version.ts";
 import { deployCommand } from "./commands/deploy.ts";
+import { removeCommand } from "./commands/remove.ts";
 import { setGlobalLogLevel } from "./utils/logger.ts";
 
 const command = new Command()
@@ -41,6 +42,7 @@ const command = new Command()
   })
   .command("init", initCommand)
   .command("deploy", deployCommand)
+  .command("remove", removeCommand)
   .command("server", serverCommand)
   .command("audit", auditCommand)
   .command("lock", lockCommand)
