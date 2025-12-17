@@ -13,6 +13,7 @@ interface AuditEntry {
   action: string;
   host?: string;
   message: string;
+  raw?: string;
 }
 
 export const auditCommand = new Command()
@@ -425,7 +426,7 @@ function parseAuditEntry(entry: string, host: string): AuditEntry | null {
 /**
  * Check if an entry should be included based on filters
  */
-function shouldIncludeEntry(entry: AuditEntry, options: {
+function shouldIncludeEntry(entry: AuditEntry | null, options: {
   filter?: string;
   status?: string;
   since?: string;

@@ -1,7 +1,7 @@
 import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
 import { executeHostOperations } from "./promise_helpers.ts";
-import { Logger } from "./logger.ts";
+import { log, Logger } from "./logger.ts";
 
 export interface AuditEntry {
   timestamp: string;
@@ -241,7 +241,7 @@ export class AuditAggregator {
 
     // Log summary if there were errors
     if (aggregatedResults.errorCount > 0) {
-      Logger.getInstance().warn(
+      log.warn(
         `Audit logging completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
         "audit",
       );
@@ -280,7 +280,7 @@ export class AuditAggregator {
 
     // Add failed operations with empty entries
     for (const { host, error } of aggregatedResults.hostErrors) {
-      Logger.getInstance().warn(
+      log.warn(
         `Failed to get audit entries from ${host}: ${error.message}`,
         "audit",
       );
@@ -289,7 +289,7 @@ export class AuditAggregator {
 
     // Log summary if there were errors
     if (aggregatedResults.errorCount > 0) {
-      Logger.getInstance().warn(
+      log.warn(
         `Audit retrieval completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
         "audit",
       );

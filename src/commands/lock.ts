@@ -86,10 +86,10 @@ async function acquireLock(
       );
     sshManagers = managers;
 
-    const auditLogger = createServerAuditLogger(sshManagers, config.project);
+    const auditLogger = createServerAuditLogger(sshManagers!, config.project);
 
     // Check if any locks exist
-    const lockStatuses = await checkLockStatus(sshManagers);
+    const lockStatuses = await checkLockStatus(sshManagers!);
     const activeLocks = lockStatuses.filter((status) =>
       status.locked && !options.force
     );
@@ -133,7 +133,7 @@ async function acquireLock(
     };
 
     const results = await Promise.all(
-      sshManagers.map(async (sshManager) => {
+      sshManagers!.map(async (sshManager) => {
         const host = sshManager.getHost();
         try {
           const success = await createLockFile(sshManager, lockData);
@@ -211,16 +211,16 @@ async function releaseLock(
     const globalOptions = options as unknown as GlobalOptions;
     const { config } = await loadConfig(globalOptions.configFile);
     const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupSSHConnections(
+      await setupLockSSHConnections(
         config,
         globalOptions,
       );
     sshManagers = managers;
 
-    const auditLogger = createServerAuditLogger(sshManagers, config.project);
+    const auditLogger = createServerAuditLogger(sshManagers!, config.project);
 
     // Check if locks exist
-    const lockStatuses = await checkLockStatus(sshManagers);
+    const lockStatuses = await checkLockStatus(sshManagers!);
     const activeLocks = lockStatuses.filter((status) => status.locked);
 
     if (activeLocks.length === 0) {
@@ -232,7 +232,7 @@ async function releaseLock(
     console.log("Removing lock files...");
 
     const results = await Promise.all(
-      sshManagers.map(async (sshManager) => {
+      sshManagers!.map(async (sshManager) => {
         const host = sshManager.getHost();
         try {
           const success = await removeLockFile(sshManager);
@@ -305,13 +305,13 @@ async function showLockStatus(
     const globalOptions = options as unknown as GlobalOptions;
     const { config } = await loadConfig(globalOptions.configFile);
     const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupSSHConnections(
+      await setupLockSSHConnections(
         config,
         globalOptions,
       );
     sshManagers = managers;
 
-    const lockStatuses = await checkLockStatus(sshManagers);
+    const lockStatuses = await checkLockStatus(sshManagers!);
 
     if (options.json) {
       console.log(JSON.stringify(
@@ -393,13 +393,13 @@ async function showDetailedLockInfo(
     const globalOptions = options as unknown as GlobalOptions;
     const { config } = await loadConfig(globalOptions.configFile);
     const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupSSHConnections(
+      await setupLockSSHConnections(
         config,
         globalOptions,
       );
     sshManagers = managers;
 
-    const lockStatuses = await checkLockStatus(sshManagers);
+    const lockStatuses = await checkLockStatus(sshManagers!);
 
     for (const status of lockStatuses) {
       console.log(`${colors.bold(colors.cyan(status.host || "unknown"))}`);

@@ -1,6 +1,3 @@
-# Jiji Deployment Configuration Template
-# =====================================
-
 # Project name (required) used for organizing services
 # All audit logs and deployment locks will be stored under .jiji/{project}/ on remote hosts
 project: myproject
@@ -101,6 +98,21 @@ ssh:
   # - Use IdentityFile from config if no keys specified in Jiji
   # - Apply connection timeouts and other SSH options
   # - Always prioritize Jiji configuration over SSH config file settings
+
+# Environment-specific configuration
+# env:
+#   variables:
+#     APP_ENV: production
+#     LOG_LEVEL: info
+#     DEBUG: "false"
+#   # Secrets to load from environment variables
+#   secrets:
+#     - DATABASE_PASSWORD
+#     - API_SECRET_KEY
+#   # Files to load as environment variables
+#   # files:
+#   #   SSL_CERT: /etc/ssl/cert.pem
+#   #   SSL_KEY: /etc/ssl/key.pem
 
 # Services Configuration
 # Services are the deployable units in Jiji - each service represents a containerized application
@@ -217,18 +229,3 @@ services:
 # Deploy to specific hosts:           jiji deploy --target-hosts 192.168.1.100,192.168.1.101
 # Exclude services:                   jiji deploy --exclude worker-queue,cache
 # Combine filters:                    jiji deploy --patterns "web-*" --exclude web-admin --target-hosts 192.168.1.100
-
-# Optional: Environment-specific configuration
-# env:
-#   variables:
-#     APP_ENV: production
-#     LOG_LEVEL: info
-#     DEBUG: "false"
-#   # Secrets to load from environment variables
-#   secrets:
-#     - DATABASE_PASSWORD
-#     - API_SECRET_KEY
-#   # Files to load as environment variables
-#   # files:
-#   #   SSL_CERT: /etc/ssl/cert.pem
-#   #   SSL_KEY: /etc/ssl/key.pem

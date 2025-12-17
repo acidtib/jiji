@@ -30,6 +30,8 @@ export const deployCommand = new Command()
         log.success(`Configuration loaded from: ${configPath}`, "config");
         log.info(`Container engine: ${config.engine}`, "engine");
 
+        if (!config) throw new Error("Configuration failed to load");
+
         // Collect all unique hosts
         const allHosts = config.getAllHosts();
         uniqueHosts = allHosts;
@@ -113,7 +115,7 @@ export const deployCommand = new Command()
               if (!hostSsh) continue;
 
               try {
-                const proxyCmd = new ProxyCommands(config.engine, hostSsh);
+                const proxyCmd = new ProxyCommands(config!.engine, hostSsh);
 
                 // Ensure network exists
                 await proxyCmd.ensureNetwork();
@@ -155,7 +157,7 @@ export const deployCommand = new Command()
                   // Log to audit
                   const hostLogger = createServerAuditLogger(
                     hostSsh,
-                    config.project,
+                    config!.project,
                   );
                   await hostLogger.logProxyEvent(
                     "boot",
@@ -180,7 +182,7 @@ export const deployCommand = new Command()
                 // Log failure to audit
                 const hostLogger = createServerAuditLogger(
                   hostSsh,
-                  config.project,
+                  config!.project,
                 );
                 await hostLogger.logProxyEvent(
                   "boot",
@@ -242,7 +244,7 @@ export const deployCommand = new Command()
                     "deploy",
                   );
                   const pullResult = await hostSsh.executeCommand(
-                    `${config.engine} pull ${fullImageName}`,
+                    `${config!.engine} pull ${fullImageName}`,
                   );
                   if (!pullResult.success) {
                     throw new Error(
@@ -252,7 +254,9 @@ export const deployCommand = new Command()
 
                   // Stop and remove existing container
                   await hostSsh.executeCommand(
-                    `${config.engine} rm -f ${containerName} 2>/dev/null || true`,
+                    `${
+                      config!.engine
+                    } rm -f ${containerName} 2>/dev/null || true`,
                   );
 
                   // Build container run command
@@ -262,14 +266,17 @@ export const deployCommand = new Command()
                   const volumeArgs = service.volumes
                     .map((v) => `-v ${v}`)
                     .join(" ");
-                  const envArgs = service.environment?.toObject
-                    ? Object.entries(service.environment.toObject())
-                      .map(([k, v]) => `-e ${k}="${v}"`)
-                      .join(" ")
+                  const envArgs = service.environment
+                    ? (Array.isArray(service.environment)
+                      ? service.environment.map((e) => `-e "${e}"`).join(" ")
+                      : Object.entries(service.environment)
+                        .map(([k, v]) => `-e ${k}="${v}"`)
+                        .join(" "))
                     : "";
 
-                  const runCommand =
-                    `${config.engine} run --name ${containerName} --network jiji --detach --restart unless-stopped ${portArgs} ${volumeArgs} ${envArgs} ${fullImageName}`;
+                  const runCommand = `${
+                    config!.engine
+                  } run --name ${containerName} --network jiji --detach --restart unless-stopped ${portArgs} ${volumeArgs} ${envArgs} ${fullImageName}`;
 
                   log.status(
                     `Starting container ${containerName} on ${host}`,
@@ -287,7 +294,9 @@ export const deployCommand = new Command()
                   const maxAttempts = 10;
                   while (attempts < maxAttempts) {
                     const statusResult = await hostSsh.executeCommand(
-                      `${config.engine} inspect ${containerName} --format '{{.State.Status}}'`,
+                      `${
+                        config!.engine
+                      } inspect ${containerName} --format '{{.State.Status}}'`,
                     );
                     if (
                       statusResult.success &&
@@ -347,7 +356,7 @@ export const deployCommand = new Command()
                 if (!hostSsh) continue;
 
                 try {
-                  const proxyCmd = new ProxyCommands(config.engine, hostSsh);
+                  const proxyCmd = new ProxyCommands(config!.engine, hostSsh);
                   const containerName = service.getContainerName();
 
                   await proxyCmd.deploy(
@@ -365,7 +374,7 @@ export const deployCommand = new Command()
                   // Log to audit
                   const hostLogger = createServerAuditLogger(
                     hostSsh,
-                    config.project,
+                    config!.project,
                   );
                   await hostLogger.logProxyEvent(
                     "deploy",
