@@ -1,37 +1,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { extractAppPort, ProxyCommands } from "../proxy.ts";
 import { ProxyConfiguration } from "../../lib/configuration/proxy.ts";
-
-// Mock SSHManager for testing
-class MockSSHManager {
-  private commands: string[] = [];
-  private shouldSucceed = true;
-
-  constructor(shouldSucceed = true) {
-    this.shouldSucceed = shouldSucceed;
-  }
-
-  async executeCommand(command: string) {
-    this.commands.push(command);
-    return {
-      success: this.shouldSucceed,
-      stdout: this.shouldSucceed ? "success" : "",
-      stderr: this.shouldSucceed ? "" : "error",
-    };
-  }
-
-  getLastCommand(): string {
-    return this.commands[this.commands.length - 1] || "";
-  }
-
-  getAllCommands(): string[] {
-    return [...this.commands];
-  }
-
-  getHost(): string {
-    return "test-host";
-  }
-}
+import { MockSSHManager } from "../../../tests/mocks.ts";
 
 Deno.test("ProxyCommands - deploy with host only", async () => {
   const mockSSH = new MockSSHManager();
