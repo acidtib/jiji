@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { Configuration } from "../lib/configuration.ts";
+import { Configuration } from "../src/lib/configuration.ts";
 
 // Test data for project integration
 const PROJECT_CONFIG_DATA = {
@@ -186,7 +186,7 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
     assertEquals(result.valid, false, `Config ${index} should be invalid`);
 
     // Should have project-related validation errors
-    const projectErrors = result.errors.filter((err) => err.path === "project");
+    const projectErrors = result.errors.filter((err: { path: string }) => err.path === "project");
     assertEquals(
       projectErrors.length > 0,
       true,
