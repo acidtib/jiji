@@ -173,6 +173,7 @@ services:
     # proxy:
     #   ssl: false
     #   host: web.myproject.example.com
+    #   path_prefix: /api                    # Optional: Path-based routing
     #   healthcheck:
     #     path: /health
     #     interval: 10s
@@ -197,11 +198,66 @@ services:
   #   command: ["node", "dist/server.js"]
   #   volumes:
   #     - "/app/logs:/var/log/app"
+  #   # Host-based routing (separate subdomain)
   #   proxy:
   #     ssl: true
   #     host: api.myproject.example.com
   #     healthcheck:
   #       path: /api/health
+  #       interval: 15s
+  #   # Or path-based routing (same domain, different path)
+  #   # proxy:
+  #   #   ssl: true
+  #   #   host: myproject.example.com
+  #   #   path_prefix: /api
+  #   #   healthcheck:
+  #   #     path: /api/health
+  #   #     interval: 15s
+  #   # Or combined routing (specific host + path prefix)
+  #   # proxy:
+  #   #   ssl: true
+  #   #   host: app.myproject.example.com
+  #   #   path_prefix: /v2
+  #   #   healthcheck:
+  #   #     path: /v2/health
+  #   #     interval: 15s
+
+  # Admin service with path-based routing
+  # admin-panel:
+  #   build:
+  #     context: ./admin
+  #     dockerfile: Dockerfile
+  #   hosts:
+  #     - 192.168.1.100
+  #   ports:
+  #     - "3001:3000"
+  #   environment:
+  #     NODE_ENV: production
+  #   proxy:
+  #     ssl: true
+  #     host: myproject.example.com
+  #     path_prefix: /admin
+  #     healthcheck:
+  #       path: /admin/health
+  #       interval: 10s
+
+  # GraphQL API with path-based routing
+  # graphql-api:
+  #   build:
+  #     context: ./graphql
+  #     dockerfile: Dockerfile
+  #   hosts:
+  #     - 192.168.1.101
+  #   ports:
+  #     - "4000:4000"
+  #   environment:
+  #     NODE_ENV: production
+  #   proxy:
+  #     ssl: true
+  #     host: myproject.example.com
+  #     path_prefix: /graphql
+  #     healthcheck:
+  #       path: /graphql/health
   #       interval: 15s
 
   # Example: Worker service for background jobs
@@ -242,6 +298,54 @@ services:
   #   volumes:
   #     - "/data/redis:/data"
   #   command: ["redis-server", "--appendonly", "yes"]
+
+# Proxy Routing Configuration:
+# ============================
+#
+# Jiji supports both host-based and path-based routing:
+#
+# Host-based routing (different domains/subdomains):
+# services:
+#   frontend:
+#     proxy:
+#       ssl: true
+#       host: myapp.com
+#
+#   api:
+#     proxy:
+#       ssl: true
+#       host: api.myapp.com
+#
+# Path-based routing (same domain, different paths):
+# services:
+#   frontend:
+#     proxy:
+#       ssl: true
+#       host: myapp.com          # Catch-all
+#
+#   api:
+#     proxy:
+#       ssl: true
+#       host: myapp.com
+#       path_prefix: /api        # Routes myapp.com/api/*
+#
+#   admin:
+#     proxy:
+#       ssl: true
+#       host: myapp.com
+#       path_prefix: /admin      # Routes myapp.com/admin/*
+#
+# Combined routing (host + path):
+# services:
+#   api-v1:
+#     proxy:
+#       ssl: true
+#       host: api.myapp.com
+#       path_prefix: /v1         # Routes api.myapp.com/v1/*
+#
+# Routing priority:
+# - Longer path prefixes match first (/api/v2 before /api)
+# - Services without path_prefix are catch-all for their host
 
 # Service Deployment Filtering Examples:
 # =====================================
