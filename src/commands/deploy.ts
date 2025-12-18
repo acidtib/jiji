@@ -12,6 +12,7 @@ import {
 import { PortForwardManager } from "../utils/port_forward.ts";
 import { GitUtils } from "../utils/git.ts";
 import { RegistryManager } from "../utils/registry_manager.ts";
+import { ErrorPagesManager } from "../utils/error_pages.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -770,6 +771,10 @@ export const deployCommand = new Command()
 
           // Deploy services to proxy
           await log.group("Service Proxy Configuration", async () => {
+            // Get version for error pages directory
+            const version = globalOptions.version ||
+              await GitUtils.getCommitSHA(true);
+
             for (const service of servicesWithProxy) {
               log.status(
                 `Configuring proxy for service: ${service.name}`,
@@ -801,11 +806,44 @@ export const deployCommand = new Command()
                   );
                   const containerName = service.getContainerName();
 
+                  // Upload error pages if configured for this service
+                  let errorPagesPath: string | null = null;
+                  if (proxyConfig.errorPages?.path) {
+                    try {
+                      const errorPagesManager = new ErrorPagesManager(
+                        config!.builder.engine,
+                        hostSsh,
+                        config!.project,
+                        service.name,
+                      );
+
+                      errorPagesPath = await errorPagesManager.uploadErrorPages(
+                        proxyConfig.errorPages.path,
+                        version,
+                      );
+
+                      if (errorPagesPath) {
+                        log.success(
+                          `Error pages uploaded for ${service.name} on ${host}`,
+                          "error-pages",
+                        );
+                      }
+                    } catch (error) {
+                      log.error(
+                        `Failed to upload error pages for ${service.name} on ${host}: ${
+                          error instanceof Error ? error.message : String(error)
+                        }`,
+                        "error-pages",
+                      );
+                    }
+                  }
+
                   await proxyCmd.deploy(
                     service.name,
                     containerName,
                     proxyConfig,
                     appPort,
+                    errorPagesPath || undefined,
                   );
 
                   log.success(

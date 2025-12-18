@@ -20,6 +20,8 @@ export interface KamalProxyDeployOptions {
   healthCheckPath?: string;
   /** Health check interval (e.g., "30s", "5m") */
   healthCheckInterval?: string;
+  /** Error pages directory path on the proxy container */
+  errorPagesPath?: string;
 }
 
 /**
@@ -58,6 +60,9 @@ export function buildDeployCommandArgs(
   }
   if (options.healthCheckInterval) {
     args.push(`--health-check-interval=${options.healthCheckInterval}`);
+  }
+  if (options.errorPagesPath) {
+    args.push(`--error-pages=${options.errorPagesPath}`);
   }
 
   return args;
@@ -226,6 +231,7 @@ export class ProxyCommands {
     containerName: string,
     config: ProxyConfiguration,
     appPort: number,
+    errorPagesPath?: string,
   ): Promise<void> {
     const options = buildKamalProxyOptions(
       service,
@@ -233,6 +239,12 @@ export class ProxyCommands {
       appPort,
       config,
     );
+
+    // Add error pages path if provided
+    if (errorPagesPath) {
+      options.errorPagesPath = errorPagesPath;
+    }
+
     const args = buildDeployCommandArgs(options);
     const argsStr = args.join(" ");
 

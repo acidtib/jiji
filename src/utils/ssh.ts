@@ -796,6 +796,26 @@ export class SSHManager {
   }
 
   /**
+   * Get SSH2 client for advanced operations (port forwarding, etc.)
+   * Creates the client if it doesn't exist
+   */
+  async getSsh2Client(): Promise<Client | null> {
+    try {
+      await this.ensureSsh2Client();
+      return this.ssh2Client || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get NodeSSH connection object for accessing internal properties
+   */
+  getNodeSSH(): NodeSSH {
+    return this.ssh;
+  }
+
+  /**
    * Close the SSH connection
    */
   dispose(): void {

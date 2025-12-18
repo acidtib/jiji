@@ -2,6 +2,22 @@ import { log } from "./logger.ts";
 import type { SSHManager } from "./ssh.ts";
 import { connect, type Socket } from "node:net";
 
+// SSH2 types for port forwarding
+interface TcpConnectionInfo {
+  srcIP: string;
+  srcPort: number;
+  destIP: string;
+  destPort: number;
+}
+
+interface StreamAccept {
+  (): NodeJS.ReadWriteStream & { destroy?(): void; end(): void };
+}
+
+interface StreamReject {
+  (): void;
+}
+
 /**
  * SSH Port Forwarder for tunneling local registry to remote hosts
  * Uses SSH reverse port forwarding to make local registry accessible on remote hosts
@@ -44,8 +60,7 @@ export class PortForwarder {
     try {
       // Get the underlying ssh2 client from SSHManager
       // We'll use forwardIn to create a reverse tunnel
-      const client = (this.ssh as any).ssh2Client ||
-                     (this.ssh as any).ssh?.connection;
+      const client = await this.ssh.getSsh2Client();
 
       if (!client) {
         throw new Error(
@@ -75,9 +90,13 @@ export class PortForwarder {
       // Handle incoming connections from the remote side
       client.on(
         "tcp connection",
-        (info: any, accept: () => any, reject: () => void) => {
+        (
+          info: TcpConnectionInfo,
+          accept: StreamAccept,
+          _reject: StreamReject,
+        ) => {
           if (info.destPort === this.remotePort) {
-            this.handleTcpConnection(accept, reject);
+            this.handleTcpConnection(accept, _reject);
           }
         },
       );
@@ -88,9 +107,7 @@ export class PortForwarder {
         "port-forward",
       );
     } catch (error) {
-      const errorMsg = error instanceof Error
-        ? error.message
-        : String(error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
       log.error(`Port forwarding setup failed: ${errorMsg}`, "port-forward");
       throw error;
     }
@@ -100,7 +117,10 @@ export class PortForwarder {
    * Handle TCP connection from remote host
    * Forward it to local registry
    */
-  private handleTcpConnection(accept: () => any, reject: () => void): void {
+  private handleTcpConnection(
+    accept: StreamAccept,
+    _reject: StreamReject,
+  ): void {
     log.debug(
       `Incoming connection on forwarded port ${this.remotePort}`,
       "port-forward",
@@ -147,7 +167,11 @@ export class PortForwarder {
         `Local socket error: ${err.message}`,
         "port-forward",
       );
-      remoteStream.destroy();
+      if (remoteStream.destroy) {
+        remoteStream.destroy();
+      } else {
+        remoteStream.end();
+      }
       cleanup();
     });
   }
@@ -174,8 +198,7 @@ export class PortForwarder {
       this.activeConnections = [];
 
       // Cancel the reverse tunnel
-      const client = (this.ssh as any).ssh2Client ||
-                     (this.ssh as any).ssh?.connection;
+      const client = await this.ssh.getSsh2Client();
 
       if (client) {
         await new Promise<void>((resolve) => {

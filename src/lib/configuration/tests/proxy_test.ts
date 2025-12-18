@@ -290,3 +290,71 @@ Deno.test("ProxyConfiguration - non-boolean ssl", () => {
 
   assertEquals(config.ssl, false); // Should default to false for non-boolean
 });
+
+Deno.test("ProxyConfiguration - error pages configuration", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: "public",
+  });
+
+  assertEquals(config.errorPages?.path, "public");
+});
+
+Deno.test("ProxyConfiguration - error pages undefined when not set", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+  });
+
+  assertEquals(config.errorPages, undefined);
+});
+
+Deno.test("ProxyConfiguration - error pages with relative path", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: "app/public/errors",
+  });
+
+  assertEquals(config.errorPages?.path, "app/public/errors");
+});
+
+Deno.test("ProxyConfiguration - error pages validation with invalid characters", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: "public<test>",
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Error pages path contains invalid characters",
+  );
+});
+
+Deno.test("ProxyConfiguration - error pages with absolute path warning", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: "/var/www/public",
+  });
+
+  // Should not throw, just warn
+  config.validate();
+  assertEquals(config.errorPages?.path, "/var/www/public");
+});
+
+Deno.test("ProxyConfiguration - error pages ignores non-string values", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: 123,
+  });
+
+  assertEquals(config.errorPages, undefined);
+});
+
+Deno.test("ProxyConfiguration - error pages ignores object values", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    error_pages: { path: "public" },
+  });
+
+  assertEquals(config.errorPages, undefined);
+});

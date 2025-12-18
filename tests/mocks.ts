@@ -9,7 +9,7 @@ export class MockSSHManager {
     this.shouldSucceed = shouldSucceed;
   }
 
-  async executeCommand(command: string) {
+  executeCommand(command: string) {
     this.commands.push(command);
     return {
       success: this.shouldSucceed,
