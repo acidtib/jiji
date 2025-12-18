@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { ProxyConfiguration } from "../proxy.ts";
+import { ConfigurationError } from "../base.ts";
 
 Deno.test("ProxyConfiguration - basic host configuration", () => {
   const config = new ProxyConfiguration({
@@ -84,7 +85,7 @@ Deno.test("ProxyConfiguration - validate invalid host format", () => {
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Invalid host format: invalid..host",
   );
 });
@@ -105,7 +106,7 @@ Deno.test("ProxyConfiguration - validate SSL without host", () => {
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "SSL requires a host to be configured",
   );
 });
@@ -118,7 +119,7 @@ Deno.test("ProxyConfiguration - validate path prefix without leading slash", () 
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Path prefix must start with /: api",
   );
 });
@@ -131,7 +132,7 @@ Deno.test("ProxyConfiguration - validate path prefix with invalid characters", (
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Invalid characters in path prefix: /api<script>",
   );
 });
@@ -166,7 +167,7 @@ Deno.test("ProxyConfiguration - validate healthcheck path without leading slash"
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Health check path must start with /: health",
   );
 });
@@ -181,7 +182,7 @@ Deno.test("ProxyConfiguration - validate healthcheck path with invalid character
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Health check path contains invalid characters: /health?<script>",
   );
 });
@@ -196,7 +197,7 @@ Deno.test("ProxyConfiguration - validate healthcheck interval format", () => {
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Invalid health check interval: invalid",
   );
 });
@@ -211,7 +212,7 @@ Deno.test("ProxyConfiguration - validate healthcheck interval too short", () => 
 
   assertThrows(
     () => config.validate(),
-    Error,
+    ConfigurationError,
     "Health check interval too short: 0s. Minimum is 1s.",
   );
 });

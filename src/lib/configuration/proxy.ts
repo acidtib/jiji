@@ -1,4 +1,4 @@
-import { BaseConfiguration } from "./base.ts";
+import { BaseConfiguration, ConfigurationError } from "./base.ts";
 
 /**
  * Interface for proxy healthcheck configuration
@@ -14,6 +14,12 @@ export interface ProxyHealthcheckConfig {
  */
 export class ProxyConfiguration extends BaseConfiguration {
   private rawConfig: Record<string, unknown>;
+
+  // Validation patterns
+  private static readonly HOST_PATTERN =
+    /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+  private static readonly INVALID_PATH_CHARS = /[<>"|?*]/;
+  private static readonly INTERVAL_PATTERN = /^\d+[smh]$/;
 
   constructor(config: Record<string, unknown>) {
     super(config);
@@ -55,23 +61,46 @@ export class ProxyConfiguration extends BaseConfiguration {
   }
 
   validate(): void {
+    const errors: ConfigurationError[] = [];
+    const warnings: string[] = [];
+
     // Host validation
     if (this.host) {
-      const hostPattern =
-        /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-      if (!hostPattern.test(this.host)) {
-        throw new Error(`Invalid host format: ${this.host}`);
+      if (!ProxyConfiguration.HOST_PATTERN.test(this.host)) {
+        errors.push(
+          new ConfigurationError(`Invalid host format: ${this.host}`),
+        );
+      }
+
+      // Localhost warning
+      if (this.host === "localhost" || this.host === "127.0.0.1") {
+        warnings.push(
+          `Host '${this.host}' uses localhost - this may not work in distributed deployments`,
+        );
       }
     }
 
     // Path prefix validation
     if (this.pathPrefix) {
       if (!this.pathPrefix.startsWith("/")) {
-        throw new Error(`Path prefix must start with /: ${this.pathPrefix}`);
+        errors.push(
+          new ConfigurationError(
+            `Path prefix must start with /: ${this.pathPrefix}`,
+          ),
+        );
       }
-      if (/[<>"|?*]/.test(this.pathPrefix)) {
-        throw new Error(
-          `Invalid characters in path prefix: ${this.pathPrefix}`,
+      if (ProxyConfiguration.INVALID_PATH_CHARS.test(this.pathPrefix)) {
+        errors.push(
+          new ConfigurationError(
+            `Invalid characters in path prefix: ${this.pathPrefix}`,
+          ),
+        );
+      }
+
+      // Trailing slash warning
+      if (this.pathPrefix !== "/" && this.pathPrefix.endsWith("/")) {
+        warnings.push(
+          `Path prefix '${this.pathPrefix}' has trailing slash - this may affect routing behavior`,
         );
       }
     }
@@ -80,21 +109,27 @@ export class ProxyConfiguration extends BaseConfiguration {
     const healthcheck = this.healthcheck;
     if (healthcheck?.path) {
       if (!healthcheck.path.startsWith("/")) {
-        throw new Error(
-          `Health check path must start with /: ${healthcheck.path}`,
+        errors.push(
+          new ConfigurationError(
+            `Health check path must start with /: ${healthcheck.path}`,
+          ),
         );
       }
-      if (/[<>"|?*]/.test(healthcheck.path)) {
-        throw new Error(
-          `Health check path contains invalid characters: ${healthcheck.path}`,
+      if (ProxyConfiguration.INVALID_PATH_CHARS.test(healthcheck.path)) {
+        errors.push(
+          new ConfigurationError(
+            `Health check path contains invalid characters: ${healthcheck.path}`,
+          ),
         );
       }
     }
 
     if (healthcheck?.interval) {
-      if (!/^\d+[smh]$/.test(healthcheck.interval)) {
-        throw new Error(
-          `Invalid health check interval: ${healthcheck.interval}`,
+      if (!ProxyConfiguration.INTERVAL_PATTERN.test(healthcheck.interval)) {
+        errors.push(
+          new ConfigurationError(
+            `Invalid health check interval: ${healthcheck.interval}`,
+          ),
         );
       }
       // Check for minimum interval
@@ -103,8 +138,10 @@ export class ProxyConfiguration extends BaseConfiguration {
         const value = parseInt(match[1]);
         const unit = match[2];
         if (unit === "s" && value < 1) {
-          throw new Error(
-            `Health check interval too short: ${healthcheck.interval}. Minimum is 1s.`,
+          errors.push(
+            new ConfigurationError(
+              `Health check interval too short: ${healthcheck.interval}. Minimum is 1s.`,
+            ),
           );
         }
       }
@@ -112,7 +149,17 @@ export class ProxyConfiguration extends BaseConfiguration {
 
     // SSL requires host
     if (this.ssl && !this.host) {
-      throw new Error("SSL requires a host to be configured");
+      errors.push(
+        new ConfigurationError("SSL requires a host to be configured"),
+      );
     }
+
+    // Throw first error if any exist
+    if (errors.length > 0) {
+      throw errors[0];
+    }
+
+    // Log warnings
+    warnings.forEach((w) => console.warn(w));
   }
 }
