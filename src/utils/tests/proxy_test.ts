@@ -1,5 +1,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { extractAppPort, ProxyCommands } from "../proxy.ts";
+import {
+  buildDeployCommandArgs,
+  buildKamalProxyOptions,
+  extractAppPort,
+  type KamalProxyDeployOptions,
+  ProxyCommands,
+} from "../proxy.ts";
 import { ProxyConfiguration } from "../../lib/configuration/proxy.ts";
 import { MockSSHManager } from "../../../tests/mocks.ts";
 
@@ -304,4 +310,135 @@ Deno.test("ProxyCommands - deploy generates correct command format", async () =>
   for (const part of expectedParts) {
     assertStringIncludes(lastCommand, part);
   }
+});
+
+// Unit tests for helper functions
+
+Deno.test("buildKamalProxyOptions - creates complete options", () => {
+  const config = new ProxyConfiguration({
+    ssl: true,
+    host: "example.com",
+    path_prefix: "/api",
+    healthcheck: { path: "/health", interval: "30s" },
+  });
+
+  const options = buildKamalProxyOptions("api", "api-container", 3000, config);
+
+  assertEquals(options.serviceName, "api");
+  assertEquals(options.target, "api-container:3000");
+  assertEquals(options.host, "example.com");
+  assertEquals(options.pathPrefix, "/api");
+  assertEquals(options.tls, true);
+  assertEquals(options.healthCheckPath, "/health");
+  assertEquals(options.healthCheckInterval, "30s");
+});
+
+Deno.test("buildKamalProxyOptions - minimal options", () => {
+  const config = new ProxyConfiguration({
+    ssl: false,
+  });
+
+  const options = buildKamalProxyOptions("web", "web-container", 8080, config);
+
+  assertEquals(options.serviceName, "web");
+  assertEquals(options.target, "web-container:8080");
+  assertEquals(options.host, undefined);
+  assertEquals(options.pathPrefix, undefined);
+  assertEquals(options.tls, false);
+  assertEquals(options.healthCheckPath, undefined);
+  assertEquals(options.healthCheckInterval, undefined);
+});
+
+Deno.test("buildKamalProxyOptions - with partial healthcheck", () => {
+  const config = new ProxyConfiguration({
+    ssl: false,
+    host: "test.com",
+    healthcheck: { path: "/status" },
+  });
+
+  const options = buildKamalProxyOptions("svc", "container", 5000, config);
+
+  assertEquals(options.serviceName, "svc");
+  assertEquals(options.target, "container:5000");
+  assertEquals(options.host, "test.com");
+  assertEquals(options.healthCheckPath, "/status");
+  assertEquals(options.healthCheckInterval, undefined);
+});
+
+Deno.test("buildDeployCommandArgs - builds correct argument array with all options", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "test",
+    target: "container:3000",
+    host: "example.com",
+    pathPrefix: "/api",
+    tls: true,
+    healthCheckPath: "/health",
+    healthCheckInterval: "30s",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--target=container:3000"), true);
+  assertEquals(args.includes("--host=example.com"), true);
+  assertEquals(args.includes("--path-prefix=/api"), true);
+  assertEquals(args.includes("--tls"), true);
+  assertEquals(args.includes("--health-check-path=/health"), true);
+  assertEquals(args.includes("--health-check-interval=30s"), true);
+});
+
+Deno.test("buildDeployCommandArgs - minimal options", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "minimal",
+    target: "min-container:8080",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.length, 1);
+  assertEquals(args[0], "--target=min-container:8080");
+});
+
+Deno.test("buildDeployCommandArgs - with host and SSL only", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "secure",
+    target: "secure-container:443",
+    host: "secure.example.com",
+    tls: true,
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--target=secure-container:443"), true);
+  assertEquals(args.includes("--host=secure.example.com"), true);
+  assertEquals(args.includes("--tls"), true);
+  assertEquals(args.includes("--path-prefix"), false);
+  assertEquals(args.includes("--health-check-path"), false);
+});
+
+Deno.test("buildDeployCommandArgs - with path prefix only", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "path-service",
+    target: "path-container:3000",
+    pathPrefix: "/admin",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--target=path-container:3000"), true);
+  assertEquals(args.includes("--path-prefix=/admin"), true);
+  assertEquals(args.length, 2);
+});
+
+Deno.test("buildDeployCommandArgs - respects false tls value", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "no-tls",
+    target: "container:3000",
+    host: "http.example.com",
+    tls: false,
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--tls"), false);
+  assertEquals(args.includes("--host=http.example.com"), true);
 });
