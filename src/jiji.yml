@@ -285,7 +285,6 @@ services:
     #   healthcheck:
     #     path: /health
     #     interval: 10s
-    #   error_pages: public                  # Directory containing 4xx.html and 5xx.html files
 
   # Example: API service using custom build
   # api-backend:

@@ -10,14 +10,6 @@ export interface ProxyHealthcheckConfig {
 }
 
 /**
- * Interface for proxy error pages configuration
- */
-export interface ProxyErrorPagesConfig {
-  /** Directory path relative to app root containing error page files (e.g., "public") */
-  path: string;
-}
-
-/**
  * Modern ProxyConfiguration for kamal-proxy
  * Supports host-based and path-based routing with SSL termination
  */
@@ -62,17 +54,6 @@ export class ProxyConfiguration extends BaseConfiguration {
       interval: typeof config.interval === "string"
         ? config.interval
         : undefined,
-    };
-  }
-
-  get errorPages(): ProxyErrorPagesConfig | undefined {
-    const errorPagesConfig = this.rawConfig.error_pages;
-    if (!errorPagesConfig || typeof errorPagesConfig !== "string") {
-      return undefined;
-    }
-
-    return {
-      path: errorPagesConfig,
     };
   }
 
@@ -172,26 +153,6 @@ export class ProxyConfiguration extends BaseConfiguration {
       errors.push(
         new ConfigurationError("SSL requires a host to be configured"),
       );
-    }
-
-    // Error pages validation
-    const errorPages = this.errorPages;
-    if (errorPages?.path) {
-      // Check for invalid characters
-      if (ProxyConfiguration.INVALID_PATH_CHARS.test(errorPages.path)) {
-        errors.push(
-          new ConfigurationError(
-            `Error pages path contains invalid characters: ${errorPages.path}`,
-          ),
-        );
-      }
-
-      // Warn if path is absolute
-      if (errorPages.path.startsWith("/")) {
-        warnings.push(
-          `Error pages path '${errorPages.path}' is absolute - should be relative to app root`,
-        );
-      }
     }
 
     // Throw first error if any exist
