@@ -16,6 +16,14 @@ export interface BuildConfig {
 }
 
 /**
+ * Server configuration
+ */
+export type ServerConfig = {
+  host: string;
+  arch?: string;
+};
+
+/**
  * Mount options for files and directories
  */
 type MountOptions = "ro" | "z" | "Z";
@@ -52,7 +60,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _project: string;
   private _image?: string;
   private _build?: string | BuildConfig;
-  private _hosts?: string[];
+  private _servers?: ServerConfig[];
   private _ports?: string[];
   private _volumes?: string[];
   private _files?: FileMountConfig[];
@@ -135,15 +143,15 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
-   * List of hosts to deploy to
+   * List of servers to deploy to
    */
-  get hosts(): string[] {
-    if (!this._hosts) {
-      this._hosts = this.has("hosts")
-        ? this.validateArray<string>(this.get("hosts"), "hosts", this.name)
+  get servers(): ServerConfig[] {
+    if (!this._servers) {
+      this._servers = this.has("servers")
+        ? this.validateServers(this.get("servers"))
         : [];
     }
-    return this._hosts;
+    return this._servers;
   }
 
   /**
@@ -317,16 +325,19 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
 
-    // Validate hosts are not empty
-    if (this.hosts.length === 0) {
+    // Validate servers are not empty
+    if (this.servers.length === 0) {
       throw new ConfigurationError(
-        `Service '${this.name}' must specify at least one host`,
+        `Service '${this.name}' must specify at least one server`,
       );
     }
 
-    // Validate each host
-    for (const host of this.hosts) {
-      this.validateHost(host, "hosts", this.name);
+    // Validate each server
+    for (const serverConfig of this.servers) {
+      this.validateHost(serverConfig.host, "servers", this.name);
+      if (serverConfig.arch) {
+        this.validateArch(serverConfig.arch);
+      }
     }
 
     // Validate proxy configuration if present
@@ -436,7 +447,7 @@ export class ServiceConfiguration extends BaseConfiguration
       result.build = this.build;
     }
 
-    result.hosts = this.hosts;
+    result.servers = this.servers;
 
     if (this.ports.length > 0) {
       result.ports = this.ports;
@@ -474,15 +485,26 @@ export class ServiceConfiguration extends BaseConfiguration
 
   /**
    * Returns the image name to use (either from image or generated from build)
+   * @param registry Optional registry prefix (e.g., "localhost:5000")
+   * @param version Optional version tag (e.g., "a1b2c3d" or "latest")
    */
-  getImageName(registry?: string): string {
+  getImageName(registry?: string, version?: string): string {
     if (this.image) {
+      // Pre-built image: use as-is or override version
+      if (version) {
+        const [img] = this.image.split(":");
+        const fullImage = `${img}:${version}`;
+        return registry ? `${registry}/${fullImage}` : fullImage;
+      }
       return this.image;
     }
 
-    // Generate image name from project and service name
-    const imageName = `${this.project}-${this.name}:latest`;
-    return registry ? `${registry}/${imageName}` : imageName;
+    // Built image: project-service format
+    const imageName = `${this.project}-${this.name}`;
+    const imageTag = version || "latest";
+    const fullName = `${imageName}:${imageTag}`;
+
+    return registry ? `${registry}/${fullName}` : fullName;
   }
 
   /**
@@ -491,5 +513,132 @@ export class ServiceConfiguration extends BaseConfiguration
   getContainerName(suffix?: string): string {
     const baseName = `${this.project}-${this.name}`;
     return suffix ? `${baseName}-${suffix}` : baseName;
+  }
+
+  /**
+   * Validate architecture values
+   */
+  private validateArch(arch: unknown): string | string[] {
+    const validArchs = ["amd64", "arm64"];
+
+    if (typeof arch === "string") {
+      if (!validArchs.includes(arch)) {
+        throw new ConfigurationError(
+          `Invalid architecture '${arch}' for service '${this.name}'. Allowed values: ${
+            validArchs.join(", ")
+          }`,
+        );
+      }
+      return arch;
+    }
+
+    if (Array.isArray(arch)) {
+      if (arch.length === 0) {
+        throw new ConfigurationError(
+          `Architecture array cannot be empty for service '${this.name}'`,
+        );
+      }
+
+      for (const a of arch) {
+        if (typeof a !== "string") {
+          throw new ConfigurationError(
+            `Architecture values must be strings for service '${this.name}'`,
+          );
+        }
+        if (!validArchs.includes(a)) {
+          throw new ConfigurationError(
+            `Invalid architecture '${a}' for service '${this.name}'. Allowed values: ${
+              validArchs.join(", ")
+            }`,
+          );
+        }
+      }
+
+      // Remove duplicates
+      return [...new Set(arch)];
+    }
+
+    throw new ConfigurationError(
+      `Architecture must be a string or array of strings for service '${this.name}'`,
+    );
+  }
+
+  /**
+   * Get the default architecture for builds
+   */
+  static getDefaultArch(): string {
+    return "amd64";
+  }
+
+  /**
+   * Validate servers configuration
+   */
+  private validateServers(servers: unknown): ServerConfig[] {
+    if (!Array.isArray(servers)) {
+      throw new ConfigurationError(
+        `'servers' for service '${this.name}' must be an array`,
+      );
+    }
+
+    return servers.map((server, index) => {
+      if (typeof server === "object" && server !== null) {
+        const serverObj = server as Record<string, unknown>;
+        if (!serverObj.host || typeof serverObj.host !== "string") {
+          throw new ConfigurationError(
+            `Server at index ${index} for service '${this.name}' must have a 'host' property`,
+          );
+        }
+        if (serverObj.arch && typeof serverObj.arch !== "string") {
+          throw new ConfigurationError(
+            `Server architecture at index ${index} for service '${this.name}' must be a string`,
+          );
+        }
+        return {
+          host: serverObj.host,
+          arch: serverObj.arch as string | undefined,
+        };
+      } else {
+        throw new ConfigurationError(
+          `Server at index ${index} for service '${this.name}' must be an object with 'host' property`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Get all unique architectures required by this service's servers
+   */
+  getRequiredArchitectures(): string[] {
+    const architectures = new Set<string>();
+
+    const defaultArch = ServiceConfiguration.getDefaultArch();
+
+    for (const serverConfig of this.servers) {
+      const arch = serverConfig.arch || defaultArch;
+      architectures.add(arch);
+    }
+
+    return Array.from(architectures);
+  }
+
+  /**
+   * Get servers by architecture
+   */
+  getServersByArchitecture(): Map<string, string[]> {
+    const serversByArch = new Map<string, string[]>();
+
+    const defaultArch = ServiceConfiguration.getDefaultArch();
+
+    for (const serverConfig of this.servers) {
+      const serverAddress = serverConfig.host;
+      const arch = serverConfig.arch || defaultArch;
+
+      if (!serversByArch.has(arch)) {
+        serversByArch.set(arch, []);
+      }
+      serversByArch.get(arch)!.push(serverAddress);
+    }
+
+    return serversByArch;
   }
 }

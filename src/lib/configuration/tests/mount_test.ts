@@ -229,7 +229,7 @@ Deno.test("ServiceConfiguration - toObject excludes empty files and directories"
 Deno.test("ServiceConfiguration - validates files with valid SELinux options", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: [
       "config.yml:/app/config.yml:z",
       "secret.key:/app/secret.key:Z",
@@ -245,7 +245,7 @@ Deno.test("ServiceConfiguration - validates files with valid SELinux options", (
 Deno.test("ServiceConfiguration - validates directories with valid permissions", () => {
   const serviceData = {
     image: "mysql:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     directories: [
       {
         local: "data",

@@ -20,18 +20,20 @@ engine: docker
 ssh:
   user: testuser
   port: 22
+builder:
+  local: true
 services:
   web:
     image: nginx:latest
-    hosts:
-      - web1.example.com
-      - web2.example.com
+    servers:
+      - host: web1.example.com
+      - host: web2.example.com
     ports:
       - "80:80"
   api:
     image: node:18
-    hosts:
-      - api1.example.com
+    servers:
+      - host: api1.example.com
     ports:
       - "3000:3000"
     env:

@@ -111,13 +111,15 @@ export class ServiceFilter {
   }
 
   /**
-   * Check if service has any hosts that match the target hosts
+   * Check if a service has servers matching the target hosts
    */
   private static hasMatchingHosts(
     service: ServiceConfiguration,
     targetHosts: string[],
   ): boolean {
-    return service.hosts.some((host) => targetHosts.includes(host));
+    return service.servers.some((server) => {
+      return targetHosts.includes(server.host);
+    });
   }
 
   /**
@@ -148,13 +150,14 @@ export class ServiceFilter {
   ): ServiceConfiguration[][] {
     const hostGroups = new Map<string, ServiceConfiguration[]>();
 
-    // Group services by their first host (for simplicity)
+    // Group services by their first server (for simplicity)
     for (const service of services.values()) {
-      const primaryHost = service.hosts[0];
-      if (!hostGroups.has(primaryHost)) {
-        hostGroups.set(primaryHost, []);
+      const primaryServer = service.servers[0];
+      const primaryServerAddress = primaryServer.host;
+      if (!hostGroups.has(primaryServerAddress)) {
+        hostGroups.set(primaryServerAddress, []);
       }
-      hostGroups.get(primaryHost)!.push(service);
+      hostGroups.get(primaryServerAddress)!.push(service);
     }
 
     // Convert to batches respecting concurrency limit
@@ -284,7 +287,9 @@ export class ServiceFilter {
   ): string[] {
     const hosts = new Set<string>();
     for (const service of services.values()) {
-      service.hosts.forEach((host) => hosts.add(host));
+      service.servers.forEach((server) => {
+        hosts.add(server.host);
+      });
     }
     return Array.from(hosts).sort();
   }
@@ -297,7 +302,7 @@ export class ServiceFilter {
     host: string,
   ): ServiceConfiguration[] {
     return Array.from(services.values()).filter((service) =>
-      service.hosts.includes(host)
+      service.servers.some((server) => server.host === host)
     );
   }
 

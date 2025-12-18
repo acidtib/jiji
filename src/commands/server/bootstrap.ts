@@ -40,7 +40,7 @@ export const bootstrapCommand = new Command()
         const engineCommand = getEngineCommand(config);
 
         // Collect all unique hosts from services using new system
-        let allHosts = config.getAllHosts();
+        let allHosts = config.getAllServerHosts();
 
         // Filter by services if requested
         if (globalOptions.services) {

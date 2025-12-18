@@ -2,6 +2,7 @@ import { ConfigurationLoader } from "./configuration/loader.ts";
 import { SSHConfiguration } from "./configuration/ssh.ts";
 import { ServiceConfiguration } from "./configuration/service.ts";
 import { EnvironmentConfiguration } from "./configuration/environment.ts";
+import { BuilderConfiguration } from "./configuration/builder.ts";
 import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
@@ -18,6 +19,7 @@ export class Configuration extends BaseConfiguration {
   private _ssh?: SSHConfiguration;
   private _services?: Map<string, ServiceConfiguration>;
   private _environment?: EnvironmentConfiguration;
+  private _builder?: BuilderConfiguration; // Lazy-loaded, required field
   private _configPath?: string;
   private _environmentName?: string;
 
@@ -111,6 +113,21 @@ export class Configuration extends BaseConfiguration {
   }
 
   /**
+   * Builder configuration for building and managing container images
+   */
+  get builder(): BuilderConfiguration {
+    if (!this._builder) {
+      const builderConfig = this.getRequired<Record<string, unknown>>(
+        "builder",
+      );
+      this._builder = new BuilderConfiguration(
+        this.validateObject(builderConfig, "builder"),
+      );
+    }
+    return this._builder;
+  }
+
+  /**
    * Configuration file path
    */
   get configPath(): string | undefined {
@@ -154,18 +171,18 @@ export class Configuration extends BaseConfiguration {
    */
   getServicesForHost(hostname: string): ServiceConfiguration[] {
     return Array.from(this.services.values()).filter((service) =>
-      service.hosts.includes(hostname)
+      service.servers.some((server) => server.host === hostname)
     );
   }
 
   /**
-   * Gets all unique hosts from all services
+   * Gets all unique server hosts from all services
    */
-  getAllHosts(): string[] {
+  getAllServerHosts(): string[] {
     const hosts = new Set<string>();
     for (const service of this.services.values()) {
-      for (const host of service.hosts) {
-        hosts.add(host);
+      for (const server of service.servers) {
+        hosts.add(server.host);
       }
     }
     return Array.from(hosts).sort();
@@ -192,7 +209,9 @@ export class Configuration extends BaseConfiguration {
       for (const serviceName of matchingServices) {
         const service = this.services.get(serviceName);
         if (service) {
-          service.hosts.forEach((host) => hosts.add(host));
+          service.servers.forEach((server) => {
+            hosts.add(server.host);
+          });
         }
       }
     }
@@ -309,6 +328,20 @@ export class Configuration extends BaseConfiguration {
       }
     }
 
+    // Validate builder configuration (required)
+    try {
+      this.builder.validate();
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        result.errors.push({
+          path: "builder",
+          message: error.message,
+          code: "BUILDER_VALIDATION",
+        });
+        result.valid = false;
+      }
+    }
+
     // Custom cross-service validations
     this.validateHostConsistency(result);
 
@@ -319,14 +352,14 @@ export class Configuration extends BaseConfiguration {
    * Validates host consistency across services
    */
   private validateHostConsistency(result: ValidationResult): void {
-    const allHosts = this.getAllHosts();
+    const allHosts = this.getAllServerHosts();
 
     for (const service of this.services.values()) {
-      if (service.hosts.length === 0) {
+      if (service.servers.length === 0) {
         result.errors.push({
-          path: `services.${service.name}.hosts`,
-          message: `Service '${service.name}' must specify at least one host`,
-          code: "NO_HOSTS",
+          path: `services.${service.name}.servers`,
+          message: `Service '${service.name}' must specify at least one server`,
+          code: "NO_SERVERS",
         });
         result.valid = false;
       }
@@ -370,6 +403,9 @@ export class Configuration extends BaseConfiguration {
     if (Object.keys(envObj).length > 0) {
       result.env = envObj;
     }
+
+    // Add builder (required)
+    result.builder = this.builder.getRawConfig();
 
     return result;
   }
@@ -426,6 +462,13 @@ export class Configuration extends BaseConfiguration {
         user: "root",
         port: 22,
       },
+      builder: {
+        local: true,
+        registry: {
+          type: "local",
+          port: 5000,
+        },
+      },
       services: {
         web: {
           image: "nginx:latest",
@@ -467,6 +510,8 @@ export {
   ServiceConfiguration,
 } from "./configuration/service.ts";
 export { EnvironmentConfiguration } from "./configuration/environment.ts";
+export { BuilderConfiguration } from "./configuration/builder.ts";
+export { RegistryConfiguration } from "./configuration/registry.ts";
 export { ConfigurationLoader } from "./configuration/loader.ts";
 export {
   ProxyConfiguration,

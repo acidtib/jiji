@@ -12,17 +12,27 @@ const VALID_CONFIG_DATA = {
     connect_timeout: 30,
     command_timeout: 300,
   },
+  builder: {
+    local: true,
+    registry: {
+      type: "local",
+      port: 5000,
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      hosts: ["web1.example.com", "web2.example.com"],
+      servers: [
+        { host: "web1.example.com", arch: "amd64" },
+        { host: "web2.example.com", arch: "amd64" },
+      ],
       ports: ["80:80", "443:443"],
       env: {
         NODE_ENV: "production",
       },
     },
     api: {
-      hosts: ["api1.example.com"],
+      servers: [{ host: "api1.example.com", arch: "amd64" }],
       ports: ["3000:3000"],
       build: {
         dockerfile: "Dockerfile",
@@ -45,10 +55,17 @@ const INVALID_CONFIG_DATA = {
     user: "testuser",
     port: "not_a_number",
   },
+  builder: {
+    local: true,
+    registry: {
+      type: "local",
+      port: 5000,
+    },
+  },
   services: {
     web: {
       // Missing required fields
-      hosts: [],
+      servers: [],
     },
   },
 };
@@ -59,10 +76,17 @@ const MINIMAL_CONFIG_DATA = {
   ssh: {
     user: "root",
   },
+  builder: {
+    local: true,
+    registry: {
+      type: "local",
+      port: 5000,
+    },
+  },
   services: {
     simple: {
       image: "alpine:latest",
-      hosts: ["localhost"],
+      servers: [{ host: "localhost", arch: "amd64" }],
     },
   },
 };
@@ -141,7 +165,10 @@ Deno.test("Configuration - services property", () => {
   const webService = services.get("web");
   assertEquals(webService?.name, "web");
   assertEquals(webService?.image, "nginx:latest");
-  assertEquals(webService?.hosts, ["web1.example.com", "web2.example.com"]);
+  assertEquals(webService?.servers.map((s) => s.host), [
+    "web1.example.com",
+    "web2.example.com",
+  ]);
 
   const apiService = services.get("api");
   assertEquals(apiService?.name, "api");
@@ -149,7 +176,7 @@ Deno.test("Configuration - services property", () => {
     (apiService?.build as unknown as Record<string, unknown>)?.dockerfile,
     "Dockerfile",
   );
-  assertEquals(apiService?.hosts, ["api1.example.com"]);
+  assertEquals(apiService?.servers.map((s) => s.host), ["api1.example.com"]);
 });
 
 Deno.test("Configuration - environment configuration", () => {
@@ -209,9 +236,9 @@ Deno.test("Configuration - getServicesForHost method", () => {
   assertEquals(noServices.length, 0);
 });
 
-Deno.test("Configuration - getAllHosts method", () => {
+Deno.test("Configuration - getAllServerHosts method", () => {
   const config = new Configuration(VALID_CONFIG_DATA);
-  const hosts = config.getAllHosts();
+  const hosts = config.getAllServerHosts();
 
   assertEquals(hosts.sort(), [
     "api1.example.com",
@@ -270,7 +297,7 @@ Deno.test("Configuration - validation checks host consistency", () => {
     services: {
       web: {
         image: "nginx:latest",
-        hosts: [], // Empty hosts array
+        servers: [], // Empty servers array
       },
     },
   };
@@ -279,7 +306,7 @@ Deno.test("Configuration - validation checks host consistency", () => {
   const result = config.validate();
 
   assertEquals(result.valid, false);
-  assertEquals(result.errors.some((e) => e.code === "NO_HOSTS"), true);
+  assertEquals(result.errors.some((e) => e.code === "NO_SERVERS"), true);
 });
 
 Deno.test("Configuration - validation warns about many hosts", () => {
@@ -289,7 +316,7 @@ Deno.test("Configuration - validation warns about many hosts", () => {
   for (let i = 1; i <= 15; i++) {
     manyHostsServices[`service${i}`] = {
       image: "nginx:latest",
-      hosts: [`host${i}.example.com`],
+      servers: [{ host: `host${i}.example.com`, arch: "amd64" }],
     };
   }
 
@@ -367,7 +394,7 @@ Deno.test("Configuration - handles missing optional sections", () => {
     services: {
       web: {
         image: "nginx:latest",
-        hosts: ["localhost"],
+        servers: [{ host: "localhost", arch: "amd64" }],
       },
     },
   };

@@ -1,16 +1,19 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { ServiceConfiguration } from "../service.ts";
+import { type BuildConfig, ServiceConfiguration } from "../service.ts";
 import { ConfigurationError } from "../base.ts";
 
 // Test data
 const MINIMAL_SERVICE_DATA = {
   image: "nginx:latest",
-  hosts: ["web1.example.com"],
+  servers: [{ host: "web1.example.com", arch: "amd64" }],
 };
 
 const COMPLETE_SERVICE_DATA = {
   image: "myapp:v1.0.0",
-  hosts: ["web1.example.com", "web2.example.com"],
+  servers: [
+    { host: "web1.example.com", arch: "amd64" },
+    { host: "web2.example.com", arch: "amd64" },
+  ],
   ports: ["80:80", "443:443"],
   volumes: ["/data:/app/data", "/logs:/app/logs"],
   environment: {
@@ -23,7 +26,7 @@ const COMPLETE_SERVICE_DATA = {
 
 const ENVIRONMENT_ARRAY_SERVICE_DATA = {
   image: "myapp:latest",
-  hosts: ["localhost"],
+  servers: [{ host: "localhost", arch: "amd64" }],
   environment: [
     "NODE_ENV=production",
     "PORT=3000",
@@ -32,7 +35,7 @@ const ENVIRONMENT_ARRAY_SERVICE_DATA = {
 };
 
 const BUILD_SERVICE_DATA = {
-  hosts: ["localhost"],
+  servers: [{ host: "localhost", arch: "amd64" }],
   build: {
     dockerfile: "Dockerfile",
     context: ".",
@@ -45,13 +48,30 @@ const BUILD_SERVICE_DATA = {
 };
 
 const STRING_BUILD_SERVICE_DATA = {
-  hosts: ["localhost"],
+  servers: [{ host: "localhost", arch: "amd64" }],
   build: "./backend",
+};
+
+const SERVER_ARCH_SERVICE_DATA = {
+  image: "nginx:latest",
+  servers: [
+    { host: "192.168.1.100", arch: "amd64" },
+    { host: "192.168.1.101", arch: "arm64" },
+    { host: "192.168.1.102", arch: "amd64" },
+  ],
+};
+
+const MIXED_ARCH_BUILD_SERVICE_DATA = {
+  build: "./app",
+  servers: [
+    { host: "192.168.1.100", arch: "amd64" },
+    { host: "192.168.1.101", arch: "arm64" },
+  ],
 };
 
 const INVALID_SERVICE_DATA = {
   // Missing required image and build
-  hosts: ["localhost"],
+  servers: [{ host: "localhost", arch: "amd64" }],
 };
 
 Deno.test("ServiceConfiguration - minimal configuration", () => {
@@ -64,7 +84,7 @@ Deno.test("ServiceConfiguration - minimal configuration", () => {
   assertEquals(service.name, "web");
   assertEquals(service.project, "myproject");
   assertEquals(service.image, "nginx:latest");
-  assertEquals(service.hosts, ["web1.example.com"]);
+  assertEquals(service.servers[0].host, "web1.example.com");
   assertEquals(service.ports, []);
   assertEquals(service.volumes, []);
   assertEquals(service.environment, {});
@@ -82,7 +102,10 @@ Deno.test("ServiceConfiguration - complete configuration", () => {
   assertEquals(service.name, "api");
   assertEquals(service.project, "myproject");
   assertEquals(service.image, "myapp:v1.0.0");
-  assertEquals(service.hosts, ["web1.example.com", "web2.example.com"]);
+  assertEquals(service.servers.map((s) => s.host), [
+    "web1.example.com",
+    "web2.example.com",
+  ]);
   assertEquals(service.ports, ["80:80", "443:443"]);
   assertEquals(service.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(service.command, ["npm", "start"]);
@@ -249,28 +272,29 @@ Deno.test("ServiceConfiguration - validation fails with both image and build", (
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails without hosts", () => {
+Deno.test("ServiceConfiguration - validation fails without servers", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
+    // Missing servers array
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Service 'web' must specify at least one host",
+    "Service 'web' must specify at least one server",
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with empty hosts", () => {
+Deno.test("ServiceConfiguration - validation fails with empty servers", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: [],
+    servers: [],
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Service 'web' must specify at least one host",
+    "Service 'web' must specify at least one server",
   );
 });
 
@@ -287,29 +311,29 @@ Deno.test("ServiceConfiguration - validation fails with invalid image type", () 
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with invalid hosts type", () => {
+Deno.test("ServiceConfiguration - validation fails with invalid servers type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: "not-an-array",
+    servers: "not-an-array",
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "'hosts' in web must be an array",
+    "'servers' for service 'web' must be an array",
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with non-string host", () => {
+Deno.test("ServiceConfiguration - validation fails with invalid server", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["valid-host", 123],
+    servers: [{ host: "web1.example.com", arch: "amd64" }, 123],
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "'hosts' in web must be a string",
+    "Server at index 1 for service 'web' must be an object with 'host' property",
   );
 });
 
@@ -436,7 +460,10 @@ Deno.test("ServiceConfiguration - toObject method", () => {
   const obj = service.toObject();
 
   assertEquals(obj.image, "myapp:v1.0.0");
-  assertEquals(obj.hosts, ["web1.example.com", "web2.example.com"]);
+  assertEquals(obj.servers, [
+    { host: "web1.example.com", arch: "amd64" },
+    { host: "web2.example.com", arch: "amd64" },
+  ]);
   assertEquals(obj.ports, ["80:80", "443:443"]);
   assertEquals(obj.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(obj.command, ["npm", "start"]);
@@ -456,7 +483,7 @@ Deno.test("ServiceConfiguration - toObject excludes empty arrays and undefined v
   const obj = service.toObject();
 
   assertEquals(obj.image, "nginx:latest");
-  assertEquals(obj.hosts, ["web1.example.com"]);
+  assertEquals(obj.servers, [{ host: "web1.example.com", arch: "amd64" }]);
 
   // Empty arrays and undefined values should not be included
   assertEquals("ports" in obj, false);
@@ -468,7 +495,7 @@ Deno.test("ServiceConfiguration - toObject excludes empty arrays and undefined v
 
 Deno.test("ServiceConfiguration - toObject with build configuration", () => {
   const service = new ServiceConfiguration(
-    "api",
+    "web",
     BUILD_SERVICE_DATA,
     "myproject",
   );
@@ -484,6 +511,7 @@ Deno.test("ServiceConfiguration - toObject with build configuration", () => {
     },
     target: "runtime",
   });
+  assertEquals(obj.servers, [{ host: "localhost", arch: "amd64" }]);
 });
 
 Deno.test("ServiceConfiguration - lazy loading of properties", () => {
@@ -497,9 +525,9 @@ Deno.test("ServiceConfiguration - lazy loading of properties", () => {
   assertEquals(service.image, "myapp:v1.0.0");
   assertEquals(service.image, "myapp:v1.0.0");
 
-  const hosts1 = service.hosts;
-  const hosts2 = service.hosts;
-  assertEquals(hosts1, hosts2); // Should be the same instance
+  const servers1 = service.servers;
+  const servers2 = service.servers;
+  assertEquals(servers1, servers2); // Should be the same instance
 
   const env1 = service.environment;
   const env2 = service.environment;
@@ -534,29 +562,152 @@ Deno.test("ServiceConfiguration - build with all options", () => {
     BUILD_SERVICE_DATA,
     "myproject",
   );
-  const build = service.build as unknown as Record<string, unknown>;
+  const build = service.build as BuildConfig;
 
   assertEquals(build.context, ".");
   assertEquals(build.dockerfile, "Dockerfile");
   assertEquals(build.target, "runtime");
   assertEquals(typeof build.args, "object");
-  assertEquals((build.args as Record<string, unknown>).BUILD_ENV, "production");
-  assertEquals((build.args as Record<string, unknown>).VERSION, "1.0.0");
+  assertEquals(build.args?.BUILD_ENV, "production");
+  assertEquals(build.args?.VERSION, "1.0.0");
 });
 
 Deno.test("ServiceConfiguration - build with minimal options", () => {
   const serviceData = {
-    hosts: ["localhost"],
+    servers: [{ host: "localhost", arch: "amd64" }],
     build: {
-      context: "./app",
+      context: "./frontend",
     },
   };
 
   const service = new ServiceConfiguration("web", serviceData, "myproject");
-  const build = service.build as unknown as Record<string, unknown>;
+  const build = service.build as BuildConfig;
 
-  assertEquals(build.context, "./app");
+  assertEquals(build.context, "./frontend");
   assertEquals(build.dockerfile, undefined);
   assertEquals(build.args, undefined);
   assertEquals(build.target, undefined);
+});
+
+Deno.test("ServiceConfiguration - server with architecture configuration", () => {
+  const service = new ServiceConfiguration(
+    "web",
+    SERVER_ARCH_SERVICE_DATA,
+    "myproject",
+  );
+
+  const servers = service.servers;
+  assertEquals(servers.length, 3);
+
+  // Check server objects
+  assertEquals(servers[0], { host: "192.168.1.100", arch: "amd64" });
+  assertEquals(servers[1], { host: "192.168.1.101", arch: "arm64" });
+  assertEquals(servers[2], { host: "192.168.1.102", arch: "amd64" });
+});
+
+Deno.test("ServiceConfiguration - getRequiredArchitectures returns unique architectures", () => {
+  const service = new ServiceConfiguration(
+    "web",
+    SERVER_ARCH_SERVICE_DATA,
+    "myproject",
+  );
+
+  const architectures = service.getRequiredArchitectures();
+  assertEquals(architectures.sort(), ["amd64", "arm64"]);
+});
+
+Deno.test("ServiceConfiguration - getServersByArchitecture groups servers correctly", () => {
+  const service = new ServiceConfiguration(
+    "web",
+    SERVER_ARCH_SERVICE_DATA,
+    "myproject",
+  );
+
+  const serversByArch = service.getServersByArchitecture();
+
+  assertEquals(serversByArch.get("amd64"), ["192.168.1.100", "192.168.1.102"]);
+  assertEquals(serversByArch.get("arm64"), ["192.168.1.101"]);
+});
+
+Deno.test("ServiceConfiguration - build service with mixed server architectures", () => {
+  const service = new ServiceConfiguration(
+    "web",
+    MIXED_ARCH_BUILD_SERVICE_DATA,
+    "myproject",
+  );
+
+  const architectures = service.getRequiredArchitectures();
+  assertEquals(architectures.sort(), ["amd64", "arm64"]);
+
+  const serversByArch = service.getServersByArchitecture();
+  assertEquals(serversByArch.get("amd64"), ["192.168.1.100"]);
+  assertEquals(serversByArch.get("arm64"), ["192.168.1.101"]);
+});
+
+Deno.test("ServiceConfiguration - default architecture for servers without arch", () => {
+  const serviceData = {
+    image: "nginx:latest",
+    servers: [
+      { host: "192.168.1.100" },
+      { host: "192.168.1.101" },
+    ],
+  };
+
+  const service = new ServiceConfiguration("web", serviceData, "myproject");
+  const architectures = service.getRequiredArchitectures();
+
+  assertEquals(architectures, ["amd64"]); // all default to amd64
+
+  const serversByArch = service.getServersByArchitecture();
+  assertEquals(serversByArch.get("amd64"), ["192.168.1.100", "192.168.1.101"]);
+});
+
+Deno.test("ServiceConfiguration - invalid server architecture throws error", () => {
+  const serviceData = {
+    image: "nginx:latest",
+    servers: [
+      { host: "192.168.1.100", arch: "x86" }, // invalid arch
+    ],
+  };
+
+  assertThrows(
+    () => {
+      const service = new ServiceConfiguration("web", serviceData, "myproject");
+      service.validate(); // This should trigger validation
+    },
+    ConfigurationError,
+    "Invalid architecture 'x86'",
+  );
+});
+
+Deno.test("ServiceConfiguration - invalid server object format throws error", () => {
+  const serviceData = {
+    image: "nginx:latest",
+    servers: [
+      { arch: "amd64" }, // missing host property
+    ],
+  };
+
+  assertThrows(
+    () => {
+      const service = new ServiceConfiguration("web", serviceData, "myproject");
+      service.servers; // Access servers to trigger validation
+    },
+    ConfigurationError,
+    "Server at index 0 for service 'web' must have a 'host' property",
+  );
+});
+
+Deno.test("ServiceConfiguration - server without arch defaults to amd64", () => {
+  const serviceData = {
+    image: "nginx:latest",
+    servers: [
+      { host: "192.168.1.100" }, // no arch specified
+    ],
+  };
+
+  const service = new ServiceConfiguration("web", serviceData, "myproject");
+  const architectures = service.getRequiredArchitectures();
+
+  assertEquals(architectures, ["amd64"]);
 });

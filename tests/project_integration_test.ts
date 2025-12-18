@@ -9,10 +9,13 @@ const PROJECT_CONFIG_DATA = {
     user: "deploy",
     port: 22,
   },
+  builder: {
+    local: true,
+  },
   services: {
     web: {
       image: "nginx:latest",
-      hosts: ["web1.example.com", "web2.example.com"],
+      servers: [{ host: "web1.example.com" }, { host: "web2.example.com" }],
       ports: ["80:80", "443:443"],
     },
     api: {
@@ -20,7 +23,7 @@ const PROJECT_CONFIG_DATA = {
         context: "./api",
         dockerfile: "Dockerfile.prod",
       },
-      hosts: ["api1.example.com"],
+      servers: [{ host: "api1.example.com" }],
       ports: ["3000:3000"],
       environment: {
         NODE_ENV: "production",
@@ -29,7 +32,7 @@ const PROJECT_CONFIG_DATA = {
     },
     database: {
       image: "postgres:15",
-      hosts: ["db1.example.com"],
+      servers: [{ host: "db1.example.com" }],
       ports: ["5432:5432"],
       environment: {
         POSTGRES_DB: "myapp",
@@ -103,25 +106,29 @@ Deno.test("Project Integration - Project validation enforces naming rules", () =
       project: "myapp",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "my-app",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "my_app",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "app123",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
   ];
 
@@ -140,43 +147,50 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
       project: "",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Empty
     {
       project: "My-App",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Uppercase
     {
       project: "my app",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Space
     {
       project: "my.app",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Dot
     {
       project: "my@app",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Special char
     {
       project: "-myapp",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Start with hyphen
     {
       project: "myapp-",
       engine: "docker",
       ssh: { user: "deploy" },
-      services: { web: { image: "nginx", hosts: ["localhost"] } },
+      builder: { local: true },
+      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // End with hyphen
   ];
 
@@ -203,7 +217,7 @@ Deno.test("Project Integration - Missing project field fails validation", () => 
     services: {
       web: {
         image: "nginx:latest",
-        hosts: ["localhost"],
+        servers: [{ host: "localhost" }],
       },
     },
   };
@@ -306,10 +320,11 @@ Deno.test("Project Integration - Complex project name validation", () => {
       project: name,
       engine: "docker" as const,
       ssh: { user: "deploy" },
+      builder: { local: true },
       services: {
         web: {
           image: "nginx:latest",
-          hosts: ["localhost"],
+          servers: [{ host: "localhost" }],
         },
       },
     };

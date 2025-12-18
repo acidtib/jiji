@@ -2,8 +2,114 @@
 # All audit logs and deployment locks will be stored under .jiji/{project}/ on remote hosts
 project: myproject
 
-# Container engine to use (docker or podman)
-engine: podman
+# Builder Configuration
+# ====================
+# Controls how container images are built and where they're stored
+# Supports both local builds (on your machine) and remote builds (on dedicated build servers)
+#
+# Note: Build-specific options like context, dockerfile, and args are configured per-service
+# in the services section under the 'build' option. The builder section contains global
+# settings that apply to all builds.
+#
+# Builder Use Cases:
+# 1. Local Development: Build images locally and use local registry with SSH port forwarding
+# 2. Remote Building: Offload builds to powerful remote servers for faster compilation
+# 3. CI/CD Integration: Push to remote registries for production deployment
+# 4. Multi-architecture: Use remote builders for cross-platform image builds
+
+builder:
+  # Container engine for building (docker or podman)
+  # Options: docker, podman
+  engine: podman
+
+  # Build location - determines where images are built
+  local: true
+
+  # Remote builder SSH connection (required when local: false)
+  # Enables building on remote servers with more resources or different architectures
+  # Format: ssh://[user@]hostname[:port]
+  # Examples:
+  # remote: ssh://builder@192.168.1.50:22
+  # remote: ssh://root@build-server.example.com
+  # remote: ssh://ubuntu@build-arm64.local:2222
+
+  # Enable build cache (default: true)
+  # Set to false to force clean builds (useful for CI/CD or debugging)
+  cache: true
+
+  # Container Registry Configuration
+  # ===============================
+  # Determines where built images are stored and retrieved from
+  registry:
+    # Registry type: "local" or "remote"
+    type: local
+
+    # Local Registry Settings (type: local)
+    # Creates a local registry with SSH port forwarding to deployment hosts
+    # Perfect for development and small deployments
+    port: 5000
+
+    # Remote Registry Settings (type: remote)
+    # Use when deploying to production or sharing images across teams
+    # Examples: Docker Hub, AWS ECR, Google GCR, Harbor, GitLab Registry
+    # server: registry.example.com:5000
+    # server: your-account.dkr.ecr.us-west-2.amazonaws.com
+    # server: gcr.io/your-project-id
+    # username: myuser
+    # password: "${REGISTRY_PASSWORD}"  # Environment variable substitution supported
+
+# Builder Configuration Examples:
+# ===============================
+#
+# Example 1: Local Development Setup
+# builder:
+#   engine: podman
+#   local: true
+#   cache: true
+#   registry:
+#     type: local
+#     port: 5000
+#
+# Example 2: Remote Building with Local Registry
+# builder:
+#   engine: docker
+#   local: false
+#   remote: ssh://builder@192.168.1.100:22
+#   cache: true
+#   registry:
+#     type: local
+#     port: 5000
+#
+# Example 3: Production with Remote Registry (Docker Hub)
+# builder:
+#   engine: docker
+#   local: true
+#   cache: false  # Always fresh builds in CI
+#   registry:
+#     type: remote
+#     server: docker.io
+#     username: myusername
+#     password: "${DOCKER_HUB_TOKEN}"
+#
+# Example 4: AWS ECR Registry
+# builder:
+#   engine: docker
+#   local: true
+#   registry:
+#     type: remote
+#     server: 123456789012.dkr.ecr.us-west-2.amazonaws.com
+#     username: AWS
+#     password: "${ECR_TOKEN}"
+#
+# Example 5: Remote Building with Custom Registry Port
+# builder:
+#   engine: podman
+#   local: false
+#   remote: ssh://build-server@192.168.1.200:22
+#   cache: true
+#   registry:
+#     type: local
+#     port: 6000
 
 # SSH configuration for remote connections
 ssh:
@@ -135,9 +241,11 @@ services:
   # Example: Web frontend service using pre-built image
   web-frontend:
     image: nginx:latest
-    hosts:
-      - 192.168.1.100
-      - 192.168.1.101
+    servers:
+      - host: 192.168.1.100
+        arch: amd64
+      - host: 192.168.1.101
+        arch: amd64
     ports:
       - "127.0.0.1:8080:80"
     # Volumes: Docker/Podman named volumes or host paths
@@ -181,20 +289,24 @@ services:
   # Example: API service using custom build
   # api-backend:
   #   build:
-  #     context: ./api
-  #     dockerfile: Dockerfile
-  #     args:
+  #     context: ./api                    # Build context (relative to project root)
+  #     dockerfile: Dockerfile           # Dockerfile path (relative to context)
+  #     args:                            # Build arguments for this service
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
-  #   hosts:
-  #     - 192.168.1.100
-  #     - 192.168.1.102
+  #       BUILD_DATE: "${BUILD_DATE}"    # Environment variable substitution
+  #   servers:
+  #     # Mixed architecture deployment
+  #     - host: 192.168.1.100
+  #       arch: amd64
+  #     - host: 192.168.1.102
+  #       arch: arm64
   #   ports:
   #     - "3000:3000"
   #   environment:
   #     NODE_ENV: production
   #     DATABASE_URL: "postgresql://user:pass@192.168.1.103:5432/myapp"
-  #     REDIS_URL: "redis://192.168.1.104:6379"
+  #     REDIS_URL: "redis://redis.local:6379"
   #   command: ["node", "dist/server.js"]
   #   volumes:
   #     - "/app/logs:/var/log/app"
@@ -227,8 +339,9 @@ services:
   #   build:
   #     context: ./admin
   #     dockerfile: Dockerfile
-  #   hosts:
-  #     - 192.168.1.100
+  #   servers:
+  #     - host: 192.168.1.100
+  #       arch: amd64
   #   ports:
   #     - "3001:3000"
   #   environment:
@@ -237,67 +350,100 @@ services:
   #     ssl: true
   #     host: myproject.example.com
   #     path_prefix: /admin
-  #     healthcheck:
-  #       path: /admin/health
-  #       interval: 10s
 
-  # GraphQL API with path-based routing
-  # graphql-api:
-  #   build:
-  #     context: ./graphql
-  #     dockerfile: Dockerfile
-  #   hosts:
-  #     - 192.168.1.101
-  #   ports:
-  #     - "4000:4000"
-  #   environment:
-  #     NODE_ENV: production
-  #   proxy:
-  #     ssl: true
-  #     host: myproject.example.com
-  #     path_prefix: /graphql
-  #     healthcheck:
-  #       path: /graphql/health
-  #       interval: 15s
+# Server Architecture Configuration Examples:
+#
+# 1. Single architecture deployment:
+#   servers:
+#     - host: 192.168.1.100
+#       arch: amd64
+#     - host: 192.168.1.101
+#       arch: amd64
+#
+# 2. Mixed architecture deployment:
+#   servers:
+#     - host: 192.168.1.100
+#       arch: amd64
+#     - host: 192.168.1.101
+#       arch: arm64
+#
+# 3. ARM-only deployment:
+#   servers:
+#     - host: 192.168.1.200
+#       arch: arm64
+#     - host: 192.168.1.201
+#       arch: arm64
+#
+# Notes:
+# - Each server must specify host and optionally arch
+# - Supported architectures: amd64, arm64
+# - If no arch specified, defaults to amd64
+# - Jiji automatically builds multi-architecture images when needed
+#     healthcheck:
+#       path: /admin/health
+#       interval: 10s
 
-  # Example: Worker service for background jobs
-  # worker-queue:
-  #   build:
-  #     context: ./worker
-  #     dockerfile: Dockerfile
-  #   hosts:
-  #     - 192.168.1.103
-  #   environment:
-  #     QUEUE_URL: "redis://192.168.1.104:6379"
-  #     WORKER_CONCURRENCY: "4"
-  #   command: ["npm", "run", "worker"]
-  #   volumes:
-  #     - "/app/worker-data:/data"
+# GraphQL API with path-based routing
+# graphql-api:
+#   build:
+#     context: ./graphql
+#     dockerfile: Dockerfile
+#   servers:
+#     - host: 192.168.1.101
+#       arch: amd64
+#   ports:
+#     - "4000:4000"
+#   environment:
+#     NODE_ENV: production
+#   proxy:
+#     ssl: true
+#     host: myproject.example.com
+#     path_prefix: /graphql
+#     healthcheck:
+#       path: /graphql/health
+#       interval: 15s
 
-  # Example: Database service
-  # database:
-  #   image: postgres:15-alpine
-  #   hosts:
-  #     - 192.168.1.103
-  #   ports:
-  #     - "127.0.0.1:5432:5432"
-  #   environment:
-  #     POSTGRES_DB: myapp
-  #     POSTGRES_USER: appuser
-  #     POSTGRES_PASSWORD: securepassword
-  #   volumes:
-  #     - "/data/postgres:/var/lib/postgresql/data"
+# Example: Worker service for background jobs
+# worker-queue:
+#   build:
+#     context: ./worker
+#     dockerfile: Dockerfile
+#   servers:
+#     - host: 192.168.1.103
+#       arch: amd64
+#   environment:
+#     QUEUE_URL: "redis://192.168.1.104:6379"
+#     WORKER_CONCURRENCY: "4"
+#   command: ["npm", "run", "worker"]
+#   volumes:
+#     - "/app/worker-data:/data"
 
-  # Example: Cache service
-  # cache:
-  #   image: redis:7-alpine
-  #   hosts:
-  #     - 192.168.1.104
-  #   ports:
-  #     - "127.0.0.1:6379:6379"
-  #   volumes:
-  #     - "/data/redis:/data"
-  #   command: ["redis-server", "--appendonly", "yes"]
+# Example: Database service
+# database:
+#   image: postgres:15-alpine
+#   servers:
+#     - host: 192.168.1.103
+#       arch: amd64
+#   ports:
+#     - "127.0.0.1:5432:5432"
+#   environment:
+#     POSTGRES_DB: myapp
+#     POSTGRES_USER: appuser
+#     POSTGRES_PASSWORD: securepassword
+#   volumes:
+#     - "/data/postgres:/var/lib/postgresql/data"
+
+# Example: Cache service
+# cache:
+#   image: redis:7-alpine
+#   servers:
+#     - host: 192.168.1.104
+#       arch: amd64
+#   ports:
+#     - "127.0.0.1:6379:6379"
+#   volumes:
+#     - "/data/redis:/data"
+#   command: ["redis-server", "--appendonly", "yes"]
 
 # Proxy Routing Configuration:
 # ============================
@@ -346,6 +492,99 @@ services:
 # Routing priority:
 # - Longer path prefixes match first (/api/v2 before /api)
 # - Services without path_prefix are catch-all for their host
+
+# Service Build Architecture Configuration:
+# ========================================
+# The 'arch' field in service build configurations specifies the target architecture(s)
+# for container builds. This enables multi-platform deployments and cross-architecture builds.
+#
+# Key Features:
+# - Single architecture: arch: "amd64" (default if not specified)
+# - Multi-architecture: arch: ["amd64", "arm64"]
+# - Automatic platform detection: Uses Docker/Podman --platform flags
+# - Cross-compilation support: Build ARM images on Intel machines (and vice versa)
+#
+# Supported Architectures:
+# - amd64: Intel/AMD 64-bit (most common server architecture)
+# - arm64: ARM 64-bit (Apple Silicon, AWS Graviton, Raspberry Pi 4+)
+#
+# Docker/Podman Requirements:
+# - Docker: Requires Docker Desktop with buildx or Docker CE with buildx plugin
+# - Podman: Native multi-arch support in recent versions
+# - For multi-arch builds, the base images must support the target architectures
+#
+# Use Cases:
+# 1. Consistent amd64 builds for Intel/AMD servers
+# 2. ARM64 builds for Apple Silicon development and ARM servers
+# 3. Multi-arch builds for hybrid cloud deployments
+# 4. Cross-platform container distribution
+
+# Service Build Architecture Examples:
+# ===================================
+# Single architecture build (amd64 is default):
+# services:
+#   web-app:
+#     build:
+#       context: .
+#       # arch: amd64  # Optional - amd64 is default
+#
+# Multi-architecture build:
+# services:
+#   web-app:
+#     build:
+#       context: .
+#       arch:
+#         - amd64
+#         - arm64
+#
+# Mixed architecture deployments:
+# services:
+#   web-frontend:
+#     build:
+#       context: ./frontend
+#       # arch: amd64            # Default architecture (Intel servers)
+#     hosts:
+#       - web1.example.com
+#
+#   api-backend:
+#     build:
+#       context: ./backend
+#       arch:
+#         - amd64
+#         - arm64              # Support both Intel and ARM servers
+#     hosts:
+#       - api1.example.com    # Intel server
+#       - api2.example.com    # ARM server
+#
+# Architecture-specific optimization example:
+# services:
+#   ml-service:
+#     build:
+#       context: ./ml-service
+#       dockerfile: Dockerfile.gpu
+#       arch: amd64           # GPU workloads typically require Intel/AMD
+#     hosts:
+#       - gpu-server.example.com
+#
+#   iot-gateway:
+#     build:
+#       context: ./iot-gateway
+#       dockerfile: Dockerfile.arm
+#       arch: arm64           # IoT deployments often use ARM
+#     hosts:
+#       - iot-hub.example.com
+#
+# Cross-platform development example:
+# services:
+#   web-app:
+#     build:
+#       context: .
+#       arch:
+#         - amd64             # Production Intel servers
+#         - arm64             # Local Apple Silicon development
+#     hosts:
+#       - prod-web1.example.com   # Intel production
+#       - prod-web2.example.com   # Intel production
 
 # Service Deployment Filtering Examples:
 # =====================================

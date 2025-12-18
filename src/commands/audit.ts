@@ -68,8 +68,8 @@ export const auditCommand = new Command()
       // Collect all unique hosts from services
       const allHosts = new Set<string>();
       for (const [, service] of config.services) {
-        if (service.hosts && service.hosts.length > 0) {
-          service.hosts.forEach((host: string) => allHosts.add(host));
+        if (service.servers && service.servers.length > 0) {
+          service.servers.forEach((server) => allHosts.add(server.host));
         }
       }
 

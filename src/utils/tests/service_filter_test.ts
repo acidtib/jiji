@@ -17,21 +17,21 @@ Deno.test("ServiceFilter - basic service filtering", () => {
       "web",
       createMockService("web", {
         image: "nginx:latest",
-        hosts: ["host1", "host2"],
+        servers: [{ host: "host1" }, { host: "host2" }],
       }),
     ],
     [
       "api",
       createMockService("api", {
         image: "node:18",
-        hosts: ["host2", "host3"],
+        servers: [{ host: "host2" }, { host: "host3" }],
       }),
     ],
     [
       "worker",
       createMockService("worker", {
         build: { context: "./worker" },
-        hosts: ["host3"],
+        servers: [{ host: "host3" }],
       }),
     ],
   ]);
@@ -65,28 +65,28 @@ Deno.test("ServiceFilter - pattern matching", () => {
       "web-frontend",
       createMockService("web-frontend", {
         image: "nginx:latest",
-        hosts: ["host1"],
+        servers: [{ host: "host1" }],
       }),
     ],
     [
       "web-backend",
       createMockService("web-backend", {
         image: "node:18",
-        hosts: ["host2"],
+        servers: [{ host: "host2" }],
       }),
     ],
     [
       "database",
       createMockService("database", {
         image: "postgres:15",
-        hosts: ["host3"],
+        servers: [{ host: "host3" }],
       }),
     ],
     [
       "cache",
       createMockService("cache", {
         image: "redis:7",
-        hosts: ["host4"],
+        servers: [{ host: "host4" }],
       }),
     ],
   ]);
@@ -125,21 +125,21 @@ Deno.test("ServiceFilter - build vs image filtering", () => {
       "pre-built",
       createMockService("pre-built", {
         image: "nginx:latest",
-        hosts: ["host1"],
+        servers: [{ host: "host1" }],
       }),
     ],
     [
       "custom-build",
       createMockService("custom-build", {
         build: { context: "./app" },
-        hosts: ["host2"],
+        servers: [{ host: "host2" }],
       }),
     ],
     [
       "another-image",
       createMockService("another-image", {
         image: "redis:7",
-        hosts: ["host3"],
+        servers: [{ host: "host3" }],
       }),
     ],
   ]);
@@ -169,21 +169,21 @@ Deno.test("ServiceFilter - host-based filtering", () => {
       "service1",
       createMockService("service1", {
         image: "nginx:latest",
-        hosts: ["host1", "host2"],
+        servers: [{ host: "host1" }, { host: "host2" }],
       }),
     ],
     [
       "service2",
       createMockService("service2", {
         image: "node:18",
-        hosts: ["host2", "host3"],
+        servers: [{ host: "host2" }, { host: "host3" }],
       }),
     ],
     [
       "service3",
       createMockService("service3", {
         image: "redis:7",
-        hosts: ["host4"],
+        servers: [{ host: "host4" }],
       }),
     ],
   ]);
@@ -217,14 +217,14 @@ Deno.test("ServiceFilter - exclusion takes precedence", () => {
       "web",
       createMockService("web", {
         image: "nginx:latest",
-        hosts: ["host1"],
+        servers: [{ host: "host1" }],
       }),
     ],
     [
       "api",
       createMockService("api", {
         image: "node:18",
-        hosts: ["host2"],
+        servers: [{ host: "host2" }],
       }),
     ],
   ]);
@@ -245,28 +245,28 @@ Deno.test("ServiceFilter - complex filtering", () => {
       "web-frontend",
       createMockService("web-frontend", {
         image: "nginx:latest",
-        hosts: ["host1", "host2"],
+        servers: [{ host: "host1" }, { host: "host2" }],
       }),
     ],
     [
       "web-api",
       createMockService("web-api", {
         build: { context: "./api" },
-        hosts: ["host2", "host3"],
+        servers: [{ host: "host2" }, { host: "host3" }],
       }),
     ],
     [
       "worker-queue",
       createMockService("worker-queue", {
         build: { context: "./worker" },
-        hosts: ["host3"],
+        servers: [{ host: "host3" }],
       }),
     ],
     [
       "database",
       createMockService("database", {
         image: "postgres:15",
-        hosts: ["host4"],
+        servers: [{ host: "host4" }],
       }),
     ],
   ]);
@@ -289,23 +289,38 @@ Deno.test("ServiceFilter - service grouping by concurrency", () => {
   const services = new Map([
     [
       "service1",
-      createMockService("service1", { image: "nginx", hosts: ["host1"] }),
+      createMockService("service1", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
     ],
     [
       "service2",
-      createMockService("service2", { image: "nginx", hosts: ["host2"] }),
+      createMockService("service2", {
+        image: "nginx",
+        servers: [{ host: "host2" }],
+      }),
     ],
     [
       "service3",
-      createMockService("service3", { image: "nginx", hosts: ["host3"] }),
+      createMockService("service3", {
+        image: "nginx",
+        servers: [{ host: "host3" }],
+      }),
     ],
     [
       "service4",
-      createMockService("service4", { image: "nginx", hosts: ["host4"] }),
+      createMockService("service4", {
+        image: "nginx",
+        servers: [{ host: "host4" }],
+      }),
     ],
     [
       "service5",
-      createMockService("service5", { image: "nginx", hosts: ["host5"] }),
+      createMockService("service5", {
+        image: "nginx",
+        servers: [{ host: "host5" }],
+      }),
     ],
   ]);
 
@@ -325,11 +340,41 @@ Deno.test("ServiceFilter - service grouping by concurrency", () => {
 
 Deno.test("ServiceFilter - service grouping by hosts", () => {
   const services = new Map([
-    ["web1", createMockService("web1", { image: "nginx", hosts: ["host1"] })],
-    ["web2", createMockService("web2", { image: "nginx", hosts: ["host1"] })],
-    ["api1", createMockService("api1", { image: "node", hosts: ["host2"] })],
-    ["api2", createMockService("api2", { image: "node", hosts: ["host2"] })],
-    ["db", createMockService("db", { image: "postgres", hosts: ["host3"] })],
+    [
+      "web1",
+      createMockService("web1", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
+    ],
+    [
+      "web2",
+      createMockService("web2", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
+    ],
+    [
+      "api1",
+      createMockService("api1", {
+        image: "node",
+        servers: [{ host: "host2" }],
+      }),
+    ],
+    [
+      "api2",
+      createMockService("api2", {
+        image: "node",
+        servers: [{ host: "host2" }],
+      }),
+    ],
+    [
+      "db",
+      createMockService("db", {
+        image: "postgres",
+        servers: [{ host: "host3" }],
+      }),
+    ],
   ]);
 
   const groups = ServiceFilter.group(services, {
@@ -349,13 +394,28 @@ Deno.test("ServiceFilter - dependency-based grouping", () => {
   const services = new Map([
     [
       "database",
-      createMockService("database", { image: "postgres", hosts: ["host1"] }),
+      createMockService("database", {
+        image: "postgres",
+        servers: [{ host: "host1" }],
+      }),
     ],
-    ["api", createMockService("api", { image: "node", hosts: ["host2"] })],
-    ["web", createMockService("web", { image: "nginx", hosts: ["host3"] })],
+    [
+      "api",
+      createMockService("api", { image: "node", servers: [{ host: "host2" }] }),
+    ],
+    [
+      "web",
+      createMockService("web", {
+        image: "nginx",
+        servers: [{ host: "host3" }],
+      }),
+    ],
     [
       "worker",
-      createMockService("worker", { image: "worker", hosts: ["host4"] }),
+      createMockService("worker", {
+        image: "worker",
+        servers: [{ host: "host4" }],
+      }),
     ],
   ]);
 
@@ -389,14 +449,14 @@ Deno.test("ServiceFilter - utility functions", () => {
       "web",
       createMockService("web", {
         image: "nginx:latest",
-        hosts: ["host1", "host2"],
+        servers: [{ host: "host1" }, { host: "host2" }],
       }),
     ],
     [
       "api",
       createMockService("api", {
         image: "node:18",
-        hosts: ["host2", "host3"],
+        servers: [{ host: "host2" }, { host: "host3" }],
       }),
     ],
   ]);
@@ -417,13 +477,22 @@ Deno.test("ServiceFilter - utility functions", () => {
 
 Deno.test("ServiceFilter - filter summary", () => {
   const allServices = new Map([
-    ["web", createMockService("web", { image: "nginx", hosts: ["host1"] })],
-    ["api", createMockService("api", { image: "node", hosts: ["host2"] })],
+    [
+      "web",
+      createMockService("web", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
+    ],
+    [
+      "api",
+      createMockService("api", { image: "node", servers: [{ host: "host2" }] }),
+    ],
     [
       "worker",
       createMockService("worker", {
         build: { context: "./worker" },
-        hosts: ["host3"],
+        servers: [{ host: "host3" }],
       }),
     ],
   ]);
@@ -519,7 +588,13 @@ Deno.test("ServiceFilter - edge cases", () => {
 
   // Filter with no matching services
   const services = new Map([
-    ["web", createMockService("web", { image: "nginx", hosts: ["host1"] })],
+    [
+      "web",
+      createMockService("web", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
+    ],
   ]);
 
   const filtered2 = ServiceFilter.filter(services, {
@@ -535,7 +610,13 @@ Deno.test("ServiceFilter - edge cases", () => {
 
   // Grouping with single service
   const singleService = new Map([
-    ["web", createMockService("web", { image: "nginx", hosts: ["host1"] })],
+    [
+      "web",
+      createMockService("web", {
+        image: "nginx",
+        servers: [{ host: "host1" }],
+      }),
+    ],
   ]);
   const groups2 = ServiceFilter.group(singleService, {
     maxConcurrent: 5,

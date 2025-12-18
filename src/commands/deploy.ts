@@ -9,6 +9,7 @@ import {
   prepareMountDirectories,
   prepareMountFiles,
 } from "../utils/mount_manager.ts";
+import { PortForwardManager } from "../utils/port_forward.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -18,6 +19,7 @@ export const deployCommand = new Command()
     let uniqueHosts: string[] = [];
     let config: Configuration | undefined;
     let sshManagers: SSHManager[] | undefined;
+    let portForwardManager: PortForwardManager | undefined;
 
     try {
       await log.group("Service Deployment", async () => {
@@ -38,7 +40,7 @@ export const deployCommand = new Command()
         if (!config) throw new Error("Configuration failed to load");
 
         // Collect all unique hosts
-        const allHosts = config.getAllHosts();
+        const allHosts = config.getAllServerHosts();
         uniqueHosts = allHosts;
 
         if (uniqueHosts.length === 0) {
@@ -78,6 +80,55 @@ export const deployCommand = new Command()
           uniqueHosts = result.connectedHosts;
         });
 
+        // Set up port forwarding for local registry if needed
+        if (config!.builder.registry.isLocal()) {
+          await log.group("Local Registry Port Forwarding", async () => {
+            const registryPort = config!.builder.registry.port;
+            log.info(
+              `Setting up reverse port forwarding for local registry (port ${registryPort})`,
+              "registry",
+            );
+
+            portForwardManager = new PortForwardManager();
+
+            // Set up port forwarding for each connected host
+            for (const ssh of sshManagers!) {
+              const host = ssh.getHost();
+              log.status(
+                `Establishing port forward to ${host}`,
+                "port-forward",
+              );
+
+              const forwarder = portForwardManager.getForwarder(
+                host,
+                ssh,
+                registryPort,
+                registryPort,
+              );
+
+              try {
+                await forwarder.startForwarding();
+                log.success(
+                  `Port forwarding active for ${host}`,
+                  "port-forward",
+                );
+              } catch (error) {
+                log.warn(
+                  `Failed to set up port forwarding for ${host}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                  "port-forward",
+                );
+              }
+            }
+
+            log.info(
+              `Local registry accessible on remote hosts via localhost:${registryPort}`,
+              "registry",
+            );
+          });
+        }
+
         // Check which services have proxy configuration
         const servicesWithProxy = Array.from(config.services.values())
           .filter((service) => service.proxy?.enabled);
@@ -92,7 +143,8 @@ export const deployCommand = new Command()
             // Get unique hosts that need proxy
             const proxyHosts = new Set<string>();
             for (const service of servicesWithProxy) {
-              for (const host of service.hosts) {
+              for (const server of service.servers) {
+                const host = server.host;
                 if (uniqueHosts.includes(host)) {
                   proxyHosts.add(host);
                 }
@@ -220,7 +272,8 @@ export const deployCommand = new Command()
             for (const service of servicesWithProxy) {
               log.status(`Deploying ${service.name} containers`, "deploy");
 
-              for (const host of service.hosts) {
+              for (const server of service.servers) {
+                const host = server.host;
                 if (!uniqueHosts.includes(host)) {
                   log.warn(
                     `Skipping ${service.name} on unreachable host: ${host}`,
@@ -236,7 +289,11 @@ export const deployCommand = new Command()
 
                 try {
                   const containerName = service.getContainerName();
-                  const imageName = service.getImageName();
+
+                  // Determine image name with optional version and registry
+                  const version = globalOptions.version;
+                  const registry = config!.builder.registry.getRegistryUrl();
+                  const imageName = service.getImageName(registry, version);
 
                   // Prepare files and directories before deployment
                   if (service.files.length > 0) {
@@ -402,7 +459,8 @@ export const deployCommand = new Command()
               const proxyConfig = service.proxy!;
               const appPort = extractAppPort(service.ports);
 
-              for (const host of service.hosts) {
+              for (const server of service.servers) {
+                const host = server.host;
                 if (!uniqueHosts.includes(host)) {
                   log.warn(
                     `Skipping ${service.name} on unreachable host: ${host}`,
@@ -468,6 +526,20 @@ export const deployCommand = new Command()
       log.error(errorMessage, "deploy");
       Deno.exit(1);
     } finally {
+      // Clean up port forwarding
+      if (portForwardManager) {
+        try {
+          await portForwardManager.cleanup();
+        } catch (error) {
+          log.debug(
+            `Failed to cleanup port forwarding: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            "port-forward",
+          );
+        }
+      }
+
       // Clean up SSH connections
       if (sshManagers) {
         sshManagers.forEach((ssh) => {

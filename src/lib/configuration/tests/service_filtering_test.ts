@@ -9,15 +9,18 @@ Deno.test("Configuration - getHostsFromServices with exact match", () => {
     services: {
       web: {
         image: "nginx",
-        hosts: ["192.168.1.10", "192.168.1.11"],
+        servers: [
+          { host: "192.168.1.10" },
+          { host: "192.168.1.11" },
+        ],
       },
       api: {
         image: "node",
-        hosts: ["192.168.1.20"],
+        servers: [{ host: "192.168.1.20" }],
       },
       database: {
         image: "postgres",
-        hosts: ["192.168.1.30"],
+        servers: [{ host: "192.168.1.30" }],
       },
     },
   });
@@ -34,15 +37,15 @@ Deno.test("Configuration - getHostsFromServices with multiple services", () => {
     services: {
       web: {
         image: "nginx",
-        hosts: ["192.168.1.10"],
+        servers: [{ host: "192.168.1.10" }],
       },
       api: {
         image: "node",
-        hosts: ["192.168.1.20"],
+        servers: [{ host: "192.168.1.20" }],
       },
       worker: {
         image: "worker",
-        hosts: ["192.168.1.30"],
+        servers: [{ host: "192.168.1.30" }],
       },
     },
   });
@@ -59,19 +62,19 @@ Deno.test("Configuration - getHostsFromServices with wildcard pattern", () => {
     services: {
       "web-frontend": {
         image: "nginx",
-        hosts: ["192.168.1.10"],
+        servers: [{ host: "192.168.1.10" }],
       },
       "web-api": {
         image: "node",
-        hosts: ["192.168.1.20"],
+        servers: [{ host: "192.168.1.20" }],
       },
       "web-worker": {
         image: "worker",
-        hosts: ["192.168.1.30"],
+        servers: [{ host: "192.168.1.30" }],
       },
       database: {
         image: "postgres",
-        hosts: ["192.168.1.40"],
+        servers: [{ host: "192.168.1.40" }],
       },
     },
   });
@@ -88,11 +91,17 @@ Deno.test("Configuration - getHostsFromServices removes duplicates", () => {
     services: {
       web: {
         image: "nginx",
-        hosts: ["192.168.1.10", "192.168.1.20"],
+        servers: [
+          { host: "192.168.1.10" },
+          { host: "192.168.1.20" },
+        ],
       },
       api: {
         image: "node",
-        hosts: ["192.168.1.20", "192.168.1.30"],
+        servers: [
+          { host: "192.168.1.20" },
+          { host: "192.168.1.30" },
+        ],
       },
     },
   });
@@ -110,7 +119,7 @@ Deno.test("Configuration - getHostsFromServices with no matches", () => {
     services: {
       web: {
         image: "nginx",
-        hosts: ["192.168.1.10"],
+        servers: [{ host: "192.168.1.10" }],
       },
     },
   });
@@ -127,19 +136,19 @@ Deno.test("Configuration - getHostsFromServices with mixed patterns", () => {
     services: {
       "web-frontend": {
         image: "nginx",
-        hosts: ["192.168.1.10"],
+        servers: [{ host: "192.168.1.10" }],
       },
       "web-api": {
         image: "node",
-        hosts: ["192.168.1.20"],
+        servers: [{ host: "192.168.1.20" }],
       },
       database: {
         image: "postgres",
-        hosts: ["192.168.1.30"],
+        servers: [{ host: "192.168.1.30" }],
       },
       cache: {
         image: "redis",
-        hosts: ["192.168.1.40"],
+        servers: [{ host: "192.168.1.40" }],
       },
     },
   });
@@ -154,8 +163,8 @@ Deno.test("Configuration - getMatchingServiceNames with exact match", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      web: { image: "nginx", hosts: ["192.168.1.10"] },
-      api: { image: "node", hosts: ["192.168.1.20"] },
+      web: { image: "nginx", servers: [{ host: "192.168.1.10" }] },
+      api: { image: "node", servers: [{ host: "192.168.1.20" }] },
     },
   });
 
@@ -169,9 +178,9 @@ Deno.test("Configuration - getMatchingServiceNames with wildcard", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      "web-frontend": { image: "nginx", hosts: ["192.168.1.10"] },
-      "web-api": { image: "node", hosts: ["192.168.1.20"] },
-      "api-worker": { image: "worker", hosts: ["192.168.1.30"] },
+      "web-frontend": { image: "nginx", servers: [{ host: "192.168.1.10" }] },
+      "web-api": { image: "node", servers: [{ host: "192.168.1.20" }] },
+      "api-worker": { image: "worker", servers: [{ host: "192.168.1.30" }] },
     },
   });
 
@@ -185,10 +194,13 @@ Deno.test("Configuration - getMatchingServiceNames with multiple patterns", () =
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      "web-frontend": { image: "nginx", hosts: ["192.168.1.10"] },
-      "web-api": { image: "node", hosts: ["192.168.1.20"] },
-      "api-worker": { image: "worker", hosts: ["192.168.1.30"] },
-      "api-processor": { image: "processor", hosts: ["192.168.1.40"] },
+      "web-frontend": { image: "nginx", servers: [{ host: "192.168.1.10" }] },
+      "web-api": { image: "node", servers: [{ host: "192.168.1.20" }] },
+      "api-worker": { image: "worker", servers: [{ host: "192.168.1.30" }] },
+      "api-processor": {
+        image: "processor",
+        servers: [{ host: "192.168.1.40" }],
+      },
     },
   });
 
@@ -205,7 +217,7 @@ Deno.test("Configuration - getMatchingServiceNames with no matches", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      web: { image: "nginx", hosts: ["192.168.1.10"] },
+      web: { image: "nginx", servers: [{ host: "192.168.1.10" }] },
     },
   });
 
@@ -219,8 +231,8 @@ Deno.test("Configuration - getMatchingServiceNames removes duplicates", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      "web-api": { image: "node", hosts: ["192.168.1.10"] },
-      "web-frontend": { image: "nginx", hosts: ["192.168.1.20"] },
+      "web-api": { image: "node", servers: [{ host: "192.168.1.10" }] },
+      "web-frontend": { image: "nginx", servers: [{ host: "192.168.1.20" }] },
     },
   });
 
@@ -236,9 +248,9 @@ Deno.test("Configuration - service filtering supports ? wildcard", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      web1: { image: "nginx", hosts: ["192.168.1.10"] },
-      web2: { image: "nginx", hosts: ["192.168.1.20"] },
-      web12: { image: "nginx", hosts: ["192.168.1.30"] },
+      web1: { image: "nginx", servers: [{ host: "192.168.1.10" }] },
+      web2: { image: "nginx", servers: [{ host: "192.168.1.20" }] },
+      web12: { image: "nginx", servers: [{ host: "192.168.1.30" }] },
     },
   });
 
@@ -253,9 +265,9 @@ Deno.test("Configuration - service filtering is case-sensitive", () => {
     engine: "docker",
     ssh: { user: "root" },
     services: {
-      web: { image: "nginx", hosts: ["192.168.1.10"] },
-      Web: { image: "nginx", hosts: ["192.168.1.20"] },
-      WEB: { image: "nginx", hosts: ["192.168.1.30"] },
+      web: { image: "nginx", servers: [{ host: "192.168.1.10" }] },
+      Web: { image: "nginx", servers: [{ host: "192.168.1.20" }] },
+      WEB: { image: "nginx", servers: [{ host: "192.168.1.30" }] },
     },
   });
 

@@ -54,7 +54,7 @@ export const removeCommand = new Command()
         if (!config) throw new Error("Configuration failed to load");
 
         // Collect all unique hosts
-        const allHosts = config.getAllHosts();
+        const allHosts = config.getAllServerHosts();
         uniqueHosts = allHosts;
 
         if (uniqueHosts.length === 0) {
@@ -125,7 +125,8 @@ export const removeCommand = new Command()
           for (const service of services) {
             log.status(`Removing service: ${service.name}`, "remove");
 
-            for (const host of service.hosts) {
+            for (const server of service.servers) {
+              const host = server.host;
               if (!uniqueHosts.includes(host)) {
                 log.warn(
                   `Skipping ${service.name} on unreachable host: ${host}`,
