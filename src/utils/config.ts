@@ -39,7 +39,7 @@ export async function loadConfig(
  * Gets the container engine command based on the configuration
  */
 export function getEngineCommand(config: Configuration): string {
-  return config.engine;
+  return config.builder.engine;
 }
 
 /**

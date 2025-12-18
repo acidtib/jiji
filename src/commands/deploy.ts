@@ -10,11 +10,20 @@ import {
   prepareMountFiles,
 } from "../utils/mount_manager.ts";
 import { PortForwardManager } from "../utils/port_forward.ts";
+import { GitUtils } from "../utils/git.ts";
+import { RegistryManager } from "../utils/registry_manager.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
+interface DeployOptions extends GlobalOptions {
+  build?: boolean;
+  noCache?: boolean;
+}
+
 export const deployCommand = new Command()
   .description("Deploy services to servers")
+  .option("--build", "Build images before deploying", { default: false })
+  .option("--no-cache", "Build without using cache (requires --build)")
   .action(async (options) => {
     let uniqueHosts: string[] = [];
     let config: Configuration | undefined;
@@ -25,7 +34,8 @@ export const deployCommand = new Command()
       await log.group("Service Deployment", async () => {
         log.info("Starting service deployment process", "deploy");
 
-        // Cast options to GlobalOptions
+        // Cast options to DeployOptions
+        const deployOptions = options as unknown as DeployOptions;
         const globalOptions = options as unknown as GlobalOptions;
 
         // Load configuration
@@ -35,9 +45,305 @@ export const deployCommand = new Command()
         );
         const configPath = config.configPath || "unknown";
         log.success(`Configuration loaded from: ${configPath}`, "config");
-        log.info(`Container engine: ${config.engine}`, "engine");
+        log.info(`Container engine: ${config.builder.engine}`, "engine");
 
         if (!config) throw new Error("Configuration failed to load");
+
+        // Build images if --build flag is set
+        if (deployOptions.build) {
+          await log.group("Service Build", async () => {
+            log.info("Building service images", "build");
+
+            // Get services to build
+            const servicesToBuild = config!.getBuildServices();
+
+            if (servicesToBuild.length === 0) {
+              log.warn("No services with 'build' configuration found", "build");
+            } else {
+              // Filter by service pattern if specified
+              let filteredServices = servicesToBuild;
+              if (deployOptions.services) {
+                const servicePatterns = deployOptions.services.split(",").map((
+                  s,
+                ) => s.trim());
+                const matchingNames = config!.getMatchingServiceNames(
+                  servicePatterns,
+                );
+                filteredServices = servicesToBuild.filter((service) =>
+                  matchingNames.includes(service.name)
+                );
+
+                if (filteredServices.length === 0) {
+                  log.error(
+                    `No buildable services match pattern: ${deployOptions.services}`,
+                    "build",
+                  );
+                  Deno.exit(1);
+                }
+              }
+
+              log.info(
+                `Building ${filteredServices.length} service(s): ${
+                  filteredServices.map((s) => s.name).join(", ")
+                }`,
+                "build",
+              );
+
+              // Determine version tag
+              let versionTag: string;
+              if (globalOptions.version) {
+                versionTag = globalOptions.version;
+                log.info(`Using custom version tag: ${versionTag}`, "build");
+              } else {
+                // Check if we're in a git repository
+                if (!await GitUtils.isGitRepository()) {
+                  log.error(
+                    "Not in a git repository. Either initialize git or use --version to specify a tag.",
+                    "build",
+                  );
+                  Deno.exit(1);
+                }
+
+                // Get git SHA
+                versionTag = await GitUtils.getCommitSHA(true);
+                log.info(`Using git SHA as version: ${versionTag}`, "build");
+
+                // Warn about uncommitted changes
+                if (await GitUtils.hasUncommittedChanges()) {
+                  log.warn(
+                    "You have uncommitted changes. The build will be tagged with the current commit SHA.",
+                    "build",
+                  );
+                }
+              }
+
+              // Set up registry if needed
+              const registry = config!.builder.registry;
+              const registryUrl = registry.getRegistryUrl();
+              let registryManager: RegistryManager | undefined;
+
+              if (registry.isLocal()) {
+                // Start local registry
+                await log.group("Local Registry Setup", async () => {
+                  registryManager = new RegistryManager(
+                    config!.builder.engine,
+                    registry.port,
+                  );
+
+                  if (!await registryManager.isRunning()) {
+                    log.info("Starting local registry", "registry");
+                    await registryManager.start();
+                  } else {
+                    log.info(
+                      `Local registry already running on port ${registry.port}`,
+                      "registry",
+                    );
+                  }
+                });
+              }
+
+              // Build each service
+              for (const service of filteredServices) {
+                await log.group(`Building: ${service.name}`, async () => {
+                  const buildConfig = typeof service.build === "string"
+                    ? {
+                      context: service.build,
+                      dockerfile: "Dockerfile",
+                      args: {},
+                    }
+                    : service.build!;
+
+                  const context = buildConfig.context;
+                  const dockerfile = buildConfig.dockerfile || "Dockerfile";
+                  const buildArgs = buildConfig.args || {};
+                  const target = buildConfig.target;
+
+                  // Get architectures required by servers
+                  const requiredArchs = service.getRequiredArchitectures();
+                  const serversByArch = service.getServersByArchitecture();
+
+                  // Build the image
+                  const imageName = service.getImageName(
+                    registryUrl,
+                    versionTag,
+                  );
+                  const latestImageName = service.getImageName(
+                    registryUrl,
+                    "latest",
+                  );
+
+                  log.info(`Building image: ${imageName}`, "build");
+                  log.info(`Context: ${context}`, "build");
+                  log.info(`Dockerfile: ${dockerfile}`, "build");
+                  log.info(
+                    `Architecture(s): ${requiredArchs.join(", ")}`,
+                    "build",
+                  );
+
+                  // Log server distribution by architecture
+                  for (const [arch, servers] of serversByArch.entries()) {
+                    log.info(`${arch}: ${servers.join(", ")}`, "build");
+                  }
+
+                  // Construct build command
+                  const buildCmdArgs = [
+                    "build",
+                    "-t",
+                    imageName,
+                    "-t",
+                    latestImageName,
+                    "-f",
+                    dockerfile,
+                  ];
+
+                  // Add build args
+                  for (const [key, value] of Object.entries(buildArgs)) {
+                    buildCmdArgs.push("--build-arg", `${key}=${value}`);
+                  }
+
+                  // Add target if specified
+                  if (target) {
+                    buildCmdArgs.push("--target", target);
+                  }
+
+                  // Add platform/architecture based on server requirements
+                  if (requiredArchs.length > 1) {
+                    // Multiple architectures - use platforms for multi-arch build
+                    const platforms = requiredArchs.map((a) => `linux/${a}`)
+                      .join(",");
+                    buildCmdArgs.push("--platform", platforms);
+                  } else if (requiredArchs.length === 1) {
+                    // Single architecture
+                    buildCmdArgs.push(
+                      "--platform",
+                      `linux/${requiredArchs[0]}`,
+                    );
+                  }
+
+                  // Add cache option
+                  if (deployOptions.noCache || !config!.builder.cache) {
+                    buildCmdArgs.push("--no-cache");
+                  }
+
+                  // Add context
+                  buildCmdArgs.push(context);
+
+                  // Execute build
+                  const buildCmd = new Deno.Command(config!.builder.engine, {
+                    args: buildCmdArgs,
+                    stdout: globalOptions.verbose ? "inherit" : "piped",
+                    stderr: globalOptions.verbose ? "inherit" : "piped",
+                  });
+
+                  const buildResult = await buildCmd.output();
+
+                  if (buildResult.code !== 0) {
+                    const stderr = new TextDecoder().decode(buildResult.stderr);
+                    log.error(`Failed to build ${service.name}`, "build");
+                    if (!globalOptions.verbose) {
+                      log.error(stderr, "build");
+                    }
+                    throw new Error(
+                      `Build failed for service: ${service.name}`,
+                    );
+                  }
+
+                  log.success(`Built image: ${imageName}`, "build");
+                  log.success(`Tagged as: ${latestImageName}`, "build");
+
+                  // Push to registry
+                  await log.group("Pushing to Registry", async () => {
+                    log.info(`Pushing ${imageName}`, "registry");
+
+                    // Build push arguments
+                    const pushArgs = ["push"];
+
+                    // Add --tls-verify=false for local registries when using podman
+                    if (
+                      registry.isLocal() && config!.builder.engine === "podman"
+                    ) {
+                      pushArgs.push("--tls-verify=false");
+                    }
+
+                    pushArgs.push(imageName);
+
+                    // Push versioned image
+                    const pushCmd = new Deno.Command(config!.builder.engine, {
+                      args: pushArgs,
+                      stdout: globalOptions.verbose ? "inherit" : "piped",
+                      stderr: globalOptions.verbose ? "inherit" : "piped",
+                    });
+
+                    const pushResult = await pushCmd.output();
+
+                    if (pushResult.code !== 0) {
+                      const stderr = new TextDecoder().decode(
+                        pushResult.stderr,
+                      );
+                      log.error(`Failed to push ${imageName}`, "registry");
+                      if (!globalOptions.verbose) {
+                        log.error(stderr, "registry");
+                      }
+                      throw new Error(`Push failed for: ${imageName}`);
+                    }
+
+                    log.success(`Pushed: ${imageName}`, "registry");
+
+                    // Push latest tag
+                    log.info(`Pushing ${latestImageName}`, "registry");
+
+                    // Build push arguments for latest
+                    const pushLatestArgs = ["push"];
+
+                    // Add --tls-verify=false for local registries when using podman
+                    if (
+                      registry.isLocal() && config!.builder.engine === "podman"
+                    ) {
+                      pushLatestArgs.push("--tls-verify=false");
+                    }
+
+                    pushLatestArgs.push(latestImageName);
+
+                    const pushLatestCmd = new Deno.Command(
+                      config!.builder.engine,
+                      {
+                        args: pushLatestArgs,
+                        stdout: globalOptions.verbose ? "inherit" : "piped",
+                        stderr: globalOptions.verbose ? "inherit" : "piped",
+                      },
+                    );
+
+                    const pushLatestResult = await pushLatestCmd.output();
+
+                    if (pushLatestResult.code !== 0) {
+                      const stderr = new TextDecoder().decode(
+                        pushLatestResult.stderr,
+                      );
+                      log.error(
+                        `Failed to push ${latestImageName}`,
+                        "registry",
+                      );
+                      if (!globalOptions.verbose) {
+                        log.error(stderr, "registry");
+                      }
+                      throw new Error(`Push failed for: ${latestImageName}`);
+                    }
+
+                    log.success(`Pushed: ${latestImageName}`, "registry");
+                  });
+                });
+              }
+
+              // Build summary
+              log.success(
+                `Successfully built ${filteredServices.length} service(s)`,
+                "build",
+              );
+              log.info(`Version tag: ${versionTag}`, "build");
+              log.info(`Registry: ${registryUrl}`, "build");
+            }
+          });
+        }
 
         // Collect all unique hosts
         const allHosts = config.getAllServerHosts();
@@ -172,7 +478,10 @@ export const deployCommand = new Command()
               if (!hostSsh) continue;
 
               try {
-                const proxyCmd = new ProxyCommands(config!.engine, hostSsh);
+                const proxyCmd = new ProxyCommands(
+                  config!.builder.engine,
+                  hostSsh,
+                );
 
                 // Ensure network exists
                 await proxyCmd.ensureNetwork();
@@ -353,14 +662,25 @@ export const deployCommand = new Command()
                     ? imageName
                     : `docker.io/library/${imageName}`;
 
+                  // Build pull command with TLS verification disabled for local registries
+                  let pullCommand = `${config!.builder.engine} pull`;
+
+                  // Add --tls-verify=false for local registries when using podman
+                  if (
+                    config!.builder.registry.isLocal() &&
+                    config!.builder.engine === "podman"
+                  ) {
+                    pullCommand += " --tls-verify=false";
+                  }
+
+                  pullCommand += ` ${fullImageName}`;
+
                   // Pull image
                   log.status(
                     `Pulling image ${fullImageName} on ${host}`,
                     "deploy",
                   );
-                  const pullResult = await hostSsh.executeCommand(
-                    `${config!.engine} pull ${fullImageName}`,
-                  );
+                  const pullResult = await hostSsh.executeCommand(pullCommand);
                   if (!pullResult.success) {
                     throw new Error(
                       `Failed to pull image: ${pullResult.stderr}`,
@@ -370,7 +690,7 @@ export const deployCommand = new Command()
                   // Stop and remove existing container
                   await hostSsh.executeCommand(
                     `${
-                      config!.engine
+                      config!.builder.engine
                     } rm -f ${containerName} 2>/dev/null || true`,
                   );
 
@@ -393,7 +713,7 @@ export const deployCommand = new Command()
                     : "";
 
                   const runCommand = `${
-                    config!.engine
+                    config!.builder.engine
                   } run --name ${containerName} --network jiji --detach --restart unless-stopped ${portArgs} ${mountArgs} ${envArgs} ${fullImageName}`;
 
                   log.status(
@@ -413,7 +733,7 @@ export const deployCommand = new Command()
                   while (attempts < maxAttempts) {
                     const statusResult = await hostSsh.executeCommand(
                       `${
-                        config!.engine
+                        config!.builder.engine
                       } inspect ${containerName} --format '{{.State.Status}}'`,
                     );
                     if (
@@ -475,7 +795,10 @@ export const deployCommand = new Command()
                 if (!hostSsh) continue;
 
                 try {
-                  const proxyCmd = new ProxyCommands(config!.engine, hostSsh);
+                  const proxyCmd = new ProxyCommands(
+                    config!.builder.engine,
+                    hostSsh,
+                  );
                   const containerName = service.getContainerName();
 
                   await proxyCmd.deploy(

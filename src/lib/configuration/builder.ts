@@ -16,11 +16,7 @@ export class BuilderConfiguration extends BaseConfiguration {
   private _registryConfig?: RegistryConfiguration;
 
   get engine(): ContainerEngine {
-    const value = this.get<string>("engine");
-    if (!value) {
-      // If not specified, return undefined to let it inherit from project engine
-      return undefined as unknown as ContainerEngine;
-    }
+    const value = this.getRequired<string>("engine");
     return this.validateEnum(
       value as ContainerEngine,
       ["docker", "podman"] as const,

@@ -4,11 +4,12 @@ import { ConfigurationLoader } from "../loader.ts";
 import { ConfigurationError } from "../base.ts";
 
 // Test YAML content
-const VALID_YAML = `engine: docker
-ssh:
+const VALID_YAML = `ssh:
   user: testuser
   port: 22
   connect_timeout: 30
+builder:
+  engine: docker
 services:
   web:
     image: nginx:latest
@@ -29,11 +30,12 @@ env:
     DATABASE_URL: postgres://localhost:5432/mydb
 `;
 
-const MALFORMED_YAML = `engine: docker
-ssh:
+const MALFORMED_YAML = `ssh:
   user: testuser
   port: 22
   invalid_indent:
+builder:
+  engine: docker
 services:
   web:
     image: nginx:latest
@@ -79,10 +81,9 @@ Deno.test("ConfigurationLoader - loadFromFile with valid YAML", async () => {
   try {
     const config = await ConfigurationLoader.loadFromFile(configPath);
 
-    assertEquals(config.engine, "docker");
+    assertEquals((config.builder as Record<string, unknown>).engine, "docker");
     assertEquals((config.ssh as Record<string, unknown>).user, "testuser");
     assertEquals((config.ssh as Record<string, unknown>).port, 22);
-    assertEquals(config.engine, "docker");
     const services = config.services as Record<string, Record<string, unknown>>;
     assertEquals(services.web.image, "nginx:latest");
     assertEquals(
@@ -145,7 +146,10 @@ Deno.test("ConfigurationLoader - loadConfig with default environment", async () 
       const result = await ConfigurationLoader.loadConfig();
 
       assertEquals(result.path, `${tempDir}/.jiji/deploy.yml`);
-      assertEquals(result.config.engine, "docker");
+      assertEquals(
+        (result.config.builder as { engine: string }).engine,
+        "docker",
+      );
     } finally {
       Deno.chdir(originalCwd);
     }
@@ -187,7 +191,10 @@ Deno.test("ConfigurationLoader - loadConfig with custom path", async () => {
     const result = await ConfigurationLoader.loadConfig(undefined, configPath);
 
     assertEquals(result.path, configPath);
-    assertEquals(result.config.engine, "docker");
+    assertEquals(
+      (result.config.builder as { engine: string }).engine,
+      "docker",
+    );
   } finally {
     await cleanup(tempDir);
   }
@@ -206,7 +213,10 @@ Deno.test("ConfigurationLoader - loadConfig with custom start path", async () =>
     );
 
     assertEquals(result.path, `${tempDir}/.jiji/deploy.yml`);
-    assertEquals(result.config.engine, "docker");
+    assertEquals(
+      (result.config.builder as { engine: string }).engine,
+      "docker",
+    );
   });
 });
 
@@ -255,7 +265,10 @@ Deno.test("ConfigurationLoader - loadConfig falls back to default when env-speci
       const result = await ConfigurationLoader.loadConfig("nonexistent");
 
       assertEquals(result.path, `${tempDir}/.jiji/deploy.yml`);
-      assertEquals(result.config.engine, "docker");
+      assertEquals(
+        (result.config.builder as { engine: string }).engine,
+        "docker",
+      );
     } finally {
       Deno.chdir(originalCwd);
     }
@@ -442,7 +455,7 @@ Deno.test("ConfigurationLoader - extractEnvironment method", () => {
 
 Deno.test("ConfigurationLoader - mergeConfigs method", () => {
   const base = {
-    engine: "docker",
+    builder: { engine: "docker" },
     ssh: { user: "root", port: 22 },
     services: { web: { image: "nginx" } },
   };
@@ -455,7 +468,7 @@ Deno.test("ConfigurationLoader - mergeConfigs method", () => {
 
   const merged = ConfigurationLoader.mergeConfigs(base, override);
 
-  assertEquals(merged.engine, "docker");
+  assertEquals((merged.builder as Record<string, unknown>).engine, "docker");
   assertEquals((merged.ssh as Record<string, unknown>).user, "root");
   assertEquals((merged.ssh as Record<string, unknown>).port, 2222);
   const services = merged.services as Record<string, Record<string, unknown>>;
@@ -480,7 +493,10 @@ Deno.test("ConfigurationLoader - loadConfig with relative paths", async () => {
         "./configs/app.yml",
       );
 
-      assertEquals(result.config.engine, "docker");
+      assertEquals(
+        (result.config.builder as { engine: string }).engine,
+        "docker",
+      );
     } finally {
       Deno.chdir(originalCwd);
     }
@@ -489,12 +505,13 @@ Deno.test("ConfigurationLoader - loadConfig with relative paths", async () => {
 
 Deno.test("ConfigurationLoader - parseYAML handles complex structures", async () => {
   const complexYaml = `
-engine: docker
 ssh:
   user: deploy
   options:
     StrictHostKeyChecking: "no"
     UserKnownHostsFile: "/dev/null"
+builder:
+  engine: docker
 services:
   web:
     image: nginx:latest
@@ -514,7 +531,7 @@ services:
   try {
     const config = await ConfigurationLoader.loadFromFile(configPath);
 
-    assertEquals(config.engine, "docker");
+    assertEquals((config.builder as Record<string, unknown>).engine, "docker");
     assertEquals((config.ssh as Record<string, unknown>).user, "deploy");
     assertEquals(
       typeof (config.ssh as Record<string, unknown>).options,
@@ -543,7 +560,10 @@ Deno.test("ConfigurationLoader - handles different config file names", async () 
       const result = await ConfigurationLoader.loadConfig();
 
       assertEquals(result.path, `${tempDir}/.jiji/deploy.yml`);
-      assertEquals(result.config.engine, "docker");
+      assertEquals(
+        (result.config.builder as { engine: string }).engine,
+        "docker",
+      );
     } finally {
       Deno.chdir(originalCwd);
     }

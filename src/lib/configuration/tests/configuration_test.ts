@@ -5,7 +5,6 @@ import { Configuration, ConfigurationError } from "../../configuration.ts";
 // Test data
 const VALID_CONFIG_DATA = {
   project: "myapp",
-  engine: "docker" as const,
   ssh: {
     user: "testuser",
     port: 22,
@@ -13,6 +12,7 @@ const VALID_CONFIG_DATA = {
     command_timeout: 300,
   },
   builder: {
+    engine: "docker",
     local: true,
     registry: {
       type: "local",
@@ -50,12 +50,12 @@ const VALID_CONFIG_DATA = {
 
 const INVALID_CONFIG_DATA = {
   project: "testproject",
-  engine: "invalid_engine",
   ssh: {
     user: "testuser",
     port: "not_a_number",
   },
   builder: {
+    engine: "invalid_engine",
     local: true,
     registry: {
       type: "local",
@@ -72,11 +72,11 @@ const INVALID_CONFIG_DATA = {
 
 const MINIMAL_CONFIG_DATA = {
   project: "testproject",
-  engine: "podman" as const,
   ssh: {
     user: "root",
   },
   builder: {
+    engine: "podman",
     local: true,
     registry: {
       type: "local",
@@ -95,7 +95,7 @@ Deno.test("Configuration - basic construction", () => {
   const config = new Configuration(VALID_CONFIG_DATA);
 
   assertEquals(config.project, "myapp");
-  assertEquals(config.engine, "docker");
+  assertEquals(config.builder.engine, "docker");
   assertEquals(config.ssh.user, "testuser");
   assertEquals(config.ssh.port, 22);
   assertEquals(config.services.size, 2);
@@ -115,17 +115,22 @@ Deno.test("Configuration - construction with path and environment", () => {
 Deno.test("Configuration - engine property", () => {
   const config = new Configuration({
     project: "test",
-    engine: "podman",
+    builder: {
+      engine: "podman",
+    },
     services: {},
   });
-  assertEquals(config.engine, "podman");
+  assertEquals(config.builder.engine, "podman");
 });
 
 Deno.test("Configuration - engine validation fails for invalid engine", () => {
-  const config = new Configuration({ engine: "invalid", services: {} });
+  const config = new Configuration({
+    builder: { engine: "invalid" },
+    services: {},
+  });
 
   assertThrows(
-    () => config.engine,
+    () => config.builder.engine,
     ConfigurationError,
     "Invalid value for 'engine'",
   );
@@ -337,17 +342,18 @@ Deno.test("Configuration - toObject method", () => {
   const obj = config.toObject();
 
   assertEquals(obj.project, "testproject");
-  assertEquals(obj.engine, "podman");
   assertEquals(typeof obj.services, "object");
   assertEquals(typeof obj.ssh, "object");
   assertEquals((obj.ssh as Record<string, unknown>).user, "root");
+  assertEquals(typeof obj.builder, "object");
+  assertEquals((obj.builder as Record<string, unknown>).engine, "podman");
 });
 
 Deno.test("Configuration - withDefaults static method", () => {
   const config = Configuration.withDefaults();
 
   assertEquals(config.project, "default");
-  assertEquals(config.engine, "podman");
+  assertEquals(config.builder.engine, "podman");
   assertEquals(config.ssh.user, "root");
   assertEquals(config.ssh.port, 22);
   assertEquals(config.services.size, 1);
@@ -357,12 +363,12 @@ Deno.test("Configuration - withDefaults static method", () => {
 Deno.test("Configuration - withDefaults overrides", () => {
   const config = Configuration.withDefaults({
     project: "override-project",
-    engine: "docker",
+    builder: { engine: "docker" },
     ssh: { user: "deploy" },
   });
 
   assertEquals(config.project, "override-project");
-  assertEquals(config.engine, "docker");
+  assertEquals(config.builder.engine, "docker");
   assertEquals(config.ssh.user, "deploy");
 });
 
@@ -372,8 +378,8 @@ Deno.test("Configuration - lazy loading of properties", () => {
   // Access properties multiple times to ensure they're cached properly
   assertEquals(config.project, "myapp");
   assertEquals(config.project, "myapp");
-  assertEquals(config.engine, "docker");
-  assertEquals(config.engine, "docker");
+  assertEquals(config.builder.engine, "docker");
+  assertEquals(config.builder.engine, "docker");
 
   const ssh1 = config.ssh;
   const ssh2 = config.ssh;
@@ -426,9 +432,9 @@ Deno.test("Configuration - missing required engine throws", () => {
   const config = new Configuration({ project: "test" });
 
   assertThrows(
-    () => config.engine,
+    () => config.builder,
     ConfigurationError,
-    "Missing required configuration: 'engine'",
+    "Missing required configuration: 'builder'",
   );
 });
 

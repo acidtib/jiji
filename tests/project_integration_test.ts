@@ -4,12 +4,12 @@ import { Configuration } from "../src/lib/configuration.ts";
 // Test data for project integration
 const PROJECT_CONFIG_DATA = {
   project: "myapp",
-  engine: "docker" as const,
   ssh: {
     user: "deploy",
     port: 22,
   },
   builder: {
+    engine: "docker",
     local: true,
   },
   services: {
@@ -47,7 +47,7 @@ Deno.test("Project Integration - Configuration loads project field", () => {
   const config = new Configuration(PROJECT_CONFIG_DATA);
 
   assertEquals(config.project, "myapp");
-  assertEquals(config.engine, "docker");
+  assertEquals(config.builder.engine, "docker");
   assertEquals(config.services.size, 3);
 });
 
@@ -104,30 +104,26 @@ Deno.test("Project Integration - Project validation enforces naming rules", () =
   const validConfigs = [
     {
       project: "myapp",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "my-app",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "my_app",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
     {
       project: "app123",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     },
   ];
@@ -145,51 +141,44 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
   const invalidConfigs = [
     {
       project: "",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Empty
     {
       project: "My-App",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Uppercase
     {
       project: "my app",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Space
     {
       project: "my.app",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Dot
     {
       project: "my@app",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Special char
     {
       project: "-myapp",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // Start with hyphen
     {
       project: "myapp-",
-      engine: "docker",
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
     }, // End with hyphen
   ];
@@ -249,7 +238,7 @@ Deno.test("Project Integration - withDefaults creates valid project config", () 
   const defaultConfig = Configuration.withDefaults();
 
   assertEquals(defaultConfig.project, "default");
-  assertEquals(defaultConfig.engine, "podman");
+  assertEquals(defaultConfig.builder.engine, "podman");
 
   // Should be able to get services with project context
   const webService = defaultConfig.getService("web");
@@ -260,11 +249,11 @@ Deno.test("Project Integration - withDefaults creates valid project config", () 
 Deno.test("Project Integration - withDefaults accepts project override", () => {
   const customConfig = Configuration.withDefaults({
     project: "custom-project",
-    engine: "docker",
+    builder: { engine: "docker" },
   });
 
   assertEquals(customConfig.project, "custom-project");
-  assertEquals(customConfig.engine, "docker");
+  assertEquals(customConfig.builder.engine, "docker");
 
   const webService = customConfig.getService("web");
   assertEquals(webService.project, "custom-project");
@@ -318,9 +307,8 @@ Deno.test("Project Integration - Complex project name validation", () => {
   edgeCases.forEach(({ name, valid }, index) => {
     const configData = {
       project: name,
-      engine: "docker" as const,
       ssh: { user: "deploy" },
-      builder: { local: true },
+      builder: { engine: "docker", local: true },
       services: {
         web: {
           image: "nginx:latest",

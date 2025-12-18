@@ -36,8 +36,8 @@ export const buildCommand = new Command()
 
         if (!config) throw new Error("Configuration failed to load");
 
-        // Determine container engine (use builder engine or fall back to project engine)
-        const engine = config.builder.engine || config.engine;
+        // Get container engine from builder configuration
+        const engine = config.builder.engine;
         log.info(`Container engine: ${engine}`, "build");
 
         // Get services to build
@@ -224,9 +224,19 @@ export const buildCommand = new Command()
               await log.group("Pushing to Registry", async () => {
                 log.info(`Pushing ${imageName}`, "registry");
 
+                // Build push arguments
+                const pushArgs = ["push"];
+
+                // Add --tls-verify=false for local registries when using podman
+                if (registry.isLocal() && engine === "podman") {
+                  pushArgs.push("--tls-verify=false");
+                }
+
+                pushArgs.push(imageName);
+
                 // Push versioned image
                 const pushCmd = new Deno.Command(engine, {
-                  args: ["push", imageName],
+                  args: pushArgs,
                   stdout: globalOptions.verbose ? "inherit" : "piped",
                   stderr: globalOptions.verbose ? "inherit" : "piped",
                 });
@@ -247,8 +257,18 @@ export const buildCommand = new Command()
                 // Push latest tag
                 log.info(`Pushing ${latestImageName}`, "registry");
 
+                // Build push arguments for latest
+                const pushLatestArgs = ["push"];
+
+                // Add --tls-verify=false for local registries when using podman
+                if (registry.isLocal() && engine === "podman") {
+                  pushLatestArgs.push("--tls-verify=false");
+                }
+
+                pushLatestArgs.push(latestImageName);
+
                 const pushLatestCmd = new Deno.Command(engine, {
-                  args: ["push", latestImageName],
+                  args: pushLatestArgs,
                   stdout: globalOptions.verbose ? "inherit" : "piped",
                   stderr: globalOptions.verbose ? "inherit" : "piped",
                 });

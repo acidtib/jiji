@@ -15,7 +15,6 @@ export type ContainerEngine = "docker" | "podman";
  */
 export class Configuration extends BaseConfiguration {
   private _project?: string;
-  private _engine?: ContainerEngine;
   private _ssh?: SSHConfiguration;
   private _services?: Map<string, ServiceConfiguration>;
   private _environment?: EnvironmentConfiguration;
@@ -42,21 +41,6 @@ export class Configuration extends BaseConfiguration {
       this.validateString(this._project, "project");
     }
     return this._project;
-  }
-
-  /**
-   * Container engine to use (docker or podman)
-   */
-  get engine(): ContainerEngine {
-    if (!this._engine) {
-      this._engine = this.getRequired<ContainerEngine>("engine");
-      this.validateEnum(
-        this._engine,
-        ["docker", "podman"] as const,
-        "engine",
-      );
-    }
-    return this._engine;
   }
 
   /**
@@ -382,7 +366,6 @@ export class Configuration extends BaseConfiguration {
   toObject(): Record<string, unknown> {
     const result: Record<string, unknown> = {
       project: this.project,
-      engine: this.engine,
     };
 
     // Add SSH config if present
@@ -457,12 +440,12 @@ export class Configuration extends BaseConfiguration {
   static withDefaults(overrides: Record<string, unknown> = {}): Configuration {
     const defaultConfig = {
       project: "default",
-      engine: "podman",
       ssh: {
         user: "root",
         port: 22,
       },
       builder: {
+        engine: "podman",
         local: true,
         registry: {
           type: "local",

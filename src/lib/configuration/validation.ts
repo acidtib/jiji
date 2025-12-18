@@ -490,13 +490,6 @@ export class ValidatorPresets {
       ),
     ]);
 
-    // Engine validation
-    validator.addRules("engine", [
-      ValidationRules.required(),
-      ValidationRules.string(),
-      ValidationRules.oneOf(["docker", "podman"] as const),
-    ]);
-
     // SSH configuration
     validator.addRules("ssh.user", [
       ValidationRules.required(),
@@ -564,6 +557,18 @@ export class ValidatorPresets {
         },
       ),
     );
+
+    // Builder validation
+    validator.addRules("builder", [
+      ValidationRules.required(),
+      ValidationRules.object(),
+    ]);
+
+    validator.addRules("builder.engine", [
+      ValidationRules.required(),
+      ValidationRules.string(),
+      ValidationRules.oneOf(["docker", "podman"] as const),
+    ]);
 
     // Services validation
     validator.addRules("services", [

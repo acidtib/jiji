@@ -16,11 +16,11 @@ import { Configuration } from "../../lib/configuration.ts";
 
 // Test data
 const VALID_CONFIG_YAML = `project: testproject
-engine: docker
 ssh:
   user: testuser
   port: 22
 builder:
+  engine: docker
   local: true
 services:
   web:
@@ -183,7 +183,7 @@ Deno.test("loadConfig - valid configuration", async () => {
 
     assertEquals(result.configPath, configPath);
     assertEquals(result.config instanceof Configuration, true);
-    assertEquals(result.config.engine, "docker");
+    assertEquals(result.config.builder.engine, "docker");
     assertEquals(result.config.ssh.user, "testuser");
     assertEquals(result.config.services.size, 2);
   } finally {
@@ -213,7 +213,7 @@ Deno.test("loadConfig - non-existent file", async () => {
 });
 
 Deno.test("getEngineCommand - returns engine from config", () => {
-  const config = Configuration.withDefaults({ engine: "podman" });
+  const config = Configuration.withDefaults({ builder: { engine: "podman" } });
   const engine = getEngineCommand(config);
   assertEquals(engine, "podman");
 });
@@ -280,7 +280,7 @@ Deno.test("createDefaultConfig - returns configuration with defaults", () => {
   const config = createDefaultConfig();
 
   assertEquals(config instanceof Configuration, true);
-  assertEquals(config.engine, "podman");
+  assertEquals(config.builder.engine, "podman");
   assertEquals(config.ssh.user, "root");
   assertEquals(config.ssh.port, 22);
   assertEquals(config.services.size, 1);

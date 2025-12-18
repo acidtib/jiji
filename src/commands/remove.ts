@@ -149,7 +149,10 @@ export const removeCommand = new Command()
                     `Removing ${service.name} from proxy on ${host}`,
                     "remove",
                   );
-                  const proxyCmd = new ProxyCommands(config!.engine, hostSsh);
+                  const proxyCmd = new ProxyCommands(
+                    config!.builder.engine,
+                    hostSsh,
+                  );
                   await proxyCmd.remove(service.name);
                   log.success(
                     `Removed ${service.name} from proxy on ${host}`,
@@ -164,7 +167,7 @@ export const removeCommand = new Command()
                 );
                 const rmResult = await hostSsh.executeCommand(
                   `${
-                    config!.engine
+                    config!.builder.engine
                   } rm -f ${containerName} 2>/dev/null || true`,
                 );
 
@@ -187,7 +190,7 @@ export const removeCommand = new Command()
                     try {
                       const volResult = await hostSsh.executeCommand(
                         `${
-                          config!.engine
+                          config!.builder.engine
                         } volume rm ${volumeName} 2>/dev/null || true`,
                       );
 

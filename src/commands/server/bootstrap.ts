@@ -34,7 +34,7 @@ export const bootstrapCommand = new Command()
         log.success(`Configuration loaded from: ${configPath}`, "config");
 
         // Configuration loading will be logged once we have SSH connections
-        log.info(`Container engine: ${config.engine}`, "engine");
+        log.info(`Container engine: ${config.builder.engine}`, "engine");
 
         // Check if the specified engine is available
         const engineCommand = getEngineCommand(config);
@@ -149,7 +149,7 @@ export const bootstrapCommand = new Command()
           // Log bootstrap start to connected servers
           await auditLogger.logBootstrapStart(
             uniqueHosts,
-            config!.engine,
+            config!.builder.engine,
           );
 
           // Log configuration loading to connected servers
@@ -164,7 +164,7 @@ export const bootstrapCommand = new Command()
             try {
               installResults = await installEngineOnHosts(
                 sshManagers!,
-                config!.engine,
+                config!.builder.engine,
               );
 
               // Create server loggers for individual host reporting
@@ -197,7 +197,7 @@ export const bootstrapCommand = new Command()
                     config!.project,
                   );
                   await hostAuditLogger.logEngineInstall(
-                    config!.engine,
+                    config!.builder.engine,
                     result.success ? "success" : "failed",
                     result.message ||
                       (result.success
@@ -248,7 +248,7 @@ export const bootstrapCommand = new Command()
                       config!.project,
                     );
                     await hostLogger.logEngineInstall(
-                      config!.engine,
+                      config!.builder.engine,
                       "failed",
                       errorMessage,
                     );
@@ -275,7 +275,7 @@ export const bootstrapCommand = new Command()
         if (auditLogger) {
           const auditResults = await auditLogger.logBootstrapSuccess(
             uniqueHosts,
-            config!.engine,
+            config!.builder.engine,
           );
 
           // Report successful audit logging (should match connected hosts)
@@ -307,7 +307,7 @@ export const bootstrapCommand = new Command()
         const failureResults = await auditLogger.logBootstrapFailure(
           errorMessage,
           uniqueHosts,
-          config?.engine,
+          config?.builder.engine,
         );
 
         // Report which servers received the failure log
