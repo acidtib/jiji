@@ -1,4 +1,5 @@
 import { BaseConfiguration, ConfigurationError } from "./base.ts";
+import { log } from "../../utils/logger.ts";
 
 /**
  * Interface for proxy healthcheck configuration
@@ -160,6 +161,6 @@ export class ProxyConfiguration extends BaseConfiguration {
     }
 
     // Log warnings
-    warnings.forEach((w) => console.warn(w));
+    warnings.forEach((w) => log.warn(w, "proxy"));
   }
 }

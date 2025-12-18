@@ -469,7 +469,7 @@ export class SSHManager {
           );
           privateKeys.push(keyContent);
         } catch (error) {
-          console.warn(
+          this.logger.warn(
             `Failed to read SSH config identity file '${config._sshConfigIdentityFile}': ${
               error instanceof Error ? error.message : String(error)
             }`,
@@ -547,10 +547,10 @@ export class SSHManager {
     await this.ensureSsh2Client();
 
     return new Promise((resolve, reject) => {
-      console.log(`\nConnected to ${this.config.host}`);
-      console.log(`Starting interactive session: ${command}`);
-      console.log(
-        `To disconnect: Press Ctrl+C, Ctrl+D, Ctrl+\\, or type 'exit'\n`,
+      this.logger.info(`Connected to ${this.config.host}`);
+      this.logger.info(`Starting interactive session: ${command}`);
+      this.logger.info(
+        `To disconnect: Press Ctrl+C, Ctrl+D, Ctrl+\\, or type 'exit'`,
       );
 
       this.ssh2Client!.shell(
@@ -609,8 +609,8 @@ export class SSHManager {
 
           // Set up a connection timeout (5 minutes)
           const connectionTimeout = setTimeout(() => {
-            console.log(
-              "\n⏰ Interactive session timed out after 5 minutes of inactivity",
+            this.logger.warn(
+              "Interactive session timed out after 5 minutes of inactivity",
             );
             inputActive = false;
             cleanup();
@@ -941,7 +941,8 @@ export async function testConnections(
   sshManagers: SSHManager[],
   maxConcurrent?: number,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  console.log("Testing connections to all hosts...");
+  const log = new Logger({ prefix: "ssh" });
+  log.info("Testing connections to all hosts...");
 
   // Import the pool dynamically to avoid circular dependencies
   const { SSHConnectionPool } = await import("./ssh_pool.ts");
@@ -951,14 +952,14 @@ export async function testConnections(
     sshManagers.map((ssh) => async () => {
       try {
         await ssh.connectWithRetry(); // Use retry logic
-        console.log(`✓ Connected to ${ssh.getHost()}`);
+        log.success(`Connected to ${ssh.getHost()}`);
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
           ? error.message
           : String(error);
-        console.log(
-          `❌ Failed to connect to ${ssh.getHost()}: ${errorMessage}`,
+        log.error(
+          `Failed to connect to ${ssh.getHost()}: ${errorMessage}`,
         );
         return {
           host: ssh.getHost(),

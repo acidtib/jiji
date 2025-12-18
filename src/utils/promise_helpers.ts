@@ -1,3 +1,5 @@
+import { log } from "./logger.ts";
+
 /**
  * Enhanced promise utilities for better error handling in multi-host operations
  *
@@ -327,9 +329,9 @@ export function logAggregatedResults<T>(
     warn: (msg: string) => void;
     error: (msg: string) => void;
   } = {
-    success: (msg) => console.log(`✓ ${msg}`),
-    warn: (msg) => console.warn(`⚠ ${msg}`),
-    error: (msg) => console.error(`❌ ${msg}`),
+    success: (msg) => log.success(`✓ ${msg}`, "promise-helpers"),
+    warn: (msg) => log.warn(`⚠ ${msg}`, "promise-helpers"),
+    error: (msg) => log.error(`${msg}`, "promise-helpers"),
   },
 ): void {
   const summary = createErrorSummary(results, operation);

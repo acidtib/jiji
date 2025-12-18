@@ -155,7 +155,7 @@ export const initCommand = new Command()
     } catch (error) {
       console.log();
       log.error(
-        `❌ Initialization failed: ${
+        `Initialization failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

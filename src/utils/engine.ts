@@ -1,6 +1,7 @@
 import type { SSHManager } from "./ssh.ts";
 import { getSSHTroubleshootingTips } from "./ssh.ts";
 import { executeHostOperations } from "./promise_helpers.ts";
+import { log } from "./logger.ts";
 
 export interface EngineInstallResult {
   success: boolean;
@@ -42,7 +43,7 @@ export class EngineInstaller {
    */
   async installPodman(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    console.log(`Installing Podman on ${host}...`);
+    log.info(`Installing Podman on ${host}...`, "engine");
 
     const commands = [
       "sudo apt update",
@@ -54,7 +55,7 @@ export class EngineInstaller {
     let errorMessage = "";
 
     for (const command of commands) {
-      console.log(`  Running: ${command}`);
+      log.debug(`Running: ${command}`, "engine");
       const result = await this.ssh.executeCommand(command);
 
       fullOutput += `$ ${command}\n${result.stdout}\n`;
@@ -76,7 +77,7 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("podman --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        console.log(`  Podman installed successfully: ${version}`);
+        log.info(`Podman installed successfully: ${version}`, "engine");
         fullOutput += `\n$ podman --version\n${verifyResult.stdout}\n`;
       } else {
         hasError = true;
@@ -102,7 +103,7 @@ export class EngineInstaller {
    */
   async installDocker(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    console.log(`Installing Docker on ${host}...`);
+    log.info(`Installing Docker on ${host}...`, "engine");
 
     const commands = [
       "sudo apt update",
@@ -115,7 +116,7 @@ export class EngineInstaller {
     let errorMessage = "";
 
     for (const command of commands) {
-      console.log(`  Running: ${command}`);
+      log.debug(`Running: ${command}`, "engine");
       const result = await this.ssh.executeCommand(command);
 
       fullOutput += `$ ${command}\n${result.stdout}\n`;
@@ -137,7 +138,7 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("docker --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        console.log(`  Docker installed successfully: ${version}`);
+        log.info(`Docker installed successfully: ${version}`, "engine");
         fullOutput += `\n$ docker --version\n${verifyResult.stdout}\n`;
 
         // Note about group membership
@@ -208,7 +209,10 @@ export async function installEngineOnHosts(
   sshManagers: SSHManager[],
   engine: "podman" | "docker",
 ): Promise<EngineInstallResult[]> {
-  console.log(`Installing ${engine} on ${sshManagers.length} host(s)...`);
+  log.info(
+    `Installing ${engine} on ${sshManagers.length} host(s)...`,
+    "engine",
+  );
 
   // Create host operations for error collection
   const hostOperations = sshManagers.map((ssh) => ({
@@ -220,7 +224,7 @@ export async function installEngineOnHosts(
       try {
         if (!ssh.isConnected()) {
           await ssh.connect();
-          console.log(`Connected to ${host}`);
+          log.info(`Connected to ${host}`, "engine");
         }
 
         const result = await installer.installEngine(engine);
@@ -231,11 +235,11 @@ export async function installEngineOnHosts(
           : String(error);
         const troubleshootingTips = getSSHTroubleshootingTips(errorMessage);
 
-        console.log(`Connection failed for ${host}:`);
-        console.log(`   ${errorMessage}`);
-        console.log(`\nTroubleshooting suggestions:`);
-        troubleshootingTips.forEach((tip) => console.log(`   ${tip}`));
-        console.log("");
+        log.error(`Connection failed for ${host}:`, "engine");
+        log.error(`   ${errorMessage}`, "engine");
+        log.warn(`Troubleshooting suggestions:`, "engine");
+        troubleshootingTips.forEach((tip) => log.warn(`   ${tip}`, "engine"));
+        log.info("", "engine");
 
         // Return a failed result instead of throwing
         return {
@@ -273,24 +277,26 @@ export async function installEngineOnHosts(
   const failed = results.filter((r) => !r.success);
 
   if (successful.length > 0) {
-    console.log(`\nSuccessfully installed on:`);
+    log.success(`Successfully installed on:`, "engine");
     for (const result of successful) {
-      console.log(
+      log.success(
         `  - ${result.host}${result.version ? ` (${result.version})` : ""}`,
+        "engine",
       );
     }
   }
 
   if (failed.length > 0) {
-    console.log(`\nFailed installations:`);
+    log.error(`Failed installations:`, "engine");
     for (const result of failed) {
-      console.log(`  - ${result.host}: ${result.error}`);
+      log.error(`  - ${result.host}: ${result.error}`, "engine");
     }
   }
 
   // Log aggregated summary
-  console.log(
-    `\n${engine} installation summary: ${successful.length} succeeded, ${failed.length} failed (total: ${results.length})`,
+  log.info(
+    `${engine} installation summary: ${successful.length} succeeded, ${failed.length} failed (total: ${results.length})`,
+    "engine",
   );
 
   return results;
@@ -344,8 +350,9 @@ export async function checkEngineOnHosts(
 
   // Log summary if there were errors
   if (aggregatedResults.errorCount > 0) {
-    console.log(
+    log.warn(
       `Engine check completed with ${aggregatedResults.errorCount} connection failures - treating as engine not available`,
+      "engine",
     );
   }
 

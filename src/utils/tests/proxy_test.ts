@@ -12,7 +12,10 @@ import type { SSHManager } from "../ssh.ts";
 
 Deno.test("ProxyCommands - deploy with host only", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -32,7 +35,10 @@ Deno.test("ProxyCommands - deploy with host only", async () => {
 
 Deno.test("ProxyCommands - deploy with SSL enabled", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: true,
@@ -55,7 +61,10 @@ Deno.test("ProxyCommands - deploy with SSL enabled", async () => {
 
 Deno.test("ProxyCommands - deploy with path prefix", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -74,7 +83,10 @@ Deno.test("ProxyCommands - deploy with path prefix", async () => {
 
 Deno.test("ProxyCommands - deploy with complex path prefix", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: true,
@@ -99,7 +111,10 @@ Deno.test("ProxyCommands - deploy with complex path prefix", async () => {
 
 Deno.test("ProxyCommands - deploy with all options", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("podman", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "podman",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: true,
@@ -126,7 +141,10 @@ Deno.test("ProxyCommands - deploy with all options", async () => {
 
 Deno.test("ProxyCommands - deploy with health check only", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -156,7 +174,10 @@ Deno.test("ProxyCommands - deploy with health check only", async () => {
 
 Deno.test("ProxyCommands - deploy with partial health check", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -181,7 +202,10 @@ Deno.test("ProxyCommands - deploy with partial health check", async () => {
 
 Deno.test("ProxyCommands - deploy command failure", async () => {
   const mockSSH = new MockSSHManager(false); // Configure to fail
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -240,7 +264,10 @@ Deno.test("extractAppPort - single port", () => {
 
 Deno.test("ProxyCommands - deploy path prefix with special characters", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -261,7 +288,10 @@ Deno.test("ProxyCommands - deploy path prefix with special characters", async ()
 
 Deno.test("ProxyCommands - deploy root path prefix", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("docker", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "docker",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: false,
@@ -277,7 +307,10 @@ Deno.test("ProxyCommands - deploy root path prefix", async () => {
 
 Deno.test("ProxyCommands - deploy generates correct command format", async () => {
   const mockSSH = new MockSSHManager();
-  const proxyCommands = new ProxyCommands("podman", mockSSH as unknown as SSHManager);
+  const proxyCommands = new ProxyCommands(
+    "podman",
+    mockSSH as unknown as SSHManager,
+  );
 
   const config = new ProxyConfiguration({
     ssl: true,

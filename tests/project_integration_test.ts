@@ -186,7 +186,9 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
     assertEquals(result.valid, false, `Config ${index} should be invalid`);
 
     // Should have project-related validation errors
-    const projectErrors = result.errors.filter((err: { path: string }) => err.path === "project");
+    const projectErrors = result.errors.filter((err: { path: string }) =>
+      err.path === "project"
+    );
     assertEquals(
       projectErrors.length > 0,
       true,

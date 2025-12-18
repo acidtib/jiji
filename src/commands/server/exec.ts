@@ -519,7 +519,7 @@ export const execCommand = new Command()
         ? error.message
         : String(error);
       console.log();
-      log.error("❌ Command execution failed:", "exec");
+      log.error("Command execution failed:", "exec");
       log.error(errorMessage, "exec");
 
       // Log failure to audit if possible

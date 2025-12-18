@@ -5,6 +5,7 @@ import { EnvironmentConfiguration } from "./configuration/environment.ts";
 import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
+import { log } from "../utils/logger.ts";
 
 export type ContainerEngine = "docker" | "podman";
 
@@ -408,7 +409,7 @@ export class Configuration extends BaseConfiguration {
         .map((warn) => `${warn.path}: ${warn.message}`)
         .join("\n");
 
-      console.warn(`Configuration warnings:\n${warningMessages}`);
+      log.warn(`Configuration warnings:\n${warningMessages}`, "config");
     }
 
     return configuration;

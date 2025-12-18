@@ -1,5 +1,6 @@
 import type { ProxyConfiguration } from "../lib/configuration/proxy.ts";
 import type { SSHManager } from "./ssh.ts";
+import { log } from "./logger.ts";
 
 /**
  * Options for deploying a service to kamal-proxy
@@ -186,8 +187,9 @@ export class ProxyCommands {
       }
 
       if (i % 5 === 0 && result.success) {
-        console.log(
+        log.info(
           `Waiting for kamal-proxy... (status: ${result.stdout.trim()})`,
+          "proxy",
         );
       }
 

@@ -1,5 +1,6 @@
 import { Configuration, ConfigurationError } from "../lib/configuration.ts";
 import { ensureDir } from "@std/fs";
+import { log } from "./logger.ts";
 
 const TEMPLATE_PATH = import.meta.dirname + "/../jiji.yml";
 const CONFIG_DIR = ".jiji";
@@ -145,7 +146,7 @@ export async function validateConfigFile(configPath: string): Promise<void> {
         .map((warn) => `${warn.path}: ${warn.message}`)
         .join("\n");
 
-      console.warn(`Configuration warnings:\n${warningMessages}`);
+      log.warn(`Configuration warnings:\n${warningMessages}`, "config");
     }
   } catch (error) {
     if (error instanceof ConfigurationError) {

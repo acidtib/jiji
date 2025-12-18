@@ -5,6 +5,7 @@ import type { GlobalOptions } from "../types.ts";
 import type { Configuration } from "../lib/configuration.ts";
 import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
+import { log } from "../utils/logger.ts";
 
 export const lockCommand = new Command()
   .description("Manage deployment locks");
@@ -74,7 +75,7 @@ async function acquireLock(
   let sshManagers: SSHManager[] | undefined;
 
   try {
-    console.log(colors.bold("Acquiring deployment lock...\n"));
+    log.info(colors.bold("Acquiring deployment lock..."), "lock");
 
     // Cast options to GlobalOptions to access global options
     const globalOptions = options as unknown as GlobalOptions;
@@ -95,34 +96,37 @@ async function acquireLock(
     );
 
     if (activeLocks.length > 0) {
-      console.log(colors.red("ERROR: Deployment lock already exists:\n"));
+      log.error("Deployment lock already exists:", "lock");
 
       for (const lock of activeLocks) {
-        console.log(
+        log.error(
           `${colors.cyan(lock.host || "unknown")}: ${
             colors.yellow(lock.message || "No message")
           }`,
+          "lock",
         );
         if (lock.acquiredBy) {
-          console.log(`   Acquired by: ${colors.white(lock.acquiredBy)}`);
+          log.error(`   Acquired by: ${colors.white(lock.acquiredBy)}`, "lock");
         }
         if (lock.acquiredAt) {
-          console.log(
+          log.error(
             `   Acquired at: ${
               colors.gray(new Date(lock.acquiredAt).toLocaleString())
             }`,
+            "lock",
           );
         }
       }
 
-      console.log(
-        `\nUse ${colors.yellow("--force")} to override (use with caution)`,
+      log.error(
+        `Use ${colors.yellow("--force")} to override (use with caution)`,
+        "lock",
       );
       Deno.exit(1);
     }
 
     // Acquire locks on all hosts
-    console.log("Creating lock files...");
+    log.info("Creating lock files...", "lock");
 
     const lockData: LockInfo = {
       locked: true,
@@ -151,15 +155,16 @@ async function acquireLock(
     const failures = results.filter((r) => !r.success);
 
     if (failures.length > 0) {
-      console.log(
-        colors.red("\nERROR: Failed to acquire locks on some hosts:"),
+      log.error(
+        "Failed to acquire locks on some hosts:",
+        "lock",
       );
       for (const failure of failures) {
-        console.log(`   ${colors.cyan(failure.host)}: ${failure.error}`);
+        log.error(`   ${colors.cyan(failure.host)}: ${failure.error}`, "lock");
       }
 
       // Try to clean up any successful locks
-      console.log("\nCleaning up partial locks...");
+      log.warn("Cleaning up partial locks...", "lock");
       await cleanupPartialLocks(sshManagers);
       Deno.exit(1);
     }
@@ -176,16 +181,18 @@ async function acquireLock(
       },
     });
 
-    console.log(
-      colors.green("SUCCESS: Deployment lock acquired successfully!"),
+    log.success(
+      "Deployment lock acquired successfully!",
+      "lock",
     );
-    console.log(`Message: ${colors.white(message)}`);
-    console.log(`Hosts: ${colors.cyan(targetHosts.join(", "))}`);
-    console.log(`\nTo release: ${colors.yellow("jiji lock release")}`);
+    log.info(`Message: ${colors.white(message)}`, "lock");
+    log.info(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, "lock");
+    log.info(`To release: ${colors.yellow("jiji lock release")}`, "lock");
   } catch (error) {
-    console.error(`\nERROR: Failed to acquire deployment lock:`);
-    console.error(
+    log.error(`Failed to acquire deployment lock:`, "lock");
+    log.error(
       colors.red(error instanceof Error ? error.message : String(error)),
+      "lock",
     );
     Deno.exit(1);
   } finally {
@@ -205,7 +212,7 @@ async function releaseLock(
   let sshManagers: SSHManager[] | undefined;
 
   try {
-    console.log(colors.bold("Releasing deployment lock...\n"));
+    log.info(colors.bold("Releasing deployment lock..."), "lock");
 
     // Cast options to GlobalOptions to access global options
     const globalOptions = options as unknown as GlobalOptions;
@@ -224,12 +231,12 @@ async function releaseLock(
     const activeLocks = lockStatuses.filter((status) => status.locked);
 
     if (activeLocks.length === 0) {
-      console.log(colors.yellow("WARNING: No deployment locks found"));
+      log.warn("No deployment locks found", "lock");
       return;
     }
 
     // Remove lock files
-    console.log("Removing lock files...");
+    log.info("Removing lock files...", "lock");
 
     const results = await Promise.all(
       sshManagers!.map(async (sshManager) => {
@@ -250,11 +257,12 @@ async function releaseLock(
     const failures = results.filter((r) => !r.success);
 
     if (failures.length > 0) {
-      console.log(
-        colors.red("\nWARNING: Failed to release locks on some hosts:"),
+      log.warn(
+        "Failed to release locks on some hosts:",
+        "lock",
       );
       for (const failure of failures) {
-        console.log(`   ${colors.cyan(failure.host)}: ${failure.error}`);
+        log.error(`   ${colors.cyan(failure.host)}: ${failure.error}`, "lock");
       }
     }
 
@@ -270,17 +278,20 @@ async function releaseLock(
         },
       });
 
-      console.log(
-        colors.green("SUCCESS: Deployment lock released successfully!"),
+      log.success(
+        "Deployment lock released successfully!",
+        "lock",
       );
-      console.log(
+      log.info(
         `Hosts: ${colors.cyan(successes.map((s) => s.host).join(", "))}`,
+        "lock",
       );
     }
   } catch (error) {
-    console.error(`\nERROR: Failed to release deployment lock:`);
-    console.error(
+    log.error(`Failed to release deployment lock:`, "lock");
+    log.error(
       colors.red(error instanceof Error ? error.message : String(error)),
+      "lock",
     );
     Deno.exit(1);
   } finally {
@@ -314,60 +325,66 @@ async function showLockStatus(
     const lockStatuses = await checkLockStatus(sshManagers!);
 
     if (options.json) {
-      console.log(JSON.stringify(
-        {
-          hosts: lockStatuses,
-          summary: {
-            total: lockStatuses.length,
-            locked: lockStatuses.filter((s) => s.locked).length,
-            unlocked: lockStatuses.filter((s) => !s.locked).length,
+      log.info(
+        JSON.stringify(
+          {
+            hosts: lockStatuses,
+            summary: {
+              total: lockStatuses.length,
+              locked: lockStatuses.filter((s) => s.locked).length,
+              unlocked: lockStatuses.filter((s) => !s.locked).length,
+            },
           },
-        },
-        null,
-        2,
-      ));
+          null,
+          2,
+        ),
+        "lock",
+      );
       return;
     }
 
-    console.log(colors.bold("Deployment Lock Status\n"));
+    log.info("Deployment Lock Status", "lock");
 
     const activeLocks = lockStatuses.filter((s) => s.locked);
     const unlockedHosts = lockStatuses.filter((s) => !s.locked);
 
     if (activeLocks.length === 0) {
-      console.log(colors.green("SUCCESS: No active deployment locks"));
+      log.success("No active deployment locks", "lock");
     } else {
-      console.log(colors.red(`ERROR: ${activeLocks.length} active lock(s):`));
+      log.error(`${activeLocks.length} active lock(s):`, "lock");
       for (const lock of activeLocks) {
-        console.log(`\n${colors.cyan(lock.host || "unknown")}:`);
-        console.log(`  Status: ${colors.red("LOCKED")}`);
+        log.info(`\n${colors.cyan(lock.host || "unknown")}:`, "lock");
+        log.error(`  Status: ${colors.red("LOCKED")}`, "lock");
         if (lock.message) {
-          console.log(`  Message: ${colors.yellow(lock.message)}`);
+          log.info(`  Message: ${colors.yellow(lock.message)}`, "lock");
         }
         if (lock.acquiredBy) {
-          console.log(`  Owner: ${colors.white(lock.acquiredBy)}`);
+          log.info(`  Owner: ${colors.white(lock.acquiredBy)}`, "lock");
         }
         if (lock.acquiredAt) {
-          console.log(
+          log.info(
             `  Since: ${
               colors.gray(new Date(lock.acquiredAt).toLocaleString())
             }`,
+            "lock",
           );
         }
       }
     }
 
     if (unlockedHosts.length > 0) {
-      console.log(
-        `\n${colors.green("SUCCESS")} Unlocked hosts: ${
+      log.success(
+        `Unlocked hosts: ${
           colors.cyan(unlockedHosts.map((h) => h.host).join(", "))
         }`,
+        "lock",
       );
     }
   } catch (error) {
-    console.error(`\nERROR: Failed to check lock status:`);
-    console.error(
+    log.error(`Failed to check lock status:`, "lock");
+    log.error(
       colors.red(error instanceof Error ? error.message : String(error)),
+      "lock",
     );
     Deno.exit(1);
   } finally {
@@ -387,7 +404,7 @@ async function showDetailedLockInfo(
   let sshManagers: SSHManager[] | undefined;
 
   try {
-    console.log(colors.bold("Detailed Lock Information\n"));
+    log.info("Detailed Lock Information", "lock");
 
     // Cast options to GlobalOptions to access global options
     const globalOptions = options as unknown as GlobalOptions;
@@ -402,18 +419,20 @@ async function showDetailedLockInfo(
     const lockStatuses = await checkLockStatus(sshManagers!);
 
     for (const status of lockStatuses) {
-      console.log(`${colors.bold(colors.cyan(status.host || "unknown"))}`);
-      console.log("─".repeat(40));
+      log.info(`${colors.bold(colors.cyan(status.host || "unknown"))}`, "lock");
+      log.info("─".repeat(40), "lock");
 
       if (status.locked) {
-        console.log(`Status:      ${colors.red("LOCKED")}`);
-        console.log(
+        log.error(`Status:      ${colors.red("LOCKED")}`, "lock");
+        log.info(
           `Message:     ${colors.yellow(status.message || "No message")}`,
+          "lock",
         );
-        console.log(
+        log.info(
           `Acquired by: ${colors.white(status.acquiredBy || "Unknown")}`,
+          "lock",
         );
-        console.log(
+        log.info(
           `Acquired at: ${
             colors.gray(
               status.acquiredAt
@@ -421,21 +440,26 @@ async function showDetailedLockInfo(
                 : "Unknown",
             )
           }`,
+          "lock",
         );
         if (status.pid) {
-          console.log(`Process ID:  ${colors.white(status.pid.toString())}`);
+          log.info(
+            `Process ID:  ${colors.white(status.pid.toString())}`,
+            "lock",
+          );
         }
       } else {
-        console.log(`Status:      ${colors.green("UNLOCKED")}`);
-        console.log(`Available for deployment`);
+        log.success(`Status:      ${colors.green("UNLOCKED")}`, "lock");
+        log.info(`Available for deployment`, "lock");
       }
 
-      console.log("");
+      log.info("", "lock");
     }
   } catch (error) {
-    console.error(`\nERROR: Failed to show lock information:`);
-    console.error(
+    log.error(`Failed to show lock information:`, "lock");
+    log.error(
       colors.red(error instanceof Error ? error.message : String(error)),
+      "lock",
     );
     Deno.exit(1);
   } finally {
@@ -492,7 +516,10 @@ async function setupLockSSHConnections(
     { allowPartialConnection: true },
   );
 
-  console.log(`Connected: ${colors.green(result.connectedHosts.join(", "))}\n`);
+  log.success(
+    `Connected: ${colors.green(result.connectedHosts.join(", "))}`,
+    "lock",
+  );
 
   return {
     targetHosts: result.connectedHosts,
