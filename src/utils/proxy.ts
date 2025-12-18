@@ -2,6 +2,67 @@ import type { ProxyConfiguration } from "../lib/configuration/proxy.ts";
 import type { SSHManager } from "./ssh.ts";
 
 /**
+ * Options for deploying a service to kamal-proxy
+ */
+export interface KamalProxyDeployOptions {
+  /** Service name to deploy */
+  serviceName: string;
+  /** Target container name and port (containerName:port) */
+  target: string;
+  /** Host domain for routing */
+  host?: string;
+  /** Path prefix for path-based routing */
+  pathPrefix?: string;
+  /** Enable TLS/SSL */
+  tls?: boolean;
+  /** Health check endpoint path */
+  healthCheckPath?: string;
+  /** Health check interval (e.g., "30s", "5m") */
+  healthCheckInterval?: string;
+}
+
+/**
+ * Converts ProxyConfiguration to KamalProxyDeployOptions
+ */
+export function buildKamalProxyOptions(
+  serviceName: string,
+  containerName: string,
+  appPort: number,
+  config: ProxyConfiguration,
+): KamalProxyDeployOptions {
+  return {
+    serviceName,
+    target: `${containerName}:${appPort}`,
+    host: config.host,
+    pathPrefix: config.pathPrefix,
+    tls: config.ssl,
+    healthCheckPath: config.healthcheck?.path,
+    healthCheckInterval: config.healthcheck?.interval,
+  };
+}
+
+/**
+ * Builds kamal-proxy deploy command arguments from options
+ */
+export function buildDeployCommandArgs(
+  options: KamalProxyDeployOptions,
+): string[] {
+  const args: string[] = [`--target=${options.target}`];
+
+  if (options.host) args.push(`--host=${options.host}`);
+  if (options.pathPrefix) args.push(`--path-prefix=${options.pathPrefix}`);
+  if (options.tls) args.push("--tls");
+  if (options.healthCheckPath) {
+    args.push(`--health-check-path=${options.healthCheckPath}`);
+  }
+  if (options.healthCheckInterval) {
+    args.push(`--health-check-interval=${options.healthCheckInterval}`);
+  }
+
+  return args;
+}
+
+/**
  * Modern kamal-proxy management for container deployments
  */
 export class ProxyCommands {
@@ -164,22 +225,17 @@ export class ProxyCommands {
     config: ProxyConfiguration,
     appPort: number,
   ): Promise<void> {
-    const options = [`--target=${containerName}:${appPort}`];
+    const options = buildKamalProxyOptions(
+      service,
+      containerName,
+      appPort,
+      config,
+    );
+    const args = buildDeployCommandArgs(options);
+    const argsStr = args.join(" ");
 
-    if (config.host) options.push(`--host=${config.host}`);
-    if (config.pathPrefix) options.push(`--path-prefix=${config.pathPrefix}`);
-    if (config.ssl) options.push("--tls");
-
-    if (config.healthcheck?.path) {
-      options.push(`--health-check-path=${config.healthcheck.path}`);
-    }
-    if (config.healthcheck?.interval) {
-      options.push(`--health-check-interval=${config.healthcheck.interval}`);
-    }
-
-    const optionsStr = options.join(" ");
     const command =
-      `${this.engine} exec ${this.containerName} kamal-proxy deploy ${service} ${optionsStr}`;
+      `${this.engine} exec ${this.containerName} kamal-proxy deploy ${service} ${argsStr}`;
 
     const result = await this.ssh.executeCommand(command);
     if (!result.success) {
