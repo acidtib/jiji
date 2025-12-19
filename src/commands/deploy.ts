@@ -20,6 +20,32 @@ interface DeployOptions extends GlobalOptions {
   noCache?: boolean;
 }
 
+/**
+ * Filter services based on service patterns (used by both build and deploy phases)
+ */
+function filterServicesByPatterns<T extends { name: string }>(
+  services: T[],
+  servicePatterns: string,
+  config: Configuration,
+  phase: string,
+): T[] {
+  const patterns = servicePatterns.split(",").map((s) => s.trim());
+  const matchingNames = config.getMatchingServiceNames(patterns);
+  const filtered = services.filter((service) =>
+    matchingNames.includes(service.name)
+  );
+
+  if (filtered.length === 0) {
+    log.error(
+      `No services match pattern: ${servicePatterns}`,
+      phase,
+    );
+    Deno.exit(1);
+  }
+
+  return filtered;
+}
+
 export const deployCommand = new Command()
   .description("Deploy services to servers")
   .option("--build", "Build images before deploying", { default: false })
@@ -63,23 +89,12 @@ export const deployCommand = new Command()
               // Filter by service pattern if specified
               let filteredServices = servicesToBuild;
               if (deployOptions.services) {
-                const servicePatterns = deployOptions.services.split(",").map((
-                  s,
-                ) => s.trim());
-                const matchingNames = config!.getMatchingServiceNames(
-                  servicePatterns,
+                filteredServices = filterServicesByPatterns(
+                  servicesToBuild,
+                  deployOptions.services,
+                  config!,
+                  "build",
                 );
-                filteredServices = servicesToBuild.filter((service) =>
-                  matchingNames.includes(service.name)
-                );
-
-                if (filteredServices.length === 0) {
-                  log.error(
-                    `No buildable services match pattern: ${deployOptions.services}`,
-                    "build",
-                  );
-                  Deno.exit(1);
-                }
               }
 
               log.info(
@@ -435,10 +450,39 @@ export const deployCommand = new Command()
           });
         }
 
-        // Check which services have proxy configuration
-        const servicesWithProxy = Array.from(config.services.values())
-          .filter((service) => service.proxy?.enabled);
+        // Get deployable services and apply filtering if specified
+        let allServices = config.getDeployableServices();
 
+        // Apply service filtering if specified (same logic as build phase)
+        if (deployOptions.services) {
+          allServices = filterServicesByPatterns(
+            allServices,
+            deployOptions.services,
+            config!,
+            "deploy",
+          );
+
+          log.info(
+            `Deploying ${allServices.length} service(s): ${
+              allServices.map((s) => s.name).join(", ")
+            }`,
+            "deploy",
+          );
+        } else {
+          log.info(
+            `Deploying all ${allServices.length} service(s): ${
+              allServices.map((s) => s.name).join(", ")
+            }`,
+            "deploy",
+          );
+        }
+
+        // Get services that need proxy configuration
+        const servicesWithProxy = allServices.filter((service) =>
+          service.proxy?.enabled
+        );
+
+        // Install proxy if any services need it
         if (servicesWithProxy.length > 0) {
           await log.group("Proxy Installation", async () => {
             log.info(
@@ -576,9 +620,9 @@ export const deployCommand = new Command()
             }
           });
 
-          // Deploy service containers
+          // Deploy service containers (both with and without proxy)
           await log.group("Service Container Deployment", async () => {
-            for (const service of servicesWithProxy) {
+            for (const service of allServices) {
               log.status(`Deploying ${service.name} containers`, "deploy");
 
               for (const server of service.servers) {
@@ -767,75 +811,106 @@ export const deployCommand = new Command()
             }
           });
 
-          // Deploy services to proxy
-          await log.group("Service Proxy Configuration", async () => {
-            for (const service of servicesWithProxy) {
-              log.status(
-                `Configuring proxy for service: ${service.name}`,
-                "proxy",
-              );
-
-              const proxyConfig = service.proxy!;
-              const appPort = extractAppPort(service.ports);
-
-              for (const server of service.servers) {
-                const host = server.host;
-                if (!uniqueHosts.includes(host)) {
-                  log.warn(
-                    `Skipping ${service.name} on unreachable host: ${host}`,
-                    "proxy",
-                  );
-                  continue;
-                }
-
-                const hostSsh = sshManagers!.find((ssh) =>
-                  ssh.getHost() === host
+          // Configure proxy for services that need it
+          if (servicesWithProxy.length > 0) {
+            await log.group("Service Proxy Configuration", async () => {
+              for (const service of servicesWithProxy) {
+                log.status(
+                  `Configuring proxy for service: ${service.name}`,
+                  "proxy",
                 );
-                if (!hostSsh) continue;
 
-                try {
-                  const proxyCmd = new ProxyCommands(
-                    config!.builder.engine,
-                    hostSsh,
-                  );
-                  const containerName = service.getContainerName();
+                const proxyConfig = service.proxy!;
+                const appPort = extractAppPort(service.ports);
 
-                  await proxyCmd.deploy(
-                    service.name,
-                    containerName,
-                    proxyConfig,
-                    appPort,
-                  );
+                for (const server of service.servers) {
+                  const host = server.host;
+                  if (!uniqueHosts.includes(host)) {
+                    log.warn(
+                      `Skipping ${service.name} on unreachable host: ${host}`,
+                      "proxy",
+                    );
+                    continue;
+                  }
 
-                  log.success(
-                    `${service.name} configured on proxy at ${host} (${proxyConfig.host}, port ${appPort})`,
-                    "proxy",
+                  const hostSsh = sshManagers!.find((ssh) =>
+                    ssh.getHost() === host
                   );
+                  if (!hostSsh) continue;
 
-                  // Log to audit
-                  const hostLogger = createServerAuditLogger(
-                    hostSsh,
-                    config!.project,
-                  );
-                  await hostLogger.logProxyEvent(
-                    "deploy",
-                    "success",
-                    `${service.name} -> ${proxyConfig.host}:${appPort} (SSL: ${proxyConfig.ssl})`,
-                  );
-                } catch (error) {
-                  const errorMessage = error instanceof Error
-                    ? error.message
-                    : String(error);
-                  log.error(
-                    `Failed to configure ${service.name} on proxy at ${host}: ${errorMessage}`,
-                    "proxy",
-                  );
+                  try {
+                    const proxyCmd = new ProxyCommands(
+                      config!.builder.engine,
+                      hostSsh,
+                    );
+                    const containerName = service.getContainerName();
+
+                    await proxyCmd.deploy(
+                      service.name,
+                      containerName,
+                      proxyConfig,
+                      appPort,
+                    );
+
+                    log.success(
+                      `${service.name} configured on proxy at ${host} (${proxyConfig.host}, port ${appPort})`,
+                      "proxy",
+                    );
+
+                    // Log to audit
+                    const hostLogger = createServerAuditLogger(
+                      hostSsh,
+                      config!.project,
+                    );
+                    await hostLogger.logProxyEvent(
+                      "deploy",
+                      "success",
+                      `${service.name} -> ${proxyConfig.host}:${appPort} (SSL: ${proxyConfig.ssl})`,
+                    );
+                  } catch (error) {
+                    const errorMessage = error instanceof Error
+                      ? error.message
+                      : String(error);
+                    log.error(
+                      `Failed to configure ${service.name} on proxy at ${host}: ${errorMessage}`,
+                      "proxy",
+                    );
+
+                    // Fetch and display service container logs to help diagnose the issue
+                    const containerName = service.getContainerName();
+                    log.info(
+                      `Fetching logs from ${containerName} to diagnose the issue...`,
+                      "proxy",
+                    );
+
+                    const logsCmd = `${
+                      config!.builder.engine
+                    } logs --tail 50 ${containerName} 2>&1`;
+                    const logsResult = await hostSsh.executeCommand(logsCmd);
+
+                    if (logsResult.success && logsResult.stdout.trim()) {
+                      log.error(
+                        `Container logs for ${containerName}:`,
+                        "proxy",
+                      );
+                      // Split logs into lines and display each with error level
+                      const logLines = logsResult.stdout.trim().split("\n");
+                      for (const line of logLines) {
+                        log.error(`  ${line}`, "proxy");
+                      }
+                    } else {
+                      log.warn(
+                        `No logs available for ${containerName}`,
+                        "proxy",
+                      );
+                    }
+                  }
                 }
               }
-            }
-          });
-        } else {
-          log.info("No services configured with proxy", "deploy");
+            });
+          }
+        } else if (allServices.length === 0) {
+          log.info("No services found to deploy", "deploy");
         }
 
         log.success("Deployment process completed", "deploy");

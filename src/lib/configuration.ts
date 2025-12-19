@@ -265,6 +265,13 @@ export class Configuration extends BaseConfiguration {
   }
 
   /**
+   * Gets all services that should be deployed (both build and image-based)
+   */
+  getDeployableServices(): ServiceConfiguration[] {
+    return Array.from(this.services.values());
+  }
+
+  /**
    * Validates the entire configuration
    */
   validate(): ValidationResult {
