@@ -49,3 +49,26 @@ export type { ServiceConfiguration } from "./lib/configuration.ts";
 export type { SSHConfiguration } from "./lib/configuration.ts";
 export type { EnvironmentConfiguration } from "./lib/configuration.ts";
 export { ConfigurationError } from "./lib/configuration.ts";
+
+// Re-export registry types
+export type {
+  AuthenticationResult,
+  RegistryCommandOptions,
+  RegistryCredentials,
+  RegistryHealthCheck,
+  RegistryInfo,
+  RegistryListOptions,
+  RegistryOperation,
+  RegistryOperationResult,
+  RegistrySetupOptions,
+  RegistryStatus,
+  RegistryType,
+  RegistryValidationResult,
+} from "./types/registry.ts";
+
+// Re-export error handling types
+export {
+  RegistryError,
+  type RegistryErrorCode,
+  RegistryErrorCodes,
+} from "./utils/error_handling.ts";
