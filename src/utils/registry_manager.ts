@@ -21,7 +21,7 @@ export class RegistryManager {
 
   constructor(
     private engine: ContainerEngine,
-    private port: number = 5000,
+    private port: number = 6767,
   ) {}
 
   /**
@@ -240,13 +240,37 @@ export class RegistryManager {
     }
 
     if (!await this.containerExists()) {
-      return;
+      log.info("Registry container does not exist", "registry");
+    } else {
+      log.info("Removing local registry container", "registry");
+
+      const command = new Deno.Command(this.engine, {
+        args: ["rm", RegistryManager.CONTAINER_NAME],
+        stdout: "piped",
+        stderr: "piped",
+      });
+
+      const { code, stderr } = await command.output();
+      if (code !== 0) {
+        const error = new TextDecoder().decode(stderr);
+        throw new Error(`Failed to remove registry container: ${error}`);
+      }
+
+      log.success("Local registry container removed", "registry");
     }
 
-    log.info("Removing local registry container", "registry");
+    // Clean up the volume
+    await this.removeVolume();
+  }
+
+  /**
+   * Remove the registry volume (for cleanup)
+   */
+  private async removeVolume(): Promise<void> {
+    log.info("Removing local registry volume", "registry");
 
     const command = new Deno.Command(this.engine, {
-      args: ["rm", RegistryManager.CONTAINER_NAME],
+      args: ["volume", "rm", RegistryManager.VOLUME_NAME],
       stdout: "piped",
       stderr: "piped",
     });
@@ -254,10 +278,15 @@ export class RegistryManager {
     const { code, stderr } = await command.output();
     if (code !== 0) {
       const error = new TextDecoder().decode(stderr);
-      throw new Error(`Failed to remove registry container: ${error}`);
+      // Check if volume doesn't exist (this is not a critical error)
+      if (error.toLowerCase().includes("no such volume")) {
+        log.info("Registry volume does not exist", "registry");
+        return;
+      }
+      throw new Error(`Failed to remove registry volume: ${error}`);
     }
 
-    log.success("Local registry container removed", "registry");
+    log.success("Local registry volume removed", "registry");
   }
 
   /**
@@ -281,7 +310,7 @@ export class RegistryManager {
 
   /**
    * Get registry URL for image naming
-   * @returns Registry URL (e.g., "localhost:5000")
+   * @returns Registry URL (e.g., "localhost:6767")
    */
   getRegistryUrl(): string {
     return `localhost:${this.port}`;

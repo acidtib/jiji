@@ -462,7 +462,7 @@ export class Configuration extends BaseConfiguration {
         local: true,
         registry: {
           type: "local",
-          port: 5000,
+          port: 6767,
         },
       },
       services: {

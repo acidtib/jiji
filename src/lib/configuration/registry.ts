@@ -10,7 +10,7 @@ export type RegistryType = "local" | "remote";
  * Supports both local registry (with SSH port forwarding) and remote registries
  */
 export class RegistryConfiguration extends BaseConfiguration {
-  private static readonly DEFAULT_LOCAL_PORT = 5000;
+  private static readonly DEFAULT_LOCAL_PORT = 6767;
   private static readonly SERVER_PATTERN = /^[a-z0-9.-]+:\d+$/i;
 
   get type(): RegistryType {

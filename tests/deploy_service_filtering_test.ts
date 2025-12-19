@@ -12,7 +12,8 @@ const TEST_CONFIG_DATA = {
     engine: "docker",
     local: true,
     registry: {
-      url: "localhost:5000",
+      type: "local",
+      port: 6767,
     },
   },
   services: {

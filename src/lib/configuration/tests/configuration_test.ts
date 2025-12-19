@@ -16,7 +16,7 @@ const VALID_CONFIG_DATA = {
     local: true,
     registry: {
       type: "local",
-      port: 5000,
+      port: 6767,
     },
   },
   services: {
@@ -59,7 +59,7 @@ const INVALID_CONFIG_DATA = {
     local: true,
     registry: {
       type: "local",
-      port: 5000,
+      port: 6767,
     },
   },
   services: {
@@ -80,7 +80,7 @@ const MINIMAL_CONFIG_DATA = {
     local: true,
     registry: {
       type: "local",
-      port: 5000,
+      port: 6767,
     },
   },
   services: {

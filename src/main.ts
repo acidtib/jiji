@@ -8,6 +8,7 @@ import { versionCommand } from "./commands/version.ts";
 import { deployCommand } from "./commands/deploy.ts";
 import { buildCommand } from "./commands/build.ts";
 import { removeCommand } from "./commands/remove.ts";
+import { registryCommand } from "./commands/registry/index.ts";
 import { setGlobalLogLevel } from "./utils/logger.ts";
 
 const command = new Command()
@@ -46,6 +47,7 @@ const command = new Command()
   .command("deploy", deployCommand)
   .command("remove", removeCommand)
   .command("server", serverCommand)
+  .command("registry", registryCommand)
   .command("audit", auditCommand)
   .command("lock", lockCommand)
   .command("version", versionCommand)

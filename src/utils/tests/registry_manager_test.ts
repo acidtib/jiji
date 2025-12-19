@@ -41,7 +41,7 @@ if (engine) {
   Deno.test({
     name: "RegistryManager - check if registry is running",
     async fn() {
-      const manager = new RegistryManager(engine, 5000);
+      const manager = new RegistryManager(engine, 6767);
 
       const isRunning = await manager.isRunning();
       assertEquals(typeof isRunning, "boolean");
@@ -51,13 +51,13 @@ if (engine) {
   Deno.test({
     name: "RegistryManager - get registry status",
     async fn() {
-      const manager = new RegistryManager(engine, 5000);
+      const manager = new RegistryManager(engine, 6767);
 
       const status = await manager.getStatus();
 
       assertEquals(typeof status.running, "boolean");
       assertEquals(typeof status.port, "number");
-      assertEquals(status.port, 5000);
+      assertEquals(status.port, 6767);
 
       if (status.running) {
         assertEquals(typeof status.containerId, "string");
@@ -150,6 +150,41 @@ if (engine) {
   });
 
   Deno.test({
+    name: "RegistryManager - remove registry with volume cleanup",
+    async fn() {
+      const testPort = 5005;
+      const manager = new RegistryManager(engine, testPort);
+
+      try {
+        // Start registry (creates volume)
+        await manager.start();
+        assertEquals(await manager.isRunning(), true);
+
+        // Remove registry (should stop container and remove volume)
+        await manager.remove();
+
+        // Check it's not running
+        assertEquals(await manager.isRunning(), false);
+
+        // Verify volume is cleaned up by checking if we can create registry again
+        // without conflicts (this indirectly tests volume cleanup)
+        await manager.start();
+        assertEquals(await manager.isRunning(), true);
+        await manager.remove();
+      } finally {
+        // Cleanup
+        try {
+          await manager.remove();
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    },
+    sanitizeResources: false,
+    sanitizeOps: false,
+  });
+
+  Deno.test({
     name: "RegistryManager - restart existing stopped container",
     async fn() {
       const testPort = 5003;
@@ -214,7 +249,7 @@ if (engine) {
     name: "RegistryManager - different engines use same container name",
     async fn() {
       // This test verifies that the container name is consistent
-      const manager = new RegistryManager(engine, 5000);
+      const manager = new RegistryManager(engine, 6767);
 
       // The container name should always be 'jiji-registry'
       // We can't directly access private static fields, but we can verify
@@ -225,7 +260,7 @@ if (engine) {
         const running1 = await manager.isRunning();
 
         // Create another manager instance with same engine
-        const manager2 = new RegistryManager(engine, 5000);
+        const manager2 = new RegistryManager(engine, 6767);
         const running2 = await manager2.isRunning();
 
         // Both should see the same container

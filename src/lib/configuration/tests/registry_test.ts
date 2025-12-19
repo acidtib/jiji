@@ -5,7 +5,7 @@ import { ConfigurationError } from "../base.ts";
 // Test data
 const LOCAL_REGISTRY_DATA = {
   type: "local",
-  port: 5000,
+  port: 6767,
 };
 
 const LOCAL_REGISTRY_CUSTOM_PORT_DATA = {
@@ -65,9 +65,9 @@ Deno.test("RegistryConfiguration - local registry with default port", () => {
   const registry = new RegistryConfiguration({});
 
   assertEquals(registry.type, "local");
-  assertEquals(registry.port, 5000);
+  assertEquals(registry.port, 6767);
   assertEquals(registry.isLocal(), true);
-  assertEquals(registry.getRegistryUrl(), "localhost:5000");
+  assertEquals(registry.getRegistryUrl(), "localhost:6767");
 });
 
 Deno.test("RegistryConfiguration - local registry with custom port", () => {
@@ -94,7 +94,7 @@ Deno.test("RegistryConfiguration - getFullImageName", () => {
   const registry = new RegistryConfiguration(LOCAL_REGISTRY_DATA);
 
   const imageName = registry.getFullImageName("myproject", "web", "v1.0.0");
-  assertEquals(imageName, "localhost:5000/myproject-web:v1.0.0");
+  assertEquals(imageName, "localhost:6767/myproject-web:v1.0.0");
 });
 
 Deno.test("RegistryConfiguration - getFullImageName with remote registry", () => {
@@ -241,10 +241,10 @@ Deno.test("RegistryConfiguration - remote registry validation passes", () => {
 });
 
 Deno.test("RegistryConfiguration - registry URL for different ports", () => {
-  const registry1 = new RegistryConfiguration({ type: "local", port: 5000 });
+  const registry1 = new RegistryConfiguration({ type: "local", port: 6767 });
   const registry2 = new RegistryConfiguration({ type: "local", port: 8080 });
 
-  assertEquals(registry1.getRegistryUrl(), "localhost:5000");
+  assertEquals(registry1.getRegistryUrl(), "localhost:6767");
   assertEquals(registry2.getRegistryUrl(), "localhost:8080");
 });
 
