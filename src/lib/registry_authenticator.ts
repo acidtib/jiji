@@ -53,7 +53,7 @@ export class RegistryAuthenticator {
         };
       }
 
-      const result = await this.executeLogin(registry, credentials);
+      await this.executeLogin(registry, credentials);
 
       log.debug(
         `Successfully authenticated to registry: ${registry}`,
@@ -135,7 +135,7 @@ export class RegistryAuthenticator {
   /**
    * Check if the current user is authenticated to a registry
    */
-  async isAuthenticated(registry: string): Promise<boolean> {
+  async isAuthenticated(_registry: string): Promise<boolean> {
     try {
       // Try a lightweight operation to check authentication
       const command = new Deno.Command(this.engine, {

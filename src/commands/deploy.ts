@@ -408,9 +408,14 @@ export const deployCommand = new Command()
                   const containerName = service.getContainerName();
 
                   // Determine image name with optional version and registry
-                  const version = globalOptions.version;
-                  const registry = config!.builder.registry.getRegistryUrl();
-                  const imageName = service.getImageName(registry, version);
+                  const version = globalOptions.version || "latest";
+                  const imageName = service.requiresBuild()
+                    ? config!.builder.registry.getFullImageName(
+                      service.project,
+                      service.name,
+                      version,
+                    )
+                    : service.getImageName(undefined, version);
 
                   // Prepare files and directories before deployment
                   if (service.files.length > 0) {
@@ -469,6 +474,44 @@ export const deployCommand = new Command()
                   const fullImageName = imageName.includes("/")
                     ? imageName
                     : `docker.io/library/${imageName}`;
+
+                  // Authenticate to registry on remote server if using remote registry
+                  if (
+                    !config!.builder.registry.isLocal() &&
+                    service.requiresBuild()
+                  ) {
+                    const registryUrl = config!.builder.registry
+                      .getRegistryUrl();
+                    const username = config!.builder.registry.username;
+                    const password = config!.builder.registry.password;
+
+                    if (username && password) {
+                      log.status(
+                        `Authenticating to ${registryUrl} on ${host}`,
+                        "deploy",
+                      );
+
+                      // Use echo to pipe password to podman/docker login
+                      const loginCommand = `echo '${password}' | ${
+                        config!.builder.engine
+                      } login ${registryUrl} --username ${username} --password-stdin`;
+                      const loginResult = await hostSsh.executeCommand(
+                        loginCommand,
+                      );
+
+                      if (!loginResult.success) {
+                        log.warn(
+                          `Failed to authenticate to ${registryUrl} on ${host}: ${loginResult.stderr}`,
+                          "deploy",
+                        );
+                      } else {
+                        log.success(
+                          `Authenticated to ${registryUrl} on ${host}`,
+                          "deploy",
+                        );
+                      }
+                    }
+                  }
 
                   // Build pull command with TLS verification disabled for local registries
                   let pullCommand = `${config!.builder.engine} pull`;

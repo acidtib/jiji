@@ -10,12 +10,11 @@ import {
   RegistryAuthenticator,
   type RegistryCredentials,
 } from "./registry_authenticator.ts";
-import type { RegistryConfiguration } from "./configuration/registry.ts";
+
 import type { ContainerEngine } from "./configuration/builder.ts";
 import {
   createRegistryError,
   getErrorMessage,
-  type RegistryErrorCode,
   RegistryErrorCodes,
 } from "../utils/error_handling.ts";
 

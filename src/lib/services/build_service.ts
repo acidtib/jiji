@@ -3,6 +3,7 @@ import type { RegistryConfiguration } from "../configuration/registry.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { ImagePushService } from "./image_push_service.ts";
+import { RegistryAuthenticator } from "../registry_authenticator.ts";
 import { log } from "../../utils/logger.ts";
 
 /**
@@ -34,8 +35,12 @@ export interface BuildResult {
  */
 export class BuildService {
   private imagePushService?: ImagePushService;
+  private registryAuthenticator: RegistryAuthenticator;
+  private isAuthenticated = false;
 
   constructor(private options: BuildServiceOptions) {
+    this.registryAuthenticator = new RegistryAuthenticator(options.engine);
+
     // Create ImagePushService if push is enabled
     if (options.push) {
       this.imagePushService = new ImagePushService({
@@ -43,6 +48,47 @@ export class BuildService {
         registry: options.registry,
         globalOptions: options.globalOptions,
       });
+    }
+  }
+
+  /**
+   * Authenticate to registry if needed (for remote registries)
+   */
+  private async ensureAuthenticated(): Promise<void> {
+    // Skip if already authenticated or using local registry
+    if (this.isAuthenticated || this.options.registry.isLocal()) {
+      return;
+    }
+
+    // Authenticate to remote registry
+    const registryUrl = this.options.registry.getRegistryUrl();
+    const username = this.options.registry.username;
+    const password = this.options.registry.password;
+
+    if (!username || !password) {
+      log.warn(
+        `No credentials configured for ${registryUrl}, skipping authentication`,
+        "build",
+      );
+      return;
+    }
+
+    try {
+      log.status(`Authenticating to ${registryUrl}...`, "build");
+      await this.registryAuthenticator.login(registryUrl, {
+        username,
+        password,
+      });
+      this.isAuthenticated = true;
+      log.success(`Authenticated to ${registryUrl}`, "build");
+    } catch (error) {
+      log.error(
+        `Failed to authenticate to ${registryUrl}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "build",
+      );
+      throw error;
     }
   }
 
@@ -57,9 +103,20 @@ export class BuildService {
     versionTag: string,
   ): Promise<BuildResult> {
     try {
-      const registryUrl = this.options.registry.getRegistryUrl();
-      const imageName = service.getImageName(registryUrl, versionTag);
-      const latestImageName = service.getImageName(registryUrl, "latest");
+      const imageName = service.requiresBuild()
+        ? this.options.registry.getFullImageName(
+          service.project,
+          service.name,
+          versionTag,
+        )
+        : service.getImageName(undefined, versionTag);
+      const latestImageName = service.requiresBuild()
+        ? this.options.registry.getFullImageName(
+          service.project,
+          service.name,
+          "latest",
+        )
+        : service.getImageName(undefined, "latest");
 
       // Log build information
       this.logBuildInfo(service, imageName);
@@ -72,6 +129,9 @@ export class BuildService {
 
       // Push to registry if requested
       if (this.options.push && this.imagePushService) {
+        // Ensure we're authenticated before pushing
+        await this.ensureAuthenticated();
+
         await log.group("Pushing to Registry", async () => {
           // Push versioned image
           const versionedResult = await this.imagePushService!.pushImage(

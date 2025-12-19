@@ -11,7 +11,7 @@ export type RegistryType = "local" | "remote";
  */
 export class RegistryConfiguration extends BaseConfiguration {
   private static readonly DEFAULT_LOCAL_PORT = 6767;
-  private static readonly SERVER_PATTERN = /^[a-z0-9.-]+:\d+$/i;
+  private static readonly SERVER_PATTERN = /^[a-z0-9.-]+(:\d+)?$/i;
 
   get type(): RegistryType {
     const value = this.get<string>("type", "local");
@@ -88,7 +88,55 @@ export class RegistryConfiguration extends BaseConfiguration {
     version: string,
   ): string {
     const registry = this.getRegistryUrl();
-    return `${registry}/${project}-${service}:${version}`;
+    const imageName = `${project}-${service}:${version}`;
+    const namespace = this.getNamespaceForRegistry(project);
+
+    if (namespace) {
+      return `${registry}/${namespace}/${imageName}`;
+    }
+
+    return `${registry}/${imageName}`;
+  }
+
+  /**
+   * Get the appropriate namespace for the current registry
+   */
+  private getNamespaceForRegistry(_project: string): string | undefined {
+    if (!this.server) {
+      return undefined;
+    }
+
+    const serverHost = this.server.split(":")[0];
+
+    switch (serverHost) {
+      case "ghcr.io": {
+        // For GHCR: username format (project is already in image name)
+        const username = this.username;
+        if (username) {
+          return username;
+        }
+        throw new ConfigurationError(
+          `GHCR requires username to be configured`,
+        );
+      }
+
+      case "docker.io":
+      case "registry-1.docker.io":
+      case "index.docker.io": {
+        // Docker Hub: username format
+        const dockerUsername = this.username;
+        if (dockerUsername) {
+          return dockerUsername;
+        }
+        throw new ConfigurationError(
+          `Docker Hub requires username to be configured`,
+        );
+      }
+
+      default:
+        // Other registries don't require namespace
+        return undefined;
+    }
   }
 
   /**
@@ -109,10 +157,26 @@ export class RegistryConfiguration extends BaseConfiguration {
         );
       }
 
+      // Username validation with registry-specific messages
       if (!this.username) {
-        throw new ConfigurationError(
-          "Remote registry requires 'username' to be configured",
-        );
+        const serverHost = this.server.split(":")[0];
+        if (serverHost === "ghcr.io") {
+          throw new ConfigurationError(
+            "GHCR requires username to be configured",
+          );
+        } else if (
+          ["docker.io", "registry-1.docker.io", "index.docker.io"].includes(
+            serverHost,
+          )
+        ) {
+          throw new ConfigurationError(
+            "Docker Hub requires username to be configured",
+          );
+        } else {
+          throw new ConfigurationError(
+            "Remote registry requires 'username' to be configured",
+          );
+        }
       }
 
       if (!this.password) {

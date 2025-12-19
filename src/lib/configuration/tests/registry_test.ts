@@ -27,6 +27,39 @@ const REMOTE_REGISTRY_WITH_ENV_PASSWORD_DATA = {
   password: "${GCR_TOKEN}",
 };
 
+const REMOTE_REGISTRY_NO_PORT_DATA = {
+  type: "remote",
+  server: "ghcr.io",
+  username: "myuser",
+  password: "secret123",
+};
+
+const GHCR_AUTO_NAMESPACE_DATA = {
+  type: "remote",
+  server: "ghcr.io",
+  username: "acidtib",
+  password: "secret123",
+};
+
+const GHCR_MISSING_USERNAME_DATA = {
+  type: "remote",
+  server: "ghcr.io",
+  password: "secret123",
+};
+
+const DOCKER_HUB_AUTO_NAMESPACE_DATA = {
+  type: "remote",
+  server: "docker.io",
+  username: "myuser",
+  password: "secret123",
+};
+
+const DOCKER_HUB_MISSING_USERNAME_DATA = {
+  type: "remote",
+  server: "docker.io",
+  password: "secret123",
+};
+
 const INVALID_REGISTRY_TYPE_DATA = {
   type: "invalid",
 };
@@ -51,7 +84,7 @@ const REMOTE_REGISTRY_MISSING_PASSWORD_DATA = {
 
 const INVALID_SERVER_FORMAT_DATA = {
   type: "remote",
-  server: "invalid-server-format",
+  server: "@invalid-server",
   username: "myuser",
   password: "secret",
 };
@@ -90,6 +123,17 @@ Deno.test("RegistryConfiguration - remote registry", () => {
   assertEquals(registry.getRegistryUrl(), "registry.example.com:5000");
 });
 
+Deno.test("RegistryConfiguration - remote registry without port", () => {
+  const registry = new RegistryConfiguration(REMOTE_REGISTRY_NO_PORT_DATA);
+
+  assertEquals(registry.type, "remote");
+  assertEquals(registry.server, "ghcr.io");
+  assertEquals(registry.username, "myuser");
+  assertEquals(registry.password, "secret123");
+  assertEquals(registry.isLocal(), false);
+  assertEquals(registry.getRegistryUrl(), "ghcr.io");
+});
+
 Deno.test("RegistryConfiguration - getFullImageName", () => {
   const registry = new RegistryConfiguration(LOCAL_REGISTRY_DATA);
 
@@ -102,6 +146,40 @@ Deno.test("RegistryConfiguration - getFullImageName with remote registry", () =>
 
   const imageName = registry.getFullImageName("myproject", "api", "abc123");
   assertEquals(imageName, "registry.example.com:5000/myproject-api:abc123");
+});
+
+Deno.test("RegistryConfiguration - GHCR auto namespace detection", () => {
+  const registry = new RegistryConfiguration(GHCR_AUTO_NAMESPACE_DATA);
+
+  const imageName = registry.getFullImageName("myproject", "api", "v1.0.0");
+  assertEquals(imageName, "ghcr.io/acidtib/myproject-api:v1.0.0");
+});
+
+Deno.test("RegistryConfiguration - GHCR missing username throws error", () => {
+  const registry = new RegistryConfiguration(GHCR_MISSING_USERNAME_DATA);
+
+  assertThrows(
+    () => registry.getFullImageName("myproject", "api", "v1.0.0"),
+    Error,
+    "GHCR requires username to be configured",
+  );
+});
+
+Deno.test("RegistryConfiguration - Docker Hub auto namespace detection", () => {
+  const registry = new RegistryConfiguration(DOCKER_HUB_AUTO_NAMESPACE_DATA);
+
+  const imageName = registry.getFullImageName("myproject", "api", "v1.0.0");
+  assertEquals(imageName, "docker.io/myuser/myproject-api:v1.0.0");
+});
+
+Deno.test("RegistryConfiguration - Docker Hub missing username throws error", () => {
+  const registry = new RegistryConfiguration(DOCKER_HUB_MISSING_USERNAME_DATA);
+
+  assertThrows(
+    () => registry.getFullImageName("myproject", "api", "v1.0.0"),
+    ConfigurationError,
+    "Docker Hub requires username to be configured",
+  );
 });
 
 Deno.test("RegistryConfiguration - environment variable substitution", () => {
@@ -238,6 +316,50 @@ Deno.test("RegistryConfiguration - remote registry validation passes", () => {
   // Should not throw
   registry.validate();
   assertEquals(registry.isLocal(), false);
+});
+
+Deno.test("RegistryConfiguration - remote registry without port validation passes", () => {
+  const registry = new RegistryConfiguration(REMOTE_REGISTRY_NO_PORT_DATA);
+
+  // Should not throw
+  registry.validate();
+  assertEquals(registry.isLocal(), false);
+});
+
+Deno.test("RegistryConfiguration - GHCR auto namespace validation passes", () => {
+  const registry = new RegistryConfiguration(GHCR_AUTO_NAMESPACE_DATA);
+
+  // Should not throw
+  registry.validate();
+  assertEquals(registry.isLocal(), false);
+});
+
+Deno.test("RegistryConfiguration - GHCR validation fails without username", () => {
+  const registry = new RegistryConfiguration(GHCR_MISSING_USERNAME_DATA);
+
+  assertThrows(
+    () => registry.validate(),
+    ConfigurationError,
+    "GHCR requires username to be configured",
+  );
+});
+
+Deno.test("RegistryConfiguration - Docker Hub auto namespace validation passes", () => {
+  const registry = new RegistryConfiguration(DOCKER_HUB_AUTO_NAMESPACE_DATA);
+
+  // Should not throw
+  registry.validate();
+  assertEquals(registry.isLocal(), false);
+});
+
+Deno.test("RegistryConfiguration - Docker Hub validation fails without username", () => {
+  const registry = new RegistryConfiguration(DOCKER_HUB_MISSING_USERNAME_DATA);
+
+  assertThrows(
+    () => registry.validate(),
+    ConfigurationError,
+    "Docker Hub requires username to be configured",
+  );
 });
 
 Deno.test("RegistryConfiguration - registry URL for different ports", () => {

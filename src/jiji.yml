@@ -51,10 +51,10 @@ builder:
 
     # Remote Registry Settings (type: remote)
     # Use when deploying to production or sharing images across teams
-    # Examples: Docker Hub, AWS ECR, Google GCR, Harbor, GitLab Registry
+    # Examples: Docker Hub, GitHub Container Registry
     # server: registry.example.com:5000
-    # server: your-account.dkr.ecr.us-west-2.amazonaws.com
-    # server: gcr.io/your-project-id
+    # server: ghcr.io
+    # server: docker.io
     # username: myuser
     # password: "${REGISTRY_PASSWORD}"  # Environment variable substitution supported
 
