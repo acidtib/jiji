@@ -201,3 +201,32 @@ export function filterHostsByPatterns(
   // Remove duplicates
   return [...new Set(matchingHosts)];
 }
+
+/**
+ * Filter services based on patterns (used by both build and deploy commands)
+ * @param services - All available services
+ * @param servicePatterns - Comma-separated service patterns
+ * @param config - Configuration instance for pattern matching
+ * @returns Array of matching services
+ */
+export function filterServicesByPatterns<T extends { name: string }>(
+  services: T[],
+  servicePatterns: string,
+  config: Configuration,
+): T[] {
+  const patterns = servicePatterns.split(",").map((s) => s.trim());
+  const matchingNames = config.getMatchingServiceNames(patterns);
+  const filtered = services.filter((service) =>
+    matchingNames.includes(service.name)
+  );
+
+  if (filtered.length === 0) {
+    log.error(
+      `No services match pattern: ${servicePatterns}`,
+      "config",
+    );
+    Deno.exit(1);
+  }
+
+  return filtered;
+}

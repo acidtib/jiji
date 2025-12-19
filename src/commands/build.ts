@@ -1,7 +1,9 @@
 import { Command } from "@cliffy/command";
 import { Configuration } from "../lib/configuration.ts";
-import { GitUtils } from "../utils/git.ts";
 import { RegistryManager } from "../utils/registry_manager.ts";
+import { VersionManager } from "../utils/version_manager.ts";
+import { filterServicesByPatterns } from "../utils/config.ts";
+import { BuildService } from "../lib/services/build_service.ts";
 import { log } from "../utils/logger.ts";
 import type { GlobalOptions } from "../types.ts";
 
@@ -50,21 +52,11 @@ export const buildCommand = new Command()
 
         // Filter by service pattern if specified
         if (buildOptions.services) {
-          const servicePatterns = buildOptions.services.split(",").map((s) =>
-            s.trim()
+          servicesToBuild = filterServicesByPatterns(
+            servicesToBuild,
+            buildOptions.services,
+            config,
           );
-          const matchingNames = config.getMatchingServiceNames(servicePatterns);
-          servicesToBuild = servicesToBuild.filter((service) =>
-            matchingNames.includes(service.name)
-          );
-
-          if (servicesToBuild.length === 0) {
-            log.error(
-              `No buildable services match pattern: ${buildOptions.services}`,
-              "build",
-            );
-            Deno.exit(1);
-          }
         }
 
         log.info(
@@ -75,222 +67,34 @@ export const buildCommand = new Command()
         );
 
         // Determine version tag
-        let versionTag: string;
-        if (globalOptions.version) {
-          versionTag = globalOptions.version;
-          log.info(`Using custom version tag: ${versionTag}`, "build");
-        } else {
-          // Check if we're in a git repository
-          if (!await GitUtils.isGitRepository()) {
-            log.error(
-              "Not in a git repository. Either initialize git or use --version to specify a tag.",
-              "build",
-            );
-            Deno.exit(1);
-          }
-
-          // Get git SHA
-          versionTag = await GitUtils.getCommitSHA(true);
-          log.info(`Using git SHA as version: ${versionTag}`, "build");
-
-          // Warn about uncommitted changes
-          if (await GitUtils.hasUncommittedChanges()) {
-            log.warn(
-              "You have uncommitted changes. The build will be tagged with the current commit SHA.",
-              "build",
-            );
-          }
-        }
+        const versionTag = await VersionManager.determineVersionTag({
+          customVersion: globalOptions.version,
+          useGitSha: true,
+          shortSha: true,
+        });
 
         // Set up registry if needed
         const registry = config.builder.registry;
-        const registryUrl = registry.getRegistryUrl();
 
         if (buildOptions.push && registry.isLocal()) {
           // Start local registry
           await log.group("Local Registry Setup", async () => {
             registryManager = new RegistryManager(engine, registry.port);
-
-            if (!await registryManager.isRunning()) {
-              log.info("Starting local registry", "registry");
-              await registryManager.start();
-            } else {
-              log.info(
-                `Local registry already running on port ${registry.port}`,
-                "registry",
-              );
-            }
+            await registryManager.setupForBuild();
           });
         }
 
-        // Build each service
-        for (const service of servicesToBuild) {
-          await log.group(`Building: ${service.name}`, async () => {
-            const buildConfig = typeof service.build === "string"
-              ? {
-                context: service.build,
-                dockerfile: "Dockerfile",
-                args: {},
-              }
-              : service.build!;
+        // Create BuildService and build all services
+        const buildService = new BuildService({
+          engine,
+          registry,
+          globalOptions,
+          noCache: buildOptions.noCache,
+          push: buildOptions.push,
+          cacheEnabled: config.builder.cache,
+        });
 
-            const context = buildConfig.context;
-            const dockerfile = buildConfig.dockerfile || "Dockerfile";
-            const buildArgs = buildConfig.args || {};
-            const target = buildConfig.target;
-
-            // Get architectures required by servers
-            const requiredArchs = service.getRequiredArchitectures();
-            const serversByArch = service.getServersByArchitecture();
-
-            // Build the image
-            const imageName = service.getImageName(registryUrl, versionTag);
-            const latestImageName = service.getImageName(registryUrl, "latest");
-
-            log.info(`Building image: ${imageName}`, "build");
-            log.info(`Context: ${context}`, "build");
-            log.info(`Dockerfile: ${dockerfile}`, "build");
-            log.info(`Architecture(s): ${requiredArchs.join(", ")}`, "build");
-
-            // Log server distribution by architecture
-            for (const [arch, servers] of serversByArch.entries()) {
-              log.info(`${arch}: ${servers.join(", ")}`, "build");
-            }
-
-            // Construct build command
-            const buildCmdArgs = [
-              "build",
-              "-t",
-              imageName,
-              "-t",
-              latestImageName,
-              "-f",
-              dockerfile,
-            ];
-
-            // Add build args
-            for (const [key, value] of Object.entries(buildArgs)) {
-              buildCmdArgs.push("--build-arg", `${key}=${value}`);
-            }
-
-            // Add target if specified
-            if (target) {
-              buildCmdArgs.push("--target", target);
-            }
-
-            // Add platform/architecture based on server requirements
-            if (requiredArchs.length > 1) {
-              // Multiple architectures - use platforms for multi-arch build
-              const platforms = requiredArchs.map((a) => `linux/${a}`).join(
-                ",",
-              );
-              buildCmdArgs.push("--platform", platforms);
-            } else if (requiredArchs.length === 1) {
-              // Single architecture
-              buildCmdArgs.push("--platform", `linux/${requiredArchs[0]}`);
-            }
-
-            // Add cache option
-            if (buildOptions.noCache || !config!.builder.cache) {
-              buildCmdArgs.push("--no-cache");
-            }
-
-            // Add context
-            buildCmdArgs.push(context);
-
-            // Execute build
-            const buildCmd = new Deno.Command(engine, {
-              args: buildCmdArgs,
-              stdout: globalOptions.verbose ? "inherit" : "piped",
-              stderr: globalOptions.verbose ? "inherit" : "piped",
-            });
-
-            const buildResult = await buildCmd.output();
-
-            if (buildResult.code !== 0) {
-              const stderr = new TextDecoder().decode(buildResult.stderr);
-              log.error(`Failed to build ${service.name}`, "build");
-              if (!globalOptions.verbose) {
-                log.error(stderr, "build");
-              }
-              throw new Error(`Build failed for service: ${service.name}`);
-            }
-
-            log.success(`Built image: ${imageName}`, "build");
-            log.success(`Tagged as: ${latestImageName}`, "build");
-
-            // Push to registry if requested
-            if (buildOptions.push) {
-              await log.group("Pushing to Registry", async () => {
-                log.info(`Pushing ${imageName}`, "registry");
-
-                // Build push arguments
-                const pushArgs = ["push"];
-
-                // Add --tls-verify=false for local registries when using podman
-                if (registry.isLocal() && engine === "podman") {
-                  pushArgs.push("--tls-verify=false");
-                }
-
-                pushArgs.push(imageName);
-
-                // Push versioned image
-                const pushCmd = new Deno.Command(engine, {
-                  args: pushArgs,
-                  stdout: globalOptions.verbose ? "inherit" : "piped",
-                  stderr: globalOptions.verbose ? "inherit" : "piped",
-                });
-
-                const pushResult = await pushCmd.output();
-
-                if (pushResult.code !== 0) {
-                  const stderr = new TextDecoder().decode(pushResult.stderr);
-                  log.error(`Failed to push ${imageName}`, "registry");
-                  if (!globalOptions.verbose) {
-                    log.error(stderr, "registry");
-                  }
-                  throw new Error(`Push failed for: ${imageName}`);
-                }
-
-                log.success(`Pushed: ${imageName}`, "registry");
-
-                // Push latest tag
-                log.info(`Pushing ${latestImageName}`, "registry");
-
-                // Build push arguments for latest
-                const pushLatestArgs = ["push"];
-
-                // Add --tls-verify=false for local registries when using podman
-                if (registry.isLocal() && engine === "podman") {
-                  pushLatestArgs.push("--tls-verify=false");
-                }
-
-                pushLatestArgs.push(latestImageName);
-
-                const pushLatestCmd = new Deno.Command(engine, {
-                  args: pushLatestArgs,
-                  stdout: globalOptions.verbose ? "inherit" : "piped",
-                  stderr: globalOptions.verbose ? "inherit" : "piped",
-                });
-
-                const pushLatestResult = await pushLatestCmd.output();
-
-                if (pushLatestResult.code !== 0) {
-                  const stderr = new TextDecoder().decode(
-                    pushLatestResult.stderr,
-                  );
-                  log.error(`Failed to push ${latestImageName}`, "registry");
-                  if (!globalOptions.verbose) {
-                    log.error(stderr, "registry");
-                  }
-                  throw new Error(`Push failed for: ${latestImageName}`);
-                }
-
-                log.success(`Pushed: ${latestImageName}`, "registry");
-              });
-            }
-          });
-        }
+        await buildService.buildServices(servicesToBuild, versionTag);
 
         // Build summary
         log.success(
@@ -299,7 +103,7 @@ export const buildCommand = new Command()
         );
         log.info(`Version tag: ${versionTag}`, "build");
         if (buildOptions.push) {
-          log.info(`Registry: ${registryUrl}`, "build");
+          log.info(`Registry: ${registry.getRegistryUrl()}`, "build");
         }
       });
     } catch (error) {

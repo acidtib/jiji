@@ -259,4 +259,31 @@ export class RegistryManager {
 
     log.success("Local registry container removed", "registry");
   }
+
+  /**
+   * Setup registry for build operations
+   * Starts local registry if needed and returns registry URL
+   * @returns Registry URL for image tagging
+   */
+  async setupForBuild(): Promise<string> {
+    if (!await this.isRunning()) {
+      log.info("Starting local registry", "registry");
+      await this.start();
+    } else {
+      log.info(
+        `Local registry already running on port ${this.port}`,
+        "registry",
+      );
+    }
+
+    return this.getRegistryUrl();
+  }
+
+  /**
+   * Get registry URL for image naming
+   * @returns Registry URL (e.g., "localhost:5000")
+   */
+  getRegistryUrl(): string {
+    return `localhost:${this.port}`;
+  }
 }
