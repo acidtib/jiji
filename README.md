@@ -7,11 +7,15 @@ vendor lock in, just run.
 
 ## Features
 
+- **Service Management**: Build, deploy, and remove containerized services across multiple servers
 - **Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
 - **Remote Command Execution**: Execute custom commands across multiple servers
 - **Configuration Management**: Create and manage infrastructure configurations
 - **Server-Side Audit Trail**: Comprehensive logging of all operations directly
   on target servers
+- **Registry Management**: Manage container registries (local and remote)
+- **Proxy Integration**: Built-in support for kamal-proxy for routing traffic to services
+- **Mount Management**: Support for file, directory, and volume mounts
 - **CLI Interface**: Easy-to-use command-line interface built with Cliffy
 
 ## Installation
@@ -38,7 +42,7 @@ You can also install a specific version by setting the VERSION environment
 variable:
 
 ```bash
-curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.5 sh
+curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.7 sh
 ```
 
 ## Usage
@@ -49,6 +53,85 @@ Create a configuration stub in `.jiji/deploy.yml`:
 
 ```bash
 jiji init
+```
+
+### Build Images
+
+Build container images for your services (with optional push to registry):
+
+```bash
+# Build all services defined with build configuration
+jiji build
+
+# Build without pushing to registry
+jiji build --no-push
+
+# Build without using cache
+jiji build --no-cache
+
+# Build specific services only
+jiji build --services "web,api"
+```
+
+### Deploy Services
+
+Deploy services to remote servers with full lifecycle management:
+
+```bash
+# Deploy all services
+jiji deploy
+
+# Build and deploy services in one command
+jiji deploy --build
+
+# Deploy without using cache (requires --build)
+jiji deploy --build --no-cache
+
+# Deploy specific services only
+jiji deploy --services "web,api"
+
+# Deploy using specific version tag (instead of git SHA)
+jiji deploy --version v1.2.3
+
+# Deploy to specific hosts only
+jiji deploy --hosts "server1.example.com,server2.example.com"
+```
+
+### Remove Services
+
+Remove services and clean up project directories:
+
+```bash
+# Remove all services (prompts for confirmation)
+jiji remove
+
+# Remove without confirmation prompt
+jiji remove --confirmed
+
+# Remove specific services only
+jiji remove --services "web,api"
+```
+
+### Registry Management
+
+Manage container registries for storing and retrieving images:
+
+```bash
+# Setup local or remote registry
+jiji registry setup
+
+# Skip local or remote setup
+jiji registry setup --skip-local
+jiji registry setup --skip-remote
+
+# Login to a remote registry
+jiji registry login
+
+# Logout from a registry
+jiji registry logout
+
+# Remove local registry
+jiji registry remove
 ```
 
 ### Server Management
@@ -123,6 +206,30 @@ Audit logs are stored in `.jiji/audit.txt` on each target server and include:
 - Detailed error messages and troubleshooting information
 - Host identification for multi-server deployments
 
+### Global Options
+
+Several global options are available for all commands:
+
+```bash
+# Enable verbose logging
+jiji --verbose deploy
+
+# Specify a specific app version
+jiji --version=v1.2.3 deploy
+
+# Use a custom config file
+jiji --config-file=/custom/path/deploy.yml deploy
+
+# Specify environment (uses jiji.<environment>.yml)
+jiji --environment=staging deploy
+
+# Target specific hosts (supports wildcards with *)
+jiji --hosts="server*.example.com" deploy
+
+# Target specific services (supports wildcards with *)
+jiji --services="web*" deploy
+```
+
 ### Help
 
 Get help for any command:
@@ -132,6 +239,48 @@ jiji --help
 jiji server --help
 jiji server bootstrap --help
 jiji server exec --help
+jiji deploy --help
+jiji build --help
+jiji remove --help
+jiji registry --help
+```
+
+## Configuration
+
+Jiji uses YAML configuration files (default: `.jiji/deploy.yml`) to define your infrastructure. A typical configuration includes:
+
+- Project name
+- SSH connection settings
+- Container engine selection (Docker/Podman)
+- Registry configuration (local or remote)
+- Service definitions with images, ports, mounts, environment variables, and proxy settings
+
+Example service with proxy configuration:
+```yaml
+services:
+  web:
+    # Build from local Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Or use pre-built image
+    # image: nginx:latest
+    hosts: [server1.example.com, server2.example.com]
+    ports: ["3000:80"]
+    volumes:
+      - "/data/web/logs:/var/log/nginx"
+    environment:
+      - ENV=production
+    proxy:
+      enabled: true
+      host: myapp.example.com
+      ssl: false
+      health_check: "/health"
+    files:
+      - source: "./config/nginx.conf"
+        destination: "/etc/nginx/nginx.conf"
+    directories:
+      - "/app/uploads"
 ```
 
 ## Development
@@ -168,17 +317,6 @@ deno run src/main.ts
 
 MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Roadmap
-
-- [x] Server bootstrap functionality
-- [x] Remote command execution across multiple servers
-- [x] Support for multiple container runtimes (Podman/Docker)
-- [x] Server-side audit trail and operation logging
-- [ ] Service deployment and orchestration
-- [ ] Configuration templates
-- [ ] Server health checks
-- [ ] Advanced monitoring integration
-- [ ] Multi-environment support
 
 ## Documentation
 
