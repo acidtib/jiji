@@ -44,7 +44,7 @@ You can also install a specific version by setting the VERSION environment
 variable:
 
 ```bash
-curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.7 sh
+curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.8 sh
 ```
 
 ## Usage
