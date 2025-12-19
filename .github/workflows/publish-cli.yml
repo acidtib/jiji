@@ -20,7 +20,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   npm:
-    if: ${{ inputs.npm || github.event_name == 'push' }}
+    # if: ${{ inputs.npm || github.event_name == 'push' }}
+    if: false # skip
     needs: test
     uses: ./.github/workflows/publish-npm.yml
     permissions:
