@@ -284,10 +284,25 @@ export function extractAppPort(ports: string[]): number {
   }
 
   const firstPort = ports[0];
-  const parts = firstPort.split(":");
-  const containerPortStr = parts.length >= 2
-    ? parts[parts.length - 1].split("/")[0]
-    : parts[0].split("/")[0];
+
+  // Remove protocol suffix if present
+  const portWithoutProtocol = firstPort.replace(/(\/tcp|\/udp)$/, "");
+  const parts = portWithoutProtocol.split(":");
+
+  let containerPortStr: string;
+
+  if (parts.length === 1) {
+    // Format: "8000" (container port only)
+    containerPortStr = parts[0];
+  } else if (parts.length === 2) {
+    // Format: "8080:8000" (host_port:container_port)
+    containerPortStr = parts[1];
+  } else if (parts.length === 3) {
+    // Format: "192.168.1.1:8080:8000" (host_ip:host_port:container_port)
+    containerPortStr = parts[2];
+  } else {
+    throw new Error(`Invalid port mapping format: ${firstPort}`);
+  }
 
   const port = parseInt(containerPortStr, 10);
   if (isNaN(port)) {

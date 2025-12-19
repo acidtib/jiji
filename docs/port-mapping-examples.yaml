@@ -1,0 +1,69 @@
+# Port Mapping Examples for Jiji Configuration
+# This file demonstrates all supported port mapping formats
+
+# Example 1: Container port only
+# When you specify just a port number, it maps to the same port on the host
+services:
+  web:
+    image: nginx:latest
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "8000" # Maps to 8000:8000
+
+  # Example 2: Host port to container port mapping
+  # Specify both host and container ports explicitly
+  api:
+    image: node:18-alpine
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "8080:3000" # Host port 8080 -> Container port 3000
+      - "8443:3443" # Host port 8443 -> Container port 3443
+
+  # Example 3: Full format with host IP, ports, and protocol
+  # Complete Docker-style port mapping with all options
+  database:
+    image: postgres:15
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "192.168.1.87:5432:5432/tcp" # Bind to specific IP
+      - "127.0.0.1:3306:3306/tcp" # Localhost only
+
+  # Example 4: Container ports with protocol specification
+  cache:
+    image: redis:7-alpine
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "6379/tcp" # TCP protocol (default)
+      - "6380/udp" # UDP protocol
+
+  # Example 5: Mixed port mapping formats
+  # You can use different formats in the same service
+  mixed:
+    image: my-app:latest
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "8000" # Container port only
+      - "8080:3000" # Host:container mapping
+      - "192.168.1.87:9000:4000" # Full format without protocol
+      - "127.0.0.1:9443:4443/tcp" # Full format with protocol
+
+  # Example 6: Original configuration that now works
+  # Your original failing configuration is now supported
+  original_api:
+    image: my-api:latest
+    servers:
+      - host: 192.168.1.87
+    ports:
+      - "8000" # This now works! (was failing before)
+
+# Supported formats summary:
+# 1. "8000"                        - Container port only (maps to 8000:8000)
+# 2. "8080:8000"                   - Host port to container port
+# 3. "192.168.1.87:8080:8000"     - Host IP, host port, container port
+# 4. "192.168.1.87:8080:8000/tcp" - Full format with protocol
+# 5. "9000/udp"                    - Container port with protocol

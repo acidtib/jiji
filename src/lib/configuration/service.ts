@@ -4,6 +4,7 @@ import {
   type Validatable,
 } from "./base.ts";
 import { ProxyConfiguration } from "./proxy.ts";
+import { EnvironmentConfiguration } from "./environment.ts";
 
 /**
  * Build configuration for a service
@@ -65,14 +66,21 @@ export class ServiceConfiguration extends BaseConfiguration
   private _volumes?: string[];
   private _files?: FileMountConfig[];
   private _directories?: DirectoryMountConfig[];
-  private _environment?: Record<string, string> | string[];
+  private _environment?: EnvironmentConfiguration;
+  private _sharedEnvironment?: EnvironmentConfiguration;
   private _command?: string | string[];
   private _proxy?: ProxyConfiguration;
 
-  constructor(name: string, config: Record<string, unknown>, project: string) {
+  constructor(
+    name: string,
+    config: Record<string, unknown>,
+    project: string,
+    sharedEnvironment?: EnvironmentConfiguration,
+  ) {
     super(config);
     this._name = name;
     this._project = project;
+    this._sharedEnvironment = sharedEnvironment;
   }
 
   /**
@@ -211,22 +219,36 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
-   * Environment variables
+   * Service-specific environment configuration
    */
-  get environment(): Record<string, string> | string[] {
-    if (!this._environment && this.has("environment")) {
-      const envValue = this.get("environment");
-      if (Array.isArray(envValue)) {
-        this._environment = envValue as string[];
-      } else if (typeof envValue === "object" && envValue !== null) {
-        this._environment = envValue as Record<string, string>;
+  get environment(): EnvironmentConfiguration {
+    if (!this._environment) {
+      if (this.has("environment")) {
+        const envValue = this.get("environment");
+        if (typeof envValue === "object" && envValue !== null) {
+          this._environment = new EnvironmentConfiguration(
+            envValue as Record<string, unknown>,
+          );
+        } else {
+          throw new ConfigurationError(
+            `'environment' for service '${this.name}' must be an object`,
+          );
+        }
       } else {
-        throw new ConfigurationError(
-          `'environment' for service '${this.name}' must be an array or object`,
-        );
+        this._environment = EnvironmentConfiguration.empty();
       }
     }
-    return this._environment || {};
+    return this._environment;
+  }
+
+  /**
+   * Get merged environment (shared + service-specific)
+   */
+  getMergedEnvironment(): EnvironmentConfiguration {
+    if (this._sharedEnvironment) {
+      return this._sharedEnvironment.merge(this.environment);
+    }
+    return this.environment;
   }
 
   /**
@@ -296,7 +318,7 @@ export class ServiceConfiguration extends BaseConfiguration
     for (const port of this.ports) {
       if (!this.isValidPortMapping(port)) {
         throw new ConfigurationError(
-          `Invalid port mapping '${port}' for service '${this.name}'. Expected format: [host_ip:]host_port:container_port[/protocol]`,
+          `Invalid port mapping '${port}' for service '${this.name}'. Expected format: container_port, host_port:container_port, or [host_ip:]host_port:container_port[/protocol]`,
         );
       }
     }
@@ -314,16 +336,8 @@ export class ServiceConfiguration extends BaseConfiguration
     this.validateMounts(this.files, "file");
     this.validateMounts(this.directories, "directory");
 
-    // Validate environment variables
-    if (Array.isArray(this.environment)) {
-      for (const env of this.environment) {
-        if (!env.includes("=")) {
-          throw new ConfigurationError(
-            `Invalid environment variable '${env}' for service '${this.name}'. Expected format: KEY=value`,
-          );
-        }
-      }
-    }
+    // Validate environment configuration
+    this.environment.validate();
 
     // Validate servers are not empty
     if (this.servers.length === 0) {
@@ -350,11 +364,48 @@ export class ServiceConfiguration extends BaseConfiguration
    * Validates port mapping format
    */
   private isValidPortMapping(port: string): boolean {
-    // Basic validation for port mapping format
-    // Examples: "80:80", "127.0.0.1:80:80", "3000:3000/tcp"
-    const portRegex =
-      /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:)?\d+:\d+(\/tcp|\/udp)?$/;
-    return portRegex.test(port);
+    // Supports multiple port mapping formats:
+    // 1. Container port only: "8000"
+    // 2. Host and container ports: "8080:8000"
+    // 3. Full format with optional IP and protocol: "192.168.1.1:8080:8000/tcp"
+
+    // Remove protocol suffix if present
+    const portWithoutProtocol = port.replace(/(\/tcp|\/udp)$/, "");
+    const parts = portWithoutProtocol.split(":");
+
+    if (parts.length === 1) {
+      // Format: "8000" (container port only)
+      const containerPort = parseInt(parts[0], 10);
+      return !isNaN(containerPort) && containerPort > 0 &&
+        containerPort <= 65535;
+    } else if (parts.length === 2) {
+      // Format: "8080:8000" (host_port:container_port)
+      const hostPort = parseInt(parts[0], 10);
+      const containerPort = parseInt(parts[1], 10);
+      return !isNaN(hostPort) && !isNaN(containerPort) &&
+        hostPort > 0 && hostPort <= 65535 &&
+        containerPort > 0 && containerPort <= 65535;
+    } else if (parts.length === 3) {
+      // Format: "192.168.1.1:8080:8000" (host_ip:host_port:container_port)
+      const hostIp = parts[0];
+      const hostPort = parseInt(parts[1], 10);
+      const containerPort = parseInt(parts[2], 10);
+
+      // Basic IP validation
+      const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+      const isValidIp = ipRegex.test(hostIp) &&
+        hostIp.split(".").every((octet) => {
+          const num = parseInt(octet, 10);
+          return num >= 0 && num <= 255;
+        });
+
+      return isValidIp &&
+        !isNaN(hostPort) && !isNaN(containerPort) &&
+        hostPort > 0 && hostPort <= 65535 &&
+        containerPort > 0 && containerPort <= 65535;
+    }
+
+    return false;
   }
 
   /**
@@ -465,8 +516,9 @@ export class ServiceConfiguration extends BaseConfiguration
       result.directories = this.directories;
     }
 
-    if (Object.keys(this.environment).length > 0) {
-      result.environment = this.environment;
+    const envObj = this.environment.toObject();
+    if (Object.keys(envObj).length > 0) {
+      result.environment = envObj;
     }
 
     if (this.command) {

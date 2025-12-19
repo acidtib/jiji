@@ -40,8 +40,8 @@ const VALID_CONFIG_DATA = {
       },
     },
   },
-  env: {
-    variables: {
+  environment: {
+    clear: {
       GLOBAL_VAR: "global_value",
       DATABASE_URL: "postgres://localhost:5432/mydb",
     },
@@ -185,12 +185,11 @@ Deno.test("Configuration - services property", () => {
 });
 
 Deno.test("Configuration - environment configuration", () => {
-  const config = new Configuration(VALID_CONFIG_DATA, undefined, "production");
+  const config = new Configuration(VALID_CONFIG_DATA);
   const env = config.environment;
 
-  assertEquals(env.name, "production");
-  assertEquals(env.variables.GLOBAL_VAR, "global_value");
-  assertEquals(env.variables.DATABASE_URL, "postgres://localhost:5432/mydb");
+  assertEquals(env.clear.GLOBAL_VAR, "global_value");
+  assertEquals(env.clear.DATABASE_URL, "postgres://localhost:5432/mydb");
 });
 
 Deno.test("Configuration - getService method", () => {
@@ -412,20 +411,8 @@ Deno.test("Configuration - handles missing optional sections", () => {
   assertEquals(config.ssh.port, 22);
 
   // Environment should be empty but functional
-  assertEquals(config.environment.name, "default");
-  assertEquals(config.environment.variables.NONEXISTENT, undefined);
-});
-
-Deno.test("Configuration - environment name defaults", () => {
-  const config = new Configuration(MINIMAL_CONFIG_DATA);
-  assertEquals(config.environmentName, undefined);
-  assertEquals(config.environment.name, "default");
-});
-
-Deno.test("Configuration - environment name from constructor", () => {
-  const config = new Configuration(MINIMAL_CONFIG_DATA, undefined, "test");
-  assertEquals(config.environmentName, "test");
-  assertEquals(config.environment.name, "test");
+  assertEquals(Object.keys(config.environment.clear).length, 0);
+  assertEquals(config.environment.secrets.length, 0);
 });
 
 Deno.test("Configuration - missing required engine throws", () => {

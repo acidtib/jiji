@@ -24,8 +24,8 @@ services:
       context: .
     hosts:
       - api1.example.com
-env:
-  variables:
+environment:
+  clear:
     NODE_ENV: production
     DATABASE_URL: postgres://localhost:5432/mydb
 `;
@@ -173,8 +173,11 @@ Deno.test("ConfigurationLoader - loadConfig with specific environment", async ()
       const result = await ConfigurationLoader.loadConfig("staging");
 
       assertEquals(result.path, `${tempDir}/.jiji/deploy.staging.yml`);
-      const env = result.config.env as Record<string, Record<string, unknown>>;
-      assertEquals(env.variables.NODE_ENV, "staging");
+      const env = result.config.environment as Record<
+        string,
+        Record<string, unknown>
+      >;
+      assertEquals(env.clear.NODE_ENV, "staging");
     } finally {
       Deno.chdir(originalCwd);
     }
@@ -244,8 +247,11 @@ Deno.test("ConfigurationLoader - loadConfig prioritizes environment-specific con
       const result = await ConfigurationLoader.loadConfig("production");
 
       assertEquals(result.path, `${tempDir}/.jiji/deploy.production.yml`);
-      const env = result.config.env as Record<string, Record<string, unknown>>;
-      assertEquals(env.variables.NODE_ENV, "production-override");
+      const env = result.config.environment as Record<
+        string,
+        Record<string, unknown>
+      >;
+      assertEquals(env.clear.NODE_ENV, "production-override");
     } finally {
       Deno.chdir(originalCwd);
     }

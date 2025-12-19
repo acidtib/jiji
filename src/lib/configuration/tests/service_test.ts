@@ -17,21 +17,13 @@ const COMPLETE_SERVICE_DATA = {
   ports: ["80:80", "443:443"],
   volumes: ["/data:/app/data", "/logs:/app/logs"],
   environment: {
-    NODE_ENV: "production",
-    DATABASE_URL: "postgres://localhost:5432/mydb",
-    API_KEY: "secret123",
+    clear: {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgres://localhost:5432/mydb",
+      API_KEY: "secret123",
+    },
   },
   command: ["npm", "start"],
-};
-
-const ENVIRONMENT_ARRAY_SERVICE_DATA = {
-  image: "myapp:latest",
-  servers: [{ host: "localhost", arch: "amd64" }],
-  environment: [
-    "NODE_ENV=production",
-    "PORT=3000",
-    "DEBUG=false",
-  ],
 };
 
 const BUILD_SERVICE_DATA = {
@@ -87,7 +79,8 @@ Deno.test("ServiceConfiguration - minimal configuration", () => {
   assertEquals(service.servers[0].host, "web1.example.com");
   assertEquals(service.ports, []);
   assertEquals(service.volumes, []);
-  assertEquals(service.environment, {});
+  assertEquals(Object.keys(service.environment.clear).length, 0);
+  assertEquals(service.environment.secrets.length, 0);
   assertEquals(service.build, undefined);
   assertEquals(service.command, undefined);
 });
@@ -110,27 +103,13 @@ Deno.test("ServiceConfiguration - complete configuration", () => {
   assertEquals(service.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(service.command, ["npm", "start"]);
 
-  // Environment variables as object
-  const env = service.environment as Record<string, string>;
-  assertEquals(env.NODE_ENV, "production");
-  assertEquals(env.DATABASE_URL, "postgres://localhost:5432/mydb");
-  assertEquals(env.API_KEY, "secret123");
-});
-
-Deno.test("ServiceConfiguration - environment as array", () => {
-  const service = new ServiceConfiguration(
-    "web",
-    ENVIRONMENT_ARRAY_SERVICE_DATA,
-    "myproject",
+  // Environment configuration
+  assertEquals(service.environment.clear.NODE_ENV, "production");
+  assertEquals(
+    service.environment.clear.DATABASE_URL,
+    "postgres://localhost:5432/mydb",
   );
-
-  assertEquals(Array.isArray(service.environment), true);
-  const envArray = service.environment as string[];
-  assertEquals(envArray, [
-    "NODE_ENV=production",
-    "PORT=3000",
-    "DEBUG=false",
-  ]);
+  assertEquals(service.environment.clear.API_KEY, "secret123");
 });
 
 Deno.test("ServiceConfiguration - build configuration object", () => {
@@ -351,17 +330,84 @@ Deno.test("ServiceConfiguration - validation fails with invalid ports type", () 
   );
 });
 
+Deno.test("ServiceConfiguration - validation succeeds with container port only", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["localhost"],
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["8000"], // Container port only format
+  }, "myproject");
+
+  // Should not throw - validation should pass
+  service.validate();
+});
+
+Deno.test("ServiceConfiguration - validation succeeds with host:container port format", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["localhost"],
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["8080:8000"], // host_port:container_port format
+  }, "myproject");
+
+  // Should not throw - validation should pass
+  service.validate();
+});
+
+Deno.test("ServiceConfiguration - validation succeeds with full port format", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["localhost"],
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["192.168.1.1:8080:8000/tcp"], // Full format with IP and protocol
+  }, "myproject");
+
+  // Should not throw - validation should pass
+  service.validate();
+});
+
 Deno.test("ServiceConfiguration - validation fails with invalid port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
     hosts: ["localhost"],
-    ports: ["443"], // Invalid format - missing container port
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["invalid:port"], // Invalid format
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Invalid port mapping '443' for service 'web'. Expected format: [host_ip:]host_port:container_port[/protocol]",
+    "Invalid port mapping 'invalid:port' for service 'web'. Expected format: container_port, host_port:container_port, or [host_ip:]host_port:container_port[/protocol]",
+  );
+});
+
+Deno.test("ServiceConfiguration - validation fails with out of range port", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["localhost"],
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["99999"], // Port out of range
+  }, "myproject");
+
+  assertThrows(
+    () => service.validate(),
+    ConfigurationError,
+    "Invalid port mapping '99999' for service 'web'. Expected format: container_port, host_port:container_port, or [host_ip:]host_port:container_port[/protocol]",
+  );
+});
+
+Deno.test("ServiceConfiguration - validation fails with invalid IP in port mapping", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["localhost"],
+    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    ports: ["999.999.999.999:8080:8000"], // Invalid IP
+  }, "myproject");
+
+  assertThrows(
+    () => service.validate(),
+    ConfigurationError,
+    "Invalid port mapping '999.999.999.999:8080:8000' for service 'web'. Expected format: container_port, host_port:container_port, or [host_ip:]host_port:container_port[/protocol]",
   );
 });
 
@@ -382,28 +428,32 @@ Deno.test("ServiceConfiguration - validation fails with invalid volumes type", (
 Deno.test("ServiceConfiguration - validation fails with invalid environment type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
-    environment: "not-an-object-or-array",
+    servers: [{ host: "localhost" }],
+    environment: "not-an-object",
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "'environment' for service 'web' must be an array or object",
+    "'environment' for service 'web' must be an object",
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with invalid environment array format", () => {
+Deno.test("ServiceConfiguration - validation fails with invalid environment variable name", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
-    environment: ["INVALID_VAR"], // Missing equals sign
+    servers: [{ host: "localhost" }],
+    environment: {
+      clear: {
+        "INVALID-VAR": "value", // Hyphens not allowed
+      },
+    },
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Invalid environment variable 'INVALID_VAR' for service 'web'. Expected format: KEY=value",
+    "Invalid environment variable name",
   );
 });
 
@@ -468,9 +518,11 @@ Deno.test("ServiceConfiguration - toObject method", () => {
   assertEquals(obj.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(obj.command, ["npm", "start"]);
   assertEquals(obj.environment, {
-    NODE_ENV: "production",
-    DATABASE_URL: "postgres://localhost:5432/mydb",
-    API_KEY: "secret123",
+    clear: {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgres://localhost:5432/mydb",
+      API_KEY: "secret123",
+    },
   });
 });
 

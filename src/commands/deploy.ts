@@ -704,13 +704,12 @@ export const deployCommand = new Command()
                     service.volumes,
                     config!.project,
                   );
-                  const envArgs = service.environment
-                    ? (Array.isArray(service.environment)
-                      ? service.environment.map((e) => `-e "${e}"`).join(" ")
-                      : Object.entries(service.environment)
-                        .map(([k, v]) => `-e ${k}="${v}"`)
-                        .join(" "))
-                    : "";
+                  // Get merged environment (shared + service-specific)
+                  const mergedEnv = service.getMergedEnvironment();
+                  const envArray = mergedEnv.toEnvArray();
+                  const envArgs = envArray
+                    .map((e) => `-e "${e}"`)
+                    .join(" ");
 
                   const runCommand = `${
                     config!.builder.engine

@@ -231,6 +231,16 @@ Deno.test("extractAppPort - simple port mapping", () => {
   assertEquals(extractAppPort(ports), 80);
 });
 
+Deno.test("extractAppPort - container port only", () => {
+  const ports = ["8000"];
+  assertEquals(extractAppPort(ports), 8000);
+});
+
+Deno.test("extractAppPort - container port only with protocol", () => {
+  const ports = ["9000/tcp"];
+  assertEquals(extractAppPort(ports), 9000);
+});
+
 Deno.test("extractAppPort - with host IP", () => {
   const ports = ["127.0.0.1:8080:3000"];
   assertEquals(extractAppPort(ports), 3000);
@@ -243,6 +253,21 @@ Deno.test("extractAppPort - with protocol", () => {
 
 Deno.test("extractAppPort - complex mapping", () => {
   const ports = ["192.168.1.100:8080:3000/tcp"];
+  assertEquals(extractAppPort(ports), 3000);
+});
+
+Deno.test("extractAppPort - complex mapping without protocol", () => {
+  const ports = ["192.168.1.100:8080:4000"];
+  assertEquals(extractAppPort(ports), 4000);
+});
+
+Deno.test("extractAppPort - host:container format", () => {
+  const ports = ["8080:3000"];
+  assertEquals(extractAppPort(ports), 3000);
+});
+
+Deno.test("extractAppPort - host:container format with protocol", () => {
+  const ports = ["8080:3000/udp"];
   assertEquals(extractAppPort(ports), 3000);
 });
 

@@ -205,20 +205,18 @@ ssh:
   # - Apply connection timeouts and other SSH options
   # - Always prioritize Jiji configuration over SSH config file settings
 
-# Environment-specific configuration
-# env:
-#   variables:
+# Shared Environment Configuration
+# Applied to all services, can be overridden per-service
+# environment:
+#   # Clear text environment variables
+#   clear:
 #     APP_ENV: production
 #     LOG_LEVEL: info
 #     DEBUG: "false"
-#   # Secrets to load from environment variables
+#   # Secrets loaded from host environment variables
 #   secrets:
 #     - DATABASE_PASSWORD
 #     - API_SECRET_KEY
-#   # Files to load as environment variables
-#   # files:
-#   #   SSL_CERT: /etc/ssl/cert.pem
-#   #   SSL_KEY: /etc/ssl/key.pem
 
 # Services Configuration
 # Services are the deployable units in Jiji - each service represents a containerized application
@@ -274,9 +272,11 @@ services:
     #     mode: "0755"
     #     owner: "nginx:nginx"
     #     options: "z"
+    # Service-specific environment (merged with shared environment)
     environment:
-      NGINX_WORKER_PROCESSES: auto
-      NGINX_WORKER_CONNECTIONS: "1024"
+      clear:
+        NGINX_WORKER_PROCESSES: auto
+        NGINX_WORKER_CONNECTIONS: "1024"
     # Optional: Proxy configuration for automatic SSL and routing
     # proxy:
     #   ssl: false
@@ -304,9 +304,13 @@ services:
   #   ports:
   #     - "3000:3000"
   #   environment:
-  #     NODE_ENV: production
-  #     DATABASE_URL: "postgresql://user:pass@192.168.1.103:5432/myapp"
-  #     REDIS_URL: "redis://redis.local:6379"
+  #     clear:
+  #       NODE_ENV: production
+  #       DATABASE_URL: "postgresql://user:pass@192.168.1.103:5432/myapp"
+  #       REDIS_URL: "redis://redis.local:6379"
+  #     secrets:
+  #       - JWT_SECRET
+  #       - API_KEY
   #   command: ["node", "dist/server.js"]
   #   volumes:
   #     - "/app/logs:/var/log/app"
@@ -345,7 +349,8 @@ services:
   #   ports:
   #     - "3001:3000"
   #   environment:
-  #     NODE_ENV: production
+  #     clear:
+  #       NODE_ENV: production
   #   proxy:
   #     ssl: true
   #     host: myproject.example.com
@@ -394,7 +399,8 @@ services:
 #   ports:
 #     - "4000:4000"
 #   environment:
-#     NODE_ENV: production
+#     clear:
+#       NODE_ENV: production
 #   proxy:
 #     ssl: true
 #     host: myproject.example.com
@@ -412,8 +418,9 @@ services:
 #     - host: 192.168.1.103
 #       arch: amd64
 #   environment:
-#     QUEUE_URL: "redis://192.168.1.104:6379"
-#     WORKER_CONCURRENCY: "4"
+#     clear:
+#       QUEUE_URL: "redis://192.168.1.104:6379"
+#       WORKER_CONCURRENCY: "4"
 #   command: ["npm", "run", "worker"]
 #   volumes:
 #     - "/app/worker-data:/data"
@@ -427,9 +434,10 @@ services:
 #   ports:
 #     - "127.0.0.1:5432:5432"
 #   environment:
-#     POSTGRES_DB: myapp
-#     POSTGRES_USER: appuser
-#     POSTGRES_PASSWORD: securepassword
+#     clear:
+#       POSTGRES_DB: myapp
+#       POSTGRES_USER: appuser
+#       POSTGRES_PASSWORD: securepassword
 #   volumes:
 #     - "/data/postgres:/var/lib/postgresql/data"
 

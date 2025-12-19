@@ -67,6 +67,9 @@ export class Configuration extends BaseConfiguration {
       );
       this.validateObject(servicesConfig, "services");
 
+      // Get shared environment to pass to services
+      const sharedEnv = this.environment;
+
       for (const [name, config] of Object.entries(servicesConfig)) {
         const serviceConfig = this.validateObject(
           config,
@@ -74,7 +77,12 @@ export class Configuration extends BaseConfiguration {
         );
         this._services.set(
           name,
-          new ServiceConfiguration(name, serviceConfig, this.project),
+          new ServiceConfiguration(
+            name,
+            serviceConfig,
+            this.project,
+            sharedEnv,
+          ),
         );
       }
     }
@@ -82,15 +90,13 @@ export class Configuration extends BaseConfiguration {
   }
 
   /**
-   * Environment configuration
+   * Shared environment configuration
    */
   get environment(): EnvironmentConfiguration {
     if (!this._environment) {
-      const envConfig = this.has("env") ? this.get("env") : {};
-      const envName = this._environmentName || "default";
+      const envConfig = this.has("environment") ? this.get("environment") : {};
       this._environment = new EnvironmentConfiguration(
-        envName,
-        this.validateObject(envConfig, "env"),
+        this.validateObject(envConfig, "environment"),
       );
     }
     return this._environment;
@@ -304,7 +310,7 @@ export class Configuration extends BaseConfiguration {
     } catch (error) {
       if (error instanceof ConfigurationError) {
         result.errors.push({
-          path: "env",
+          path: "environment",
           message: error.message,
           code: "ENVIRONMENT_VALIDATION",
         });
@@ -384,7 +390,7 @@ export class Configuration extends BaseConfiguration {
     // Add environment if present
     const envObj = this.environment.toObject();
     if (Object.keys(envObj).length > 0) {
-      result.env = envObj;
+      result.environment = envObj;
     }
 
     // Add builder (required)
