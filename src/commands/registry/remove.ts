@@ -25,7 +25,7 @@ export const removeCommand = new Command()
       // Perform local removal unless skip-local is specified
       if (!options.skipLocal) {
         await removeLocalRegistry(registry);
-        log.info("✓ Local registry removed", "registry:remove");
+        log.info("Local registry removed", "registry:remove");
       } else {
         log.debug("Skipped local registry removal", "registry:remove");
       }
@@ -33,7 +33,7 @@ export const removeCommand = new Command()
       // Perform remote logout unless skip-remote is specified
       if (!options.skipRemote) {
         await logoutRemoteRegistry(registry);
-        log.info("✓ Remote registry logout completed", "registry:remove");
+        log.info("Remote registry logout completed", "registry:remove");
       } else {
         log.debug("Skipped remote registry logout", "registry:remove");
       }

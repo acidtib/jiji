@@ -329,8 +329,8 @@ export function logAggregatedResults<T>(
     warn: (msg: string) => void;
     error: (msg: string) => void;
   } = {
-    success: (msg) => log.success(`✓ ${msg}`, "promise-helpers"),
-    warn: (msg) => log.warn(`⚠ ${msg}`, "promise-helpers"),
+    success: (msg) => log.success(`${msg}`, "promise-helpers"),
+    warn: (msg) => log.warn(`${msg}`, "promise-helpers"),
     error: (msg) => log.error(`${msg}`, "promise-helpers"),
   },
 ): void {

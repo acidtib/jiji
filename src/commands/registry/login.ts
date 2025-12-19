@@ -38,14 +38,14 @@ export const loginCommand = new Command()
       // Only perform operations that aren't skipped
       if (!options.skipLocal) {
         await loginLocally(registry, registryConfig);
-        log.info("✓ Local login successful", "registry:login");
+        log.info("Local login successful", "registry:login");
       } else {
         log.debug("Skipped local login", "registry:login");
       }
 
       if (!options.skipRemote) {
         loginRemotely(registry, registryConfig);
-        log.info("✓ Remote login successful", "registry:login");
+        log.info("Remote login successful", "registry:login");
       } else {
         log.debug("Skipped remote login", "registry:login");
       }

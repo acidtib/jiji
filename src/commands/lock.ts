@@ -420,7 +420,7 @@ async function showDetailedLockInfo(
 
     for (const status of lockStatuses) {
       log.info(`${colors.bold(colors.cyan(status.host || "unknown"))}`, "lock");
-      log.info("─".repeat(40), "lock");
+      log.info("-".repeat(40), "lock");
 
       if (status.locked) {
         log.error(`Status:      ${colors.red("LOCKED")}`, "lock");

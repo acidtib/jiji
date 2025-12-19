@@ -308,7 +308,7 @@ function displayServerEntries(
 
     if (filteredEntries.length > 0) {
       log.info(`${colors.bold(colors.cyan(`Host: ${host}`))}`, "audit");
-      log.info(`${"─".repeat(60)}`, "audit");
+      log.info(`${"-".repeat(60)}`, "audit");
 
       for (const entry of filteredEntries) {
         if (options.raw) {

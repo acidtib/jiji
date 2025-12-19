@@ -7,14 +7,16 @@ vendor lock in, just run.
 
 ## Features
 
-- **Service Management**: Build, deploy, and remove containerized services across multiple servers
+- **Service Management**: Build, deploy, and remove containerized services
+  across multiple servers
 - **Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
 - **Remote Command Execution**: Execute custom commands across multiple servers
 - **Configuration Management**: Create and manage infrastructure configurations
 - **Server-Side Audit Trail**: Comprehensive logging of all operations directly
   on target servers
 - **Registry Management**: Manage container registries (local and remote)
-- **Proxy Integration**: Built-in support for kamal-proxy for routing traffic to services
+- **Proxy Integration**: Built-in support for kamal-proxy for routing traffic to
+  services
 - **Mount Management**: Support for file, directory, and volume mounts
 - **CLI Interface**: Easy-to-use command-line interface built with Cliffy
 
@@ -247,15 +249,18 @@ jiji registry --help
 
 ## Configuration
 
-Jiji uses YAML configuration files (default: `.jiji/deploy.yml`) to define your infrastructure. A typical configuration includes:
+Jiji uses YAML configuration files (default: `.jiji/deploy.yml`) to define your
+infrastructure. A typical configuration includes:
 
 - Project name
 - SSH connection settings
 - Container engine selection (Docker/Podman)
 - Registry configuration (local or remote)
-- Service definitions with images, ports, mounts, environment variables, and proxy settings
+- Service definitions with images, ports, mounts, environment variables, and
+  proxy settings
 
 Example service with proxy configuration:
+
 ```yaml
 services:
   web:
@@ -316,7 +321,6 @@ deno run src/main.ts
 ## License
 
 MIT License - see the [LICENSE](LICENSE) file for details.
-
 
 ## Documentation
 

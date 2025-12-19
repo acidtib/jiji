@@ -31,7 +31,7 @@ export const setupCommand = new Command()
       // Setup local registry unless skip-local is specified
       if (!options.skipLocal) {
         await setupLocalRegistry(registry, registryConfig, options);
-        log.info("✓ Local registry setup completed", "registry:setup");
+        log.info("Local registry setup completed", "registry:setup");
       } else {
         log.debug("Skipped local registry setup", "registry:setup");
       }
@@ -39,7 +39,7 @@ export const setupCommand = new Command()
       // Setup remote registry unless skip-remote is specified
       if (!options.skipRemote) {
         await setupRemoteRegistry(registry, registryConfig);
-        log.info("✓ Remote registry setup completed", "registry:setup");
+        log.info("Remote registry setup completed", "registry:setup");
       } else {
         log.debug("Skipped remote registry setup", "registry:setup");
       }

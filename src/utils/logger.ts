@@ -289,14 +289,14 @@ export class Logger {
   ): string {
     const filled = Math.round((current / total) * width);
     const empty = width - filled;
-    const bar = "█".repeat(filled) + "░".repeat(empty);
+    const bar = "#".repeat(filled) + ".".repeat(empty);
 
     return this.useColors ? colors.cyan(`[${bar}]`) : `[${bar}]`;
   }
 
   // Group related log messages
   group(title: string, fn: () => void | Promise<void>): void | Promise<void> {
-    const separator = "─".repeat(60);
+    const separator = "-".repeat(60);
     const groupTitle = this.useColors ? colors.bold(colors.blue(title)) : title;
 
     console.log("");

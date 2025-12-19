@@ -1059,14 +1059,14 @@ export function getSSHTroubleshootingTips(error: string): string[] {
   }
 
   if (error.includes("timeout") || error.includes("ETIMEDOUT")) {
-    tips.push("⏱️  Connection timeout - check:");
+    tips.push("Connection timeout - check:");
     tips.push("   • Network connectivity to host");
     tips.push("   • SSH port accessibility");
     tips.push("   • Host is powered on and reachable");
   }
 
   if (tips.length === 0) {
-    tips.push("❓ For general SSH issues:");
+    tips.push("For general SSH issues:");
     tips.push("   • Test connection: ssh -v user@host");
     tips.push("   • Check SSH agent: ssh-add -l");
     tips.push("   • Verify host accessibility: ping host");

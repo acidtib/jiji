@@ -8,6 +8,8 @@
     "run": "deno run --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys src/main.ts",
     "dev:build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include src/jiji.yml --output build/jiji_dev src/main.ts",
     "dev:install": "deno task dev:build && sudo cp build/jiji_dev /usr/local/bin/jiji_dev",
+    "build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include src/jiji.yml --output build/jiji src/main.ts",
+    "install": "deno task build && sudo cp build/jiji /usr/local/bin/jiji",
     "version": "./bin/version",
     "test": "deno test --allow-all",
     "fmt": "deno fmt",

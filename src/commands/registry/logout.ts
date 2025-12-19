@@ -22,14 +22,14 @@ export const logoutCommand = new Command()
       // Only perform operations that aren't skipped
       if (!options.skipLocal) {
         await logoutLocally(registry);
-        log.info("✓ Local logout successful", "registry:logout");
+        log.info("Local logout successful", "registry:logout");
       } else {
         log.debug("Skipped local logout", "registry:logout");
       }
 
       if (!options.skipRemote) {
         await logoutRemotely(registry);
-        log.info("✓ Remote logout successful", "registry:logout");
+        log.info("Remote logout successful", "registry:logout");
       } else {
         log.debug("Skipped remote logout", "registry:logout");
       }
