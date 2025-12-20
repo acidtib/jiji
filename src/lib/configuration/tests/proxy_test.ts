@@ -107,7 +107,7 @@ Deno.test("ProxyConfiguration - validate SSL without host", () => {
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "SSL requires a host to be configured",
+    "SSL requires at least one host to be configured",
   );
 });
 

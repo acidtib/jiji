@@ -3,6 +3,7 @@ import { SSHConfiguration } from "./configuration/ssh.ts";
 import { ServiceConfiguration } from "./configuration/service.ts";
 import { EnvironmentConfiguration } from "./configuration/environment.ts";
 import { BuilderConfiguration } from "./configuration/builder.ts";
+import { NetworkConfiguration } from "./configuration/network.ts";
 import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
@@ -19,6 +20,7 @@ export class Configuration extends BaseConfiguration {
   private _services?: Map<string, ServiceConfiguration>;
   private _environment?: EnvironmentConfiguration;
   private _builder?: BuilderConfiguration; // Lazy-loaded, required field
+  private _network?: NetworkConfiguration;
   private _configPath?: string;
   private _environmentName?: string;
 
@@ -115,6 +117,19 @@ export class Configuration extends BaseConfiguration {
       );
     }
     return this._builder;
+  }
+
+  /**
+   * Network configuration for private networking
+   */
+  get network(): NetworkConfiguration {
+    if (!this._network) {
+      const networkConfig = this.has("network") ? this.get("network") : {};
+      this._network = new NetworkConfiguration(
+        this.validateObject(networkConfig, "network"),
+      );
+    }
+    return this._network;
   }
 
   /**
@@ -339,6 +354,20 @@ export class Configuration extends BaseConfiguration {
       }
     }
 
+    // Validate network configuration
+    try {
+      this.network.validate();
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        result.errors.push({
+          path: "network",
+          message: error.message,
+          code: "NETWORK_VALIDATION",
+        });
+        result.valid = false;
+      }
+    }
+
     // Custom cross-service validations
     this.validateHostConsistency(result);
 
@@ -402,6 +431,12 @@ export class Configuration extends BaseConfiguration {
 
     // Add builder (required)
     result.builder = this.builder.getRawConfig();
+
+    // Add network if present
+    const networkObj = this.network.toObject();
+    if (Object.keys(networkObj).length > 0) {
+      result.network = networkObj;
+    }
 
     return result;
   }
@@ -507,6 +542,7 @@ export {
 } from "./configuration/service.ts";
 export { EnvironmentConfiguration } from "./configuration/environment.ts";
 export { BuilderConfiguration } from "./configuration/builder.ts";
+export { NetworkConfiguration } from "./configuration/network.ts";
 export { RegistryConfiguration } from "./configuration/registry.ts";
 export { ConfigurationLoader } from "./configuration/loader.ts";
 export {

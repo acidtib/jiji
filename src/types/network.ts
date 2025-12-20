@@ -1,0 +1,149 @@
+/**
+ * Network-related type definitions for Jiji private networking
+ */
+
+/**
+ * Network discovery method
+ */
+export type NetworkDiscovery = "static" | "corrosion";
+
+/**
+ * Network server information stored in network.json
+ */
+export interface NetworkServer {
+  id: string;
+  hostname: string;
+  subnet: string;
+  wireguardIp: string;
+  wireguardPublicKey: string;
+  managementIp: string;
+  endpoints: string[];
+}
+
+/**
+ * Network topology stored in .jiji/network.json
+ */
+export interface NetworkTopology {
+  clusterCidr: string;
+  serviceDomain: string;
+  discovery: NetworkDiscovery;
+  servers: NetworkServer[];
+  createdAt: string;
+  updatedAt?: string;
+}
+
+/**
+ * WireGuard peer configuration
+ */
+export interface WireGuardPeer {
+  publicKey: string;
+  allowedIps: string[];
+  endpoint?: string;
+  persistentKeepalive?: number;
+}
+
+/**
+ * WireGuard interface configuration
+ */
+export interface WireGuardConfig {
+  privateKey: string;
+  address: string[];
+  listenPort: number;
+  peers: WireGuardPeer[];
+}
+
+/**
+ * Corrosion configuration
+ */
+export interface CorrosionConfig {
+  dbPath: string;
+  schemaPath: string;
+  gossipAddr: string;
+  apiAddr: string;
+  adminPath: string;
+  bootstrap: string[];
+  plaintext: boolean;
+}
+
+/**
+ * DNS server configuration
+ */
+export interface DNSConfig {
+  listenAddr: string;
+  serviceDomain: string;
+  corrosionApiAddr: string;
+  upstreamResolvers: string[];
+}
+
+/**
+ * Container registration info for Corrosion
+ */
+export interface ContainerRegistration {
+  id: string;
+  service: string;
+  serverId: string;
+  ip: string;
+  healthy: boolean;
+  startedAt: number;
+}
+
+/**
+ * Service registration info for Corrosion
+ */
+export interface ServiceRegistration {
+  name: string;
+  project: string;
+}
+
+/**
+ * Server registration info for Corrosion
+ */
+export interface ServerRegistration {
+  id: string;
+  hostname: string;
+  subnet: string;
+  wireguardIp: string;
+  wireguardPublicKey: string;
+  managementIp: string;
+  endpoints: string;
+  lastSeen: number;
+}
+
+/**
+ * Network setup result for a single server
+ */
+export interface NetworkSetupResult {
+  host: string;
+  success: boolean;
+  message?: string;
+  error?: string;
+  publicKey?: string;
+}
+
+/**
+ * Network installation dependencies
+ */
+export interface NetworkDependencies {
+  wireguard: boolean;
+  corrosion: boolean;
+  dns: boolean;
+}
+
+/**
+ * Network status information
+ */
+export interface NetworkStatus {
+  enabled: boolean;
+  servers: Array<{
+    hostname: string;
+    wireguardIp: string;
+    subnet: string;
+    online: boolean;
+    containers: Array<{
+      id: string;
+      service: string;
+      ip: string;
+      healthy: boolean;
+    }>;
+  }>;
+}

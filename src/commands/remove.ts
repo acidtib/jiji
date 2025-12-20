@@ -4,6 +4,7 @@ import { Configuration } from "../lib/configuration.ts";
 import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { log } from "../utils/logger.ts";
 import { ProxyCommands } from "../utils/proxy.ts";
+import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
 import type { GlobalOptions } from "../types.ts";
 import type { ServiceConfiguration } from "../lib/configuration/service.ts";
 
@@ -158,6 +159,27 @@ export const removeCommand = new Command()
                     `Removed ${service.name} from proxy on ${host}`,
                     "remove",
                   );
+                }
+
+                // Unregister from network (if enabled)
+                if (config!.network.enabled) {
+                  try {
+                    log.status(
+                      `Unregistering ${service.name} from network...`,
+                      "network",
+                    );
+                    await unregisterContainerFromNetwork(
+                      hostSsh,
+                      containerName,
+                      service.name,
+                      config!.project,
+                    );
+                  } catch (error) {
+                    log.warn(
+                      `Failed to unregister from network: ${error}`,
+                      "network",
+                    );
+                  }
                 }
 
                 // Stop and remove the container

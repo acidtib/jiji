@@ -10,8 +10,8 @@ export interface KamalProxyDeployOptions {
   serviceName: string;
   /** Target container name and port (containerName:port) */
   target: string;
-  /** Host domain for routing */
-  host?: string;
+  /** Host domains for routing (can be multiple) */
+  hosts?: string[];
   /** Path prefix for path-based routing */
   pathPrefix?: string;
   /** Enable TLS/SSL */
@@ -27,14 +27,15 @@ export interface KamalProxyDeployOptions {
  */
 export function buildKamalProxyOptions(
   serviceName: string,
-  containerName: string,
+  _containerName: string,
   appPort: number,
   config: ProxyConfiguration,
+  projectName: string,
 ): KamalProxyDeployOptions {
   return {
     serviceName,
-    target: `${containerName}:${appPort}`,
-    host: config.host,
+    target: `${projectName}-${serviceName}.jiji:${appPort}`,
+    hosts: config.hosts.length > 0 ? config.hosts : undefined,
     pathPrefix: config.pathPrefix,
     tls: config.ssl,
     healthCheckPath: config.healthcheck?.path,
@@ -50,7 +51,13 @@ export function buildDeployCommandArgs(
 ): string[] {
   const args: string[] = [`--target=${options.target}`];
 
-  if (options.host) args.push(`--host=${options.host}`);
+  // Add multiple hosts (kamal-proxy supports --host flag multiple times)
+  if (options.hosts && options.hosts.length > 0) {
+    for (const host of options.hosts) {
+      args.push(`--host=${host}`);
+    }
+  }
+
   if (options.pathPrefix) args.push(`--path-prefix=${options.pathPrefix}`);
   if (options.tls) args.push("--tls");
   if (options.healthCheckPath) {
@@ -221,21 +228,61 @@ export class ProxyCommands {
     await this.ssh.executeCommand(command);
   }
 
+  async refreshDNS(): Promise<void> {
+    // Trigger immediate DNS hosts update
+    const updateCommand = `/opt/jiji/dns/update-hosts.sh`;
+    const updateResult = await this.ssh.executeCommand(updateCommand);
+
+    if (!updateResult.success) {
+      log.warn(`DNS update failed: ${updateResult.stderr}`, "proxy");
+    } else {
+      log.debug("DNS hosts updated before proxy deployment", "proxy");
+    }
+
+    // Restart kamal-proxy to pick up fresh DNS entries
+    log.debug("Refreshing kamal-proxy DNS resolution...", "proxy");
+    await this.restart();
+
+    // Wait for proxy to be ready after restart
+    await this.waitForReady();
+  }
+
+  async restart(): Promise<void> {
+    const restartCommand = `${this.engine} restart ${this.containerName}`;
+    const result = await this.ssh.executeCommand(restartCommand);
+
+    if (!result.success) {
+      throw new Error(
+        `Failed to restart kamal-proxy: ${result.stderr || result.stdout}`,
+      );
+    }
+  }
+
   async deploy(
     service: string,
     containerName: string,
     config: ProxyConfiguration,
     appPort: number,
+    projectName: string,
   ): Promise<void> {
+    // Refresh DNS before deployment to ensure fresh hostname resolution
+    await this.refreshDNS();
+
     const options = buildKamalProxyOptions(
       service,
       containerName,
       appPort,
       config,
+      projectName,
     );
 
     const args = buildDeployCommandArgs(options);
     const argsStr = args.join(" ");
+
+    log.debug(
+      `Deploying ${service} to proxy with target: ${options.target}`,
+      "proxy",
+    );
 
     const command =
       `${this.engine} exec ${this.containerName} kamal-proxy deploy ${service} ${argsStr}`;

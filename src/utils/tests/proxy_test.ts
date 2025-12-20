@@ -22,11 +22,20 @@ Deno.test("ProxyCommands - deploy with host only", async () => {
     host: "example.com",
   });
 
-  await proxyCommands.deploy("test-service", "test-container", config, 3000);
+  await proxyCommands.deploy(
+    "test-service",
+    "test-container",
+    config,
+    3000,
+    "myproject",
+  );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "kamal-proxy deploy test-service");
-  assertStringIncludes(lastCommand, "--target=test-container:3000");
+  assertStringIncludes(
+    lastCommand,
+    "--target=myproject-test-service.jiji:3000",
+  );
   assertStringIncludes(lastCommand, "--host=example.com");
   // Should not include SSL or path prefix
   assertEquals(lastCommand.includes("--tls"), false);
@@ -50,11 +59,15 @@ Deno.test("ProxyCommands - deploy with SSL enabled", async () => {
     "secure-container",
     config,
     8080,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "kamal-proxy deploy secure-service");
-  assertStringIncludes(lastCommand, "--target=secure-container:8080");
+  assertStringIncludes(
+    lastCommand,
+    "--target=myproject-secure-service.jiji:8080",
+  );
   assertStringIncludes(lastCommand, "--host=secure.example.com");
   assertStringIncludes(lastCommand, "--tls");
 });
@@ -72,11 +85,17 @@ Deno.test("ProxyCommands - deploy with path prefix", async () => {
     path_prefix: "/v1",
   });
 
-  await proxyCommands.deploy("api-service", "api-container", config, 4000);
+  await proxyCommands.deploy(
+    "api-service",
+    "api-container",
+    config,
+    4000,
+    "myproject",
+  );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "kamal-proxy deploy api-service");
-  assertStringIncludes(lastCommand, "--target=api-container:4000");
+  assertStringIncludes(lastCommand, "--target=myproject-api-service.jiji:4000");
   assertStringIncludes(lastCommand, "--host=api.example.com");
   assertStringIncludes(lastCommand, "--path-prefix=/v1");
 });
@@ -99,11 +118,15 @@ Deno.test("ProxyCommands - deploy with complex path prefix", async () => {
     "graphql-container",
     config,
     5000,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "kamal-proxy deploy graphql-service");
-  assertStringIncludes(lastCommand, "--target=graphql-container:5000");
+  assertStringIncludes(
+    lastCommand,
+    "--target=myproject-graphql-service.jiji:5000",
+  );
   assertStringIncludes(lastCommand, "--host=app.example.com");
   assertStringIncludes(lastCommand, "--path-prefix=/api/v2/graphql");
   assertStringIncludes(lastCommand, "--tls");
@@ -126,12 +149,21 @@ Deno.test("ProxyCommands - deploy with all options", async () => {
     },
   });
 
-  await proxyCommands.deploy("admin-service", "admin-container", config, 3001);
+  await proxyCommands.deploy(
+    "admin-service",
+    "admin-container",
+    config,
+    3001,
+    "myproject",
+  );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "podman exec kamal-proxy");
   assertStringIncludes(lastCommand, "kamal-proxy deploy admin-service");
-  assertStringIncludes(lastCommand, "--target=admin-container:3001");
+  assertStringIncludes(
+    lastCommand,
+    "--target=myproject-admin-service.jiji:3001",
+  );
   assertStringIncludes(lastCommand, "--host=full.example.com");
   assertStringIncludes(lastCommand, "--path-prefix=/admin");
   assertStringIncludes(lastCommand, "--tls");
@@ -160,11 +192,15 @@ Deno.test("ProxyCommands - deploy with health check only", async () => {
     "health-container",
     config,
     8000,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "kamal-proxy deploy health-service");
-  assertStringIncludes(lastCommand, "--target=health-container:8000");
+  assertStringIncludes(
+    lastCommand,
+    "--target=myproject-health-service.jiji:8000",
+  );
   assertStringIncludes(lastCommand, "--host=health.example.com");
   assertStringIncludes(lastCommand, "--health-check-path=/status");
   assertStringIncludes(lastCommand, "--health-check-interval=10s");
@@ -193,6 +229,7 @@ Deno.test("ProxyCommands - deploy with partial health check", async () => {
     "partial-container",
     config,
     9000,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
@@ -214,7 +251,13 @@ Deno.test("ProxyCommands - deploy command failure", async () => {
 
   let errorThrown = false;
   try {
-    await proxyCommands.deploy("fail-service", "fail-container", config, 3000);
+    await proxyCommands.deploy(
+      "fail-service",
+      "fail-container",
+      config,
+      3000,
+      "myproject",
+    );
   } catch (error) {
     errorThrown = true;
     assertStringIncludes(
@@ -305,6 +348,7 @@ Deno.test("ProxyCommands - deploy path prefix with special characters", async ()
     "special-container",
     config,
     3000,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
@@ -324,7 +368,13 @@ Deno.test("ProxyCommands - deploy root path prefix", async () => {
     path_prefix: "/",
   });
 
-  await proxyCommands.deploy("root-service", "root-container", config, 3000);
+  await proxyCommands.deploy(
+    "root-service",
+    "root-container",
+    config,
+    3000,
+    "myproject",
+  );
 
   const lastCommand = mockSSH.getLastCommand();
   assertStringIncludes(lastCommand, "--path-prefix=/");
@@ -348,6 +398,7 @@ Deno.test("ProxyCommands - deploy generates correct command format", async () =>
     "format-container",
     config,
     4000,
+    "myproject",
   );
 
   const lastCommand = mockSSH.getLastCommand();
@@ -360,7 +411,7 @@ Deno.test("ProxyCommands - deploy generates correct command format", async () =>
 
   // Verify all options are present and in correct format
   const expectedParts = [
-    "--target=format-container:4000",
+    "--target=myproject-format-service.jiji:4000",
     "--host=format.example.com",
     "--path-prefix=/test",
     "--tls",
@@ -381,11 +432,17 @@ Deno.test("buildKamalProxyOptions - creates complete options", () => {
     healthcheck: { path: "/health", interval: "30s" },
   });
 
-  const options = buildKamalProxyOptions("api", "api-container", 3000, config);
+  const options = buildKamalProxyOptions(
+    "api",
+    "api-container",
+    3000,
+    config,
+    "testproject",
+  );
 
   assertEquals(options.serviceName, "api");
-  assertEquals(options.target, "api-container:3000");
-  assertEquals(options.host, "example.com");
+  assertEquals(options.target, "testproject-api.jiji:3000");
+  assertEquals(options.hosts, ["example.com"]);
   assertEquals(options.pathPrefix, "/api");
   assertEquals(options.tls, true);
   assertEquals(options.healthCheckPath, "/health");
@@ -397,11 +454,17 @@ Deno.test("buildKamalProxyOptions - minimal options", () => {
     ssl: false,
   });
 
-  const options = buildKamalProxyOptions("web", "web-container", 8080, config);
+  const options = buildKamalProxyOptions(
+    "web",
+    "web-container",
+    8080,
+    config,
+    "testproject",
+  );
 
   assertEquals(options.serviceName, "web");
-  assertEquals(options.target, "web-container:8080");
-  assertEquals(options.host, undefined);
+  assertEquals(options.target, "testproject-web.jiji:8080");
+  assertEquals(options.hosts, undefined);
   assertEquals(options.pathPrefix, undefined);
   assertEquals(options.tls, false);
   assertEquals(options.healthCheckPath, undefined);
@@ -415,11 +478,17 @@ Deno.test("buildKamalProxyOptions - with partial healthcheck", () => {
     healthcheck: { path: "/status" },
   });
 
-  const options = buildKamalProxyOptions("svc", "container", 5000, config);
+  const options = buildKamalProxyOptions(
+    "svc",
+    "container",
+    5000,
+    config,
+    "testproject",
+  );
 
   assertEquals(options.serviceName, "svc");
-  assertEquals(options.target, "container:5000");
-  assertEquals(options.host, "test.com");
+  assertEquals(options.target, "testproject-svc.jiji:5000");
+  assertEquals(options.hosts, ["test.com"]);
   assertEquals(options.healthCheckPath, "/status");
   assertEquals(options.healthCheckInterval, undefined);
 });
@@ -428,7 +497,7 @@ Deno.test("buildDeployCommandArgs - builds correct argument array with all optio
   const options: KamalProxyDeployOptions = {
     serviceName: "test",
     target: "container:3000",
-    host: "example.com",
+    hosts: ["example.com"],
     pathPrefix: "/api",
     tls: true,
     healthCheckPath: "/health",
@@ -461,7 +530,7 @@ Deno.test("buildDeployCommandArgs - with host and SSL only", () => {
   const options: KamalProxyDeployOptions = {
     serviceName: "secure",
     target: "secure-container:443",
-    host: "secure.example.com",
+    hosts: ["secure.example.com"],
     tls: true,
   };
 
@@ -492,7 +561,7 @@ Deno.test("buildDeployCommandArgs - respects false tls value", () => {
   const options: KamalProxyDeployOptions = {
     serviceName: "no-tls",
     target: "container:3000",
-    host: "http.example.com",
+    hosts: ["http.example.com"],
     tls: false,
   };
 
@@ -500,4 +569,46 @@ Deno.test("buildDeployCommandArgs - respects false tls value", () => {
 
   assertEquals(args.includes("--tls"), false);
   assertEquals(args.includes("--host=http.example.com"), true);
+});
+
+Deno.test("buildDeployCommandArgs - multiple hosts", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "multi-host",
+    target: "container:3000",
+    hosts: ["domain.com", "other.domain.com", "www.domain.com"],
+    tls: true,
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--target=container:3000"), true);
+  assertEquals(args.includes("--host=domain.com"), true);
+  assertEquals(args.includes("--host=other.domain.com"), true);
+  assertEquals(args.includes("--host=www.domain.com"), true);
+  assertEquals(args.includes("--tls"), true);
+
+  // Verify all three hosts are present in the args
+  const hostArgs = args.filter((arg) => arg.startsWith("--host="));
+  assertEquals(hostArgs.length, 3);
+});
+
+Deno.test("ProxyConfiguration - supports hosts array", () => {
+  const config = new ProxyConfiguration({
+    ssl: true,
+    hosts: ["domain.com", "www.domain.com"],
+  });
+
+  assertEquals(config.hosts, ["domain.com", "www.domain.com"]);
+  assertEquals(config.enabled, true);
+  assertEquals(config.ssl, true);
+});
+
+Deno.test("ProxyConfiguration - supports single host (backward compatibility)", () => {
+  const config = new ProxyConfiguration({
+    ssl: false,
+    host: "example.com",
+  });
+
+  assertEquals(config.hosts, ["example.com"]);
+  assertEquals(config.enabled, true);
 });

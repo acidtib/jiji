@@ -205,6 +205,116 @@ ssh:
   # - Apply connection timeouts and other SSH options
   # - Always prioritize Jiji configuration over SSH config file settings
 
+# Private Networking Configuration
+# ================================
+# Enables secure, encrypted container-to-container communication across servers
+# using WireGuard VPN mesh network with automatic service discovery via DNS
+#
+# Network Architecture:
+# - WireGuard: Creates encrypted mesh VPN between all servers
+# - Corrosion: Distributed CRDT database for service registry (gossip protocol)
+# - CoreDNS: DNS server for service discovery (resolves <service>.jiji to container IPs)
+# - Dual-stack: IPv4 (10.210.0.0/16) for containers, IPv6 (fdcc::/16) for management
+# - Automatic: Containers are auto-registered on deploy, auto-unregistered on remove
+#
+# Use Cases:
+# - Microservices communication without exposing ports publicly
+# - Multi-server deployments with service discovery
+# - Database replication across servers
+# - Secure inter-service authentication
+# - Zero-trust networking with encryption by default
+#
+# network:
+#   # Enable private networking (default: true)
+#   enabled: true
+#
+#   # Cluster CIDR for container networking
+#   # Each server gets a /24 subnet (254 usable IPs per server)
+#   # Default: 10.210.0.0/16 (supports 256 servers)
+#   clusterCidr: "10.210.0.0/16"
+#
+#   # Service discovery configuration
+#   # Note: Service domain is 'jiji' - containers reach each other via <service>.jiji
+#   discovery:
+#     # Corrosion gossip protocol port (server-to-server sync)
+#     # Default: 8787
+#     gossipPort: 8787
+#
+#     # Corrosion API port for queries
+#     # Default: 8788
+#     apiPort: 8788
+#
+# Network Configuration Examples:
+# ==============================
+#
+# Example 1: Basic Setup (Recommended)
+# network:
+#   enabled: true
+#   clusterCidr: "10.210.0.0/16"
+#   discovery:
+#     gossipPort: 8787
+#     apiPort: 8788
+#
+# Example 2: Custom CIDR for Existing Network
+# network:
+#   enabled: true
+#   clusterCidr: "172.20.0.0/16"    # Avoid conflicts with existing networks
+#   discovery:
+#     gossipPort: 8787
+#     apiPort: 8788
+#
+# Example 3: Custom Ports
+# network:
+#   enabled: true
+#   clusterCidr: "10.210.0.0/16"
+#   discovery:
+#     gossipPort: 9000               # Custom gossip port
+#     apiPort: 9001                  # Custom API port
+#
+# How It Works:
+# ============
+# 1. Bootstrap: Run 'jiji server bootstrap' to set up network infrastructure
+#    - Installs WireGuard on all servers
+#    - Generates keypairs and establishes mesh VPN
+#    - Installs Corrosion for distributed service registry
+#    - Installs CoreDNS for DNS-based service discovery
+#
+# 2. Deploy: Run 'jiji deploy' to deploy containers
+#    - Containers automatically join the private network
+#    - Registered in Corrosion with service name and IP
+#    - DNS automatically updated to resolve <service>.jiji
+#
+# 3. Service Discovery: Containers communicate via DNS
+#    - Example: curl http://api-backend.jiji:3000/health
+#    - DNS resolves to all healthy container IPs for that service
+#    - Load balanced automatically by DNS round-robin
+#
+# 4. Network Status: Check network health
+#    - Run 'jiji network status' to see topology and server status
+#
+# 5. Teardown: Clean up network (if needed)
+#    - Run 'jiji network teardown' to remove all network infrastructure
+#
+# Service Communication Example:
+# ============================
+# Given these services:
+#
+# services:
+#   api-backend:
+#     servers:
+#       - host: 192.168.1.100
+#       - host: 192.168.1.101
+#
+#   database:
+#     servers:
+#       - host: 192.168.1.102
+#
+# The api-backend containers can connect to database via:
+#   DATABASE_URL: postgresql://user:pass@database.jiji:5432/myapp
+#
+# And database can connect back to api via:
+#   API_URL: http://api-backend.jiji:3000
+
 # Shared Environment Configuration
 # Applied to all services, can be overridden per-service
 # environment:

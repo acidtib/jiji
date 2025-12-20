@@ -15,6 +15,11 @@ import { RegistryManager } from "../utils/registry_manager.ts";
 import { filterServicesByPatterns } from "../utils/config.ts";
 import { BuildService } from "../lib/services/build_service.ts";
 import { ContainerRunBuilder } from "../lib/services/container_run_builder.ts";
+import {
+  cleanupServiceContainers,
+  registerContainerInNetwork,
+} from "../lib/services/container_registry.ts";
+import { getServerByHostname, loadTopology } from "../lib/network/topology.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -538,6 +543,29 @@ export const deployCommand = new Command()
                     );
                   }
 
+                  // Clean up old service containers from network registry
+                  if (config!.network.enabled) {
+                    try {
+                      const cleanedCount = await cleanupServiceContainers(
+                        hostSsh,
+                        service.name,
+                        config!.builder.engine,
+                        config!.project,
+                      );
+                      if (cleanedCount > 0) {
+                        log.debug(
+                          `Cleaned up ${cleanedCount} stale containers for ${service.name}`,
+                          "network",
+                        );
+                      }
+                    } catch (error) {
+                      log.warn(
+                        `Service cleanup failed: ${error} (deployment will continue)`,
+                        "network",
+                      );
+                    }
+                  }
+
                   // Stop and remove existing container
                   await hostSsh.executeCommand(
                     `${
@@ -604,6 +632,48 @@ export const deployCommand = new Command()
                     );
                   }
 
+                  // Register container in network (if enabled)
+                  if (config!.network.enabled) {
+                    try {
+                      const topology = await loadTopology();
+                      if (topology) {
+                        const server = getServerByHostname(topology, host);
+                        if (server) {
+                          log.status(
+                            `Registering ${service.name} in network...`,
+                            "network",
+                          );
+
+                          const registered = await registerContainerInNetwork(
+                            hostSsh,
+                            service.name,
+                            config!.project,
+                            server.id,
+                            containerName,
+                            config!.builder.engine,
+                          );
+
+                          if (!registered) {
+                            log.warn(
+                              `Failed to register ${service.name} in network (service will still run)`,
+                              "network",
+                            );
+                          }
+                        } else {
+                          log.warn(
+                            `Server ${host} not found in network topology`,
+                            "network",
+                          );
+                        }
+                      }
+                    } catch (error) {
+                      log.warn(
+                        `Network registration failed: ${error} (service will still run)`,
+                        "network",
+                      );
+                    }
+                  }
+
                   log.success(
                     `${service.name} deployed successfully on ${host}`,
                     "deploy",
@@ -659,6 +729,7 @@ export const deployCommand = new Command()
                       containerName,
                       proxyConfig,
                       appPort,
+                      config!.project,
                     );
 
                     log.success(

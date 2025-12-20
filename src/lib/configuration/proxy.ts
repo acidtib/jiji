@@ -37,6 +37,22 @@ export class ProxyConfiguration extends BaseConfiguration {
     return typeof value === "string" ? value : undefined;
   }
 
+  get hosts(): string[] {
+    // Support both 'host' (single) and 'hosts' (array)
+    const hostsValue = this.get<unknown>("hosts");
+    const hostValue = this.get<unknown>("host");
+
+    if (Array.isArray(hostsValue)) {
+      return hostsValue.filter((h): h is string => typeof h === "string");
+    }
+
+    if (typeof hostValue === "string") {
+      return [hostValue];
+    }
+
+    return [];
+  }
+
   get pathPrefix(): string | undefined {
     const value = this.get<unknown>("path_prefix");
     return typeof value === "string" ? value : undefined;
@@ -58,25 +74,37 @@ export class ProxyConfiguration extends BaseConfiguration {
   }
 
   get enabled(): boolean {
-    return this.host !== undefined;
+    return this.hosts.length > 0;
   }
 
   validate(): void {
     const errors: ConfigurationError[] = [];
     const warnings: string[] = [];
 
+    // Validate that only 'host' OR 'hosts' is specified, not both
+    const hasHost = this.rawConfig.host !== undefined;
+    const hasHosts = this.rawConfig.hosts !== undefined;
+
+    if (hasHost && hasHosts) {
+      errors.push(
+        new ConfigurationError(
+          "Specify either 'host' or 'hosts', not both",
+        ),
+      );
+    }
+
     // Host validation
-    if (this.host) {
-      if (!ProxyConfiguration.HOST_PATTERN.test(this.host)) {
+    for (const host of this.hosts) {
+      if (!ProxyConfiguration.HOST_PATTERN.test(host)) {
         errors.push(
-          new ConfigurationError(`Invalid host format: ${this.host}`),
+          new ConfigurationError(`Invalid host format: ${host}`),
         );
       }
 
       // Localhost warning
-      if (this.host === "localhost" || this.host === "127.0.0.1") {
+      if (host === "localhost" || host === "127.0.0.1") {
         warnings.push(
-          `Host '${this.host}' uses localhost - this may not work in distributed deployments`,
+          `Host '${host}' uses localhost - this may not work in distributed deployments`,
         );
       }
     }
@@ -149,9 +177,11 @@ export class ProxyConfiguration extends BaseConfiguration {
     }
 
     // SSL requires host
-    if (this.ssl && !this.host) {
+    if (this.ssl && this.hosts.length === 0) {
       errors.push(
-        new ConfigurationError("SSL requires a host to be configured"),
+        new ConfigurationError(
+          "SSL requires at least one host to be configured",
+        ),
       );
     }
 

@@ -6,6 +6,7 @@ import { installEngineOnHosts } from "../../utils/engine.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log, Logger } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
+import { setupNetwork } from "../../lib/network/setup.ts";
 
 export const bootstrapCommand = new Command()
   .description("Bootstrap servers")
@@ -269,6 +270,84 @@ export const bootstrapCommand = new Command()
             "config",
           );
           Deno.exit(1);
+        }
+
+        // Network setup (if enabled)
+        if (config!.network.enabled) {
+          try {
+            const networkResults = await setupNetwork(config!, sshManagers!);
+
+            // Log network setup results
+            const successfulSetups = networkResults.filter((r) => r.success);
+            const failedSetups = networkResults.filter((r) => !r.success);
+
+            if (successfulSetups.length > 0) {
+              log.success(
+                `Private network configured on ${successfulSetups.length} server(s)`,
+                "network",
+              );
+            }
+
+            if (failedSetups.length > 0) {
+              log.warn(
+                `Network setup failed on ${failedSetups.length} server(s)`,
+                "network",
+              );
+              for (const result of failedSetups) {
+                log.error(
+                  `${result.host}: ${result.error || "Unknown error"}`,
+                  "network",
+                );
+              }
+            }
+
+            // Log network setup to audit trail
+            if (auditLogger) {
+              for (const result of networkResults) {
+                const hostSsh = sshManagers!.find((ssh) =>
+                  ssh.getHost() === result.host
+                );
+                if (hostSsh) {
+                  const hostLogger = createServerAuditLogger(
+                    hostSsh,
+                    config!.project,
+                  );
+                  await hostLogger.logCustomCommand(
+                    "network_setup",
+                    result.success ? "success" : "failed",
+                    result.message || result.error,
+                  );
+                }
+              }
+            }
+          } catch (error) {
+            const errorMessage = error instanceof Error
+              ? error.message
+              : String(error);
+            log.error(`Network setup failed: ${errorMessage}`, "network");
+
+            // Log network setup failure
+            if (auditLogger && sshManagers) {
+              for (const host of uniqueHosts) {
+                const hostSsh = sshManagers.find((ssh) =>
+                  ssh.getHost() === host
+                );
+                if (hostSsh) {
+                  const hostLogger = createServerAuditLogger(
+                    hostSsh,
+                    config!.project,
+                  );
+                  await hostLogger.logCustomCommand(
+                    "network_setup",
+                    "failed",
+                    errorMessage,
+                  );
+                }
+              }
+            }
+
+            log.status(`Continuing with bootstrap process...`, "bootstrap");
+          }
         }
 
         // Log successful bootstrap completion to connected servers
