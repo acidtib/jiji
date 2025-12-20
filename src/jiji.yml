@@ -431,6 +431,8 @@ services:
   #     healthcheck:
   #       path: /api/health
   #       interval: 15s
+  #       timeout: 10s
+  #       deploy_timeout: 60s
   #   # Or path-based routing (same domain, different path)
   #   # proxy:
   #   #   ssl: true
@@ -439,6 +441,8 @@ services:
   #   #   healthcheck:
   #   #     path: /api/health
   #   #     interval: 15s
+  #   #     timeout: 10s
+  #   #     deploy_timeout: 60s
   #   # Or combined routing (specific host + path prefix)
   #   # proxy:
   #   #   ssl: true
@@ -447,6 +451,8 @@ services:
   #   #   healthcheck:
   #   #     path: /v2/health
   #   #     interval: 15s
+  #   #     timeout: 10s
+  #   #     deploy_timeout: 60s
 
   # Admin service with path-based routing
   # admin-panel:

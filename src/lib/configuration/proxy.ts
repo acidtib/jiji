@@ -7,6 +7,8 @@ import { log } from "../../utils/logger.ts";
 export interface ProxyHealthcheckConfig {
   path?: string;
   interval?: string;
+  timeout?: string;
+  deploy_timeout?: string;
 }
 
 /**
@@ -69,6 +71,10 @@ export class ProxyConfiguration extends BaseConfiguration {
       path: typeof config.path === "string" ? config.path : undefined,
       interval: typeof config.interval === "string"
         ? config.interval
+        : undefined,
+      timeout: typeof config.timeout === "string" ? config.timeout : undefined,
+      deploy_timeout: typeof config.deploy_timeout === "string"
+        ? config.deploy_timeout
         : undefined,
     };
   }
@@ -173,6 +179,29 @@ export class ProxyConfiguration extends BaseConfiguration {
             ),
           );
         }
+      }
+    }
+
+    // Timeout validation
+    if (healthcheck?.timeout) {
+      if (!ProxyConfiguration.INTERVAL_PATTERN.test(healthcheck.timeout)) {
+        errors.push(
+          new ConfigurationError(
+            `Invalid health check timeout: ${healthcheck.timeout}`,
+          ),
+        );
+      }
+    }
+
+    if (healthcheck?.deploy_timeout) {
+      if (
+        !ProxyConfiguration.INTERVAL_PATTERN.test(healthcheck.deploy_timeout)
+      ) {
+        errors.push(
+          new ConfigurationError(
+            `Invalid deploy timeout: ${healthcheck.deploy_timeout}`,
+          ),
+        );
       }
     }
 

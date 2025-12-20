@@ -22,6 +22,12 @@ const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
  */
 const CORROSION_SCHEMA = `-- Jiji network database schema
 
+-- Cluster metadata (cluster-wide configuration)
+CREATE TABLE IF NOT EXISTS cluster_metadata (
+  key TEXT NOT NULL PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+);
+
 -- Servers in the cluster
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT NOT NULL PRIMARY KEY,
@@ -51,6 +57,7 @@ CREATE TABLE IF NOT EXISTS containers (
 );
 
 -- Enable CRDT for all tables (disabled for compatibility)
+-- SELECT crsql_as_crr('cluster_metadata');
 -- SELECT crsql_as_crr('servers');
 -- SELECT crsql_as_crr('services');
 -- SELECT crsql_as_crr('containers');
@@ -298,18 +305,16 @@ export async function registerServer(
   ssh: SSHManager,
   server: ServerRegistration,
 ): Promise<void> {
-  const sql = `
-    INSERT OR REPLACE INTO servers
-    (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen)
-    VALUES
-    ('${server.id}', '${server.hostname}', '${server.subnet}', '${server.wireguardIp}',
-     '${server.wireguardPublicKey}', '${server.managementIp}', '${server.endpoints}', ${server.lastSeen});
-  `;
+  // Escape double quotes in the endpoints JSON string so it can be safely embedded in SQL
+  // The endpoints field is already a JSON string like '["ip:port"]'
+  // We need to escape the inner quotes: '["ip:port"]' becomes '[\"ip:port\"]'
+  const escapedEndpoints = server.endpoints.replace(/"/g, '\\"');
+
+  const sql =
+    `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${server.id}', '${server.hostname}', '${server.subnet}', '${server.wireguardIp}', '${server.wireguardPublicKey}', '${server.managementIp}', '${escapedEndpoints}', ${server.lastSeen});`;
 
   const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
+    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
   );
 
   if (result.code !== 0) {
@@ -432,4 +437,336 @@ export async function isCorrosionRunning(ssh: SSHManager): Promise<boolean> {
     "systemctl is-active jiji-corrosion",
   );
   return result.stdout.trim() === "active";
+}
+
+/**
+ * Wait for Corrosion database to synchronize with cluster
+ *
+ * Prevents reading stale/empty state before replication completes.
+ * This is critical to avoid the "empty machines list" bug where a newly
+ * joined server would remove all peers before state sync finished.
+ *
+ * @param ssh - SSH connection to the server
+ * @param expectedServerCount - Number of servers expected in the cluster
+ * @param maxWaitSeconds - Maximum time to wait in seconds (default: 300 = 5 minutes)
+ * @param pollIntervalMs - How often to check in milliseconds (default: 2000 = 2 seconds)
+ */
+export async function waitForCorrosionSync(
+  ssh: SSHManager,
+  expectedServerCount: number,
+  maxWaitSeconds: number = 300,
+  pollIntervalMs: number = 2000,
+): Promise<void> {
+  const host = ssh.getHost();
+  const maxRetries = Math.floor((maxWaitSeconds * 1000) / pollIntervalMs);
+  const logIntervalRetries = Math.floor(5000 / pollIntervalMs); // Log every 5 seconds
+
+  log.info(
+    `Waiting for Corrosion to be ready on ${host}...`,
+    "corrosion",
+  );
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      // Simple query to check if Corrosion is responsive
+      const sql = `SELECT 1 as ready`;
+
+      const result = await ssh.executeCommand(
+        `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+      );
+
+      if (result.code === 0 && result.stdout.trim() === "1") {
+        log.success(
+          `Corrosion is ready on ${host}`,
+          "corrosion",
+        );
+        return;
+      }
+
+      // Log progress every 5 seconds
+      if (i % logIntervalRetries === 0 && i > 0) {
+        log.debug(
+          `Still waiting for Corrosion on ${host}...`,
+          "corrosion",
+        );
+      }
+    } catch (error) {
+      // Ignore errors during polling, will retry
+      if (i % logIntervalRetries === 0 && i > 0) {
+        log.debug(
+          `Corrosion query failed on ${host}, retrying: ${error}`,
+          "corrosion",
+        );
+      }
+    }
+
+    // Wait before next poll
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  // Timeout reached
+  throw new Error(
+    `Corrosion readiness timeout on ${host} after ${maxWaitSeconds} seconds`,
+  );
+}
+
+/**
+ * Update server endpoints in Corrosion database
+ *
+ * Used to persist discovered or successful endpoints back to the distributed state
+ *
+ * @param ssh - SSH connection to the server
+ * @param serverId - Server ID to update
+ * @param endpoints - Array of endpoints in "IP:PORT" format
+ */
+export async function updateServerEndpoints(
+  ssh: SSHManager,
+  serverId: string,
+  endpoints: string[],
+): Promise<void> {
+  const endpointsJson = JSON.stringify(endpoints);
+  const sql = `
+    UPDATE servers
+    SET endpoints = '${endpointsJson}'
+    WHERE id = '${serverId}';
+  `;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
+      sql.replace(/\n/g, " ")
+    }"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to update server endpoints: ${result.stderr}`);
+  }
+
+  log.debug(
+    `Updated endpoints for server ${serverId}: ${endpointsJson}`,
+    "corrosion",
+  );
+}
+
+/**
+ * Update server heartbeat timestamp
+ *
+ * Should be called periodically by the control loop to indicate server is alive
+ *
+ * @param ssh - SSH connection to the server
+ * @param serverId - Server ID to update
+ */
+export async function updateServerHeartbeat(
+  ssh: SSHManager,
+  serverId: string,
+): Promise<void> {
+  const now = Date.now();
+  const sql = `
+    UPDATE servers
+    SET last_seen = ${now}
+    WHERE id = '${serverId}';
+  `;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
+      sql.replace(/\n/g, " ")
+    }"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to update server heartbeat: ${result.stderr}`);
+  }
+}
+
+/**
+ * Query active servers from Corrosion
+ *
+ * Returns servers that have sent a heartbeat within the last 5 minutes
+ *
+ * @param ssh - SSH connection to any server (Corrosion is distributed)
+ * @returns Array of active server registrations
+ */
+export async function queryActiveServers(
+  ssh: SSHManager,
+): Promise<ServerRegistration[]> {
+  const sql = `
+    SELECT id, hostname, subnet, wireguard_ip, wireguard_pubkey,
+           management_ip, endpoints, last_seen
+    FROM servers
+    WHERE last_seen > (strftime('%s', 'now') - 300) * 1000
+    ORDER BY hostname;
+  `;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${
+      sql.replace(/\n/g, " ")
+    }"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query active servers: ${result.stderr}`);
+  }
+
+  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
+  const lines = result.stdout.trim().split("\n").filter((line) =>
+    line.length > 0
+  );
+
+  return lines.map((line) => {
+    const [
+      id,
+      hostname,
+      subnet,
+      wireguardIp,
+      wireguardPublicKey,
+      managementIp,
+      endpoints,
+      lastSeenStr,
+    ] = line.split("|");
+
+    return {
+      id,
+      hostname,
+      subnet,
+      wireguardIp,
+      wireguardPublicKey,
+      managementIp,
+      endpoints,
+      lastSeen: parseInt(lastSeenStr, 10),
+    };
+  });
+}
+
+/**
+ * Query all servers from Corrosion (including inactive ones)
+ *
+ * @param ssh - SSH connection to any server
+ * @returns Array of all server registrations
+ */
+export async function queryAllServers(
+  ssh: SSHManager,
+): Promise<ServerRegistration[]> {
+  const sql = `
+    SELECT id, hostname, subnet, wireguard_ip, wireguard_pubkey,
+           management_ip, endpoints, last_seen
+    FROM servers
+    ORDER BY hostname;
+  `;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${
+      sql.replace(/\n/g, " ")
+    }"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query all servers: ${result.stderr}`);
+  }
+
+  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
+  const lines = result.stdout.trim().split("\n").filter((line) =>
+    line.length > 0
+  );
+
+  return lines.map((line) => {
+    const [
+      id,
+      hostname,
+      subnet,
+      wireguardIp,
+      wireguardPublicKey,
+      managementIp,
+      endpoints,
+      lastSeenStr,
+    ] = line.split("|");
+
+    return {
+      id,
+      hostname,
+      subnet,
+      wireguardIp,
+      wireguardPublicKey,
+      managementIp,
+      endpoints,
+      lastSeen: parseInt(lastSeenStr, 10),
+    };
+  });
+}
+
+/**
+ * Set cluster metadata value
+ *
+ * @param ssh - SSH connection to any server
+ * @param key - Metadata key
+ * @param value - Metadata value
+ */
+export async function setClusterMetadata(
+  ssh: SSHManager,
+  key: string,
+  value: string,
+): Promise<void> {
+  const sql = `
+    INSERT OR REPLACE INTO cluster_metadata (key, value)
+    VALUES ('${key}', '${value}');
+  `;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
+      sql.replace(/\n/g, " ")
+    }"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to set cluster metadata: ${result.stderr}`);
+  }
+
+  log.debug(`Set cluster metadata: ${key} = ${value}`, "corrosion");
+}
+
+/**
+ * Get cluster metadata value
+ *
+ * @param ssh - SSH connection to any server
+ * @param key - Metadata key
+ * @returns Metadata value or null if not found
+ */
+export async function getClusterMetadata(
+  ssh: SSHManager,
+  key: string,
+): Promise<string | null> {
+  const sql = `SELECT value FROM cluster_metadata WHERE key = '${key}';`;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to get cluster metadata: ${result.stderr}`);
+  }
+
+  const value = result.stdout.trim();
+  return value.length > 0 ? value : null;
+}
+
+/**
+ * Initialize cluster metadata
+ *
+ * Should be called during network setup to store cluster-wide configuration
+ *
+ * @param ssh - SSH connection to any server
+ * @param clusterCidr - Cluster CIDR (e.g., "10.210.0.0/16")
+ * @param serviceDomain - Service domain (e.g., "jiji")
+ * @param discovery - Discovery method
+ */
+export async function initializeClusterMetadata(
+  ssh: SSHManager,
+  clusterCidr: string,
+  serviceDomain: string,
+  discovery: "static" | "corrosion",
+): Promise<void> {
+  await setClusterMetadata(ssh, "cluster_cidr", clusterCidr);
+  await setClusterMetadata(ssh, "service_domain", serviceDomain);
+  await setClusterMetadata(ssh, "discovery", discovery);
+  await setClusterMetadata(ssh, "created_at", new Date().toISOString());
+
+  log.success("Cluster metadata initialized in Corrosion", "corrosion");
 }

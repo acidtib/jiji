@@ -59,6 +59,12 @@ export function generateWireGuardConfig(config: WireGuardConfig): string {
   }
 
   lines.push(`ListenPort = ${config.listenPort}`);
+
+  // Add MTU if specified (recommended: 1420 for WireGuard to avoid fragmentation)
+  if (config.mtu) {
+    lines.push(`MTU = ${config.mtu}`);
+  }
+
   lines.push("");
 
   // [Peer] sections
@@ -301,6 +307,40 @@ export async function disableWireGuardService(
     `systemctl disable wg-quick@${interfaceName} || true`,
   );
   log.success(`WireGuard service disabled for ${interfaceName}`, "wireguard");
+}
+
+/**
+ * Restart WireGuard interface to pick up configuration changes
+ *
+ * @param ssh - SSH connection to the server
+ * @param interfaceName - Interface name (default: jiji0)
+ */
+export async function restartWireGuardInterface(
+  ssh: SSHManager,
+  interfaceName = "jiji0",
+): Promise<void> {
+  const host = ssh.getHost();
+
+  log.info(
+    `Restarting WireGuard interface ${interfaceName} on ${host}`,
+    "wireguard",
+  );
+
+  // Bring down the interface (ignore errors if it's not up)
+  await ssh.executeCommand(`wg-quick down ${interfaceName} || true`);
+
+  // Bring up the interface with new configuration
+  const upResult = await ssh.executeCommand(`wg-quick up ${interfaceName}`);
+  if (upResult.code !== 0) {
+    throw new Error(
+      `Failed to restart WireGuard interface: ${upResult.stderr}`,
+    );
+  }
+
+  log.success(
+    `WireGuard interface ${interfaceName} restarted on ${host}`,
+    "wireguard",
+  );
 }
 
 /**

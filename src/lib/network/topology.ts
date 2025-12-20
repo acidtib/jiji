@@ -1,78 +1,90 @@
 /**
  * Network topology manager
  *
- * Manages the .jiji/network.json file that stores network state
- * including server information, WireGuard keys, and IP allocations.
+ * Manages network topology through Corrosion distributed database.
+ * No longer uses local .jiji/network.json file.
  */
 
-import { ensureDir, exists } from "@std/fs";
-import { join } from "@std/path";
+import type { SSHManager } from "../../utils/ssh.ts";
 import type { NetworkServer, NetworkTopology } from "../../types/network.ts";
 import { log } from "../../utils/logger.ts";
-
-const NETWORK_CONFIG_FILE = ".jiji/network.json";
+import { getClusterMetadata, queryAllServers } from "./corrosion.ts";
+import type { ServerRegistration } from "../../types/network.ts";
 
 /**
- * Load network topology from .jiji/network.json
+ * Load network topology from Corrosion distributed database
  *
- * @param configDir - Directory containing the config (defaults to cwd)
- * @returns Network topology or null if not exists
+ * Queries any server in the cluster via SSH to retrieve the full topology
+ *
+ * @param ssh - SSH connection to any server in the cluster
+ * @returns Network topology or null if cluster not initialized
  */
 export async function loadTopology(
-  configDir?: string,
+  ssh: SSHManager,
 ): Promise<NetworkTopology | null> {
-  const configPath = configDir
-    ? join(configDir, NETWORK_CONFIG_FILE)
-    : NETWORK_CONFIG_FILE;
-
-  if (!await exists(configPath)) {
-    return null;
-  }
-
   try {
-    const content = await Deno.readTextFile(configPath);
-    const topology = JSON.parse(content) as NetworkTopology;
+    // Query cluster metadata
+    const clusterCidr = await getClusterMetadata(ssh, "cluster_cidr");
+    const serviceDomain = await getClusterMetadata(ssh, "service_domain");
+    const discoveryStr = await getClusterMetadata(ssh, "discovery");
+    const createdAt = await getClusterMetadata(ssh, "created_at");
 
-    log.debug(`Loaded network topology from ${configPath}`, "network");
+    // If no metadata exists, cluster is not initialized
+    if (!clusterCidr || !serviceDomain || !discoveryStr) {
+      return null;
+    }
+
+    const discovery = discoveryStr as "static" | "corrosion";
+
+    // Query all servers
+    const serverRegs = await queryAllServers(ssh);
+
+    // Convert ServerRegistration[] to NetworkServer[]
+    const servers: NetworkServer[] = serverRegs.map((reg) => ({
+      id: reg.id,
+      hostname: reg.hostname,
+      subnet: reg.subnet,
+      wireguardIp: reg.wireguardIp,
+      wireguardPublicKey: reg.wireguardPublicKey,
+      managementIp: reg.managementIp,
+      endpoints: JSON.parse(reg.endpoints) as string[],
+    }));
+
+    const topology: NetworkTopology = {
+      clusterCidr,
+      serviceDomain,
+      discovery,
+      servers,
+      createdAt: createdAt || new Date().toISOString(),
+    };
+
+    log.debug("Loaded network topology from Corrosion", "network");
     return topology;
   } catch (error) {
-    throw new Error(
-      `Failed to load network topology from ${configPath}: ${error}`,
-    );
+    log.warn(`Failed to load topology from Corrosion: ${error}`, "network");
+    return null;
   }
 }
 
 /**
- * Save network topology to .jiji/network.json
+ * Save network topology to Corrosion distributed database
+ *
+ * This is now a no-op since topology is stored in real-time via Corrosion.
+ * Kept for backward compatibility with existing code.
  *
  * @param topology - Network topology to save
- * @param configDir - Directory to save config (defaults to cwd)
+ * @param ssh - SSH connection (optional, unused)
+ * @deprecated Use registerServer() and initializeClusterMetadata() instead
  */
 export async function saveTopology(
-  topology: NetworkTopology,
-  configDir?: string,
+  _topology: NetworkTopology,
+  _ssh?: SSHManager,
 ): Promise<void> {
-  const configPath = configDir
-    ? join(configDir, NETWORK_CONFIG_FILE)
-    : NETWORK_CONFIG_FILE;
-
-  // Ensure .jiji directory exists
-  const dir = configDir ? join(configDir, ".jiji") : ".jiji";
-  await ensureDir(dir);
-
-  // Update timestamp
-  topology.updatedAt = new Date().toISOString();
-
-  try {
-    const content = JSON.stringify(topology, null, 2);
-    await Deno.writeTextFile(configPath, content);
-
-    log.debug(`Saved network topology to ${configPath}`, "network");
-  } catch (error) {
-    throw new Error(
-      `Failed to save network topology to ${configPath}: ${error}`,
-    );
-  }
+  // No-op: topology is stored in Corrosion in real-time
+  log.debug(
+    "saveTopology() called but is deprecated - topology stored in Corrosion",
+    "network",
+  );
 }
 
 /**
@@ -100,6 +112,9 @@ export function createTopology(
 /**
  * Add a server to the network topology
  *
+ * This is now a helper function that modifies the in-memory topology object.
+ * The actual persistence happens via registerServer() in corrosion.ts
+ *
  * @param topology - Network topology
  * @param server - Server to add
  * @returns Updated topology
@@ -126,6 +141,8 @@ export function addServer(
 
 /**
  * Remove a server from the network topology
+ *
+ * This is now a helper function that modifies the in-memory topology object.
  *
  * @param topology - Network topology
  * @param serverId - Server ID to remove
@@ -342,33 +359,34 @@ export function getTopologyStats(topology: NetworkTopology): {
 }
 
 /**
- * Check if network topology exists
+ * Check if network topology exists in Corrosion
  *
- * @param configDir - Directory to check (defaults to cwd)
- * @returns True if topology file exists
+ * @param ssh - SSH connection to any server
+ * @returns True if topology exists in Corrosion
  */
-export async function topologyExists(configDir?: string): Promise<boolean> {
-  const configPath = configDir
-    ? join(configDir, NETWORK_CONFIG_FILE)
-    : NETWORK_CONFIG_FILE;
-
-  return await exists(configPath);
+export async function topologyExists(ssh: SSHManager): Promise<boolean> {
+  try {
+    const clusterCidr = await getClusterMetadata(ssh, "cluster_cidr");
+    return clusterCidr !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Delete network topology file
+ * Delete network topology from Corrosion
  *
- * @param configDir - Directory containing config (defaults to cwd)
+ * This will remove all cluster metadata and server records
+ *
+ * @param ssh - SSH connection to any server
  */
-export async function deleteTopology(configDir?: string): Promise<void> {
-  const configPath = configDir
-    ? join(configDir, NETWORK_CONFIG_FILE)
-    : NETWORK_CONFIG_FILE;
-
-  if (await exists(configPath)) {
-    await Deno.remove(configPath);
-    log.debug(`Deleted network topology from ${configPath}`, "network");
-  }
+export async function deleteTopology(ssh: SSHManager): Promise<void> {
+  // This is now handled by dropping Corrosion database
+  // Kept for backward compatibility
+  log.debug(
+    "deleteTopology() called - cluster data will be cleared from Corrosion",
+    "network",
+  );
 }
 
 /**

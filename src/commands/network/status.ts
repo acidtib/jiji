@@ -11,6 +11,7 @@ import { getTopologyStats, loadTopology } from "../../lib/network/topology.ts";
 import { setupSSHConnections } from "../../utils/ssh.ts";
 import { getWireGuardStatus } from "../../lib/network/wireguard.ts";
 import {
+  getClusterMetadata,
   isCorrosionRunning,
   queryServiceContainers,
 } from "../../lib/network/corrosion.ts";
@@ -23,27 +24,6 @@ export const statusCommand = new Command()
   .action(async (options) => {
     try {
       await log.group("Network Status", async () => {
-        // Load topology
-        const topology = await loadTopology();
-
-        if (!topology) {
-          log.info("No network topology found", "network");
-          log.info(
-            "Run 'jiji server bootstrap' with network.enabled: true to set up private networking",
-            "network",
-          );
-          return;
-        }
-
-        // Display topology info
-        const stats = getTopologyStats(topology);
-        log.info(`Cluster CIDR: ${topology.clusterCidr}`, "network");
-        log.info(`Service Domain: ${topology.serviceDomain}`, "network");
-        log.info(`Discovery: ${topology.discovery}`, "network");
-        log.info(`Server Count: ${stats.serverCount}`, "network");
-        log.info(`Cluster Age: ${stats.clusterAge}`, "network");
-        log.info("", "network");
-
         // Cast options to GlobalOptions
         const globalOptions = options as unknown as GlobalOptions;
 
@@ -53,8 +33,19 @@ export const statusCommand = new Command()
           globalOptions.configFile,
         );
 
+        // Get all server hostnames from deploy.yml
+        const hostnames = config.getAllServerHosts();
+
+        if (hostnames.length === 0) {
+          log.info("No servers found in configuration", "network");
+          log.info(
+            "Add servers to your deploy.yml file and run 'jiji server bootstrap' with network.enabled: true",
+            "network",
+          );
+          return;
+        }
+
         // Connect to servers
-        const hostnames = topology.servers.map((s) => s.hostname);
         const { managers: sshManagers } = await setupSSHConnections(
           hostnames,
           {
@@ -71,6 +62,40 @@ export const statusCommand = new Command()
           },
           { allowPartialConnection: true },
         );
+
+        if (sshManagers.length === 0) {
+          log.error("Could not connect to any servers", "network");
+          return;
+        }
+
+        // Load topology from Corrosion via any connected server
+        let topology = null;
+        for (const ssh of sshManagers) {
+          try {
+            topology = await loadTopology(ssh);
+            if (topology) break;
+          } catch {
+            continue;
+          }
+        }
+
+        if (!topology) {
+          log.info("No network cluster found in Corrosion", "network");
+          log.info(
+            "Run 'jiji server bootstrap' with network.enabled: true to set up private networking",
+            "network",
+          );
+          return;
+        }
+
+        // Display topology info
+        const stats = getTopologyStats(topology);
+        log.info(`Cluster CIDR: ${topology.clusterCidr}`, "network");
+        log.info(`Service Domain: ${topology.serviceDomain}`, "network");
+        log.info(`Discovery: ${topology.discovery}`, "network");
+        log.info(`Server Count: ${stats.serverCount}`, "network");
+        log.info(`Cluster Age: ${stats.clusterAge}`, "network");
+        log.info("", "network");
 
         try {
           // Check status of each server

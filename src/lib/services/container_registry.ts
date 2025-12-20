@@ -18,6 +18,7 @@ import {
   unregisterContainerHostname,
 } from "../network/dns.ts";
 import { log } from "../../utils/logger.ts";
+import type { Configuration } from "../configuration.ts";
 
 /**
  * Get container IP address from Docker/Podman
@@ -402,9 +403,58 @@ export async function cleanupServiceContainers(
     return cleanedCount;
   } catch (error) {
     log.error(
-      `Failed to cleanup service containers for ${serviceName}: ${error}`,
+      `Failed to clean up service containers for ${serviceName}: ${error}`,
       "network",
     );
     return 0;
+  }
+}
+
+/**
+ * Register container across all servers in the cluster for DNS resolution
+ *
+ * This ensures that all servers know about containers on all other servers,
+ * enabling proper DNS resolution for cross-server container communication.
+ */
+export async function registerContainerClusterWide(
+  allSshManagers: SSHManager[],
+  serviceName: string,
+  projectName: string,
+  serverId: string,
+  containerId: string,
+  containerIp: string,
+  startedAt: number,
+): Promise<void> {
+  const registration: ContainerRegistration = {
+    id: containerId,
+    service: serviceName,
+    serverId,
+    ip: containerIp,
+    healthy: true,
+    startedAt,
+  };
+
+  // Register this container on all servers in the cluster
+  for (const ssh of allSshManagers) {
+    try {
+      // Register service first (idempotent)
+      await registerService(ssh, {
+        name: serviceName,
+        project: projectName,
+      });
+
+      // Register container
+      await registerContainer(ssh, registration);
+
+      log.debug(
+        `Registered container ${containerId} on server ${ssh.getHost()}`,
+        "network",
+      );
+    } catch (error) {
+      log.warn(
+        `Failed to register container ${containerId} on server ${ssh.getHost()}: ${error}`,
+        "network",
+      );
+    }
   }
 }

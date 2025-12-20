@@ -18,6 +18,8 @@ export interface NetworkServer {
   wireguardPublicKey: string;
   managementIp: string;
   endpoints: string[];
+  publicIp?: string; // Discovered public IP for NAT traversal
+  privateIps?: string[]; // Discovered private IPs for multi-homed servers
 }
 
 /**
@@ -49,6 +51,7 @@ export interface WireGuardConfig {
   privateKey: string;
   address: string[];
   listenPort: number;
+  mtu?: number; // Maximum Transmission Unit (default: 1420 for WireGuard)
   peers: WireGuardPeer[];
 }
 

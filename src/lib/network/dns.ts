@@ -483,6 +483,16 @@ dns_servers = ["${dnsServer}", "8.8.8.8", "1.1.1.1"]
       `mkdir -p /etc/containers && cat > /etc/containers/containers.conf << 'EOFCONF'\n${containersConf}\nEOFCONF`,
     );
 
+    // Restart kamal-proxy if it exists to pick up new DNS configuration
+    const proxyCheck = await ssh.executeCommand(
+      "podman ps --filter name=kamal-proxy --format '{{.Names}}'",
+    );
+    if (proxyCheck.stdout.trim() === "kamal-proxy") {
+      log.info("Restarting kamal-proxy to apply DNS configuration...", "dns");
+      await ssh.executeCommand("podman restart kamal-proxy");
+      log.success("kamal-proxy restarted with new DNS configuration", "dns");
+    }
+
     log.success(`Podman configured to use DNS server ${dnsServer}`, "dns");
   }
 }

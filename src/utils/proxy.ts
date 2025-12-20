@@ -20,6 +20,10 @@ export interface KamalProxyDeployOptions {
   healthCheckPath?: string;
   /** Health check interval (e.g., "30s", "5m") */
   healthCheckInterval?: string;
+  /** Health check timeout (e.g., "5s", "10s") */
+  healthCheckTimeout?: string;
+  /** Deploy timeout (e.g., "30s", "60s") */
+  deployTimeout?: string;
 }
 
 /**
@@ -40,6 +44,8 @@ export function buildKamalProxyOptions(
     tls: config.ssl,
     healthCheckPath: config.healthcheck?.path,
     healthCheckInterval: config.healthcheck?.interval,
+    healthCheckTimeout: config.healthcheck?.timeout,
+    deployTimeout: config.healthcheck?.deploy_timeout,
   };
 }
 
@@ -65,6 +71,12 @@ export function buildDeployCommandArgs(
   }
   if (options.healthCheckInterval) {
     args.push(`--health-check-interval=${options.healthCheckInterval}`);
+  }
+  if (options.healthCheckTimeout) {
+    args.push(`--health-check-timeout=${options.healthCheckTimeout}`);
+  }
+  if (options.deployTimeout) {
+    args.push(`--deploy-timeout=${options.deployTimeout}`);
   }
 
   return args;

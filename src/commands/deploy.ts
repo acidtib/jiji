@@ -17,6 +17,7 @@ import { BuildService } from "../lib/services/build_service.ts";
 import { ContainerRunBuilder } from "../lib/services/container_run_builder.ts";
 import {
   cleanupServiceContainers,
+  registerContainerClusterWide,
   registerContainerInNetwork,
 } from "../lib/services/container_registry.ts";
 import { getServerByHostname, loadTopology } from "../lib/network/topology.ts";
@@ -635,7 +636,8 @@ export const deployCommand = new Command()
                   // Register container in network (if enabled)
                   if (config!.network.enabled) {
                     try {
-                      const topology = await loadTopology();
+                      // Load topology from Corrosion via SSH
+                      const topology = await loadTopology(hostSsh);
                       if (topology) {
                         const server = getServerByHostname(topology, host);
                         if (server) {
@@ -644,6 +646,7 @@ export const deployCommand = new Command()
                             "network",
                           );
 
+                          // First register locally (this gets IP and sets up DNS)
                           const registered = await registerContainerInNetwork(
                             hostSsh,
                             service.name,
@@ -653,7 +656,34 @@ export const deployCommand = new Command()
                             config!.builder.engine,
                           );
 
-                          if (!registered) {
+                          if (registered) {
+                            // Get container IP for cluster-wide registration
+                            const { getContainerIp } = await import(
+                              "../lib/services/container_registry.ts"
+                            );
+                            const containerIp = await getContainerIp(
+                              hostSsh,
+                              containerName,
+                              config!.builder.engine,
+                            );
+
+                            if (containerIp && sshManagers) {
+                              // Register this container on all servers for DNS resolution
+                              await registerContainerClusterWide(
+                                sshManagers,
+                                service.name,
+                                config!.project,
+                                server.id,
+                                containerName,
+                                containerIp,
+                                Date.now(),
+                              );
+                              log.debug(
+                                `Registered ${service.name} cluster-wide for DNS resolution`,
+                                "network",
+                              );
+                            }
+                          } else {
                             log.warn(
                               `Failed to register ${service.name} in network (service will still run)`,
                               "network",
@@ -665,6 +695,11 @@ export const deployCommand = new Command()
                             "network",
                           );
                         }
+                      } else {
+                        log.warn(
+                          `Network cluster not initialized - skipping network registration`,
+                          "network",
+                        );
                       }
                     } catch (error) {
                       log.warn(

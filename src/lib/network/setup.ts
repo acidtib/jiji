@@ -7,22 +7,30 @@
 
 import type { SSHManager } from "../../utils/ssh.ts";
 import type { Configuration } from "../configuration.ts";
-import type { NetworkServer, NetworkSetupResult } from "../../types/network.ts";
+import type {
+  NetworkServer,
+  NetworkSetupResult,
+  NetworkTopology,
+  WireGuardPeer,
+} from "../../types/network.ts";
 import { log, Logger } from "../../utils/logger.ts";
 import { SubnetAllocator } from "./subnet_allocator.ts";
-import { deriveManagementIp } from "./ipv6.ts";
+import { compressIpv6, deriveManagementIp } from "./ipv6.ts";
 import {
   bringUpWireGuardInterface,
   enableWireGuardService,
   generateWireGuardKeypair,
   installWireGuard,
+  restartWireGuardInterface,
   writeWireGuardConfig,
 } from "./wireguard.ts";
 import {
   createCorrosionService,
+  initializeClusterMetadata,
   installCorrosion,
   registerServer,
   startCorrosionService,
+  waitForCorrosionSync,
   writeCorrosionConfig,
 } from "./corrosion.ts";
 import {
@@ -39,12 +47,11 @@ import {
   generateServerId,
   getServerByHostname,
   loadTopology,
-  saveTopology,
   validateTopology,
 } from "./topology.ts";
-import type { WireGuardPeer } from "../../types/network.ts";
 import { setupServerRouting } from "./routes.ts";
-import { createPeerMonitorService } from "./peer_monitor.ts";
+import { createControlLoopService } from "./control_loop.ts";
+import { discoverAllEndpoints } from "./ip_discovery.ts";
 
 const WIREGUARD_PORT = 51820;
 
@@ -82,22 +89,35 @@ export async function setupNetwork(
       );
       log.info(`Discovery: ${config.network.discovery}`, "network");
 
-      // Load or create network topology
-      let topology = await loadTopology();
-      const isNewNetwork = topology === null;
+      // Check if cluster already exists by trying to load from Corrosion via any SSH connection
+      let topology: NetworkTopology | null = null;
+      let isNewNetwork = true;
+
+      // Try to load topology from any existing server
+      for (const ssh of sshManagers) {
+        try {
+          topology = await loadTopology(ssh);
+          if (topology !== null) {
+            isNewNetwork = false;
+            log.info("Found existing network cluster in Corrosion", "network");
+            log.info(
+              `Existing servers: ${topology.servers.length}`,
+              "network",
+            );
+            break;
+          }
+        } catch {
+          // Server doesn't have Corrosion running yet, continue
+          continue;
+        }
+      }
 
       if (isNewNetwork) {
-        log.info("Creating new network topology", "network");
+        log.info("Creating new network cluster", "network");
         topology = createTopology(
           config.network.clusterCidr,
           config.network.serviceDomain,
           config.network.discovery,
-        );
-      } else {
-        log.info("Found existing network topology", "network");
-        log.info(
-          `Existing servers: ${topology!.servers.length}`,
-          "network",
         );
       }
 
@@ -151,6 +171,10 @@ export async function setupNetwork(
         }
       });
 
+      // Track existing vs new servers for WireGuard configuration
+      const existingServerHosts: Set<string> = new Set();
+      const newServerHosts: Set<string> = new Set();
+
       // Phase 2: Generate WireGuard keys and allocate IPs
       await log.group("Phase 2: Generate Keys & Allocate IPs", async () => {
         const networkServers: NetworkServer[] = [];
@@ -169,6 +193,7 @@ export async function setupNetwork(
                 `Server ${host} already in topology, reusing`,
                 "network",
               );
+              existingServerHosts.add(host);
               serverIndex = topology!.servers.indexOf(server);
 
               // Generate new WireGuard keypair (private key is not stored in topology)
@@ -187,6 +212,7 @@ export async function setupNetwork(
               // Calculate index based on existing servers + new servers processed so far
               serverIndex = topology!.servers.length + newServerCount;
               newServerCount++;
+              newServerHosts.add(host);
               const serverId = generateServerId(host, topology!);
 
               log.info(
@@ -206,6 +232,10 @@ export async function setupNetwork(
               // Derive management IP from public key
               const managementIp = await deriveManagementIp(publicKey);
 
+              // Discover all endpoints (public and private IPs)
+              log.info(`Discovering endpoints for ${host}...`, "network");
+              const endpoints = await discoverAllEndpoints(ssh, WIREGUARD_PORT);
+
               // Create server entry
               server = {
                 id: serverId,
@@ -214,7 +244,7 @@ export async function setupNetwork(
                 wireguardIp,
                 wireguardPublicKey: publicKey,
                 managementIp,
-                endpoints: [`${host}:${WIREGUARD_PORT}`],
+                endpoints,
               };
 
               // Store private key in topology temporarily (will be removed after config write)
@@ -269,13 +299,28 @@ export async function setupNetwork(
           try {
             // Build peer list (all other servers)
             const peers: WireGuardPeer[] = topology!.servers
-              .filter((s) => s.id !== server.id)
-              .map((peer) => ({
-                publicKey: peer.wireguardPublicKey,
-                allowedIps: [peer.subnet, `${peer.managementIp}/128`],
-                endpoint: peer.endpoints[0],
-                persistentKeepalive: 25,
-              }));
+              .filter((s: NetworkServer) => s.id !== server.id)
+              .map((peer: NetworkServer) => {
+                // Calculate peer's container subnet using same formula as container network setup
+                const peerServerIndex = parseInt(peer.subnet.split(".")[2]); // Extract third octet
+                const peerContainerThirdOctet = 128 + peerServerIndex; // Offset into upper half of /16
+                const peerBaseNetwork = peer.subnet.split(".").slice(0, 2).join(
+                  ".",
+                ); // e.g., "10.210"
+                const peerContainerSubnet =
+                  `${peerBaseNetwork}.${peerContainerThirdOctet}.0/24`;
+
+                return {
+                  publicKey: peer.wireguardPublicKey,
+                  allowedIps: [
+                    peer.subnet,
+                    peerContainerSubnet,
+                    `${peer.managementIp}/128`,
+                  ],
+                  endpoint: peer.endpoints[0],
+                  persistentKeepalive: 25,
+                };
+              });
 
             // Write WireGuard config
             const privateKey =
@@ -291,11 +336,31 @@ export async function setupNetwork(
                 `${server.managementIp}/128`,
               ],
               listenPort: WIREGUARD_PORT,
+              mtu: 1420, // Standard WireGuard MTU to avoid fragmentation
               peers,
             });
 
-            // Bring up interface
-            await bringUpWireGuardInterface(ssh);
+            // Determine if this is an existing server or new server
+            const isExistingServer = existingServerHosts.has(host);
+            const isNewServer = newServerHosts.has(host);
+
+            if (isExistingServer && newServerHosts.size > 0) {
+              // Existing server with new peers added - restart interface
+              serverLogger.info(
+                `Restarting WireGuard interface to connect to ${newServerHosts.size} new server(s)...`,
+              );
+              await restartWireGuardInterface(ssh);
+            } else if (isNewServer) {
+              // New server - bring up interface fresh
+              serverLogger.info(
+                "Setting up WireGuard interface for new server...",
+              );
+              await bringUpWireGuardInterface(ssh);
+            } else {
+              // Existing server with no new peers - just ensure interface is up
+              serverLogger.info("Ensuring WireGuard interface is running...");
+              await bringUpWireGuardInterface(ssh);
+            }
 
             // Enable service
             await enableWireGuardService(ssh);
@@ -322,6 +387,7 @@ export async function setupNetwork(
             { maxPrefixLength: 25 },
           );
 
+          // Step 1: Write config and start Corrosion on all servers
           for (const ssh of sshManagers) {
             const host = ssh.getHost();
             const serverLogger = serverLoggers.get(host)!;
@@ -334,15 +400,18 @@ export async function setupNetwork(
 
             try {
               // Build bootstrap peer list (all other servers)
+              // Compress IPv6 addresses to match how the kernel assigns them
               const bootstrapPeers = topology!.servers
-                .filter((s) => s.id !== server.id)
-                .map((peer) => `[${peer.managementIp}]:8787`);
+                .filter((s: NetworkServer) => s.id !== server.id)
+                .map((peer: NetworkServer) =>
+                  `[${compressIpv6(peer.managementIp)}]:8787`
+                );
 
               // Write Corrosion config
               await writeCorrosionConfig(ssh, {
                 dbPath: "/opt/jiji/corrosion/state.db",
                 schemaPath: "/opt/jiji/corrosion/schemas",
-                gossipAddr: `[${server.managementIp}]:8787`,
+                gossipAddr: `[${compressIpv6(server.managementIp)}]:8787`,
                 apiAddr: "127.0.0.1:8080",
                 adminPath: "/var/run/jiji/corrosion-admin.sock",
                 bootstrap: bootstrapPeers,
@@ -352,6 +421,62 @@ export async function setupNetwork(
               // Create and start service
               await createCorrosionService(ssh);
               await startCorrosionService(ssh);
+
+              serverLogger.success("Corrosion service started");
+            } catch (error) {
+              serverLogger.error(`Corrosion startup failed: ${error}`);
+              results.push({
+                host,
+                success: false,
+                error: String(error),
+              });
+            }
+          }
+
+          // Step 2: Wait for cluster to form (all servers must be running first)
+          log.info("Waiting for Corrosion cluster to form...");
+          await new Promise((resolve) => setTimeout(resolve, 5000)); // Give gossip protocol time to connect
+
+          // Step 3: Initialize cluster metadata (only on new clusters)
+          if (isNewNetwork) {
+            const firstSsh = sshManagers[0];
+            try {
+              await initializeClusterMetadata(
+                firstSsh,
+                config.network.clusterCidr,
+                config.network.serviceDomain,
+                config.network.discovery,
+              );
+              log.success(
+                "Cluster metadata initialized in Corrosion",
+                "network",
+              );
+            } catch (error) {
+              log.error(
+                `Failed to initialize cluster metadata: ${error}`,
+                "network",
+              );
+              throw error;
+            }
+          }
+
+          // Step 4: Wait for sync and register servers
+          for (const ssh of sshManagers) {
+            const host = ssh.getHost();
+            const serverLogger = serverLoggers.get(host)!;
+            const server = getServerByHostname(topology!, host);
+
+            if (!server) {
+              continue;
+            }
+
+            try {
+              // Wait for Corrosion to sync with cluster
+              // This prevents the "empty machines list" bug where a new server
+              // would read stale state before replication completes
+              serverLogger.info("Waiting for Corrosion database sync...");
+              await waitForCorrosionSync(ssh, topology!.servers.length);
+              serverLogger.success("Corrosion database synchronized");
 
               // Register this server in Corrosion
               await registerServer(ssh, {
@@ -365,11 +490,11 @@ export async function setupNetwork(
                 lastSeen: Date.now(),
               });
 
-              serverLogger.success(
-                `Corrosion configured with ${bootstrapPeers.length} peers`,
-              );
+              serverLogger.success("Server registered in Corrosion");
             } catch (error) {
-              serverLogger.error(`Corrosion setup failed: ${error}`);
+              serverLogger.error(
+                `Corrosion sync/registration failed: ${error}`,
+              );
               results.push({
                 host,
                 success: false,
@@ -402,24 +527,45 @@ export async function setupNetwork(
             const networkName = "jiji";
             const engine = config.builder.engine;
 
-            // Check if network already exists
-            const checkCmd =
-              `${engine} network inspect ${networkName} >/dev/null 2>&1`;
-            const checkResult = await ssh.executeCommand(checkCmd);
+            // Calculate expected network configuration
+            // WireGuard uses 10.210.0-127.0/24 range, containers use 10.210.128-255.0/24
+            // This ensures no overlap with WireGuard interface subnets
+            const serverIndex = parseInt(server.subnet.split(".")[2]); // Extract third octet
+            const containerThirdOctet = 128 + serverIndex; // Offset into upper half of /16
+            const baseNetwork = server.subnet.split(".").slice(0, 2).join("."); // e.g., "10.210"
+            const containerSubnet =
+              `${baseNetwork}.${containerThirdOctet}.0/24`;
+            const containerGateway = `${baseNetwork}.${containerThirdOctet}.1`;
 
-            if (checkResult.code === 0) {
-              // Network already exists - remove and recreate to ensure correct config
-              serverLogger.info(
-                `Removing existing ${engine} network '${networkName}'`,
-              );
-              await ssh.executeCommand(`${engine} network rm ${networkName}`);
+            // Check if network already exists
+            const inspectCmd =
+              `${engine} network inspect ${networkName} --format '{{range .Subnets}}{{.Subnet}}{{end}}'`;
+            const inspectResult = await ssh.executeCommand(inspectCmd);
+
+            if (inspectResult.code === 0) {
+              // Network exists - verify it has correct configuration
+              const existingSubnet = inspectResult.stdout.trim();
+
+              if (existingSubnet === containerSubnet) {
+                serverLogger.info(
+                  `${engine} network '${networkName}' already exists with correct configuration`,
+                );
+                return; // Network is correctly configured, skip creation
+              } else {
+                // Network exists but has wrong subnet - this is a warning, don't disrupt running containers
+                serverLogger.warn(
+                  `${engine} network '${networkName}' exists with incorrect subnet (${existingSubnet}, expected ${containerSubnet}). ` +
+                    `Skipping network recreation to avoid disrupting running containers. ` +
+                    `To fix, manually remove the network when no containers are using it: ${engine} network rm ${networkName}`,
+                );
+                return; // Skip to avoid disrupting services
+              }
             }
 
-            // Create network with allocated subnet and gateway
-            // This ensures containers get IPs from the WireGuard subnet
+            // Network doesn't exist - create it
             const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${server.subnet} --gateway=${server.wireguardIp} --dns=${server.wireguardIp} --dns=8.8.8.8`
-              : `${engine} network create ${networkName} --subnet=${server.subnet} --gateway=${server.wireguardIp} --opt com.docker.network.bridge.name=jiji-br0`;
+              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns=${server.wireguardIp}`
+              : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);
 
@@ -430,7 +576,7 @@ export async function setupNetwork(
             }
 
             serverLogger.success(
-              `${engine} network '${networkName}' created: subnet=${server.subnet}, gateway=${server.wireguardIp}`,
+              `${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}`,
             );
           } catch (error) {
             serverLogger.error(`Container network setup failed: ${error}`);
@@ -463,8 +609,8 @@ export async function setupNetwork(
           try {
             // Build peer list for routing
             const peers = topology!.servers
-              .filter((s) => s.id !== server.id)
-              .map((peer) => ({
+              .filter((s: NetworkServer) => s.id !== server.id)
+              .map((peer: NetworkServer) => ({
                 subnet: peer.subnet,
                 hostname: peer.hostname,
               }));
@@ -547,8 +693,8 @@ export async function setupNetwork(
         }
       });
 
-      // Phase 8: Setup Peer Monitoring
-      await log.group("Phase 8: Setup Peer Monitoring", async () => {
+      // Phase 8: Setup Network Control Loop
+      await log.group("Phase 8: Setup Network Control Loop", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -565,20 +711,24 @@ export async function setupNetwork(
           }
 
           try {
-            // Create peer monitoring service
-            await createPeerMonitorService(
+            // Create unified control loop service
+            // This replaces the old peer monitor and adds:
+            // - Dynamic peer reconfiguration
+            // - Container health tracking
+            // - Endpoint rotation
+            // - Heartbeat updates
+            await createControlLoopService(
               ssh,
-              topology!.servers,
               server.id,
+              config.builder.engine,
               "jiji0",
-              60, // Check every 60 seconds
             );
 
-            serverLogger.success("Peer monitoring configured");
+            serverLogger.success("Network control loop configured");
           } catch (error) {
-            serverLogger.error(`Peer monitoring setup failed: ${error}`);
+            serverLogger.error(`Control loop setup failed: ${error}`);
             // Don't fail the entire setup for monitoring issues
-            serverLogger.warn("Continuing without peer monitoring");
+            serverLogger.warn("Continuing without control loop");
           }
         }
       });
@@ -588,9 +738,8 @@ export async function setupNetwork(
         delete (server as NetworkServer & { _privateKey?: string })._privateKey;
       }
 
-      // Validate and save topology
+      // Validate topology
       validateTopology(topology!);
-      await saveTopology(topology!);
 
       log.success(
         `Private network setup complete with ${
@@ -598,7 +747,10 @@ export async function setupNetwork(
         } servers`,
         "network",
       );
-      log.info(`Network state saved to .jiji/network.json`, "network");
+      log.info(
+        `Network state stored in Corrosion distributed database`,
+        "network",
+      );
 
       // Mark all as successful if no errors so far
       if (results.length === 0) {
