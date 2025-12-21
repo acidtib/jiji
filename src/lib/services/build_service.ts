@@ -3,7 +3,7 @@ import type { RegistryConfiguration } from "../configuration/registry.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { ImagePushService } from "./image_push_service.ts";
-import { RegistryAuthenticator } from "../registry_authenticator.ts";
+import { RegistryAuthService } from "./registry_auth_service.ts";
 import { log } from "../../utils/logger.ts";
 
 /**
@@ -35,11 +35,13 @@ export interface BuildResult {
  */
 export class BuildService {
   private imagePushService?: ImagePushService;
-  private registryAuthenticator: RegistryAuthenticator;
-  private isAuthenticated = false;
+  private registryAuthService: RegistryAuthService;
 
   constructor(private options: BuildServiceOptions) {
-    this.registryAuthenticator = new RegistryAuthenticator(options.engine);
+    this.registryAuthService = new RegistryAuthService(
+      options.engine,
+      options.registry,
+    );
 
     // Create ImagePushService if push is enabled
     if (options.push) {
@@ -55,40 +57,9 @@ export class BuildService {
    * Authenticate to registry if needed (for remote registries)
    */
   private async ensureAuthenticated(): Promise<void> {
-    // Skip if already authenticated or using local registry
-    if (this.isAuthenticated || this.options.registry.isLocal()) {
-      return;
-    }
-
-    // Authenticate to remote registry
-    const registryUrl = this.options.registry.getRegistryUrl();
-    const username = this.options.registry.username;
-    const password = this.options.registry.password;
-
-    if (!username || !password) {
-      log.warn(
-        `No credentials configured for ${registryUrl}, skipping authentication`,
-        "build",
-      );
-      return;
-    }
-
-    try {
-      log.status(`Authenticating to ${registryUrl}...`, "build");
-      await this.registryAuthenticator.login(registryUrl, {
-        username,
-        password,
-      });
-      this.isAuthenticated = true;
-      log.success(`Authenticated to ${registryUrl}`, "build");
-    } catch (error) {
-      log.error(
-        `Failed to authenticate to ${registryUrl}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        "build",
-      );
-      throw error;
+    // Use the new RegistryAuthService
+    if (this.registryAuthService.requiresLocalAuth()) {
+      await this.registryAuthService.authenticateLocally();
     }
   }
 
