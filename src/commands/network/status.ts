@@ -154,7 +154,7 @@ export const statusCommand = new Command()
                 if (isRunning) {
                   proxyDetails = await proxyCommands.getServiceDetails();
                 }
-              } catch (error) {
+              } catch (_error) {
                 // Silently ignore proxy errors - it might not be installed
               }
 

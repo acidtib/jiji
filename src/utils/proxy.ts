@@ -377,6 +377,7 @@ export class ProxyCommands {
 
     // Helper function to strip ANSI color codes
     const stripAnsi = (str: string): string => {
+      // deno-lint-ignore no-control-regex
       return str.replace(/\x1b\[[0-9;]*m/g, "");
     };
 
