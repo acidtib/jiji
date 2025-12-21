@@ -82,7 +82,6 @@ export class BuilderConfiguration extends BaseConfiguration {
    * Validate builder configuration
    */
   validate(): void {
-    // Validate remote SSH URI format if specified
     if (this.remote) {
       if (!BuilderConfiguration.SSH_URI_PATTERN.test(this.remote)) {
         throw new ConfigurationError(
@@ -91,7 +90,6 @@ export class BuilderConfiguration extends BaseConfiguration {
         );
       }
 
-      // If remote is set, local should be false
       if (this.local) {
         throw new ConfigurationError(
           "Builder cannot be both 'local: true' and have a 'remote' configuration. " +
@@ -100,7 +98,6 @@ export class BuilderConfiguration extends BaseConfiguration {
       }
     }
 
-    // Validate registry configuration
     this.registry.validate();
   }
 }

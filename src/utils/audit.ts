@@ -41,7 +41,6 @@ export class RemoteAuditLogger {
     try {
       const host = this.sshManager.getHost();
 
-      // Check if audit directory exists, create if not
       const checkDirResult = await this.sshManager.executeCommand(
         `test -d ${this.auditDir} || mkdir -p ${this.auditDir}`,
       );
@@ -53,7 +52,6 @@ export class RemoteAuditLogger {
         return false;
       }
 
-      // Check if audit file exists, if not create it with header
       const checkFileResult = await this.sshManager.executeCommand(
         `test -f ${this.auditFile}`,
       );
@@ -99,7 +97,6 @@ export class RemoteAuditLogger {
     try {
       const host = this.sshManager.getHost();
 
-      // Initialize audit system if needed
       const initialized = await this.initRemoteAudit();
       if (!initialized) {
         return false;
@@ -113,7 +110,6 @@ export class RemoteAuditLogger {
 
       const formattedEntry = this.formatEntry(fullEntry);
 
-      // Escape the entry for shell command
       const escapedEntry = formattedEntry.replace(/"/g, '\\"').replace(
         /'/g,
         "\\'",
@@ -176,7 +172,6 @@ export class RemoteAuditLogger {
       line += ` - ${message}`;
     }
 
-    // Add details as JSON on next line if present
     if (entry.details && Object.keys(entry.details).length > 0) {
       const details = JSON.stringify(entry.details, null, 0);
       line += `\\n    Details: ${details}`;
@@ -208,7 +203,6 @@ export class AuditAggregator {
   async logToAllServers(
     entry: Omit<AuditEntry, "timestamp" | "host">,
   ): Promise<RemoteAuditResult[]> {
-    // Create host operations for error collection
     const hostOperations = this.sshManagers.map((sshManager) => ({
       host: sshManager.getHost(),
       operation: async (): Promise<RemoteAuditResult> => {
@@ -224,13 +218,9 @@ export class AuditAggregator {
       },
     }));
 
-    // Execute with error collection
     const aggregatedResults = await executeHostOperations(hostOperations);
-
-    // Combine successful results with failed operations
     const results = [...aggregatedResults.results];
 
-    // Convert failed operations to RemoteAuditResult format
     for (const { host, error } of aggregatedResults.hostErrors) {
       results.push({
         host,
@@ -239,7 +229,6 @@ export class AuditAggregator {
       });
     }
 
-    // Log summary if there were errors
     if (aggregatedResults.errorCount > 0) {
       log.warn(
         `Audit logging completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
@@ -256,7 +245,6 @@ export class AuditAggregator {
   async getAggregatedEntries(
     limit: number = 50,
   ): Promise<{ host: string; entries: string[] }[]> {
-    // Create host operations for error collection
     const hostOperations = this.sshManagers.map((sshManager) => ({
       host: sshManager.getHost(),
       operation: async (): Promise<{ host: string; entries: string[] }> => {
@@ -272,13 +260,9 @@ export class AuditAggregator {
       },
     }));
 
-    // Execute with error collection
     const aggregatedResults = await executeHostOperations(hostOperations);
-
-    // Combine successful results with failed operations (empty entries)
     const results = [...aggregatedResults.results];
 
-    // Add failed operations with empty entries
     for (const { host, error } of aggregatedResults.hostErrors) {
       log.warn(
         `Failed to get audit entries from ${host}: ${error.message}`,
@@ -287,7 +271,6 @@ export class AuditAggregator {
       results.push({ host, entries: [] });
     }
 
-    // Log summary if there were errors
     if (aggregatedResults.errorCount > 0) {
       log.warn(
         `Audit retrieval completed with ${aggregatedResults.errorCount} failures out of ${results.length} servers`,
@@ -774,14 +757,12 @@ export class LocalAuditLogger {
       line += ` - ${message}`;
     }
 
-    // Format details in a more readable way
     if (entry.details && Object.keys(entry.details).length > 0) {
       const importantDetails = this.extractImportantDetails(entry.details);
       if (importantDetails.length > 0) {
         line += `\n    ${importantDetails.join(", ")}`;
       }
 
-      // Add full details as JSON for complex cases
       const detailsJson = JSON.stringify(entry.details, null, 0);
       if (detailsJson.length > 100) {
         line += `\n    Details: ${detailsJson}`;

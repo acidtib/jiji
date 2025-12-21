@@ -120,7 +120,7 @@ Deno.test("ProxyConfiguration - validate path prefix without leading slash", () 
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Path prefix must start with /: api",
+    "Path prefix must start with '/': api",
   );
 });
 
@@ -133,7 +133,7 @@ Deno.test("ProxyConfiguration - validate path prefix with invalid characters", (
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Invalid characters in path prefix: /api<script>",
+    "Path prefix contains invalid characters: /api<script>",
   );
 });
 

@@ -73,7 +73,6 @@ export async function setupCommandContext(
   globalOptions: GlobalOptions,
   options: CommandContextOptions = {},
 ): Promise<CommandContext> {
-  // Load configuration
   const config = await Configuration.load(
     globalOptions.environment,
     globalOptions.configFile,
@@ -81,17 +80,14 @@ export async function setupCommandContext(
   const configPath = config.configPath || "unknown";
   log.success(`Configuration loaded from: ${configPath}`, "config");
 
-  // Collect all unique hosts from services
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
 
-  // Filter by services if requested
   if (globalOptions.services && !options.skipServiceFiltering) {
     const requestedServices = globalOptions.services.split(",").map((s) =>
       s.trim()
     );
 
-    // Get matching service names (supports wildcards)
     matchingServices = config.getMatchingServiceNames(requestedServices);
 
     if (matchingServices.length === 0) {
@@ -106,14 +102,12 @@ export async function setupCommandContext(
       Deno.exit(1);
     }
 
-    // Get hosts from matching services
     allHosts = config.getHostsFromServices(matchingServices);
 
     log.info(`Targeting services: ${matchingServices.join(", ")}`, "filter");
     log.info(`Service hosts: ${allHosts.join(", ")}`, "filter");
   }
 
-  // Filter by hosts if requested
   if (globalOptions.hosts && !options.skipHostFiltering) {
     const requestedHosts = globalOptions.hosts.split(",").map((h) => h.trim());
     const validHosts = requestedHosts.filter((host) => allHosts.includes(host));
@@ -154,7 +148,6 @@ export async function setupCommandContext(
     "ssh",
   );
 
-  // Set up SSH connections
   let sshResult: Awaited<ReturnType<typeof setupSSHConnections>>;
 
   await log.group("SSH Connection Setup", async () => {
@@ -192,7 +185,6 @@ export function cleanupSSHConnections(sshManagers: SSHManager[]): void {
     try {
       ssh.dispose();
     } catch (error) {
-      // Ignore cleanup errors, but log them for debugging
       log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
     }
   });
@@ -216,7 +208,6 @@ export function resolveTargetHosts(
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
 
-  // Filter by services if requested
   if (globalOptions.services) {
     const requestedServices = globalOptions.services.split(",").map((s) =>
       s.trim()
@@ -238,7 +229,6 @@ export function resolveTargetHosts(
     allHosts = config.getHostsFromServices(matchingServices);
   }
 
-  // Filter by hosts if requested
   if (globalOptions.hosts) {
     const requestedHosts = globalOptions.hosts.split(",").map((h) => h.trim());
     const validHosts = requestedHosts.filter((host) => allHosts.includes(host));

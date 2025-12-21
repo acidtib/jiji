@@ -13,21 +13,16 @@ export const loginCommand = new Command()
     log.info("Logging in to registry...", "registry:login");
 
     try {
-      // Load configuration to get registry settings
       const { config } = await loadConfig();
       const registryConfig = config.builder.registry;
-
-      // Use registry from config
       const registry = registryConfig.getRegistryUrl();
 
       log.debug(`Registry: ${registry}`, "registry:login");
       log.debug(`Registry type: ${registryConfig.type}`, "registry:login");
 
-      // Initialize registry service
       const registryService = new RegistryService();
       await registryService.initialize();
 
-      // Prepare credentials if available in config
       let credentials: RegistryCredentials | undefined;
       if (registryConfig.username && registryConfig.password) {
         credentials = {
@@ -36,7 +31,6 @@ export const loginCommand = new Command()
         };
       }
 
-      // Only perform operations that aren't skipped
       if (!options.skipLocal) {
         await registryService.authenticate(registry, credentials);
         log.info("Local login successful", "registry:login");

@@ -63,11 +63,9 @@ export const auditCommand = new Command()
 
       log.info("Jiji Audit Trail", "audit");
 
-      // Set up command context
       try {
         ctx = await setupCommandContext(globalOptions);
       } catch (_error) {
-        // If no remote hosts are available, show local audit log
         log.warn("No remote hosts configured.", "audit");
         log.info(
           "Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
@@ -89,7 +87,6 @@ export const auditCommand = new Command()
 
       log.info("Fetching audit entries...", "audit");
 
-      // Get audit entries from connected servers
       const serverLogs = await auditLogger.getRecentEntries(options.lines * 2);
 
       if (options.json) {
@@ -171,7 +168,6 @@ async function followAuditLogs(
     try {
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      // Check local audit file for new entries
       try {
         const auditFile = ".jiji/audit.txt";
         const content = await Deno.readTextFile(auditFile);
@@ -221,7 +217,6 @@ function outputJsonFormat(
     }
   }
 
-  // Sort by timestamp
   allEntries.sort((a, b) =>
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
@@ -258,10 +253,7 @@ function displayServerEntries(
   for (const { host, entries } of serverLogs) {
     let filteredEntries = entries;
 
-    // Apply filters
     filteredEntries = filterEntries(filteredEntries, options);
-
-    // Take only the requested number after filtering
     filteredEntries = filteredEntries.slice(-options.lines);
 
     if (filteredEntries.length > 0) {
@@ -310,7 +302,6 @@ function displayAggregatedEntries(
     raw: boolean;
   },
 ): void {
-  // Combine all entries with host information
   const allEntries: { entry: string; host: string; timestamp: Date }[] = [];
 
   for (const { host, entries } of serverLogs) {
@@ -328,15 +319,12 @@ function displayAggregatedEntries(
     }
   }
 
-  // Sort by timestamp
   allEntries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-  // Apply filters
   let filteredEntries = allEntries.filter((item) =>
     shouldIncludeEntry(parseAuditEntry(item.entry, item.host), options)
   );
 
-  // Take only the requested number after filtering
   filteredEntries = filteredEntries.slice(-options.lines);
 
   if (filteredEntries.length === 0) {
@@ -485,7 +473,6 @@ function colorizeStatus(status: string): string {
  * Format an audit entry for better readability
  */
 function formatAuditEntry(entry: string): string {
-  // Skip details lines (indented)
   if (entry.trim().startsWith("Details:")) {
     return colors.dim(`    ${entry.trim()}`);
   }

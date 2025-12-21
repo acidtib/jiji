@@ -39,30 +39,18 @@ export class RegistryError extends Error {
  * Registry error codes
  */
 export const RegistryErrorCodes = {
-  // Authentication errors
   AUTH_FAILED: "AUTH_FAILED",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   NOT_LOGGED_IN: "NOT_LOGGED_IN",
-
-  // Connection errors
   REGISTRY_UNREACHABLE: "REGISTRY_UNREACHABLE",
   CONNECTION_TIMEOUT: "CONNECTION_TIMEOUT",
-
-  // Configuration errors
-  CONFIG_NOT_FOUND: "CONFIG_NOT_FOUND",
-  CONFIG_INVALID: "CONFIG_INVALID",
+  INVALID_CONFIG: "INVALID_CONFIG",
   REGISTRY_NOT_CONFIGURED: "REGISTRY_NOT_CONFIGURED",
-
-  // Container engine errors
   ENGINE_NOT_FOUND: "ENGINE_NOT_FOUND",
   ENGINE_ERROR: "ENGINE_ERROR",
-
-  // Local registry errors
   LOCAL_REGISTRY_START_FAILED: "LOCAL_REGISTRY_START_FAILED",
   LOCAL_REGISTRY_STOP_FAILED: "LOCAL_REGISTRY_STOP_FAILED",
   PORT_IN_USE: "PORT_IN_USE",
-
-  // General errors
   UNKNOWN_ERROR: "UNKNOWN_ERROR",
   OPERATION_FAILED: "OPERATION_FAILED",
 } as const;
@@ -125,7 +113,6 @@ export function handleRegistryError(
     );
   }
 
-  // Import logger dynamically to avoid circular dependencies
   import("./logger.ts").then(({ log }) => {
     log.error(registryError.toString(), `registry:${operation}`);
   });

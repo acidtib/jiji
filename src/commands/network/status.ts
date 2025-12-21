@@ -29,11 +29,9 @@ export const statusCommand = new Command()
 
     try {
       await log.group("Network Status", async () => {
-        // Set up command context
         ctx = await setupCommandContext(globalOptions);
         const { config, sshManagers } = ctx;
 
-        // Load topology from Corrosion via any connected server
         let topology = null;
         for (const ssh of sshManagers) {
           try {
@@ -62,7 +60,6 @@ export const statusCommand = new Command()
         log.info(`Cluster Age: ${stats.clusterAge}`, "network");
         log.info("", "network");
 
-        // Check status of each server
         for (const server of topology.servers) {
           const ssh = sshManagers.find((s) => s.getHost() === server.hostname);
 
@@ -77,7 +74,6 @@ export const statusCommand = new Command()
           log.info(`  WireGuard IP: ${server.wireguardIp}`, "network");
           log.info(`  Management IP: ${server.managementIp}`, "network");
 
-          // Check WireGuard status
           const wgStatus = await getWireGuardStatus(ssh);
           if (wgStatus.up) {
             log.success(
@@ -93,7 +89,6 @@ export const statusCommand = new Command()
             log.error("  WireGuard: NOT CONFIGURED", "network");
           }
 
-          // Check Corrosion status
           if (topology.discovery === "corrosion") {
             const corrRunning = await isCorrosionRunning(ssh);
             if (corrRunning) {
@@ -103,7 +98,6 @@ export const statusCommand = new Command()
             }
           }
 
-          // Check DNS status
           const dnsRunning = await isCoreDNSRunning(ssh);
           if (dnsRunning) {
             log.success("  DNS: RUNNING", "network");
@@ -120,7 +114,6 @@ export const statusCommand = new Command()
               for (const serviceName of services) {
                 const ips = await queryServiceContainers(ssh, serviceName);
                 for (const ip of ips) {
-                  // Check if IP belongs to this server's subnet
                   if (
                     ip.startsWith(
                       server.subnet.split("/")[0].substring(

@@ -47,7 +47,6 @@ const showCommand = new Command()
     await showDetailedLockInfo(options as unknown as Record<string, unknown>);
   });
 
-// Add subcommands to main command
 lockCommand
   .command("acquire", acquireCommand)
   .command("release", releaseCommand)
@@ -81,7 +80,6 @@ async function acquireLock(
 
     const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
-    // Check if any locks exist
     const lockStatuses = await checkLockStatus(sshManagers);
     const activeLocks = lockStatuses.filter((status) =>
       status.locked && !options.force
@@ -152,7 +150,6 @@ async function acquireLock(
         log.error(`   ${colors.cyan(failure.host)}: ${failure.error}`, "lock");
       }
 
-      // Try to clean up any successful locks
       log.warn("Cleaning up partial locks...", "lock");
       await cleanupPartialLocks(sshManagers);
       Deno.exit(1);
@@ -204,7 +201,6 @@ async function releaseLock(options: Record<string, unknown>): Promise<void> {
 
     const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
-    // Check if locks exist
     const lockStatuses = await checkLockStatus(sshManagers);
     const activeLocks = lockStatuses.filter((status) => status.locked);
 
@@ -213,7 +209,6 @@ async function releaseLock(options: Record<string, unknown>): Promise<void> {
       return;
     }
 
-    // Remove lock files
     log.info("Removing lock files...", "lock");
 
     const results = await Promise.all(
@@ -458,7 +453,6 @@ async function checkLockStatus(
 async function getLockInfo(sshManager: SSHManager): Promise<LockInfo> {
   const lockFile = ".jiji/deploy.lock";
 
-  // Check if lock file exists
   const checkResult = await sshManager.executeCommand(
     `test -f ${lockFile} && echo "exists" || echo "not_found"`,
   );
@@ -494,13 +488,11 @@ async function createLockFile(
   const lockFile = ".jiji/deploy.lock";
   const lockContent = JSON.stringify(lockData, null, 2);
 
-  // Ensure .jiji directory exists
   const mkdirResult = await sshManager.executeCommand("mkdir -p .jiji");
   if (!mkdirResult.success) {
     throw new Error(`Failed to create .jiji directory: ${mkdirResult.stderr}`);
   }
 
-  // Create lock file
   const createResult = await sshManager.executeCommand(
     `cat > ${lockFile} << 'EOF'\n${lockContent}\nEOF`,
   );

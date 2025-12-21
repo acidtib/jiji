@@ -47,7 +47,6 @@ export class EnvironmentConfiguration extends BaseConfiguration
    * Validates the environment configuration
    */
   validate(): void {
-    // Validate clear variables
     const vars = this.clear;
     for (const [key, value] of Object.entries(vars)) {
       if (typeof value !== "string") {
@@ -62,7 +61,6 @@ export class EnvironmentConfiguration extends BaseConfiguration
       }
     }
 
-    // Validate secrets
     for (const secret of this.secrets) {
       if (typeof secret !== "string" || !secret.trim()) {
         throw new ConfigurationError(
@@ -121,7 +119,6 @@ export class EnvironmentConfiguration extends BaseConfiguration
   resolveVariables(): Record<string, string> {
     const resolved = { ...this.clear };
 
-    // Resolve secrets from environment
     for (const secret of this.secrets) {
       const value = Deno.env.get(secret);
       if (value !== undefined) {

@@ -32,10 +32,8 @@ async function displayDeploymentPlan(
   await log.group("Deployment Plan", () => {
     log.info("Analyzing deployment configuration...", "plan");
 
-    // Get services that will be deployed
     let allServices = config.getDeployableServices();
 
-    // Apply service filtering if specified
     if (deployOptions.services) {
       allServices = filterServicesByPatterns(
         allServices,
@@ -44,7 +42,6 @@ async function displayDeploymentPlan(
       );
     }
 
-    // Get services that will be built
     let buildServices = config.getBuildServices();
     if (deployOptions.services) {
       buildServices = filterServicesByPatterns(
@@ -54,7 +51,6 @@ async function displayDeploymentPlan(
       );
     }
 
-    // Display project information
     console.log("\nDeployment Plan");
     console.log("═".repeat(50));
     console.log(`Project: ${config.project}`);
@@ -65,7 +61,6 @@ async function displayDeploymentPlan(
       console.log(`Version: ${globalOptions.version}`);
     }
 
-    // Display build information if --build flag is set
     if (deployOptions.build && buildServices.length > 0) {
       console.log("\nServices to Build:");
       for (const service of buildServices) {
@@ -84,7 +79,6 @@ async function displayDeploymentPlan(
       }
     }
 
-    // Display deployment information
     console.log("\nServices to Deploy:");
     if (allServices.length === 0) {
       console.log("  No services to deploy");
@@ -92,7 +86,6 @@ async function displayDeploymentPlan(
       for (const service of allServices) {
         console.log(`  • ${service.name}`);
 
-        // Show image or build source
         if (service.image) {
           console.log(`    Image: ${service.image}`);
         } else if (service.build) {
@@ -105,19 +98,16 @@ async function displayDeploymentPlan(
           );
         }
 
-        // Show target servers
         if (service.servers.length > 0) {
           console.log(
             `    Servers: ${service.servers.map((s) => s.host).join(", ")}`,
           );
         }
 
-        // Show ports if any
         if (service.ports.length > 0) {
           console.log(`    Ports: ${service.ports.join(", ")}`);
         }
 
-        // Show proxy info
         if (service.proxy?.enabled) {
           const hosts = service.proxy.hosts.length > 0
             ? service.proxy.hosts.join(", ")
@@ -127,7 +117,6 @@ async function displayDeploymentPlan(
       }
     }
 
-    // Show additional options
     const options: string[] = [];
     if (deployOptions.build) options.push("Build images");
     if (deployOptions.noCache) options.push("No cache");
@@ -143,13 +132,11 @@ async function displayDeploymentPlan(
     console.log("═".repeat(50));
   });
 
-  // Skip confirmation if --yes flag is provided
   if (deployOptions.yes) {
     log.info("Skipping confirmation (--yes flag provided)", "plan");
     return true;
   }
 
-  // Get user confirmation
   console.log();
   const confirmed = await Confirm.prompt({
     message: "Do you want to proceed with this deployment?",
@@ -176,7 +163,6 @@ export const deployCommand = new Command()
       await log.group("Service Deployment", async () => {
         log.info("Starting service deployment process", "deploy");
 
-        // Load configuration first (without SSH for build phase)
         const config = await Configuration.load(
           globalOptions.environment,
           globalOptions.configFile,
@@ -187,7 +173,6 @@ export const deployCommand = new Command()
         );
         log.info(`Container engine: ${config.builder.engine}`, "engine");
 
-        // Display deployment plan and get confirmation
         const shouldProceed = await displayDeploymentPlan(
           config,
           deployOptions,
@@ -198,18 +183,15 @@ export const deployCommand = new Command()
           return;
         }
 
-        // Build images if --build flag is set
         if (deployOptions.build) {
           await log.group("Service Build", async () => {
             log.info("Building service images", "build");
 
-            // Get services to build
             const servicesToBuild = config.getBuildServices();
 
             if (servicesToBuild.length === 0) {
               log.warn("No services with 'build' configuration found", "build");
             } else {
-              // Filter by service pattern if specified
               let filteredServices = servicesToBuild;
               if (deployOptions.services) {
                 filteredServices = filterServicesByPatterns(
@@ -226,8 +208,6 @@ export const deployCommand = new Command()
                 "build",
               );
 
-              // Determine version tag for build services
-              // Build services should use: --version > git SHA > ULID
               const versionTag = await VersionManager.determineVersionTag({
                 customVersion: globalOptions.version,
                 useGitSha: true,
@@ -236,12 +216,10 @@ export const deployCommand = new Command()
                 serviceName: filteredServices.map((s) => s.name).join(", "),
               });
 
-              // Set up registry if needed
               const registry = config.builder.registry;
               let registryManager: RegistryManager | undefined;
 
               if (registry.isLocal()) {
-                // Start local registry
                 await log.group("Local Registry Setup", async () => {
                   registryManager = new RegistryManager(
                     config.builder.engine,
@@ -251,7 +229,6 @@ export const deployCommand = new Command()
                 });
               }
 
-              // Create BuildService and build all services
               const buildService = new BuildService({
                 engine: config.builder.engine,
                 registry,
@@ -263,7 +240,6 @@ export const deployCommand = new Command()
 
               await buildService.buildServices(filteredServices, versionTag);
 
-              // Build summary
               log.success(
                 `Successfully built ${filteredServices.length} service(s)`,
                 "build",
@@ -274,11 +250,9 @@ export const deployCommand = new Command()
           });
         }
 
-        // Now set up SSH connections for deployment
         ctx = await setupCommandContext(globalOptions);
         const { sshManagers, targetHosts } = ctx;
 
-        // Set up port forwarding for local registry if needed
         if (config.builder.registry.isLocal()) {
           await log.group("Local Registry Port Forwarding", async () => {
             const registryPort = config.builder.registry.port;
@@ -289,7 +263,6 @@ export const deployCommand = new Command()
 
             portForwardManager = new PortForwardManager();
 
-            // Set up port forwarding for each connected host
             for (const ssh of sshManagers) {
               const host = ssh.getHost();
               log.status(
@@ -327,10 +300,8 @@ export const deployCommand = new Command()
           });
         }
 
-        // Get deployable services and apply filtering if specified
         let allServices = config.getDeployableServices();
 
-        // Apply service filtering if specified
         if (deployOptions.services) {
           allServices = filterServicesByPatterns(
             allServices,
@@ -353,12 +324,10 @@ export const deployCommand = new Command()
           );
         }
 
-        // Get services that need proxy configuration
         const servicesWithProxy = allServices.filter((service) =>
           service.proxy?.enabled
         );
 
-        // Install proxy if any services need it
         if (servicesWithProxy.length > 0) {
           await log.group("Proxy Installation", async () => {
             log.info(
@@ -366,7 +335,6 @@ export const deployCommand = new Command()
               "proxy",
             );
 
-            // Create ProxyService and ensure proxy on hosts
             const proxyService = new ProxyService(
               config.builder.engine,
               config,
@@ -382,7 +350,6 @@ export const deployCommand = new Command()
           });
         }
 
-        // Deploy service containers
         if (allServices.length > 0) {
           await log.group("Service Container Deployment", async () => {
             const deploymentService = new ContainerDeploymentService(
@@ -400,7 +367,6 @@ export const deployCommand = new Command()
             );
           });
 
-          // Configure proxy for services that need it
           if (servicesWithProxy.length > 0) {
             await log.group("Service Proxy Configuration", async () => {
               const proxyService = new ProxyService(
@@ -413,7 +379,6 @@ export const deployCommand = new Command()
             });
           }
 
-          // Prune old images after deployment
           await log.group("Image Cleanup", async () => {
             log.info(
               "Pruning old images to retain configured versions",
@@ -425,7 +390,6 @@ export const deployCommand = new Command()
               config.project,
             );
 
-            // Prune images on each host, using the maximum retain value from all services
             const maxRetain = Math.max(...allServices.map((s) => s.retain));
             log.info(
               `Retaining up to ${maxRetain} image(s) per service`,
@@ -469,7 +433,6 @@ export const deployCommand = new Command()
         targetHosts: ctx?.targetHosts,
       });
     } finally {
-      // Clean up port forwarding
       if (portForwardManager) {
         try {
           await portForwardManager.cleanup();
@@ -483,7 +446,6 @@ export const deployCommand = new Command()
         }
       }
 
-      // SSH cleanup
       if (ctx?.sshManagers) {
         const { cleanupSSHConnections } = await import(
           "../utils/command_helpers.ts"

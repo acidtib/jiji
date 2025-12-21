@@ -272,7 +272,6 @@ export async function installEngineOnHosts(
     }
   }
 
-  // Log comprehensive results
   const successful = results.filter((r) => r.success);
   const failed = results.filter((r) => !r.success);
 
@@ -293,7 +292,6 @@ export async function installEngineOnHosts(
     }
   }
 
-  // Log aggregated summary
   log.info(
     `${engine} installation summary: ${successful.length} succeeded, ${failed.length} failed (total: ${results.length})`,
     "engine",
@@ -309,7 +307,6 @@ export async function checkEngineOnHosts(
   sshManagers: SSHManager[],
   engine: "podman" | "docker",
 ): Promise<{ host: string; available: boolean; version?: string }[]> {
-  // Create host operations for error collection
   const hostOperations = sshManagers.map((ssh) => ({
     host: ssh.getHost(),
     operation: async () => {
@@ -333,13 +330,9 @@ export async function checkEngineOnHosts(
     },
   }));
 
-  // Execute with error collection
   const aggregatedResults = await executeHostOperations(hostOperations);
-
-  // Extract successful results
   const results = aggregatedResults.results;
 
-  // Handle failed operations - treat as engine not available
   for (const { host } of aggregatedResults.hostErrors) {
     results.push({
       host,
@@ -348,7 +341,6 @@ export async function checkEngineOnHosts(
     });
   }
 
-  // Log summary if there were errors
   if (aggregatedResults.errorCount > 0) {
     log.warn(
       `Engine check completed with ${aggregatedResults.errorCount} connection failures - treating as engine not available`,

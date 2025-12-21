@@ -40,7 +40,6 @@ export class ProxyConfiguration extends BaseConfiguration {
   }
 
   get hosts(): string[] {
-    // Support both 'host' (single) and 'hosts' (array)
     const hostsValue = this.get<unknown>("hosts");
     const hostValue = this.get<unknown>("host");
 
@@ -87,19 +86,17 @@ export class ProxyConfiguration extends BaseConfiguration {
     const errors: ConfigurationError[] = [];
     const warnings: string[] = [];
 
-    // Validate that only 'host' OR 'hosts' is specified, not both
     const hasHost = this.rawConfig.host !== undefined;
     const hasHosts = this.rawConfig.hosts !== undefined;
 
     if (hasHost && hasHosts) {
       errors.push(
         new ConfigurationError(
-          "Specify either 'host' or 'hosts', not both",
+          "Use either 'host' or 'hosts', not both in proxy configuration",
         ),
       );
     }
 
-    // Host validation
     for (const host of this.hosts) {
       if (!ProxyConfiguration.HOST_PATTERN.test(host)) {
         errors.push(
@@ -107,7 +104,6 @@ export class ProxyConfiguration extends BaseConfiguration {
         );
       }
 
-      // Localhost warning
       if (host === "localhost" || host === "127.0.0.1") {
         warnings.push(
           `Host '${host}' uses localhost - this may not work in distributed deployments`,
@@ -115,24 +111,23 @@ export class ProxyConfiguration extends BaseConfiguration {
       }
     }
 
-    // Path prefix validation
     if (this.pathPrefix) {
       if (!this.pathPrefix.startsWith("/")) {
         errors.push(
           new ConfigurationError(
-            `Path prefix must start with /: ${this.pathPrefix}`,
-          ),
-        );
-      }
-      if (ProxyConfiguration.INVALID_PATH_CHARS.test(this.pathPrefix)) {
-        errors.push(
-          new ConfigurationError(
-            `Invalid characters in path prefix: ${this.pathPrefix}`,
+            `Path prefix must start with '/': ${this.pathPrefix}`,
           ),
         );
       }
 
-      // Trailing slash warning
+      if (ProxyConfiguration.INVALID_PATH_CHARS.test(this.pathPrefix)) {
+        errors.push(
+          new ConfigurationError(
+            `Path prefix contains invalid characters: ${this.pathPrefix}`,
+          ),
+        );
+      }
+
       if (this.pathPrefix !== "/" && this.pathPrefix.endsWith("/")) {
         warnings.push(
           `Path prefix '${this.pathPrefix}' has trailing slash - this may affect routing behavior`,

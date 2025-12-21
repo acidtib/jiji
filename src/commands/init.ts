@@ -88,7 +88,6 @@ export const initCommand = new Command()
         initLogger.info("Setting up deployment configuration...");
         initLogger.status(`Target config: ${configPath}`, "config");
 
-        // Check for existing configurations
         const existingConfigs = await getAvailableConfigs();
         if (existingConfigs.length > 0) {
           initLogger.info(
@@ -99,7 +98,6 @@ export const initCommand = new Command()
           });
         }
 
-        // Check if target config file exists and handle accordingly
         const fileExists = await configFileExists(configPath);
         if (fileExists) {
           initLogger.warn(`Configuration already exists at ${configPath}`);
@@ -113,7 +111,6 @@ export const initCommand = new Command()
           initLogger.info("Proceeding with overwrite...");
         }
 
-        // Use default template
         initLogger.info("Loading default configuration template...");
         const configTemplate = await readConfigTemplate();
 
@@ -122,10 +119,7 @@ export const initCommand = new Command()
 
         initLogger.success(`Config file created at ${configPath}`);
 
-        // Validate the template configuration
         await validateConfiguration(configPath);
-
-        // Parse and validate the template to check the engine
         const templateLines = configTemplate.split("\n");
         const engineLine = templateLines.find((line) =>
           line.startsWith("engine:")
@@ -136,7 +130,6 @@ export const initCommand = new Command()
         }
       });
 
-      // Final success message
       console.log();
       log.success("Jiji configuration initialized successfully!");
       log.info("Next steps:");

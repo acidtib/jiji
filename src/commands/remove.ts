@@ -173,7 +173,6 @@ export const removeCommand = new Command()
                   );
                 }
 
-                // Remove named volumes for this service
                 const namedVolumes = getNamedVolumes(service);
                 if (namedVolumes.length > 0) {
                   log.status(

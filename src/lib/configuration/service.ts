@@ -350,21 +350,17 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
 
-    // Validate file and directory mounts
     this.validateMounts(this.files, "file");
     this.validateMounts(this.directories, "directory");
 
-    // Validate environment configuration
     this.environment.validate();
 
-    // Validate servers are not empty
     if (this.servers.length === 0) {
       throw new ConfigurationError(
         `Service '${this.name}' must specify at least one server`,
       );
     }
 
-    // Validate each server
     for (const serverConfig of this.servers) {
       this.validateHost(serverConfig.host, "servers", this.name);
       if (serverConfig.arch) {
@@ -372,7 +368,6 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
 
-    // Validate proxy configuration if present
     if (this.proxy) {
       this.proxy.validate();
     }
@@ -382,34 +377,24 @@ export class ServiceConfiguration extends BaseConfiguration
    * Validates port mapping format
    */
   private isValidPortMapping(port: string): boolean {
-    // Supports multiple port mapping formats:
-    // 1. Container port only: "8000"
-    // 2. Host and container ports: "8080:8000"
-    // 3. Full format with optional IP and protocol: "192.168.1.1:8080:8000/tcp"
-
-    // Remove protocol suffix if present
     const portWithoutProtocol = port.replace(/(\/tcp|\/udp)$/, "");
     const parts = portWithoutProtocol.split(":");
 
     if (parts.length === 1) {
-      // Format: "8000" (container port only)
       const containerPort = parseInt(parts[0], 10);
       return !isNaN(containerPort) && containerPort > 0 &&
         containerPort <= 65535;
     } else if (parts.length === 2) {
-      // Format: "8080:8000" (host_port:container_port)
       const hostPort = parseInt(parts[0], 10);
       const containerPort = parseInt(parts[1], 10);
       return !isNaN(hostPort) && !isNaN(containerPort) &&
         hostPort > 0 && hostPort <= 65535 &&
         containerPort > 0 && containerPort <= 65535;
     } else if (parts.length === 3) {
-      // Format: "192.168.1.1:8080:8000" (host_ip:host_port:container_port)
       const hostIp = parts[0];
       const hostPort = parseInt(parts[1], 10);
       const containerPort = parseInt(parts[2], 10);
 
-      // Basic IP validation
       const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
       const isValidIp = ipRegex.test(hostIp) &&
         hostIp.split(".").every((octet) => {
@@ -430,8 +415,6 @@ export class ServiceConfiguration extends BaseConfiguration
    * Validates volume mapping format
    */
   private isValidVolumeMapping(volume: string): boolean {
-    // Basic validation for volume mapping format
-    // Examples: "/host/path:/container/path", "/host/path:/container/path:ro"
     const parts = volume.split(":");
     return parts.length >= 2 && parts.length <= 3;
   }
@@ -463,35 +446,28 @@ export class ServiceConfiguration extends BaseConfiguration
     _type: "file" | "directory",
   ): boolean {
     if (typeof mount === "string") {
-      // String format: "local:remote" or "local:remote:options"
       const parts = mount.split(":");
       if (parts.length < 2 || parts.length > 3) {
         return false;
       }
-      // Check that local and remote are not empty
       if (!parts[0] || !parts[1]) {
         return false;
       }
-      // If options are provided, validate they're valid
       if (parts.length === 3 && parts[2]) {
         const validOptions = ["ro", "z", "Z"];
         return validOptions.includes(parts[2]);
       }
       return true;
     } else if (typeof mount === "object" && mount !== null) {
-      // Hash format validation
       if (!mount.local || !mount.remote) {
         return false;
       }
-      // Validate mode format if provided (should be octal like "0644")
       if (mount.mode && !/^[0-7]{3,4}$/.test(mount.mode)) {
         return false;
       }
-      // Validate owner format if provided (should be "user:group" or "uid:gid")
       if (mount.owner && !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(mount.owner)) {
         return false;
       }
-      // Validate options if provided
       if (mount.options) {
         const validOptions = ["ro", "z", "Z"];
         const options = mount.options.split(",").map((o) => o.trim());
@@ -560,27 +536,17 @@ export class ServiceConfiguration extends BaseConfiguration
    */
   getImageName(registry?: string, version?: string): string {
     if (this.image) {
-      // Pre-built image
-      // If a version is explicitly provided (e.g., via --version flag),
-      // replace or append the tag to the image name
       if (version) {
-        // Split image name and tag
         const imageParts = this.image.split(":");
         if (imageParts.length === 2) {
-          // Image has a tag, replace it with the provided version
           return `${imageParts[0]}:${version}`;
         } else {
-          // Image has no tag, append the version
           return `${this.image}:${version}`;
         }
       }
 
-      // No version override: use image as-is from config
-      // (e.g., "postgres:15-alpine", "redis:latest", etc.)
       return this.image;
     }
-
-    // Built image: project-service format with registry
     const imageName = `${this.project}-${this.name}`;
     const imageTag = version || "latest";
     const fullName = `${imageName}:${imageTag}`;
@@ -635,7 +601,6 @@ export class ServiceConfiguration extends BaseConfiguration
         }
       }
 
-      // Remove duplicates
       return [...new Set(arch)];
     }
 

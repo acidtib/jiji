@@ -408,9 +408,6 @@ export function registerContainerHostname(
   projectName: string,
   containerIp: string,
 ): void {
-  // We only need CoreDNS entries now - system hosts are not needed
-  // since kamal-proxy will use the .jiji domain directly
-
   log.success(
     `Registered ${projectName}-${serviceName}.jiji -> ${containerIp} in CoreDNS`,
     "dns",

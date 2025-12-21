@@ -301,12 +301,10 @@ export class MultiHostLockManager {
     // Execute with error collection
     const aggregatedResults = await executeHostOperations(hostOperations);
 
-    // Combine successful results with failed operations
     const results: { host: string; success: boolean; error?: string }[] = [
       ...aggregatedResults.results,
     ];
 
-    // Convert failed operations to lock result format
     for (const { host, error } of aggregatedResults.hostErrors) {
       results.push({
         host,
@@ -317,7 +315,6 @@ export class MultiHostLockManager {
 
     const failures = results.filter((r) => !r.success);
 
-    // If any failed, clean up successful ones
     if (failures.length > 0) {
       await this.cleanupPartialLocks(results.filter((r) => r.success));
       return { success: false, results };
@@ -330,7 +327,6 @@ export class MultiHostLockManager {
     success: boolean;
     results: { host: string; success: boolean; error?: string }[];
   }> {
-    // Create host operations for error collection
     const hostOperations = this.lockManagers.map((manager) => ({
       host: manager.getHost(),
       operation: async () => {
@@ -338,16 +334,12 @@ export class MultiHostLockManager {
         return { host: manager.getHost(), success };
       },
     }));
-
-    // Execute with error collection
     const aggregatedResults = await executeHostOperations(hostOperations);
 
-    // Combine successful results with failed operations
     const results: { host: string; success: boolean; error?: string }[] = [
       ...aggregatedResults.results,
     ];
 
-    // Convert failed operations to lock result format
     for (const { host, error } of aggregatedResults.hostErrors) {
       results.push({
         host,
@@ -363,19 +355,14 @@ export class MultiHostLockManager {
   }
 
   async statusAll(): Promise<LockInfo[]> {
-    // Create host operations for error collection
     const hostOperations = this.lockManagers.map((manager) => ({
       host: manager.getHost(),
       operation: async () => await manager.status(),
     }));
 
-    // Execute with error collection
     const aggregatedResults = await executeHostOperations(hostOperations);
-
-    // Combine successful results with failed operations
     const results: LockInfo[] = [...aggregatedResults.results];
 
-    // Convert failed operations to LockInfo format
     for (const { host, error } of aggregatedResults.hostErrors) {
       results.push({
         locked: false,
@@ -502,7 +489,6 @@ export async function cleanupStaleLocks(
     const processRunning = await isProcessRunning(status.pid);
 
     if (!processRunning) {
-      // Process is not running, safe to clean up
       await lockManager.release();
       return true;
     }

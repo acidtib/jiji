@@ -24,11 +24,8 @@ export const buildCommand = new Command()
       await log.group("Service Build", async () => {
         log.info("Starting service build process", "build");
 
-        // Cast options to BuildOptions
         const buildOptions = options as unknown as BuildOptions;
         const globalOptions = options as unknown as GlobalOptions;
-
-        // Load configuration
         config = await Configuration.load(
           globalOptions.environment,
           globalOptions.configFile,
@@ -38,11 +35,8 @@ export const buildCommand = new Command()
 
         if (!config) throw new Error("Configuration failed to load");
 
-        // Get container engine from builder configuration
         const engine = config.builder.engine;
         log.info(`Container engine: ${engine}`, "build");
-
-        // Get services to build
         let servicesToBuild = config.getBuildServices();
 
         if (servicesToBuild.length === 0) {
@@ -50,7 +44,6 @@ export const buildCommand = new Command()
           return;
         }
 
-        // Filter by service pattern if specified
         if (buildOptions.services) {
           servicesToBuild = filterServicesByPatterns(
             servicesToBuild,
@@ -66,25 +59,21 @@ export const buildCommand = new Command()
           "build",
         );
 
-        // Determine version tag
         const versionTag = await VersionManager.determineVersionTag({
           customVersion: globalOptions.version,
           useGitSha: true,
           shortSha: true,
         });
 
-        // Set up registry if needed
         const registry = config.builder.registry;
 
         if (buildOptions.push && registry.isLocal()) {
-          // Start local registry
           await log.group("Local Registry Setup", async () => {
             registryManager = new RegistryManager(engine, registry.port);
             await registryManager.setupForBuild();
           });
         }
 
-        // Create BuildService and build all services
         const buildService = new BuildService({
           engine,
           registry,
@@ -96,7 +85,6 @@ export const buildCommand = new Command()
 
         await buildService.buildServices(servicesToBuild, versionTag);
 
-        // Build summary
         log.success(
           `Successfully built ${servicesToBuild.length} service(s)`,
           "build",

@@ -89,22 +89,16 @@ export class BuildService {
         )
         : service.getImageName(undefined, "latest");
 
-      // Log build information
       this.logBuildInfo(service, imageName);
-
-      // Build the image
       await this.executeBuild(service, imageName, latestImageName);
 
       log.success(`Built image: ${imageName}`, "build");
       log.success(`Tagged as: ${latestImageName}`, "build");
 
-      // Push to registry if requested
       if (this.options.push && this.imagePushService) {
-        // Ensure we're authenticated before pushing
         await this.ensureAuthenticated();
 
         await log.group("Pushing to Registry", async () => {
-          // Push versioned image
           const versionedResult = await this.imagePushService!.pushImage(
             imageName,
           );
@@ -113,7 +107,6 @@ export class BuildService {
               new Error(`Push failed for: ${imageName}`);
           }
 
-          // Push latest tag
           const latestResult = await this.imagePushService!.pushImage(
             latestImageName,
           );

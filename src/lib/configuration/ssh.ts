@@ -153,7 +153,6 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
         "proxy_command",
         "ssh",
       );
-      // Validate contains %h and %p
       if (
         this._proxyCommand &&
         (!this._proxyCommand.includes("%h") ||
@@ -371,7 +370,6 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
       files.push(`${home}/.ssh/config`);
     }
 
-    // Unix/Linux system config
     if (Deno.build.os !== "windows") {
       files.push("/etc/ssh/ssh_config");
     }
@@ -399,15 +397,12 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
    * Validates the SSH configuration
    */
   validate(): void {
-    // Validate required fields
-    this.user; // This will throw if not present
+    this.user;
 
-    // Validate port if provided
     if (this.has("port")) {
-      this.port; // This will validate the port
+      this.port;
     }
 
-    // Validate connect timeout if provided
     if (this.has("connect_timeout")) {
       const timeout = this.connectTimeout;
       if (timeout <= 0) {
@@ -417,7 +412,6 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
       }
     }
 
-    // Validate command timeout if provided
     if (this.has("command_timeout")) {
       const timeout = this.commandTimeout;
       if (timeout <= 0) {
@@ -427,7 +421,6 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
       }
     }
 
-    // Validate key path if provided
     if (this.has("key_path")) {
       const keyPath = this.keyPath;
       if (!keyPath || keyPath.trim().length === 0) {
@@ -437,7 +430,6 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
       }
     }
 
-    // Validate options if provided
     if (this.has("options")) {
       const options = this.options;
       for (const [key, value] of Object.entries(options)) {
@@ -449,19 +441,16 @@ export class SSHConfiguration extends BaseConfiguration implements Validatable {
       }
     }
 
-    // Validate proxy configuration
     if (this.proxy && this.proxyCommand) {
       throw new ConfigurationError(
         "Cannot specify both 'proxy' and 'proxy_command' in ssh configuration",
       );
     }
 
-    // Validate proxy format if present
     if (this.proxy) {
       this.validateProxyFormat(this.proxy);
     }
 
-    // Trigger proxy_command validation (already validates in getter)
     if (this.proxyCommand) {
       // Validation happens in the getter
     }

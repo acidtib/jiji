@@ -7,8 +7,6 @@
  * 3. Container health tracking - Validate containers and update Corrosion
  * 4. Heartbeat updates - Keep server alive in Corrosion
  * 5. Public IP discovery - Periodically refresh endpoints
- *
- * Inspired by Uncloud's control loop but adapted to work as a bash script.
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";

@@ -74,13 +74,9 @@ export async function handleCommandError(
 ): Promise<never> {
   const errorMessage = error instanceof Error ? error.message : String(error);
 
-  // Log error to console
   log.error(`${context.operation} failed:`, context.component);
   log.error(errorMessage, context.component);
-
-  // Log to audit trail if SSH managers are available
   if (context.customAuditLogger) {
-    // Use custom audit logger
     try {
       await context.customAuditLogger(errorMessage);
     } catch (auditError) {
@@ -94,7 +90,6 @@ export async function handleCommandError(
     context.projectName &&
     context.targetHosts
   ) {
-    // Use default audit logging
     try {
       await logFailureToAudit(
         context.sshManagers,
@@ -130,8 +125,6 @@ async function logFailureToAudit(
   errorMessage: string,
   component: string,
 ): Promise<void> {
-  // Log the failure with a generic custom command entry
-  // This allows flexibility for different operation types
   const results = await Promise.allSettled(
     targetHosts.map(async (host) => {
       const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
@@ -146,7 +139,6 @@ async function logFailureToAudit(
     }),
   );
 
-  // Count successful failure logs
   const successfulLogs = results.filter((r) => r.status === "fulfilled").length;
 
   if (successfulLogs > 0) {
@@ -189,7 +181,6 @@ export async function withErrorHandling<T>(
     return await operation();
   } catch (error) {
     await handleCommandError(error, context);
-    // handleCommandError calls Deno.exit(1) which never returns
     throw new Error("Unreachable");
   }
 }

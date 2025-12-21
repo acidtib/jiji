@@ -17,7 +17,6 @@ export type LogLevel =
   | "success"
   | "trace";
 
-// Log level hierarchy for filtering (lower numbers = higher priority)
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   fatal: 0,
   error: 1,
@@ -28,7 +27,6 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   trace: 5,
 };
 
-// Global log level that can be set once for all loggers
 let globalMinLevel: LogLevel | undefined = undefined;
 
 /**
@@ -57,7 +55,6 @@ export class Logger {
     this.showTimestamp = options.showTimestamp ?? true;
     this.maxPrefixLength = options.maxPrefixLength || 20;
     this.useColors = options.colors ?? true;
-    // Use global level if set, otherwise use provided or default to "info"
     this.minLevel = options.minLevel || globalMinLevel || "info";
   }
 
@@ -74,7 +71,6 @@ export class Logger {
     const actualPrefix = prefix || this.prefix;
     if (!actualPrefix) return "";
 
-    // Truncate or pad the prefix to maintain consistent spacing
     const truncated = actualPrefix.length > this.maxPrefixLength
       ? actualPrefix.substring(0, this.maxPrefixLength - 3) + "..."
       : actualPrefix;
@@ -112,13 +108,11 @@ export class Logger {
   ): string {
     const parts: string[] = [];
 
-    // Add timestamp if enabled
     if (this.showTimestamp) {
       const timestamp = this.formatTimestamp();
       parts.push(this.useColors ? colors.dim(timestamp) : timestamp);
     }
 
-    // Add formatted prefix
     const formattedPrefix = this.formatPrefix(prefix);
     if (formattedPrefix) {
       const coloredPrefix = this.useColors
@@ -127,19 +121,15 @@ export class Logger {
       parts.push(coloredPrefix);
     }
 
-    // Add level indicator
     const levelIndicator = `[${level.toUpperCase().padEnd(5)}]`;
     const coloredLevel = this.colorize(levelIndicator, level);
     parts.push(coloredLevel);
-
-    // Add the actual message
     parts.push(message);
 
     return parts.join(" ");
   }
 
   private log(level: LogLevel, message: string, prefix?: string): void {
-    // Check if this level should be logged based on minLevel
     if (!this.shouldLog(level)) {
       return;
     }
@@ -195,7 +185,6 @@ export class Logger {
     this.log("fatal", message, prefix);
   }
 
-  // command execution logging
   executing(command: string, server?: string): void {
     const prefix = server || "local";
     const message = this.useColors
@@ -204,7 +193,6 @@ export class Logger {
     this.log("info", message, prefix);
   }
 
-  // status updates
   status(message: string, server?: string): void {
     const prefix = server || "status";
     this.log("info", message, prefix);

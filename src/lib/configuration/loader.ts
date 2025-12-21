@@ -33,7 +33,6 @@ export class ConfigurationLoader {
 
       const parentPath = dirname(currentPath);
       if (parentPath === currentPath) {
-        // Reached filesystem root
         break;
       }
       currentPath = parentPath;
@@ -89,10 +88,8 @@ export class ConfigurationLoader {
     let actualConfigPath: string;
 
     if (configPath) {
-      // Use provided path
       actualConfigPath = configPath;
     } else {
-      // Search for config file
       const foundPath = await this.findConfigFile(environment, startPath);
       if (!foundPath) {
         throw new ConfigurationError(
@@ -112,20 +109,17 @@ export class ConfigurationLoader {
   private static buildConfigFilenames(environment?: string): string[] {
     const filenames: string[] = [];
 
-    // Environment-specific files first
     if (environment) {
       for (const base of this.DEFAULT_CONFIG_FILES) {
         for (const ext of this.CONFIG_EXTENSIONS) {
           filenames.push(`${base}.${environment}${ext}`);
         }
       }
-      // Also try just the environment name
       for (const ext of this.CONFIG_EXTENSIONS) {
         filenames.push(`${environment}${ext}`);
       }
     }
 
-    // Default files
     for (const base of this.DEFAULT_CONFIG_FILES) {
       for (const ext of this.CONFIG_EXTENSIONS) {
         filenames.push(`${base}${ext}`);
@@ -203,7 +197,7 @@ export class ConfigurationLoader {
         }
       }
     } catch {
-      // Ignore errors when reading directory
+      // Ignore directory read errors
     }
 
     return configs.sort();
@@ -223,13 +217,11 @@ export class ConfigurationLoader {
     const basename = configPath.split("/").pop() || "";
     const nameWithoutExt = basename.replace(/\.(yml|yaml)$/, "");
 
-    // Check if it's environment-specific (e.g., deploy.production.yml)
     const parts = nameWithoutExt.split(".");
     if (parts.length === 2 && this.DEFAULT_CONFIG_FILES.includes(parts[0])) {
       return parts[1];
     }
 
-    // Check if it's just an environment name (e.g., production.yml)
     if (
       parts.length === 1 && !this.DEFAULT_CONFIG_FILES.includes(parts[0])
     ) {
@@ -255,13 +247,11 @@ export class ConfigurationLoader {
           result[key] && typeof result[key] === "object" &&
           !Array.isArray(result[key])
         ) {
-          // Deep merge for objects
           result[key] = this.mergeConfigs(
             result[key] as Record<string, unknown>,
             value as Record<string, unknown>,
           );
         } else {
-          // Replace for primitives and arrays
           result[key] = value;
         }
       }

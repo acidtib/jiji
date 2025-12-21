@@ -30,11 +30,9 @@ export const teardownCommand = new Command()
 
     try {
       await log.group("Network Teardown", async () => {
-        // Set up command context
         ctx = await setupCommandContext(globalOptions);
         const { sshManagers, targetHosts } = ctx;
 
-        // Try to load topology from Corrosion
         let topology = null;
         for (const ssh of sshManagers) {
           try {
@@ -72,34 +70,24 @@ export const teardownCommand = new Command()
           }
 
           try {
-            // Stop DNS
             serverLogger.info("Stopping DNS service...");
             await stopCoreDNSService(ssh);
 
-            // Stop Corrosion (if using)
             if (topology.discovery === "corrosion") {
               serverLogger.info("Stopping Corrosion service...");
               await stopCorrosionService(ssh);
             }
 
-            // Stop WireGuard
             serverLogger.info("Stopping WireGuard interface...");
             await bringDownWireGuardInterface(ssh);
             await disableWireGuardService(ssh);
 
-            // Remove configuration files
             serverLogger.info("Removing configuration files...");
 
-            // Remove WireGuard config
             await ssh.executeCommand("rm -f /etc/wireguard/jiji0.conf");
-
-            // Remove Corrosion data (this deletes all cluster state)
             await ssh.executeCommand("rm -rf /opt/jiji/corrosion");
-
-            // Remove DNS config
             await ssh.executeCommand("rm -rf /opt/jiji/dns");
 
-            // Remove systemd services
             await ssh.executeCommand(
               "rm -f /etc/systemd/system/jiji-corrosion.service",
             );
@@ -116,7 +104,6 @@ export const teardownCommand = new Command()
               "rm -f /etc/systemd/system/jiji-control-loop.service",
             );
 
-            // Reload systemd
             await ssh.executeCommand("systemctl daemon-reload");
 
             serverLogger.success("Network teardown complete");

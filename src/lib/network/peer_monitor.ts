@@ -27,7 +27,7 @@ interface PeerStatus {
 type PeerHealth = "unknown" | "up" | "down";
 
 /**
- * Timeout constants (based on uncloud's implementation)
+ * Timeout constants
  */
 const ENDPOINT_CONNECTION_TIMEOUT = 15; // seconds - expect handshake within this time
 const PEER_DOWN_INTERVAL = 275; // seconds - from WireGuard whitepaper

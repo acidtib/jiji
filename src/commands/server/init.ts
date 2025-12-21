@@ -274,8 +274,6 @@ export const initCommand = new Command()
         },
       });
     } finally {
-      // SSH cleanup is handled by setupCommandContext in the error handler
-      // But we'll clean up here anyway if there was no error
       if (ctx?.sshManagers) {
         const { cleanupSSHConnections } = await import(
           "../../utils/command_helpers.ts"

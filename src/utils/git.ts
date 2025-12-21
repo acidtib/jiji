@@ -60,7 +60,6 @@ export class GitUtils {
    * Check if there are uncommitted changes in the repository
    */
   static async hasUncommittedChanges(): Promise<boolean> {
-    // Check for staged and unstaged changes
     const diffCommand = new Deno.Command("git", {
       args: ["diff", "--quiet"],
       stdout: "piped",
@@ -68,8 +67,6 @@ export class GitUtils {
     });
 
     const diffResult = await diffCommand.output();
-
-    // Check for untracked files
     const statusCommand = new Deno.Command("git", {
       args: ["status", "--porcelain"],
       stdout: "piped",
@@ -78,10 +75,7 @@ export class GitUtils {
 
     const statusResult = await statusCommand.output();
 
-    // diff --quiet returns non-zero if there are changes
     const hasDiff = diffResult.code !== 0;
-
-    // status --porcelain returns output if there are untracked/changed files
     const hasStatus = new TextDecoder().decode(statusResult.stdout).trim()
       .length > 0;
 
@@ -117,8 +111,6 @@ export class GitUtils {
     for (const line of lines) {
       if (!line.trim()) continue;
 
-      // Git status --porcelain format: XY filename
-      // X = index status, Y = working tree status
       const status = line.substring(0, 2);
       const file = line.substring(3).trim();
 
@@ -143,7 +135,6 @@ export class GitUtils {
 
     const descriptions: string[] = [];
 
-    // Index status
     switch (index) {
       case "M":
         descriptions.push("staged for commit");
@@ -165,7 +156,6 @@ export class GitUtils {
         break;
     }
 
-    // Working tree status
     switch (workingTree) {
       case "M":
         descriptions.push("modified");

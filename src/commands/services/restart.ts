@@ -49,10 +49,8 @@ export const restartCommand = new Command()
           "restart",
         );
 
-        // Get services to restart
         let servicesToRestart = Array.from(context.config.services.values());
 
-        // Filter services if specific services were requested
         if (context.matchingServices && context.matchingServices.length > 0) {
           servicesToRestart = servicesToRestart.filter((
             service: ServiceConfiguration,
@@ -84,7 +82,6 @@ export const restartCommand = new Command()
         for (const service of servicesToRestart) {
           log.status(`Restarting ${service.name} containers...`, "restart");
 
-          // Get hosts for this service that are in our target hosts
           const serviceHosts = service.servers
             .map((server: { host: string }) => server.host)
             .filter((host: string) => context.targetHosts.includes(host));
@@ -139,7 +136,6 @@ export const restartCommand = new Command()
 
           allResults.push(...results);
 
-          // Log results for this service
           const successCount = results.filter((r) => r.success).length;
           const totalCount = results.length;
 

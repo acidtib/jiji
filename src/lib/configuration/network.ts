@@ -76,7 +76,6 @@ export class NetworkConfiguration extends BaseConfiguration {
       );
     }
 
-    // Parse and validate IP and prefix
     const [ip, prefix] = cidr.split("/");
     const prefixNum = parseInt(prefix, 10);
 
@@ -100,20 +99,17 @@ export class NetworkConfiguration extends BaseConfiguration {
    * Validates the network configuration
    */
   validate(): void {
-    // Access all properties to trigger validation
     this.enabled;
     this.clusterCidr;
     this.serviceDomain;
     this.discovery;
 
-    // Validate service domain format
     if (!/^[a-z0-9-]+$/.test(this.serviceDomain)) {
       throw new ConfigurationError(
         `Invalid service domain: ${this.serviceDomain}. Must contain only lowercase letters, numbers, and hyphens`,
       );
     }
 
-    // Validate CIDR is suitable for clustering (not too small)
     const [, prefix] = this.clusterCidr.split("/");
     const prefixNum = parseInt(prefix, 10);
 
@@ -154,9 +150,6 @@ export class NetworkConfiguration extends BaseConfiguration {
     const [, prefix] = this.clusterCidr.split("/");
     const prefixNum = parseInt(prefix, 10);
 
-    // Each server gets a /24 subnet
-    // If cluster is /16, we have 256 /24 subnets
-    // If cluster is /20, we have 16 /24 subnets
     return Math.pow(2, 24 - prefixNum);
   }
 
