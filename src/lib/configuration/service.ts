@@ -542,8 +542,22 @@ export class ServiceConfiguration extends BaseConfiguration
    */
   getImageName(registry?: string, version?: string): string {
     if (this.image) {
-      // Pre-built image: use as-is, never prepend registry
-      // The image configuration already contains the full image reference
+      // Pre-built image
+      // If a version is explicitly provided (e.g., via --version flag),
+      // replace or append the tag to the image name
+      if (version) {
+        // Split image name and tag
+        const imageParts = this.image.split(":");
+        if (imageParts.length === 2) {
+          // Image has a tag, replace it with the provided version
+          return `${imageParts[0]}:${version}`;
+        } else {
+          // Image has no tag, append the version
+          return `${this.image}:${version}`;
+        }
+      }
+
+      // No version override: use image as-is from config
       // (e.g., "postgres:15-alpine", "redis:latest", etc.)
       return this.image;
     }

@@ -1,4 +1,13 @@
 /**
+ * Git file status information
+ */
+export interface GitFileStatus {
+  status: string;
+  file: string;
+  statusDescription: string;
+}
+
+/**
  * Git utility functions for version management
  */
 export class GitUtils {
@@ -77,6 +86,103 @@ export class GitUtils {
       .length > 0;
 
     return hasDiff || hasStatus;
+  }
+
+  /**
+   * Get list of uncommitted files with their status
+   * @returns Array of file status objects
+   */
+  static async getUncommittedFiles(): Promise<GitFileStatus[]> {
+    const command = new Deno.Command("git", {
+      args: ["status", "--porcelain"],
+      stdout: "piped",
+      stderr: "piped",
+    });
+
+    const { code, stdout, stderr } = await command.output();
+
+    if (code !== 0) {
+      const error = new TextDecoder().decode(stderr);
+      throw new Error(`Failed to get git status: ${error}`);
+    }
+
+    const output = new TextDecoder().decode(stdout).trim();
+    if (!output) {
+      return [];
+    }
+
+    const files: GitFileStatus[] = [];
+    const lines = output.split("\n");
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      // Git status --porcelain format: XY filename
+      // X = index status, Y = working tree status
+      const status = line.substring(0, 2);
+      const file = line.substring(3).trim();
+
+      const statusDescription = this.parseGitStatus(status);
+
+      files.push({
+        status,
+        file,
+        statusDescription,
+      });
+    }
+
+    return files;
+  }
+
+  /**
+   * Parse git status code into human-readable description
+   */
+  private static parseGitStatus(status: string): string {
+    const index = status[0];
+    const workingTree = status[1];
+
+    const descriptions: string[] = [];
+
+    // Index status
+    switch (index) {
+      case "M":
+        descriptions.push("staged for commit");
+        break;
+      case "A":
+        descriptions.push("added");
+        break;
+      case "D":
+        descriptions.push("deleted");
+        break;
+      case "R":
+        descriptions.push("renamed");
+        break;
+      case "C":
+        descriptions.push("copied");
+        break;
+      case "U":
+        descriptions.push("unmerged");
+        break;
+    }
+
+    // Working tree status
+    switch (workingTree) {
+      case "M":
+        descriptions.push("modified");
+        break;
+      case "D":
+        descriptions.push("deleted");
+        break;
+      case "?":
+        descriptions.push("untracked");
+        break;
+    }
+
+    if (descriptions.length === 0) {
+      return "changed";
+    }
+
+    return descriptions.join(", ");
   }
 
   /**

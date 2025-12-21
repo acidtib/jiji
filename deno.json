@@ -25,6 +25,7 @@
     "@std/crypto": "jsr:@std/crypto@^1.0.5",
     "@std/fs": "jsr:@std/fs@^1.0.20",
     "@std/path": "jsr:@std/path@^1.1.3",
+    "@std/ulid": "jsr:@std/ulid@^1.0.0",
     "@std/yaml": "jsr:@std/yaml@^1.0.10",
     "cpu-features": "npm:cpu-features@^0.0.10",
     "node-ssh": "npm:node-ssh@^13.2.1",

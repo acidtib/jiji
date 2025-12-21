@@ -71,11 +71,14 @@ export const deployCommand = new Command()
                 "build",
               );
 
-              // Determine version tag
+              // Determine version tag for build services
+              // Build services should use: --version > git SHA > ULID
               const versionTag = await VersionManager.determineVersionTag({
                 customVersion: globalOptions.version,
                 useGitSha: true,
                 shortSha: true,
+                isImageService: false, // These are build services
+                serviceName: filteredServices.map((s) => s.name).join(", "),
               });
 
               // Set up registry if needed
