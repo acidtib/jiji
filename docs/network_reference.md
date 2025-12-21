@@ -3,11 +3,12 @@
 ## Network Components
 
 ### WireGuard Mesh Network
-- **Interface:** `jiji0`
-- **Port:** `51820`
-- **Protocol:** UDP
-- **Encryption:** ChaCha20-Poly1305
-- **Key Exchange:** Curve25519
+
+Interface: `jiji0`
+Port: `51820`
+Protocol: UDP
+Encryption: ChaCha20-Poly1305
+Key Exchange: Curve25519
 
 ### IP Allocation
 
@@ -27,6 +28,7 @@ Cluster CIDR: 10.210.0.0/16
 ## Commands
 
 ### Setup Network
+
 ```bash
 # During initial bootstrap
 jiji bootstrap -H server1.example.com,server2.example.com
@@ -100,30 +102,42 @@ sudo wg show jiji0 endpoints
 ## Service Files
 
 ### Network State
-- **File:** `.jiji/network.json`
-- **Contents:** Server topology, IPs, WireGuard keys (public only)
+
+File: `.jiji/network.json`
+Contents: Server topology, IPs, WireGuard keys (public only)
 
 ### WireGuard Config
-- **File:** `/etc/wireguard/jiji0.conf`
-- **Service:** `wg-quick@jiji0.service`
+
+File: `/etc/wireguard/jiji0.conf`
+Service: `wg-quick@jiji0.service`
 
 ### Corrosion (Discovery)
-- **Config:** `/opt/jiji/corrosion/config.toml`
-- **Database:** `/opt/jiji/corrosion/state.db`
-- **Service:** `jiji-corrosion.service`
+
+Config: `/opt/jiji/corrosion/config.toml`
+Database: `/opt/jiji/corrosion/state.db`
+Service: `jiji-corrosion.service`
 
 ### CoreDNS
-- **Config:** `/opt/jiji/coredns/Corefile`
-- **Hosts:** `/opt/jiji/coredns/hosts`
-- **Service:** `jiji-coredns.service`
+
+Config: `/opt/jiji/coredns/Corefile`
+Hosts: `/opt/jiji/coredns/hosts`
+Service: `jiji-coredns.service`
+
+### Daemon DNS Configuration
+
+Docker: `/etc/docker/daemon.json`
+Podman: `/etc/containers/containers.conf`
+Search domain: `jiji` (configurable)
 
 ### Peer Monitor
-- **Script:** `/opt/jiji/bin/monitor-wireguard-peers.sh`
-- **Service:** `jiji-peer-monitor.service`
+
+Script: `/opt/jiji/bin/monitor-wireguard-peers.sh`
+Service: `jiji-peer-monitor.service`
 
 ## Firewall Rules
 
 ### iptables Forward Rules
+
 ```bash
 # Docker to WireGuard
 iptables -A FORWARD -i docker0 -o jiji0 -j ACCEPT
@@ -136,12 +150,14 @@ iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 ```
 
 ### NAT Rules
+
 ```bash
 # Container traffic through WireGuard
 iptables -t nat -A POSTROUTING -s 10.210.0.0/24 -o jiji0 -j MASQUERADE
 ```
 
 ### Host Firewall
+
 ```bash
 # Allow WireGuard
 ufw allow 51820/udp
@@ -153,65 +169,78 @@ ufw allow 8787/tcp
 ## DNS Resolution
 
 ### Service Names
-- **Format:** `<service-name>.<domain>`
-- **Domain:** `jiji` (configurable in jiji.yml)
-- **Example:** `api.jiji`, `postgres.jiji`
+
+Format: `<service-name>.<domain>`
+Domain: `jiji` (configurable in jiji.yml)
+Example: `api.jiji`, `postgres.jiji`
 
 ### Resolution Flow
+
 ```
 Container DNS query for "api.jiji"
   ↓
-CoreDNS on WireGuard IP (10.210.0.1:53)
+Container daemon forwards to CoreDNS (10.210.0.1:53)
   ↓
-Queries Corrosion for service "api"
+CoreDNS queries Corrosion for service "api"
   ↓
 Returns container IPs across cluster
   ↓
 Container connects to 10.210.1.15
 ```
 
+**Note**: DNS configuration is applied at both daemon and container levels:
+- **Daemon level**: All new containers inherit DNS settings automatically
+- **Container level**: Existing containers get DNS servers passed explicitly
+
 ## Performance
 
 ### Latency
-- **WireGuard overhead:** ~0.1-0.5ms
-- **Typical ping times:** 1-10ms (LAN), 20-100ms (WAN)
+
+WireGuard overhead: ~0.1-0.5ms
+Typical ping times: 1-10ms (LAN), 20-100ms (WAN)
 
 ### Throughput
-- **WireGuard:** Near line-rate (10Gbps+)
-- **Container networking:** Limited by Docker bridge (~5-9Gbps)
+
+WireGuard: Near line-rate (10Gbps+)
+Container networking: Limited by Docker bridge (~5-9Gbps)
 
 ### Resource Usage
-- **WireGuard:** Minimal (~1-2% CPU)
-- **Corrosion:** ~50MB RAM, <1% CPU
-- **CoreDNS:** ~20MB RAM, <1% CPU
-- **Peer Monitor:** Negligible
+
+WireGuard: Minimal (~1-2% CPU)
+Corrosion: ~50MB RAM, <1% CPU
+CoreDNS: ~20MB RAM, <1% CPU
+Peer Monitor: Negligible
 
 ## Security
 
 ### Encryption
-- All inter-machine traffic encrypted via WireGuard
-- No plaintext container traffic on network
+
+All inter-machine traffic encrypted via WireGuard
+No plaintext container traffic on network
 
 ### Key Management
-- Private keys never leave servers
-- Public keys stored in `.jiji/network.json`
-- Keys generated on each server
+
+Private keys never leave servers
+Public keys stored in `.jiji/network.json`
+Keys generated on each server
 
 ### Network Isolation
-- Containers isolated in WireGuard network
-- Not directly accessible from internet
-- Expose via proxy/load balancer only
+
+Containers isolated in WireGuard network
+Not directly accessible from internet
+Expose via proxy/load balancer only
 
 ## Troubleshooting Quick Tips
 
-| Issue | Quick Fix |
-|-------|-----------|
-| No peer handshakes | Check firewall allows UDP 51820 |
-| Containers can't ping peers | Verify routes: `ip route \| grep jiji0` |
-| DNS not resolving | Check CoreDNS: `systemctl status jiji-coredns` |
-| Endpoint rotation not working | Check peer monitor logs |
-| Slow cross-machine traffic | Check WireGuard MTU settings |
-| Container wrong subnet | Recreate network: `docker network rm jiji` then re-bootstrap |
+| Issue                         | Quick Fix                                                    |
+| ----------------------------- | ------------------------------------------------------------ |
+| No peer handshakes            | Check firewall allows UDP 51820                              |
+| Containers can't ping peers   | Verify routes: `ip route \| grep jiji0`                      |
+| DNS not resolving             | Check CoreDNS: `systemctl status jiji-coredns`               |
+| Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`      |
+| Endpoint rotation not working | Check peer monitor logs                                      |
+| Slow cross-machine traffic    | Check WireGuard MTU settings                                 |
+| Container wrong subnet        | Recreate network: `docker network rm jiji` then re-bootstrap |
 
 ## Environment Variables
 
@@ -231,6 +260,7 @@ export JIJI_NETWORK_DISCOVERY="static"
 ## Example Deployments
 
 ### Simple Multi-Server App
+
 ```yaml
 # docker-compose.yml
 services:
@@ -257,17 +287,20 @@ volumes:
 ```
 
 Deploy:
+
 ```bash
 jiji deploy -f docker-compose.yml
 ```
 
 Access from any container:
+
 ```bash
 # API containers can connect to postgres
 psql -h postgres.jiji -U myuser
 ```
 
 ### Service with Load Balancing
+
 ```yaml
 services:
   web:
@@ -275,17 +308,18 @@ services:
     networks:
       - jiji
     deploy:
-      replicas: 5  # Distributed across servers
+      replicas: 5 # Distributed across servers
 ```
 
-DNS automatically returns all 5 IPs for `web.jiji`, providing client-side load balancing.
+DNS automatically returns all 5 IPs for `web.jiji`, providing client-side load
+balancing.
 
 ## Network Limits
 
-- **Max servers:** 254 (with /24 subnets in /16 cluster)
-- **Max containers per server:** 254 (with /24 subnet)
-- **Max total containers:** ~64,000 (254 servers × 254 containers)
-- **WireGuard peers:** Unlimited (mesh scales to hundreds)
+Max servers: 254 (with /24 subnets in /16 cluster)
+Max containers per server: 254 (with /24 subnet)
+Max total containers: ~64,000 (254 servers × 254 containers)
+WireGuard peers: Unlimited (mesh scales to hundreds)
 
 ## Best Practices
 
@@ -300,7 +334,7 @@ DNS automatically returns all 5 IPs for `web.jiji`, providing client-side load b
 
 ## Getting Help
 
-- **Logs:** `journalctl -u jiji-* -f`
-- **Debug mode:** Set `JIJI_LOG_LEVEL=debug`
-- **Network diagram:** See `NETWORK_FIXES.md`
-- **Issues:** https://github.com/acidtib/jiji/issues
+Logs: `journalctl -u jiji-* -f`
+Debug mode: Set `JIJI_LOG_LEVEL=debug`
+Network diagram: See `NETWORK_FIXES.md`
+Issues: https://github.com/acidtib/jiji/issues

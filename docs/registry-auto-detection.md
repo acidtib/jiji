@@ -7,8 +7,8 @@ registries, providing a simple configuration experience.
 
 ### GitHub Container Registry (GHCR)
 
-**Server:** `ghcr.io`\
-**Auto-namespace:** `username/project-name`
+Server: `ghcr.io`
+Auto-namespace: `username/project-name`
 
 ```yaml
 builder:
@@ -19,13 +19,13 @@ builder:
     password: "${GITHUB_TOKEN}"
 ```
 
-**Result:** Images are pushed to
+Result: Images are pushed to
 `ghcr.io/your-github-username/project-name/service:version`
 
 ### Docker Hub
 
-**Server:** `docker.io`, `registry-1.docker.io`, `index.docker.io`\
-**Auto-namespace:** `username`
+Server: `docker.io`, `registry-1.docker.io`, `index.docker.io`
+Auto-namespace: `username`
 
 ```yaml
 builder:
@@ -36,13 +36,13 @@ builder:
     password: "${DOCKER_PASSWORD}"
 ```
 
-**Result:** Images are pushed to
+Result: Images are pushed to
 `docker.io/your-dockerhub-username/project-service:version`
 
 ### Local Registry
 
-**Type:** `local`\
-**No namespace required**
+Type: `local`
+No namespace required
 
 ```yaml
 builder:
@@ -51,7 +51,7 @@ builder:
     port: 6767 # optional, defaults to 6767
 ```
 
-**Result:** Images are stored at `localhost:6767/project-service:version`
+Result: Images are stored at `localhost:6767/project-service:version`
 
 ## Environment Setup
 
