@@ -10,6 +10,7 @@ import { filterServicesByPatterns } from "../utils/config.ts";
 import { BuildService } from "../lib/services/build_service.ts";
 import { ProxyService } from "../lib/services/proxy_service.ts";
 import { ContainerDeploymentService } from "../lib/services/container_deployment_service.ts";
+import { ImagePruneService } from "../lib/services/image_prune_service.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -257,6 +258,48 @@ export const deployCommand = new Command()
               await proxyService.configureProxyForServices(servicesWithProxy);
             });
           }
+
+          // Prune old images after deployment
+          await log.group("Image Cleanup", async () => {
+            log.info(
+              "Pruning old images to retain configured versions",
+              "prune",
+            );
+
+            const pruneService = new ImagePruneService(
+              config.builder.engine,
+              config.project,
+            );
+
+            // Prune images on each host, using the maximum retain value from all services
+            const maxRetain = Math.max(...allServices.map((s) => s.retain));
+            log.info(
+              `Retaining up to ${maxRetain} image(s) per service`,
+              "prune",
+            );
+
+            const pruneResults = await pruneService.pruneImagesOnHosts(
+              sshManagers,
+              {
+                retain: maxRetain,
+                removeDangling: true,
+              },
+            );
+
+            const totalRemoved = pruneResults.reduce(
+              (sum, r) => sum + r.imagesRemoved,
+              0,
+            );
+
+            if (totalRemoved > 0) {
+              log.success(
+                `Pruned ${totalRemoved} old image(s) across ${pruneResults.length} server(s)`,
+                "prune",
+              );
+            } else {
+              log.info("No old images to prune", "prune");
+            }
+          });
         } else {
           log.info("No services found to deploy", "deploy");
         }

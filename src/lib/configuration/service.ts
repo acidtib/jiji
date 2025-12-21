@@ -70,6 +70,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _sharedEnvironment?: EnvironmentConfiguration;
   private _command?: string | string[];
   private _proxy?: ProxyConfiguration;
+  private _retain?: number;
 
   constructor(
     name: string,
@@ -285,6 +286,23 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
     return this._proxy;
+  }
+
+  /**
+   * Number of images to retain for this service (default: 3)
+   */
+  get retain(): number {
+    if (this._retain === undefined && this.has("retain")) {
+      const retainValue = this.get("retain");
+      if (typeof retainValue === "number" && retainValue > 0) {
+        this._retain = retainValue;
+      } else {
+        throw new ConfigurationError(
+          `'retain' for service '${this.name}' must be a positive number`,
+        );
+      }
+    }
+    return this._retain ?? 3; // Default to 3 if not specified
   }
 
   /**

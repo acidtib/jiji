@@ -345,6 +345,29 @@ ssh:
 # Combine with host filtering for precise targeting:
 #   jiji server exec "systemctl status docker" --services web-* --hosts 192.168.1.100
 #
+# Image Retention Configuration:
+# =============================
+# Jiji automatically prunes old Docker/Podman images after deployment to save disk space
+# while keeping recent versions for rollbacks. Configure retention per service:
+#
+# retain: <number>   # Number of recent images to keep (default: 3)
+#
+# Image Retention Examples:
+# - retain: 3        # Keep last 3 images (default)
+# - retain: 5        # Keep last 5 images for critical services
+# - retain: 1        # Keep only the latest image for non-critical services
+#
+# How It Works:
+# 1. After each deployment, Jiji identifies all images for each service
+# 2. Sorts images by creation time (newest first)
+# 3. Keeps the N most recent images (based on retain setting)
+# 4. Removes older images that are not currently in use
+# 5. Also removes dangling (untagged) images
+#
+# Manual Pruning:
+# Run 'jiji prune' to manually clean up images outside of deployment
+# Use 'jiji prune --retain 5' to override the default retention setting
+#
 services:
   # Example: Web frontend service using pre-built image
   web-frontend:
@@ -356,6 +379,9 @@ services:
         arch: amd64
     ports:
       - "127.0.0.1:8080:80"
+    # Image Retention: Number of images to keep for rollbacks (default: 3)
+    # Older images are automatically pruned after deployment
+    retain: 5
     # Volumes: Docker/Podman named volumes or host paths
     volumes:
       - "web_storage:/opt/uploads"
