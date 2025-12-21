@@ -167,7 +167,7 @@ export const restartCommand = new Command()
         const totalSuccess = allResults.filter((r) => r.success).length;
         const totalAttempted = allResults.length;
 
-        log.info("\nRestart Summary:", "restart");
+        log.info("Restart Summary:", "restart");
         for (const result of allResults) {
           if (result.success) {
             log.success(
@@ -184,7 +184,7 @@ export const restartCommand = new Command()
 
         if (totalSuccess === totalAttempted) {
           log.success(
-            `\nAll services restarted successfully (${totalSuccess}/${totalAttempted})`,
+            `All services restarted successfully (${totalSuccess}/${totalAttempted})`,
             "restart",
           );
         } else {

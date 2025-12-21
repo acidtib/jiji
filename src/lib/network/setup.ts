@@ -131,8 +131,8 @@ export async function setupNetwork(
       // Create subnet allocator
       const allocator = new SubnetAllocator(config.network.clusterCidr);
 
-      // Phase 1: Install dependencies on all servers
-      await log.group("Phase 1: Install Dependencies", async () => {
+      // Install dependencies on all servers
+      await log.group("Install Dependencies", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -182,8 +182,8 @@ export async function setupNetwork(
       const existingServerHosts: Set<string> = new Set();
       const newServerHosts: Set<string> = new Set();
 
-      // Phase 2: Generate WireGuard keys and allocate IPs
-      await log.group("Phase 2: Generate Keys & Allocate IPs", async () => {
+      // Generate WireGuard keys and allocate IPs
+      await log.group("Generate Keys & Allocate IPs", async () => {
         const networkServers: NetworkServer[] = [];
         let newServerCount = 0; // Track only new servers being added
 
@@ -286,8 +286,8 @@ export async function setupNetwork(
         );
       });
 
-      // Phase 3: Configure WireGuard mesh
-      await log.group("Phase 3: Configure WireGuard Mesh", async () => {
+      // Configure WireGuard mesh
+      await log.group("Configure WireGuard Mesh", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -386,9 +386,9 @@ export async function setupNetwork(
         }
       });
 
-      // Phase 4: Configure Corrosion (if enabled)
+      // Configure Corrosion (if enabled)
       if (config.network.discovery === "corrosion") {
-        await log.group("Phase 4: Configure Corrosion", async () => {
+        await log.group("Configure Corrosion", async () => {
           const serverLoggers = Logger.forServers(
             sshManagers.map((ssh) => ssh.getHost()),
             { maxPrefixLength: 25 },
@@ -512,8 +512,8 @@ export async function setupNetwork(
         });
       }
 
-      // Phase 5: Configure Container Networks
-      await log.group("Phase 5: Configure Container Networks", async () => {
+      // Configure Container Networks
+      await log.group("Configure Container Networks", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -597,8 +597,8 @@ export async function setupNetwork(
         }
       });
 
-      // Phase 6: Configure Routing
-      await log.group("Phase 6: Configure Routing", async () => {
+      // Configure Routing
+      await log.group("Configure Routing", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -648,8 +648,8 @@ export async function setupNetwork(
         }
       });
 
-      // Phase 7: Configure DNS
-      await log.group("Phase 7: Configure DNS", async () => {
+      // Configure DNS
+      await log.group("Configure DNS", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },
@@ -703,8 +703,8 @@ export async function setupNetwork(
         }
       });
 
-      // Phase 8: Setup Network Control Loop
-      await log.group("Phase 8: Setup Network Control Loop", async () => {
+      // Setup Network Control Loop
+      await log.group("Setup Network Control Loop", async () => {
         const serverLoggers = Logger.forServers(
           sshManagers.map((ssh) => ssh.getHost()),
           { maxPrefixLength: 25 },

@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { Confirm } from "@cliffy/prompt";
 import { Configuration } from "../lib/configuration.ts";
 import { setupCommandContext } from "../utils/command_helpers.ts";
 import { handleCommandError } from "../utils/error_handler.ts";
@@ -17,12 +18,154 @@ import type { GlobalOptions } from "../types.ts";
 interface DeployOptions extends GlobalOptions {
   build?: boolean;
   noCache?: boolean;
+  yes?: boolean;
+}
+
+/**
+ * Display deployment plan and get user confirmation
+ */
+async function displayDeploymentPlan(
+  config: Configuration,
+  deployOptions: DeployOptions,
+  globalOptions: GlobalOptions,
+): Promise<boolean> {
+  await log.group("Deployment Plan", () => {
+    log.info("Analyzing deployment configuration...", "plan");
+
+    // Get services that will be deployed
+    let allServices = config.getDeployableServices();
+
+    // Apply service filtering if specified
+    if (deployOptions.services) {
+      allServices = filterServicesByPatterns(
+        allServices,
+        deployOptions.services,
+        config,
+      );
+    }
+
+    // Get services that will be built
+    let buildServices = config.getBuildServices();
+    if (deployOptions.services) {
+      buildServices = filterServicesByPatterns(
+        buildServices,
+        deployOptions.services,
+        config,
+      );
+    }
+
+    // Display project information
+    console.log("\nDeployment Plan");
+    console.log("═".repeat(50));
+    console.log(`Project: ${config.project}`);
+    console.log(`Container Engine: ${config.builder.engine}`);
+    console.log(`Registry: ${config.builder.registry.getRegistryUrl()}`);
+
+    if (globalOptions.version) {
+      console.log(`Version: ${globalOptions.version}`);
+    }
+
+    // Display build information if --build flag is set
+    if (deployOptions.build && buildServices.length > 0) {
+      console.log("\nServices to Build:");
+      for (const service of buildServices) {
+        console.log(`  • ${service.name}`);
+        if (typeof service.build === "string") {
+          console.log(`    Context: ${service.build}`);
+        } else if (service.build) {
+          console.log(`    Context: ${service.build.context}`);
+          if (service.build.dockerfile) {
+            console.log(`    Dockerfile: ${service.build.dockerfile}`);
+          }
+          if (service.build.target) {
+            console.log(`    Target: ${service.build.target}`);
+          }
+        }
+      }
+    }
+
+    // Display deployment information
+    console.log("\nServices to Deploy:");
+    if (allServices.length === 0) {
+      console.log("  No services to deploy");
+    } else {
+      for (const service of allServices) {
+        console.log(`  • ${service.name}`);
+
+        // Show image or build source
+        if (service.image) {
+          console.log(`    Image: ${service.image}`);
+        } else if (service.build) {
+          console.log(
+            `    Built from: ${
+              typeof service.build === "string"
+                ? service.build
+                : service.build.context
+            }`,
+          );
+        }
+
+        // Show target servers
+        if (service.servers.length > 0) {
+          console.log(
+            `    Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+          );
+        }
+
+        // Show ports if any
+        if (service.ports.length > 0) {
+          console.log(`    Ports: ${service.ports.join(", ")}`);
+        }
+
+        // Show proxy info
+        if (service.proxy?.enabled) {
+          const hosts = service.proxy.hosts.length > 0
+            ? service.proxy.hosts.join(", ")
+            : "auto";
+          console.log(`    Proxy: Enabled (${hosts})`);
+        }
+      }
+    }
+
+    // Show additional options
+    const options: string[] = [];
+    if (deployOptions.build) options.push("Build images");
+    if (deployOptions.noCache) options.push("No cache");
+    if (globalOptions.hosts) {
+      options.push(`Target hosts: ${globalOptions.hosts}`);
+    }
+
+    if (options.length > 0) {
+      console.log("\nOptions:");
+      options.forEach((option) => console.log(`  • ${option}`));
+    }
+
+    console.log("═".repeat(50));
+  });
+
+  // Skip confirmation if --yes flag is provided
+  if (deployOptions.yes) {
+    log.info("Skipping confirmation (--yes flag provided)", "plan");
+    return true;
+  }
+
+  // Get user confirmation
+  console.log();
+  const confirmed = await Confirm.prompt({
+    message: "Do you want to proceed with this deployment?",
+    default: false,
+  });
+
+  return confirmed;
 }
 
 export const deployCommand = new Command()
   .description("Deploy services to servers")
   .option("--build", "Build images before deploying", { default: false })
   .option("--no-cache", "Build without using cache (requires --build)")
+  .option("-y, --yes", "Skip deployment confirmation prompt", {
+    default: false,
+  })
   .action(async (options) => {
     const deployOptions = options as unknown as DeployOptions;
     const globalOptions = options as unknown as GlobalOptions;
@@ -43,6 +186,17 @@ export const deployCommand = new Command()
           "config",
         );
         log.info(`Container engine: ${config.builder.engine}`, "engine");
+
+        // Display deployment plan and get confirmation
+        const shouldProceed = await displayDeploymentPlan(
+          config,
+          deployOptions,
+          globalOptions,
+        );
+        if (!shouldProceed) {
+          log.info("Deployment cancelled by user", "deploy");
+          return;
+        }
 
         // Build images if --build flag is set
         if (deployOptions.build) {
