@@ -220,14 +220,14 @@ Expose via proxy/load balancer only
 
 ## Troubleshooting Quick Tips
 
-| Issue                         | Quick Fix                                                    |
-| ----------------------------- | ------------------------------------------------------------ |
-| No peer handshakes            | Check firewall allows UDP 51820                              |
-| Containers can't ping peers   | Verify routes: `ip route \| grep jiji0`                      |
-| DNS not resolving             | Check CoreDNS: `systemctl status jiji-coredns`               |
-| Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`       |
-| Endpoint rotation not working | Check peer monitor logs                                      |
-| Slow cross-machine traffic    | Check WireGuard MTU settings                                 |
+| Issue                         | Quick Fix                                                     |
+| ----------------------------- | ------------------------------------------------------------- |
+| No peer handshakes            | Check firewall allows UDP 51820                               |
+| Containers can't ping peers   | Verify routes: `ip route \| grep jiji0`                       |
+| DNS not resolving             | Check CoreDNS: `systemctl status jiji-coredns`                |
+| Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`        |
+| Endpoint rotation not working | Check peer monitor logs                                       |
+| Slow cross-machine traffic    | Check WireGuard MTU settings                                  |
 | Container wrong subnet        | Recreate network: `docker network rm jiji` then re-initialize |
 
 ## Environment Variables

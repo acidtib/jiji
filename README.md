@@ -286,9 +286,9 @@ jiji audit --raw
 
 The audit trail tracks all Jiji operations including:
 
-Server initialization (start, success, failure) Container engine installations on
-each server Service deployments per server Configuration changes SSH connections
-and errors
+Server initialization (start, success, failure) Container engine installations
+on each server Service deployments per server Configuration changes SSH
+connections and errors
 
 Audit logs are stored in `.jiji/audit.txt` on each target server and include:
 
