@@ -317,9 +317,21 @@ export const deployCommand = new Command()
                     message: "Already running",
                   });
                 } else {
+                  // Load network topology to get DNS server IP
+                  let dnsServer: string | undefined;
+                  if (config!.network.enabled) {
+                    const topology = await loadTopology(hostSsh);
+                    if (topology) {
+                      const server = getServerByHostname(topology, host);
+                      if (server) {
+                        dnsServer = server.wireguardIp;
+                      }
+                    }
+                  }
+
                   // Boot the proxy
                   log.status(`Booting kamal-proxy on ${host}...`, "proxy");
-                  await proxyCmd.boot();
+                  await proxyCmd.boot({ dnsServer });
 
                   const version = await proxyCmd.getVersion();
                   log.success(
@@ -584,7 +596,19 @@ export const deployCommand = new Command()
                   const mergedEnv = service.getMergedEnvironment();
                   const envArray = mergedEnv.toEnvArray();
 
-                  const runCommand = new ContainerRunBuilder(
+                  // Get DNS server from network topology
+                  let dnsServer: string | undefined;
+                  if (config!.network.enabled) {
+                    const topology = await loadTopology(hostSsh);
+                    if (topology) {
+                      const server = getServerByHostname(topology, host);
+                      if (server) {
+                        dnsServer = server.wireguardIp;
+                      }
+                    }
+                  }
+
+                  const builder = new ContainerRunBuilder(
                     config!.builder.engine,
                     containerName,
                     fullImageName,
@@ -594,8 +618,14 @@ export const deployCommand = new Command()
                     .restart("unless-stopped")
                     .ports(service.ports)
                     .volumes(mountArgs)
-                    .environment(envArray)
-                    .build();
+                    .environment(envArray);
+
+                  // Add DNS configuration if network is enabled
+                  if (dnsServer) {
+                    builder.dns(dnsServer, config!.network.serviceDomain);
+                  }
+
+                  const runCommand = builder.build();
 
                   log.status(
                     `Starting container ${containerName} on ${host}`,

@@ -427,6 +427,19 @@ export async function queryServiceContainers(
 }
 
 /**
+ * Check if Corrosion binary is installed
+ *
+ * @param ssh - SSH connection to the server
+ * @returns True if Corrosion is installed
+ */
+export async function isCorrosionInstalled(ssh: SSHManager): Promise<boolean> {
+  const result = await ssh.executeCommand(
+    `test -f ${CORROSION_INSTALL_DIR}/corrosion && echo "installed"`,
+  );
+  return result.stdout.trim() === "installed";
+}
+
+/**
  * Check if Corrosion service is running
  *
  * @param ssh - SSH connection to the server

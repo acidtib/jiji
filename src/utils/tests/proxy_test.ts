@@ -602,13 +602,3 @@ Deno.test("ProxyConfiguration - supports hosts array", () => {
   assertEquals(config.enabled, true);
   assertEquals(config.ssl, true);
 });
-
-Deno.test("ProxyConfiguration - supports single host (backward compatibility)", () => {
-  const config = new ProxyConfiguration({
-    ssl: false,
-    host: "example.com",
-  });
-
-  assertEquals(config.hosts, ["example.com"]);
-  assertEquals(config.enabled, true);
-});

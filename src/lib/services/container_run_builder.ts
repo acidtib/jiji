@@ -27,6 +27,23 @@ export class ContainerRunBuilder {
   }
 
   /**
+   * Add DNS configuration
+   * @param dnsServer DNS server IP address
+   * @param searchDomain Optional DNS search domain
+   * @returns This builder for chaining
+   */
+  dns(dnsServer: string, searchDomain?: string): this {
+    this.args.push("--dns", dnsServer);
+    // Add fallback DNS servers
+    this.args.push("--dns", "8.8.8.8");
+    if (searchDomain) {
+      this.args.push("--dns-search", searchDomain);
+      this.args.push("--dns-option", "ndots:1");
+    }
+    return this;
+  }
+
+  /**
    * Add port mappings
    * @param ports Array of port mappings (e.g., ["8080:80", "443:443"])
    * @returns This builder for chaining

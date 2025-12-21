@@ -156,12 +156,14 @@ export async function getDockerBridgeInterface(
  *
  * @param ssh - SSH connection to the server
  * @param localSubnet - Local container subnet CIDR
+ * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param dockerBridge - Docker bridge interface name
  * @param wireguardInterface - WireGuard interface name (default: jiji0)
  */
 export async function setupIPTablesRules(
   ssh: SSHManager,
   localSubnet: string,
+  clusterCidr: string,
   dockerBridge: string,
   wireguardInterface = "jiji0",
 ): Promise<void> {
@@ -194,13 +196,26 @@ export async function setupIPTablesRules(
     );
   }
 
-  // NAT/MASQUERADE for container traffic going through WireGuard
-  const masqueradeRule =
-    `iptables -t nat -C POSTROUTING -s ${localSubnet} -o ${wireguardInterface} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} -o ${wireguardInterface} -j MASQUERADE`;
-  const result3 = await ssh.executeCommand(masqueradeRule);
+  // Skip NAT for container-to-container traffic within the cluster
+  // This preserves source IPs so containers can communicate with their real IPs across the mesh
+  const skipNatRule =
+    `iptables -t nat -C POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN`;
+  const result3 = await ssh.executeCommand(skipNatRule);
   if (result3.code !== 0 && !result3.stderr.includes("Bad rule")) {
     log.warn(
-      `Failed to add NAT masquerade rule on ${host}`,
+      `Failed to add skip NAT rule for cluster traffic on ${host}`,
+      "network",
+    );
+  }
+
+  // MASQUERADE only for internet-bound traffic (not going over WireGuard)
+  // This allows containers to access the internet while preserving source IPs for cluster communication
+  const internetMasqueradeRule =
+    `iptables -t nat -C POSTROUTING -s ${localSubnet} ! -o ${wireguardInterface} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} ! -o ${wireguardInterface} -j MASQUERADE`;
+  const result4 = await ssh.executeCommand(internetMasqueradeRule);
+  if (result4.code !== 0 && !result4.stderr.includes("Bad rule")) {
+    log.warn(
+      `Failed to add internet MASQUERADE rule on ${host}`,
       "network",
     );
   }
@@ -237,6 +252,7 @@ export async function setupIPTablesRules(
  *
  * @param ssh - SSH connection to the server
  * @param localSubnet - Local container subnet CIDR
+ * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param peers - Array of peer information
  * @param networkName - Docker network name
  * @param engine - Container engine (docker or podman)
@@ -245,6 +261,7 @@ export async function setupIPTablesRules(
 export async function setupServerRouting(
   ssh: SSHManager,
   localSubnet: string,
+  clusterCidr: string,
   peers: Array<{ subnet: string; hostname: string }>,
   networkName: string,
   engine: "docker" | "podman",
@@ -272,6 +289,7 @@ export async function setupServerRouting(
     await setupIPTablesRules(
       ssh,
       localSubnet,
+      clusterCidr,
       dockerBridge,
       wireguardInterface,
     );

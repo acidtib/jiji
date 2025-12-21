@@ -67,27 +67,6 @@ export async function loadTopology(
 }
 
 /**
- * Save network topology to Corrosion distributed database
- *
- * This is now a no-op since topology is stored in real-time via Corrosion.
- * Kept for backward compatibility with existing code.
- *
- * @param topology - Network topology to save
- * @param ssh - SSH connection (optional, unused)
- * @deprecated Use registerServer() and initializeClusterMetadata() instead
- */
-export async function saveTopology(
-  _topology: NetworkTopology,
-  _ssh?: SSHManager,
-): Promise<void> {
-  // No-op: topology is stored in Corrosion in real-time
-  log.debug(
-    "saveTopology() called but is deprecated - topology stored in Corrosion",
-    "network",
-  );
-}
-
-/**
  * Create a new network topology
  *
  * @param clusterCidr - Cluster CIDR (e.g., "10.210.0.0/16")
@@ -371,22 +350,6 @@ export async function topologyExists(ssh: SSHManager): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Delete network topology from Corrosion
- *
- * This will remove all cluster metadata and server records
- *
- * @param ssh - SSH connection to any server
- */
-export async function deleteTopology(ssh: SSHManager): Promise<void> {
-  // This is now handled by dropping Corrosion database
-  // Kept for backward compatibility
-  log.debug(
-    "deleteTopology() called - cluster data will be cleared from Corrosion",
-    "network",
-  );
 }
 
 /**

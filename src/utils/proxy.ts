@@ -133,11 +133,13 @@ export class ProxyCommands {
     publish?: boolean;
     httpPort?: number;
     httpsPort?: number;
+    dnsServer?: string;
   }): Promise<void> {
     const {
       publish = true,
       httpPort = 80,
       httpsPort = 443,
+      dnsServer,
     } = options || {};
 
     // Pull the image first
@@ -150,8 +152,14 @@ export class ProxyCommands {
       ? `-p ${httpPort}:${this.internalHttpPort} -p ${httpsPort}:${this.internalHttpsPort}`
       : "";
 
+    // For Podman, explicitly set DNS to ensure service discovery works
+    // For Docker, daemon.json handles this but explicit --dns doesn't hurt
+    const dnsArgs = dnsServer
+      ? `--dns ${dnsServer} --dns 8.8.8.8 --dns-search jiji --dns-option ndots:1`
+      : "";
+
     const command =
-      `${this.engine} run --name ${this.containerName} --network ${this.networkName} --detach --restart unless-stopped --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy ${publishArgs} docker.io/basecamp/kamal-proxy:latest kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
+      `${this.engine} run --name ${this.containerName} --network ${this.networkName} ${dnsArgs} --detach --restart unless-stopped --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy ${publishArgs} docker.io/basecamp/kamal-proxy:latest kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
 
     const result = await this.ssh.executeCommand(command);
     if (!result.success) {
@@ -182,6 +190,7 @@ export class ProxyCommands {
     publish?: boolean;
     httpPort?: number;
     httpsPort?: number;
+    dnsServer?: string;
   }): Promise<void> {
     // Try to start first, if that fails, run a new container
     try {

@@ -96,6 +96,13 @@ export async function setupNetwork(
       // Try to load topology from any existing server
       for (const ssh of sshManagers) {
         try {
+          // Skip if Corrosion is not installed yet
+          const { isCorrosionInstalled } = await import("./corrosion.ts");
+          const installed = await isCorrosionInstalled(ssh);
+          if (!installed) {
+            continue;
+          }
+
           topology = await loadTopology(ssh);
           if (topology !== null) {
             isNewNetwork = false;
@@ -563,8 +570,9 @@ export async function setupNetwork(
             }
 
             // Network doesn't exist - create it
+            // Note: DNS is configured at daemon level, not per-network, so all containers get service discovery
             const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns=${server.wireguardIp}`
+              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway}`
               : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);
@@ -619,6 +627,7 @@ export async function setupNetwork(
             await setupServerRouting(
               ssh,
               server.subnet,
+              config.network.clusterCidr,
               peers,
               "jiji",
               config.builder.engine,
@@ -678,6 +687,7 @@ export async function setupNetwork(
             await configureContainerDNS(
               ssh,
               server.wireguardIp,
+              config.network.serviceDomain,
               config.builder.engine,
             );
 

@@ -445,19 +445,39 @@ export async function unregisterContainerHostname(
 /**
  * Configure container engine to use custom DNS
  *
+ * This configures DNS at the daemon level so ALL containers (on any network)
+ * can use service discovery, not just containers on the jiji network.
+ *
  * @param ssh - SSH connection to the server
  * @param dnsServer - DNS server IP (WireGuard IP)
+ * @param serviceDomain - Service domain for DNS search (default: "jiji")
  * @param engine - Container engine (docker or podman)
  */
 export async function configureContainerDNS(
   ssh: SSHManager,
   dnsServer: string,
+  serviceDomain: string,
   engine: "docker" | "podman",
 ): Promise<void> {
   if (engine === "docker") {
-    // Configure Docker daemon to use custom DNS
+    // Read existing daemon.json if it exists
+    const readResult = await ssh.executeCommand(
+      "cat /etc/docker/daemon.json 2>/dev/null || echo '{}'",
+    );
+
+    let existingConfig: Record<string, unknown> = {};
+    try {
+      existingConfig = JSON.parse(readResult.stdout.trim() || "{}");
+    } catch {
+      log.warn("Failed to parse existing daemon.json, will overwrite", "dns");
+    }
+
+    // Merge DNS configuration with existing config
     const daemonConfig = {
+      ...existingConfig,
       dns: [dnsServer, "8.8.8.8", "1.1.1.1"],
+      "dns-search": [serviceDomain],
+      "dns-opts": ["ndots:1"],
     };
 
     const configContent = JSON.stringify(daemonConfig, null, 2);
@@ -468,15 +488,27 @@ export async function configureContainerDNS(
     );
 
     // Reload Docker
-    await ssh.executeCommand(
-      "systemctl reload docker || systemctl restart docker",
+    const reloadResult = await ssh.executeCommand(
+      "systemctl reload docker 2>/dev/null || systemctl restart docker",
     );
 
-    log.success(`Docker configured to use DNS server ${dnsServer}`, "dns");
+    if (reloadResult.code !== 0) {
+      log.warn(
+        `Failed to reload Docker daemon: ${reloadResult.stderr}`,
+        "dns",
+      );
+    }
+
+    log.success(
+      `Docker daemon configured: DNS=${dnsServer}, search=${serviceDomain}`,
+      "dns",
+    );
   } else if (engine === "podman") {
     // Podman uses containers.conf
     const containersConf = `[network]
 dns_servers = ["${dnsServer}", "8.8.8.8", "1.1.1.1"]
+dns_searches = ["${serviceDomain}"]
+dns_options = ["ndots:1"]
 `;
 
     await ssh.executeCommand(
@@ -493,6 +525,9 @@ dns_servers = ["${dnsServer}", "8.8.8.8", "1.1.1.1"]
       log.success("kamal-proxy restarted with new DNS configuration", "dns");
     }
 
-    log.success(`Podman configured to use DNS server ${dnsServer}`, "dns");
+    log.success(
+      `Podman configured: DNS=${dnsServer}, search=${serviceDomain}`,
+      "dns",
+    );
   }
 }
