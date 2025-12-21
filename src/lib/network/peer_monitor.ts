@@ -296,7 +296,7 @@ export async function updatePeerEndpoint(
 export async function monitorPeers(
   ssh: SSHManager,
   servers: NetworkServer[],
-  localServerId: string,
+  _localServerId: string,
   interfaceName = "jiji0",
 ): Promise<void> {
   try {

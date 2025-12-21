@@ -118,7 +118,7 @@ export const deployCommand = new Command()
 
         // Now set up SSH connections for deployment
         ctx = await setupCommandContext(globalOptions);
-        const { config: ctxConfig, sshManagers, targetHosts } = ctx;
+        const { sshManagers, targetHosts } = ctx;
 
         // Set up port forwarding for local registry if needed
         if (config.builder.registry.isLocal()) {

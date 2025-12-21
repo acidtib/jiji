@@ -311,8 +311,8 @@ export async function setupServerRouting(
 export async function cleanupServerRouting(
   ssh: SSHManager,
   subnets: string[],
-  dockerBridge: string,
-  wireguardInterface = "jiji0",
+  _dockerBridge: string,
+  _wireguardInterface = "jiji0",
 ): Promise<void> {
   const host = ssh.getHost();
 

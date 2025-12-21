@@ -399,18 +399,15 @@ export async function triggerHostsUpdate(ssh: SSHManager): Promise<void> {
 /**
  * Register a container hostname in system DNS immediately
  *
- * @param ssh - SSH connection to the server
  * @param serviceName - Service name
+ * @param projectName - Project name
  * @param containerIp - Container IP address
- * @param containerId - Container ID (optional)
  */
-export async function registerContainerHostname(
-  ssh: SSHManager,
+export function registerContainerHostname(
   serviceName: string,
   projectName: string,
   containerIp: string,
-  containerId?: string,
-): Promise<void> {
+): void {
   // We only need CoreDNS entries now - system hosts are not needed
   // since kamal-proxy will use the .jiji domain directly
 
@@ -423,16 +420,13 @@ export async function registerContainerHostname(
 /**
  * Unregister a container hostname from system DNS
  *
- * @param ssh - SSH connection to the server
  * @param serviceName - Service name
- * @param containerId - Container ID (optional)
+ * @param projectName - Project name
  */
-export async function unregisterContainerHostname(
-  ssh: SSHManager,
+export function unregisterContainerHostname(
   serviceName: string,
   projectName?: string,
-  containerId?: string,
-): Promise<void> {
+): void {
   // CoreDNS entries are automatically removed when containers are
   // unregistered from Corrosion database
 

@@ -130,9 +130,6 @@ async function logFailureToAudit(
   errorMessage: string,
   component: string,
 ): Promise<void> {
-  // Create audit logger for all servers
-  const auditLogger = createServerAuditLogger(sshManagers, projectName);
-
   // Log the failure with a generic custom command entry
   // This allows flexibility for different operation types
   const results = await Promise.allSettled(

@@ -127,7 +127,7 @@ export class ContainerDeploymentService {
       );
 
       // Start new container
-      const containerId = await this.startContainer(
+      await this.startContainer(
         service,
         fullImageName,
         containerName,

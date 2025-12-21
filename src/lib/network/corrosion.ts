@@ -466,7 +466,7 @@ export async function isCorrosionRunning(ssh: SSHManager): Promise<boolean> {
  */
 export async function waitForCorrosionSync(
   ssh: SSHManager,
-  expectedServerCount: number,
+  _expectedServerCount: number,
   maxWaitSeconds: number = 300,
   pollIntervalMs: number = 2000,
 ): Promise<void> {

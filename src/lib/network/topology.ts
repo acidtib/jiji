@@ -9,7 +9,6 @@ import type { SSHManager } from "../../utils/ssh.ts";
 import type { NetworkServer, NetworkTopology } from "../../types/network.ts";
 import { log } from "../../utils/logger.ts";
 import { getClusterMetadata, queryAllServers } from "./corrosion.ts";
-import type { ServerRegistration } from "../../types/network.ts";
 
 /**
  * Load network topology from Corrosion distributed database

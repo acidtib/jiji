@@ -339,8 +339,8 @@ export async function withCommandContext<T = void>(
 
     // TypeScript doesn't understand that Deno.exit never returns
     Deno.exit(1);
-    // deno-lint-ignore no-unreachable
-    throw new Error("Unreachable");
+    // This line is unreachable but satisfies TypeScript
+    throw new Error("Process exited");
   } finally {
     // Always clean up SSH connections
     if (ctx?.sshManagers) {

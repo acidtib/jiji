@@ -18,7 +18,6 @@ import {
   unregisterContainerHostname,
 } from "../network/dns.ts";
 import { log } from "../../utils/logger.ts";
-import type { Configuration } from "../configuration.ts";
 
 /**
  * Get container IP address from Docker/Podman
@@ -133,12 +132,10 @@ export async function registerContainerInNetwork(
 
     // Register container hostname in system DNS for immediate resolution
     try {
-      await registerContainerHostname(
-        ssh,
+      registerContainerHostname(
         serviceName,
         projectName,
         ip,
-        containerId,
       );
 
       // CoreDNS will handle all resolution via project-service.jiji format
@@ -192,11 +189,9 @@ export async function unregisterContainerFromNetwork(
     // Unregister container hostname from system DNS
     if (serviceName) {
       try {
-        await unregisterContainerHostname(
-          ssh,
+        unregisterContainerHostname(
           serviceName,
           projectName,
-          containerId,
         );
       } catch (error) {
         log.warn(
@@ -371,7 +366,7 @@ export async function cleanupServiceContainers(
 
     // Also clean up any remaining DNS entries for this service
     try {
-      await unregisterContainerHostname(ssh, serviceName, projectName);
+      unregisterContainerHostname(serviceName, projectName);
       log.debug(
         `Cleaned up DNS entries for service: ${serviceName}`,
         "network",

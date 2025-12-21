@@ -1,9 +1,13 @@
 import { Command } from "@cliffy/command";
-import { Configuration } from "../../lib/configuration.ts";
-import { setupSSHConnections, type SSHManager } from "../../utils/ssh.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log, Logger } from "../../utils/logger.ts";
 import { executeHostOperations } from "../../utils/promise_helpers.ts";
+import { handleCommandError } from "../../utils/error_handler.ts";
+import { DEFAULT_MAX_PREFIX_LENGTH } from "../../constants.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const execCommand = new Command()
@@ -30,141 +34,25 @@ export const execCommand = new Command()
     { default: 300 },
   )
   .action(async (options, command: string) => {
-    let config: Configuration | undefined;
-    let sshManagers: SSHManager[] | undefined;
-    let auditLogger: ReturnType<typeof createServerAuditLogger> | undefined;
-    let targetHosts: string[] = [];
+    const globalOptions = options as unknown as GlobalOptions;
+    let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
       await log.group("Remote Command Execution", async () => {
         log.info(`Executing command: ${command}`, "exec");
 
-        // Cast options to GlobalOptions to access global options
-        const globalOptions = options as unknown as GlobalOptions;
-
-        // Load and parse the configuration using new system
-        config = await Configuration.load(
-          globalOptions.environment,
-          globalOptions.configFile,
-        );
-        const configPath = config.configPath || "unknown";
-        log.success(`Configuration loaded from: ${configPath}`, "config");
-
-        // Collect all unique hosts from services using new system
-        let allHosts = config.getAllServerHosts();
-
-        // Filter by services if requested
-        if (globalOptions.services) {
-          const requestedServices = globalOptions.services.split(",").map((s) =>
-            s.trim()
-          );
-
-          // Get matching service names (supports wildcards)
-          const matchingServices = config.getMatchingServiceNames(
-            requestedServices,
-          );
-
-          if (matchingServices.length === 0) {
-            log.error(
-              `No services found matching: ${requestedServices.join(", ")}`,
-              "exec",
-            );
-            log.info(
-              `Available services: ${config.getServiceNames().join(", ")}`,
-              "exec",
-            );
-            Deno.exit(1);
-          }
-
-          // Get hosts from matching services
-          allHosts = config.getHostsFromServices(matchingServices);
-
-          log.info(
-            `Targeting services: ${matchingServices.join(", ")}`,
-            "exec",
-          );
-          log.info(
-            `Service hosts: ${allHosts.join(", ")}`,
-            "exec",
-          );
-        }
-
-        let uniqueHosts = allHosts;
-
-        // Filter hosts if specific hosts are requested
-        if (globalOptions.hosts) {
-          const requestedHosts = globalOptions.hosts.split(",").map((h) =>
-            h.trim()
-          );
-          const validHosts = requestedHosts.filter((host) =>
-            uniqueHosts.includes(host)
-          );
-          const invalidHosts = requestedHosts.filter((host) =>
-            !uniqueHosts.includes(host)
-          );
-
-          if (invalidHosts.length > 0) {
-            log.warn(
-              `Invalid hosts specified (not in config): ${
-                invalidHosts.join(", ")
-              }`,
-              "exec",
-            );
-          }
-
-          if (validHosts.length === 0) {
-            log.error("No valid hosts specified", "exec");
-            Deno.exit(1);
-          }
-
-          uniqueHosts = validHosts;
-          log.info(
-            `Targeting specific hosts: ${uniqueHosts.join(", ")}`,
-            "exec",
-          );
-        }
-
-        if (uniqueHosts.length === 0) {
-          log.error(
-            `No hosts found in configuration at: ${configPath}`,
-            "config",
-          );
-          log.error(
-            `Please update your jiji config to include hosts for services.`,
-            "config",
-          );
-          Deno.exit(1);
-        }
-
-        log.info(
-          `Found ${uniqueHosts.length} host(s): ${uniqueHosts.join(", ")}`,
-          "exec",
-        );
-
-        await log.group("SSH Connection Setup", async () => {
-          const result = await setupSSHConnections(
-            uniqueHosts,
-            {
-              user: config!.ssh.user,
-              port: config!.ssh.port,
-              proxy: config!.ssh.proxy,
-              proxy_command: config!.ssh.proxyCommand,
-              keys: config!.ssh.allKeys.length > 0
-                ? config!.ssh.allKeys
-                : undefined,
-              keyData: config!.ssh.keyData,
-              keysOnly: config!.ssh.keysOnly,
-              dnsRetries: config!.ssh.dnsRetries,
-            },
-            { allowPartialConnection: options.continueOnError },
-          );
-
-          sshManagers = result.managers;
-          targetHosts = result.connectedHosts;
+        // Set up command context
+        ctx = await setupCommandContext(globalOptions, {
+          allowPartialConnection: options.continueOnError,
         });
 
-        // Create audit logger for connected servers
-        auditLogger = createServerAuditLogger(sshManagers!, config.project);
+        const { config, sshManagers, targetHosts } = ctx;
+
+        // Create audit logger
+        const auditLogger = createServerAuditLogger(
+          sshManagers,
+          config.project,
+        );
 
         await log.group("Command Execution", async () => {
           log.info(`Interactive mode: ${options.interactive}`, "exec");
@@ -177,26 +65,23 @@ export const execCommand = new Command()
 
           // Handle interactive mode
           if (options.interactive) {
-            if (sshManagers!.length > 1) {
+            if (sshManagers.length > 1) {
               log.error(
                 "Interactive mode only supports single host execution",
                 "exec",
               );
               log.info(
-                `Found ${
-                  sshManagers!.length
-                } hosts. Please specify a single host for interactive mode.`,
+                `Found ${sshManagers.length} hosts. Please specify a single host for interactive mode.`,
                 "exec",
               );
               return;
             }
 
             log.status("Starting interactive session...", "exec");
-            const ssh = sshManagers![0];
+            const ssh = sshManagers[0];
 
             try {
               await ssh.startInteractiveSession(command);
-              // Interactive session completed, exit quietly
               Deno.exit(0);
             } catch (error) {
               const errorMessage = error instanceof Error
@@ -209,7 +94,7 @@ export const execCommand = new Command()
 
           // Create server loggers for individual host reporting
           const serverLoggers = Logger.forServers(targetHosts, {
-            maxPrefixLength: 25,
+            maxPrefixLength: DEFAULT_MAX_PREFIX_LENGTH,
           });
 
           // Execute the command on all hosts
@@ -218,78 +103,20 @@ export const execCommand = new Command()
           if (options.parallel) {
             log.status("Executing command in parallel...", "exec");
 
-            // Create host operations for enhanced error collection
-            const hostOperations = sshManagers!.map((ssh) => ({
+            // Create host operations
+            const hostOperations = sshManagers.map((ssh) => ({
               host: ssh.getHost(),
               operation: async () => {
-                const host = ssh.getHost();
-                const hostLogger = serverLoggers.get(host);
-
-                if (hostLogger) {
-                  hostLogger.executing(command);
-                }
-
-                let timerId: number | undefined;
-
-                try {
-                  // Create a timeout promise
-                  const timeoutPromise = new Promise((_, reject) => {
-                    timerId = setTimeout(
-                      () =>
-                        reject(
-                          new Error(
-                            `Command timed out after ${options.timeout} seconds`,
-                          ),
-                        ),
-                      options.timeout * 1000,
-                    );
-                  });
-
-                  // Race the command execution against the timeout
-                  const result = await Promise.race([
-                    ssh.executeCommand(command),
-                    timeoutPromise,
-                  ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
-
-                  if (hostLogger) {
-                    if (result.success) {
-                      hostLogger.success(
-                        `Command completed (exit code: ${result.code})`,
-                      );
-                    } else {
-                      hostLogger.error(
-                        `Command failed (exit code: ${result.code})`,
-                      );
-                    }
-
-                    if (result.stdout.trim()) {
-                      result.stdout.trim().split("\n").forEach((line) => {
-                        hostLogger.info(`STDOUT: ${line}`);
-                      });
-                    }
-                    if (result.stderr.trim()) {
-                      result.stderr.trim().split("\n").forEach((line) => {
-                        hostLogger.error(`STDERR: ${line}`);
-                      });
-                    }
-                  }
-
-                  return {
-                    host,
-                    success: result.success,
-                    code: result.code,
-                    stdout: result.stdout,
-                    stderr: result.stderr,
-                  };
-                } finally {
-                  if (timerId !== undefined) {
-                    clearTimeout(timerId);
-                  }
-                }
+                return await executeCommandWithTimeout(
+                  ssh,
+                  command,
+                  options.timeout,
+                  serverLoggers,
+                );
               },
             }));
 
-            // Execute with enhanced error collection
+            // Execute with error collection
             const aggregatedResults = await executeHostOperations(
               hostOperations,
             );
@@ -315,7 +142,7 @@ export const execCommand = new Command()
 
             executionResults.push(...results);
 
-            // Log summary for parallel execution
+            // Log summary
             if (aggregatedResults.errorCount > 0) {
               log.warn(
                 `Parallel execution completed with ${aggregatedResults.errorCount} failures out of ${results.length} hosts`,
@@ -331,58 +158,16 @@ export const execCommand = new Command()
             log.status("Executing command sequentially...", "exec");
 
             // Execute sequentially
-            for (const ssh of sshManagers!) {
+            for (const ssh of sshManagers) {
               const host = ssh.getHost();
-              const hostLogger = serverLoggers.get(host);
-
-              if (hostLogger) {
-                hostLogger.executing(command);
-              }
-
-              let timerId: number | undefined;
 
               try {
-                // Create a timeout promise
-                const timeoutPromise = new Promise((_, reject) => {
-                  timerId = setTimeout(
-                    () =>
-                      reject(
-                        new Error(
-                          `Command timed out after ${options.timeout} seconds`,
-                        ),
-                      ),
-                    options.timeout * 1000,
-                  );
-                });
-
-                // Race the command execution against the timeout
-                const result = await Promise.race([
-                  ssh.executeCommand(command),
-                  timeoutPromise,
-                ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
-
-                if (hostLogger) {
-                  if (result.success) {
-                    hostLogger.success(
-                      `Command completed (exit code: ${result.code})`,
-                    );
-                  } else {
-                    hostLogger.error(
-                      `Command failed (exit code: ${result.code})`,
-                    );
-                  }
-
-                  if (result.stdout.trim()) {
-                    result.stdout.trim().split("\n").forEach((line) => {
-                      hostLogger.info(`STDOUT: ${line}`);
-                    });
-                  }
-                  if (result.stderr.trim()) {
-                    result.stderr.trim().split("\n").forEach((line) => {
-                      hostLogger.warn(`STDERR: ${line}`);
-                    });
-                  }
-                }
+                const result = await executeCommandWithTimeout(
+                  ssh,
+                  command,
+                  options.timeout,
+                  serverLoggers,
+                );
 
                 executionResults.push({
                   host,
@@ -403,6 +188,7 @@ export const execCommand = new Command()
                   ? error.message
                   : String(error);
 
+                const hostLogger = serverLoggers.get(host);
                 if (hostLogger) {
                   hostLogger.error(`Command failed: ${errorMessage}`);
                 }
@@ -427,8 +213,6 @@ export const execCommand = new Command()
                   );
                   break;
                 }
-              } finally {
-                if (timerId !== undefined) clearTimeout(timerId);
               }
             }
           }
@@ -459,15 +243,13 @@ export const execCommand = new Command()
             log.error("Command execution failed on some hosts", "exec");
 
             // Log failures to audit before exiting
-            if (auditLogger) {
-              await auditLogger.logCustomCommand(
-                command,
-                "failed",
-                `Command execution failed on ${failed.length} host(s): ${
-                  failed.map((r) => r.host).join(", ")
-                }`,
-              );
-            }
+            await auditLogger.logCustomCommand(
+              command,
+              "failed",
+              `Command execution failed on ${failed.length} host(s): ${
+                failed.map((r) => r.host).join(", ")
+              }`,
+            );
 
             Deno.exit(1);
           } else if (failed.length === 0) {
@@ -479,70 +261,114 @@ export const execCommand = new Command()
             );
           }
 
-          // Log completion to connected servers
-          if (auditLogger) {
-            await auditLogger.logCustomCommand(
-              command,
-              failed.length === 0 ? "success" : "failed",
-              failed.length === 0
-                ? `Command executed successfully on all ${successful.length} host(s)`
-                : `Command completed with ${failed.length} failure(s) out of ${executionResults.length} host(s)`,
-            );
+          // Log completion to audit
+          await auditLogger.logCustomCommand(
+            command,
+            failed.length === 0 ? "success" : "failed",
+            failed.length === 0
+              ? `Command executed successfully on all ${successful.length} host(s)`
+              : `Command completed with ${failed.length} failure(s) out of ${executionResults.length} host(s)`,
+          );
 
-            log.info(
-              `Audit trail updated on ${targetHosts.length} server(s): ${
-                targetHosts.join(", ")
-              }`,
-              "audit",
-            );
-          }
+          log.info(
+            `Audit trail updated on ${targetHosts.length} server(s): ${
+              targetHosts.join(", ")
+            }`,
+            "audit",
+          );
         });
 
-        // Clean up execution SSH connections before audit logging
-        if (sshManagers) {
-          sshManagers.forEach((ssh) => {
-            try {
-              ssh.dispose();
-            } catch (error) {
-              log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
-            }
-          });
-          sshManagers = undefined; // Prevent double disposal in finally
-        }
+        console.log();
+        log.success("Remote command execution completed!");
       });
-
-      // Final success message
-      console.log();
-      log.success("Remote command execution completed!");
     } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      console.log();
-      log.error("Command execution failed:", "exec");
-      log.error(errorMessage, "exec");
-
-      // Log failure to audit if possible
-      if (auditLogger) {
-        await auditLogger.logCustomCommand(
-          command,
-          "failed",
-          `Command execution failed: ${errorMessage}`,
-        );
-      }
-
-      Deno.exit(1);
+      await handleCommandError(error, {
+        operation: "Command execution",
+        component: "exec",
+        sshManagers: ctx?.sshManagers,
+        projectName: ctx?.config?.project,
+        targetHosts: ctx?.targetHosts,
+      });
     } finally {
-      // Clean up any remaining SSH connections
-      if (sshManagers) {
-        sshManagers.forEach((ssh) => {
-          try {
-            ssh.dispose();
-          } catch (error) {
-            // Ignore cleanup errors, but log them for debugging
-            log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
-          }
-        });
+      if (ctx?.sshManagers) {
+        cleanupSSHConnections(ctx.sshManagers);
       }
     }
   });
+
+/**
+ * Execute a command with timeout
+ */
+async function executeCommandWithTimeout(
+  ssh: Awaited<
+    ReturnType<typeof import("../../utils/ssh.ts").setupSSHConnections>
+  >["managers"][0],
+  command: string,
+  timeoutSeconds: number,
+  serverLoggers: Map<string, Logger>,
+) {
+  const host = ssh.getHost();
+  const hostLogger = serverLoggers.get(host);
+
+  if (hostLogger) {
+    hostLogger.executing(command);
+  }
+
+  let timerId: number | undefined;
+
+  try {
+    // Create a timeout promise
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Command timed out after ${timeoutSeconds} seconds`,
+            ),
+          ),
+        timeoutSeconds * 1000,
+      );
+    });
+
+    // Race the command execution against the timeout
+    const result = await Promise.race([
+      ssh.executeCommand(command),
+      timeoutPromise,
+    ]) as Awaited<ReturnType<typeof ssh.executeCommand>>;
+
+    if (hostLogger) {
+      if (result.success) {
+        hostLogger.success(
+          `Command completed (exit code: ${result.code})`,
+        );
+      } else {
+        hostLogger.error(
+          `Command failed (exit code: ${result.code})`,
+        );
+      }
+
+      if (result.stdout.trim()) {
+        result.stdout.trim().split("\n").forEach((line) => {
+          hostLogger.info(`STDOUT: ${line}`);
+        });
+      }
+      if (result.stderr.trim()) {
+        result.stderr.trim().split("\n").forEach((line) => {
+          hostLogger.warn(`STDERR: ${line}`);
+        });
+      }
+    }
+
+    return {
+      host,
+      success: result.success,
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } finally {
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+    }
+  }
+}

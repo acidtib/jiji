@@ -12,7 +12,6 @@
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";
-import type { NetworkServer } from "../../types/network.ts";
 import { log } from "../../utils/logger.ts";
 
 const LOOP_INTERVAL = 30; // seconds

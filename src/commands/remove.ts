@@ -1,7 +1,10 @@
 import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
-import { Configuration } from "../lib/configuration.ts";
-import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../utils/command_helpers.ts";
+import { handleCommandError } from "../utils/error_handler.ts";
 import { log } from "../utils/logger.ts";
 import { ProxyCommands } from "../utils/proxy.ts";
 import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
@@ -34,17 +37,14 @@ export const removeCommand = new Command()
   .description("Remove services and .jiji/project_dir from servers")
   .option("-y, --confirmed", "Skip confirmation prompt", { default: false })
   .action(async (options) => {
-    let uniqueHosts: string[] = [];
-    let config: Configuration | undefined;
-    let sshManagers: SSHManager[] | undefined;
+    const globalOptions = options as unknown as GlobalOptions;
+    let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
       await log.group("Service Removal", async () => {
-        // Cast options to GlobalOptions
-        const globalOptions = options as unknown as GlobalOptions;
-
-        // Load configuration
-        config = await Configuration.load(
+        // Load configuration first (before confirmation)
+        const { Configuration } = await import("../lib/configuration.ts");
+        const config = await Configuration.load(
           globalOptions.environment,
           globalOptions.configFile,
         );
@@ -52,13 +52,10 @@ export const removeCommand = new Command()
         log.success(`Configuration loaded from: ${configPath}`, "config");
         log.info(`Project: ${config.project}`, "config");
 
-        if (!config) throw new Error("Configuration failed to load");
-
         // Collect all unique hosts
         const allHosts = config.getAllServerHosts();
-        uniqueHosts = allHosts;
 
-        if (uniqueHosts.length === 0) {
+        if (allHosts.length === 0) {
           log.error(
             `No remote hosts found in configuration at: ${configPath}`,
             "config",
@@ -67,9 +64,7 @@ export const removeCommand = new Command()
         }
 
         log.info(
-          `Found ${uniqueHosts.length} remote host(s): ${
-            uniqueHosts.join(", ")
-          }`,
+          `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
           "remove",
         );
 
@@ -78,7 +73,7 @@ export const removeCommand = new Command()
         if (!confirmed) {
           console.log();
           log.warn(
-            `This will remove all services and .jiji/${config.project} from ${uniqueHosts.length} server(s)`,
+            `This will remove all services and .jiji/${config.project} from ${allHosts.length} server(s)`,
             "remove",
           );
           console.log();
@@ -96,30 +91,12 @@ export const removeCommand = new Command()
 
         log.info("Starting removal process...", "remove");
 
-        await log.group("SSH Connection Setup", async () => {
-          const result = await setupSSHConnections(
-            uniqueHosts,
-            {
-              user: config!.ssh.user,
-              port: config!.ssh.port,
-              proxy: config!.ssh.proxy,
-              proxy_command: config!.ssh.proxyCommand,
-              keys: config!.ssh.allKeys.length > 0
-                ? config!.ssh.allKeys
-                : undefined,
-              keyData: config!.ssh.keyData,
-              keysOnly: config!.ssh.keysOnly,
-              dnsRetries: config!.ssh.dnsRetries,
-            },
-            { allowPartialConnection: true },
-          );
-
-          sshManagers = result.managers;
-          uniqueHosts = result.connectedHosts;
-        });
+        // Set up command context
+        ctx = await setupCommandContext(globalOptions);
+        const { config: ctxConfig, sshManagers, targetHosts } = ctx;
 
         // Get all services
-        const services = Array.from(config.services.values());
+        const services = Array.from(ctxConfig.services.values());
 
         // Remove containers and proxy configuration for each service
         await log.group("Removing Services", async () => {
@@ -128,7 +105,7 @@ export const removeCommand = new Command()
 
             for (const server of service.servers) {
               const host = server.host;
-              if (!uniqueHosts.includes(host)) {
+              if (!targetHosts.includes(host)) {
                 log.warn(
                   `Skipping ${service.name} on unreachable host: ${host}`,
                   "remove",
@@ -136,9 +113,7 @@ export const removeCommand = new Command()
                 continue;
               }
 
-              const hostSsh = sshManagers!.find((ssh) =>
-                ssh.getHost() === host
-              );
+              const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
               if (!hostSsh) continue;
 
               try {
@@ -151,7 +126,7 @@ export const removeCommand = new Command()
                     "remove",
                   );
                   const proxyCmd = new ProxyCommands(
-                    config!.builder.engine,
+                    ctxConfig.builder.engine,
                     hostSsh,
                   );
                   await proxyCmd.remove(service.name);
@@ -162,7 +137,7 @@ export const removeCommand = new Command()
                 }
 
                 // Unregister from network (if enabled)
-                if (config!.network.enabled) {
+                if (ctxConfig.network.enabled) {
                   try {
                     log.status(
                       `Unregistering ${service.name} from network...`,
@@ -172,7 +147,7 @@ export const removeCommand = new Command()
                       hostSsh,
                       containerName,
                       service.name,
-                      config!.project,
+                      ctxConfig.project,
                     );
                   } catch (error) {
                     log.warn(
@@ -188,9 +163,7 @@ export const removeCommand = new Command()
                   "remove",
                 );
                 const rmResult = await hostSsh.executeCommand(
-                  `${
-                    config!.builder.engine
-                  } rm -f ${containerName} 2>/dev/null || true`,
+                  `${ctxConfig.builder.engine} rm -f ${containerName} 2>/dev/null || true`,
                 );
 
                 if (rmResult.success) {
@@ -211,9 +184,7 @@ export const removeCommand = new Command()
                   for (const volumeName of namedVolumes) {
                     try {
                       const volResult = await hostSsh.executeCommand(
-                        `${
-                          config!.builder.engine
-                        } volume rm ${volumeName} 2>/dev/null || true`,
+                        `${ctxConfig.builder.engine} volume rm ${volumeName} 2>/dev/null || true`,
                       );
 
                       if (volResult.success) {
@@ -248,11 +219,11 @@ export const removeCommand = new Command()
 
         // Remove .jiji/project directory from all hosts
         await log.group("Removing Project Directory", async () => {
-          const projectDir = `.jiji/${config!.project}`;
+          const projectDir = `.jiji/${ctxConfig.project}`;
           log.info(`Removing ${projectDir} from all hosts`, "remove");
 
-          for (const host of uniqueHosts) {
-            const hostSsh = sshManagers!.find((ssh) => ssh.getHost() === host);
+          for (const host of targetHosts) {
+            const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
             if (!hostSsh) continue;
 
             try {
@@ -283,22 +254,16 @@ export const removeCommand = new Command()
         log.success("Removal process completed", "remove");
       });
     } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      log.error("Removal failed:", "remove");
-      log.error(errorMessage, "remove");
-      Deno.exit(1);
+      await handleCommandError(error, {
+        operation: "Removal",
+        component: "remove",
+        sshManagers: ctx?.sshManagers,
+        projectName: ctx?.config?.project,
+        targetHosts: ctx?.targetHosts,
+      });
     } finally {
-      // Clean up SSH connections
-      if (sshManagers) {
-        sshManagers.forEach((ssh) => {
-          try {
-            ssh.dispose();
-          } catch (error) {
-            log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
-          }
-        });
+      if (ctx?.sshManagers) {
+        cleanupSSHConnections(ctx.sshManagers);
       }
     }
   });

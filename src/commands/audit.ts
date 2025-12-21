@@ -1,11 +1,13 @@
 import { Command } from "@cliffy/command";
 import { colors } from "@cliffy/ansi/colors";
-
-import { filterHostsByPatterns, loadConfig } from "../utils/config.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../utils/command_helpers.ts";
+import { handleCommandError } from "../utils/error_handler.ts";
 import type { GlobalOptions } from "../types.ts";
-import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
-import { log, Logger } from "../utils/logger.ts";
+import { log } from "../utils/logger.ts";
 
 interface AuditEntry {
   timestamp: string;
@@ -50,7 +52,8 @@ export const auditCommand = new Command()
     default: true,
   })
   .action(async (options) => {
-    let sshManagers: SSHManager[] | undefined;
+    const globalOptions = options as unknown as GlobalOptions;
+    let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
       if (options.follow) {
@@ -60,63 +63,28 @@ export const auditCommand = new Command()
 
       log.info("Jiji Audit Trail", "audit");
 
-      // Load configuration
-      const globalOptions = options as unknown as GlobalOptions;
-      const { config, configPath } = await loadConfig(globalOptions.configFile);
-      log.info(`Configuration: ${colors.dim(configPath)}`, "audit");
-
-      // Collect all unique hosts from services
-      const allHosts = new Set<string>();
-      for (const [, service] of config.services) {
-        if (service.servers && service.servers.length > 0) {
-          service.servers.forEach((server) => allHosts.add(server.host));
-        }
-      }
-
-      let targetHosts = Array.from(allHosts);
-
-      // Filter by specific hosts if requested
-      if (globalOptions.hosts) {
-        targetHosts = filterHostsByPatterns(targetHosts, globalOptions.hosts);
-
-        if (targetHosts.length === 0) {
-          console.error(
-            `No hosts matched the pattern(s): ${globalOptions.hosts}`,
-          );
-          Deno.exit(1);
-        }
-      }
-
-      if (targetHosts.length === 0) {
+      // Set up command context
+      try {
+        ctx = await setupCommandContext(globalOptions);
+      } catch (_error) {
+        // If no remote hosts are available, show local audit log
         log.warn("No remote hosts configured.", "audit");
         log.info(
           "Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
           "audit",
         );
-
-        // Show local audit log if available
         await showLocalAuditLog(options);
         return;
       }
 
+      const { config, sshManagers, targetHosts } = ctx;
+
+      log.info(
+        `Configuration: ${colors.dim(config.configPath || "unknown")}`,
+        "audit",
+      );
       log.info(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, "audit");
 
-      const result = await setupSSHConnections(
-        targetHosts,
-        {
-          user: config.ssh.user,
-          port: config.ssh.port,
-          proxy: config.ssh.proxy,
-          proxy_command: config.ssh.proxyCommand,
-          keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-          keyData: config.ssh.keyData,
-          keysOnly: config.ssh.keysOnly,
-          dnsRetries: config.ssh.dnsRetries,
-        },
-        { allowPartialConnection: true },
-      );
-
-      sshManagers = result.managers;
       const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
       log.info("Fetching audit entries...", "audit");
@@ -125,31 +93,23 @@ export const auditCommand = new Command()
       const serverLogs = await auditLogger.getRecentEntries(options.lines * 2);
 
       if (options.json) {
-        await outputJsonFormat(serverLogs, options);
+        outputJsonFormat(serverLogs, options);
       } else if (options.aggregate) {
-        await displayAggregatedEntries(serverLogs, options);
+        displayAggregatedEntries(serverLogs, options);
       } else {
-        await displayServerEntries(serverLogs, options);
+        displayServerEntries(serverLogs, options);
       }
     } catch (error) {
-      log.error(`Failed to read audit trail:`, "audit");
-      log.error(
-        colors.red(error instanceof Error ? error.message : String(error)),
-        "audit",
-      );
-      Deno.exit(1);
+      await handleCommandError(error, {
+        operation: "Audit",
+        component: "audit",
+        sshManagers: ctx?.sshManagers,
+        projectName: ctx?.config?.project,
+        targetHosts: ctx?.targetHosts,
+      });
     } finally {
-      // Always clean up SSH connections to prevent hanging
-      if (sshManagers) {
-        const cleanupLogger = new Logger({ prefix: "cleanup" });
-        sshManagers.forEach((ssh) => {
-          try {
-            ssh.dispose();
-          } catch (error) {
-            // Ignore cleanup errors, but log them for debugging
-            cleanupLogger.debug(`Failed to dispose SSH connection: ${error}`);
-          }
-        });
+      if (ctx?.sshManagers) {
+        cleanupSSHConnections(ctx.sshManagers);
       }
     }
   });
@@ -209,8 +169,6 @@ async function followAuditLogs(
 
   while (true) {
     try {
-      // This is a simplified version - in practice you'd want to implement
-      // proper log following with SSH connections
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Check local audit file for new entries
@@ -416,7 +374,6 @@ function displayAggregatedEntries(
  * Parse an audit entry string into structured data
  */
 function parseAuditEntry(entry: string, host: string): AuditEntry | null {
-  // Parse the entry format: [TIMESTAMP] [STATUS] ACTION [HOST] - MESSAGE
   const match = entry.match(
     /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*([^\[\-]*?)(\[([^\]]+)\])?\s*-?\s*(.*)?$/,
   );
@@ -500,7 +457,6 @@ function filterEntries(entries: string[], options: {
       return false;
     }
 
-    // Add date filtering logic here if needed
     return true;
   });
 }
@@ -534,32 +490,23 @@ function formatAuditEntry(entry: string): string {
     return colors.dim(`    ${entry.trim()}`);
   }
 
-  // Parse the entry format: [TIMESTAMP] [STATUS] ACTION [HOST] - MESSAGE
   const match = entry.match(
     /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*([^\[\-]*?)(\[([^\]]+)\])?\s*-?\s*(.*)?$/,
   );
 
   if (!match) {
-    return entry; // Return as-is if format doesn't match
+    return entry;
   }
 
   const [, timestamp, status, action, , host, message] = match;
 
-  // Format timestamp
   const timeFormatted = colors.dim(
     new Date(timestamp).toLocaleString(),
   );
 
-  // Color code based on status
   const statusFormatted = colorizeStatus(status.trim());
-
-  // Format action
   const actionFormatted = colors.bold(action.trim().toUpperCase());
-
-  // Format host
   const hostFormatted = host ? colors.cyan(`[${host}]`) : "";
-
-  // Format message
   const messageFormatted = message ? colors.white(message.trim()) : "";
 
   return `${timeFormatted} ${statusFormatted} ${actionFormatted}${

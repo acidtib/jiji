@@ -1,9 +1,12 @@
 import { Command } from "@cliffy/command";
 import { colors } from "@cliffy/ansi/colors";
-import { filterHostsByPatterns, loadConfig } from "../utils/config.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../utils/command_helpers.ts";
+import { handleCommandError } from "../utils/error_handler.ts";
 import type { GlobalOptions } from "../types.ts";
-import type { Configuration } from "../lib/configuration.ts";
-import { setupSSHConnections, type SSHManager } from "../utils/ssh.ts";
+import type { SSHManager } from "../utils/ssh.ts";
 import { createServerAuditLogger } from "../utils/audit.ts";
 import { log } from "../utils/logger.ts";
 
@@ -25,8 +28,8 @@ const acquireCommand = new Command()
 // Subcommand: release
 const releaseCommand = new Command()
   .description("Release the deployment lock")
-  .action(async (_options) => {
-    await releaseLock({});
+  .action(async (options) => {
+    await releaseLock(options as unknown as Record<string, unknown>);
   });
 
 // Subcommand: status
@@ -40,8 +43,8 @@ const statusCommand = new Command()
 // Subcommand: show
 const showCommand = new Command()
   .description("Show detailed lock information")
-  .action(async (_options) => {
-    await showDetailedLockInfo({});
+  .action(async (options) => {
+    await showDetailedLockInfo(options as unknown as Record<string, unknown>);
   });
 
 // Add subcommands to main command
@@ -65,32 +68,21 @@ interface LockInfo {
  */
 async function acquireLock(
   message: string,
-  options: {
-    config?: string;
-    host?: string;
-    force: boolean;
-    timeout: number;
-  },
+  options: { force: boolean; timeout: number },
 ): Promise<void> {
-  let sshManagers: SSHManager[] | undefined;
+  const globalOptions = options as unknown as GlobalOptions;
+  let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
   try {
     log.info(colors.bold("Acquiring deployment lock..."), "lock");
 
-    // Cast options to GlobalOptions to access global options
-    const globalOptions = options as unknown as GlobalOptions;
-    const { config } = await loadConfig(globalOptions.configFile);
-    const { targetHosts, sshManagers: managers } =
-      await setupLockSSHConnections(
-        config,
-        globalOptions,
-      );
-    sshManagers = managers;
+    ctx = await setupCommandContext(globalOptions);
+    const { config, sshManagers, targetHosts } = ctx;
 
-    const auditLogger = createServerAuditLogger(sshManagers!, config.project);
+    const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
     // Check if any locks exist
-    const lockStatuses = await checkLockStatus(sshManagers!);
+    const lockStatuses = await checkLockStatus(sshManagers);
     const activeLocks = lockStatuses.filter((status) =>
       status.locked && !options.force
     );
@@ -137,7 +129,7 @@ async function acquireLock(
     };
 
     const results = await Promise.all(
-      sshManagers!.map(async (sshManager) => {
+      sshManagers.map(async (sshManager) => {
         const host = sshManager.getHost();
         try {
           const success = await createLockFile(sshManager, lockData);
@@ -155,10 +147,7 @@ async function acquireLock(
     const failures = results.filter((r) => !r.success);
 
     if (failures.length > 0) {
-      log.error(
-        "Failed to acquire locks on some hosts:",
-        "lock",
-      );
+      log.error("Failed to acquire locks on some hosts:", "lock");
       for (const failure of failures) {
         log.error(`   ${colors.cyan(failure.host)}: ${failure.error}`, "lock");
       }
@@ -181,53 +170,42 @@ async function acquireLock(
       },
     });
 
-    log.success(
-      "Deployment lock acquired successfully!",
-      "lock",
-    );
+    log.success("Deployment lock acquired successfully!", "lock");
     log.info(`Message: ${colors.white(message)}`, "lock");
     log.info(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, "lock");
     log.info(`To release: ${colors.yellow("jiji lock release")}`, "lock");
   } catch (error) {
-    log.error(`Failed to acquire deployment lock:`, "lock");
-    log.error(
-      colors.red(error instanceof Error ? error.message : String(error)),
-      "lock",
-    );
-    Deno.exit(1);
+    await handleCommandError(error, {
+      operation: "Lock acquisition",
+      component: "lock",
+      sshManagers: ctx?.sshManagers,
+      projectName: ctx?.config?.project,
+      targetHosts: ctx?.targetHosts,
+    });
   } finally {
-    cleanupSSHConnections(sshManagers);
+    if (ctx?.sshManagers) {
+      cleanupSSHConnections(ctx.sshManagers);
+    }
   }
 }
 
 /**
  * Release a deployment lock
  */
-async function releaseLock(
-  options: {
-    config?: string;
-    host?: string;
-  } = {},
-): Promise<void> {
-  let sshManagers: SSHManager[] | undefined;
+async function releaseLock(options: Record<string, unknown>): Promise<void> {
+  const globalOptions = options as unknown as GlobalOptions;
+  let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
   try {
     log.info(colors.bold("Releasing deployment lock..."), "lock");
 
-    // Cast options to GlobalOptions to access global options
-    const globalOptions = options as unknown as GlobalOptions;
-    const { config } = await loadConfig(globalOptions.configFile);
-    const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupLockSSHConnections(
-        config,
-        globalOptions,
-      );
-    sshManagers = managers;
+    ctx = await setupCommandContext(globalOptions);
+    const { config, sshManagers } = ctx;
 
-    const auditLogger = createServerAuditLogger(sshManagers!, config.project);
+    const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
     // Check if locks exist
-    const lockStatuses = await checkLockStatus(sshManagers!);
+    const lockStatuses = await checkLockStatus(sshManagers);
     const activeLocks = lockStatuses.filter((status) => status.locked);
 
     if (activeLocks.length === 0) {
@@ -239,7 +217,7 @@ async function releaseLock(
     log.info("Removing lock files...", "lock");
 
     const results = await Promise.all(
-      sshManagers!.map(async (sshManager) => {
+      sshManagers.map(async (sshManager) => {
         const host = sshManager.getHost();
         try {
           const success = await removeLockFile(sshManager);
@@ -257,10 +235,7 @@ async function releaseLock(
     const failures = results.filter((r) => !r.success);
 
     if (failures.length > 0) {
-      log.warn(
-        "Failed to release locks on some hosts:",
-        "lock",
-      );
+      log.warn("Failed to release locks on some hosts:", "lock");
       for (const failure of failures) {
         log.error(`   ${colors.cyan(failure.host)}: ${failure.error}`, "lock");
       }
@@ -278,51 +253,39 @@ async function releaseLock(
         },
       });
 
-      log.success(
-        "Deployment lock released successfully!",
-        "lock",
-      );
+      log.success("Deployment lock released successfully!", "lock");
       log.info(
         `Hosts: ${colors.cyan(successes.map((s) => s.host).join(", "))}`,
         "lock",
       );
     }
   } catch (error) {
-    log.error(`Failed to release deployment lock:`, "lock");
-    log.error(
-      colors.red(error instanceof Error ? error.message : String(error)),
-      "lock",
-    );
-    Deno.exit(1);
+    await handleCommandError(error, {
+      operation: "Lock release",
+      component: "lock",
+      sshManagers: ctx?.sshManagers,
+      projectName: ctx?.config?.project,
+      targetHosts: ctx?.targetHosts,
+    });
   } finally {
-    cleanupSSHConnections(sshManagers);
+    if (ctx?.sshManagers) {
+      cleanupSSHConnections(ctx.sshManagers);
+    }
   }
 }
 
 /**
  * Show lock status for all hosts
  */
-async function showLockStatus(
-  options: {
-    config?: string;
-    host?: string;
-    json: boolean;
-  },
-): Promise<void> {
-  let sshManagers: SSHManager[] | undefined;
+async function showLockStatus(options: { json: boolean }): Promise<void> {
+  const globalOptions = options as unknown as GlobalOptions;
+  let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
   try {
-    // Cast options to GlobalOptions to access global options
-    const globalOptions = options as unknown as GlobalOptions;
-    const { config } = await loadConfig(globalOptions.configFile);
-    const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupLockSSHConnections(
-        config,
-        globalOptions,
-      );
-    sshManagers = managers;
+    ctx = await setupCommandContext(globalOptions);
+    const { sshManagers } = ctx;
 
-    const lockStatuses = await checkLockStatus(sshManagers!);
+    const lockStatuses = await checkLockStatus(sshManagers);
 
     if (options.json) {
       log.info(
@@ -381,14 +344,17 @@ async function showLockStatus(
       );
     }
   } catch (error) {
-    log.error(`Failed to check lock status:`, "lock");
-    log.error(
-      colors.red(error instanceof Error ? error.message : String(error)),
-      "lock",
-    );
-    Deno.exit(1);
+    await handleCommandError(error, {
+      operation: "Lock status",
+      component: "lock",
+      sshManagers: ctx?.sshManagers,
+      projectName: ctx?.config?.project,
+      targetHosts: ctx?.targetHosts,
+    });
   } finally {
-    cleanupSSHConnections(sshManagers);
+    if (ctx?.sshManagers) {
+      cleanupSSHConnections(ctx.sshManagers);
+    }
   }
 }
 
@@ -396,27 +362,18 @@ async function showLockStatus(
  * Show detailed lock information
  */
 async function showDetailedLockInfo(
-  options: {
-    config?: string;
-    host?: string;
-  } = {},
+  options: Record<string, unknown>,
 ): Promise<void> {
-  let sshManagers: SSHManager[] | undefined;
+  const globalOptions = options as unknown as GlobalOptions;
+  let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
   try {
     log.info("Detailed Lock Information", "lock");
 
-    // Cast options to GlobalOptions to access global options
-    const globalOptions = options as unknown as GlobalOptions;
-    const { config } = await loadConfig(globalOptions.configFile);
-    const { targetHosts: _targetHosts, sshManagers: managers } =
-      await setupLockSSHConnections(
-        config,
-        globalOptions,
-      );
-    sshManagers = managers;
+    ctx = await setupCommandContext(globalOptions);
+    const { sshManagers } = ctx;
 
-    const lockStatuses = await checkLockStatus(sshManagers!);
+    const lockStatuses = await checkLockStatus(sshManagers);
 
     for (const status of lockStatuses) {
       log.info(`${colors.bold(colors.cyan(status.host || "unknown"))}`, "lock");
@@ -456,75 +413,18 @@ async function showDetailedLockInfo(
       log.info("", "lock");
     }
   } catch (error) {
-    log.error(`Failed to show lock information:`, "lock");
-    log.error(
-      colors.red(error instanceof Error ? error.message : String(error)),
-      "lock",
-    );
-    Deno.exit(1);
+    await handleCommandError(error, {
+      operation: "Lock info",
+      component: "lock",
+      sshManagers: ctx?.sshManagers,
+      projectName: ctx?.config?.project,
+      targetHosts: ctx?.targetHosts,
+    });
   } finally {
-    cleanupSSHConnections(sshManagers);
-  }
-}
-
-/**
- * Setup SSH connections to target hosts
- */
-async function setupLockSSHConnections(
-  config: Configuration,
-  globalOptions: GlobalOptions,
-): Promise<
-  { targetHosts: string[]; sshManagers: SSHManager[] }
-> {
-  // Collect all unique hosts from services
-  const allHosts = new Set<string>();
-  for (const [, service] of config.services) {
-    if (service.servers && service.servers.length > 0) {
-      service.servers.forEach((server) => allHosts.add(server.host));
+    if (ctx?.sshManagers) {
+      cleanupSSHConnections(ctx.sshManagers);
     }
   }
-
-  let targetHosts = Array.from(allHosts);
-
-  // Filter by specific hosts if requested
-  if (globalOptions.hosts) {
-    targetHosts = filterHostsByPatterns(targetHosts, globalOptions.hosts);
-
-    if (targetHosts.length === 0) {
-      throw new Error(
-        `No hosts matched the pattern(s): ${globalOptions.hosts}`,
-      );
-    }
-  }
-
-  if (targetHosts.length === 0) {
-    throw new Error("No remote hosts found in configuration");
-  }
-
-  const result = await setupSSHConnections(
-    targetHosts,
-    {
-      user: config.ssh.user,
-      port: config.ssh.port,
-      proxy: config.ssh.proxy,
-      proxy_command: config.ssh.proxyCommand,
-      keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-      keyData: config.ssh.keyData,
-      keysOnly: config.ssh.keysOnly,
-      dnsRetries: config.ssh.dnsRetries,
-    },
-    { allowPartialConnection: true },
-  );
-
-  log.success(
-    `Connected: ${colors.green(result.connectedHosts.join(", "))}`,
-    "lock",
-  );
-
-  return {
-    targetHosts: result.connectedHosts,
-    sshManagers: result.managers,
-  };
 }
 
 /**
@@ -555,9 +455,7 @@ async function checkLockStatus(
 /**
  * Get lock information from a single host
  */
-async function getLockInfo(
-  sshManager: SSHManager,
-): Promise<LockInfo> {
+async function getLockInfo(sshManager: SSHManager): Promise<LockInfo> {
   const lockFile = ".jiji/deploy.lock";
 
   // Check if lock file exists
@@ -582,10 +480,7 @@ async function getLockInfo(
       ...lockData,
     };
   } catch {
-    // If we can't parse the lock file, treat it as unlocked
-    return {
-      locked: false,
-    };
+    return { locked: false };
   }
 }
 
@@ -620,9 +515,7 @@ async function createLockFile(
 /**
  * Remove lock file from remote host
  */
-async function removeLockFile(
-  sshManager: SSHManager,
-): Promise<boolean> {
+async function removeLockFile(sshManager: SSHManager): Promise<boolean> {
   const lockFile = ".jiji/deploy.lock";
 
   const result = await sshManager.executeCommand(`rm -f ${lockFile}`);
@@ -636,9 +529,7 @@ async function removeLockFile(
 /**
  * Clean up partial locks in case of failure
  */
-async function cleanupPartialLocks(
-  sshManagers: SSHManager[],
-): Promise<void> {
+async function cleanupPartialLocks(sshManagers: SSHManager[]): Promise<void> {
   await Promise.all(
     sshManagers.map(async (sshManager) => {
       try {
@@ -669,21 +560,4 @@ async function getCurrentUser(): Promise<string> {
 
   // Try environment variables
   return Deno.env.get("USER") || Deno.env.get("USERNAME") || "unknown";
-}
-
-/**
- * Clean up SSH connections
- */
-function cleanupSSHConnections(
-  sshManagers?: SSHManager[],
-): void {
-  if (sshManagers) {
-    sshManagers.forEach((ssh) => {
-      try {
-        ssh.dispose();
-      } catch {
-        // Ignore cleanup errors
-      }
-    });
-  }
 }

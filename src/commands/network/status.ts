@@ -6,12 +6,14 @@
  */
 
 import { Command } from "@cliffy/command";
-import { Configuration } from "../../lib/configuration.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
+import { handleCommandError } from "../../utils/error_handler.ts";
 import { getTopologyStats, loadTopology } from "../../lib/network/topology.ts";
-import { setupSSHConnections } from "../../utils/ssh.ts";
 import { getWireGuardStatus } from "../../lib/network/wireguard.ts";
 import {
-  getClusterMetadata,
   isCorrosionRunning,
   queryServiceContainers,
 } from "../../lib/network/corrosion.ts";
@@ -22,51 +24,14 @@ import type { GlobalOptions } from "../../types.ts";
 export const statusCommand = new Command()
   .description("Show network status")
   .action(async (options) => {
+    const globalOptions = options as unknown as GlobalOptions;
+    let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
+
     try {
       await log.group("Network Status", async () => {
-        // Cast options to GlobalOptions
-        const globalOptions = options as unknown as GlobalOptions;
-
-        // Load configuration for SSH settings
-        const config = await Configuration.load(
-          globalOptions.environment,
-          globalOptions.configFile,
-        );
-
-        // Get all server hostnames from deploy.yml
-        const hostnames = config.getAllServerHosts();
-
-        if (hostnames.length === 0) {
-          log.info("No servers found in configuration", "network");
-          log.info(
-            "Add servers to your deploy.yml file and run 'jiji server bootstrap' with network.enabled: true",
-            "network",
-          );
-          return;
-        }
-
-        // Connect to servers
-        const { managers: sshManagers } = await setupSSHConnections(
-          hostnames,
-          {
-            user: config.ssh.user,
-            port: config.ssh.port,
-            proxy: config.ssh.proxy,
-            proxy_command: config.ssh.proxyCommand,
-            keys: config.ssh.allKeys.length > 0
-              ? config.ssh.allKeys
-              : undefined,
-            keyData: config.ssh.keyData,
-            keysOnly: config.ssh.keysOnly,
-            dnsRetries: config.ssh.dnsRetries,
-          },
-          { allowPartialConnection: true },
-        );
-
-        if (sshManagers.length === 0) {
-          log.error("Could not connect to any servers", "network");
-          return;
-        }
+        // Set up command context
+        ctx = await setupCommandContext(globalOptions);
+        const { config, sshManagers } = ctx;
 
         // Load topology from Corrosion via any connected server
         let topology = null;
@@ -97,118 +62,109 @@ export const statusCommand = new Command()
         log.info(`Cluster Age: ${stats.clusterAge}`, "network");
         log.info("", "network");
 
-        try {
-          // Check status of each server
-          for (const server of topology.servers) {
-            const ssh = sshManagers.find((s) =>
-              s.getHost() === server.hostname
-            );
+        // Check status of each server
+        for (const server of topology.servers) {
+          const ssh = sshManagers.find((s) => s.getHost() === server.hostname);
 
-            if (!ssh) {
-              log.info(`\n${server.hostname} (${server.id})`, "network");
-              log.error("  Status: OFFLINE (SSH connection failed)", "network");
-              continue;
-            }
-
+          if (!ssh) {
             log.info(`\n${server.hostname} (${server.id})`, "network");
-            log.info(`  Subnet: ${server.subnet}`, "network");
-            log.info(`  WireGuard IP: ${server.wireguardIp}`, "network");
-            log.info(`  Management IP: ${server.managementIp}`, "network");
+            log.error("  Status: OFFLINE (SSH connection failed)", "network");
+            continue;
+          }
 
-            // Check WireGuard status
-            const wgStatus = await getWireGuardStatus(ssh);
-            if (wgStatus.up) {
-              log.success(
-                `  WireGuard: UP (${wgStatus.peers} peers connected)`,
-                "network",
-              );
-            } else if (wgStatus.exists) {
-              log.warn(
-                "  WireGuard: DOWN (interface exists but not active)",
-                "network",
-              );
+          log.info(`\n${server.hostname} (${server.id})`, "network");
+          log.info(`  Subnet: ${server.subnet}`, "network");
+          log.info(`  WireGuard IP: ${server.wireguardIp}`, "network");
+          log.info(`  Management IP: ${server.managementIp}`, "network");
+
+          // Check WireGuard status
+          const wgStatus = await getWireGuardStatus(ssh);
+          if (wgStatus.up) {
+            log.success(
+              `  WireGuard: UP (${wgStatus.peers} peers connected)`,
+              "network",
+            );
+          } else if (wgStatus.exists) {
+            log.warn(
+              "  WireGuard: DOWN (interface exists but not active)",
+              "network",
+            );
+          } else {
+            log.error("  WireGuard: NOT CONFIGURED", "network");
+          }
+
+          // Check Corrosion status
+          if (topology.discovery === "corrosion") {
+            const corrRunning = await isCorrosionRunning(ssh);
+            if (corrRunning) {
+              log.success("  Corrosion: RUNNING", "network");
             } else {
-              log.error("  WireGuard: NOT CONFIGURED", "network");
-            }
-
-            // Check Corrosion status
-            if (topology.discovery === "corrosion") {
-              const corrRunning = await isCorrosionRunning(ssh);
-              if (corrRunning) {
-                log.success("  Corrosion: RUNNING", "network");
-              } else {
-                log.error("  Corrosion: NOT RUNNING", "network");
-              }
-            }
-
-            // Check DNS status
-            const dnsRunning = await isCoreDNSRunning(ssh);
-            if (dnsRunning) {
-              log.success("  DNS: RUNNING", "network");
-            } else {
-              log.error("  DNS: NOT RUNNING", "network");
-            }
-
-            // Query containers on this server (if Corrosion is running)
-            if (topology.discovery === "corrosion") {
-              try {
-                // Get all services
-                const services = config.getServiceNames();
-                const containers: Array<{ service: string; ip: string }> = [];
-
-                for (const serviceName of services) {
-                  const ips = await queryServiceContainers(ssh, serviceName);
-                  for (const ip of ips) {
-                    // Check if IP belongs to this server's subnet
-                    if (
-                      ip.startsWith(
-                        server.subnet.split("/")[0].substring(
-                          0,
-                          server.subnet.lastIndexOf(".") - 1,
-                        ),
-                      )
-                    ) {
-                      containers.push({ service: serviceName, ip });
-                    }
-                  }
-                }
-
-                if (containers.length > 0) {
-                  log.info("  Containers:", "network");
-                  for (const container of containers) {
-                    log.info(
-                      `    - ${container.service}: ${container.ip}`,
-                      "network",
-                    );
-                  }
-                } else {
-                  log.info("  Containers: none", "network");
-                }
-              } catch (error) {
-                log.warn(`  Containers: failed to query (${error})`, "network");
-              }
+              log.error("  Corrosion: NOT RUNNING", "network");
             }
           }
 
-          log.info("\n", "network");
-          log.success("Network status check complete", "network");
-        } finally {
-          // Clean up SSH connections
-          for (const ssh of sshManagers) {
+          // Check DNS status
+          const dnsRunning = await isCoreDNSRunning(ssh);
+          if (dnsRunning) {
+            log.success("  DNS: RUNNING", "network");
+          } else {
+            log.error("  DNS: NOT RUNNING", "network");
+          }
+
+          // Query containers on this server (if Corrosion is running)
+          if (topology.discovery === "corrosion") {
             try {
-              ssh.dispose();
+              const services = config.getServiceNames();
+              const containers: Array<{ service: string; ip: string }> = [];
+
+              for (const serviceName of services) {
+                const ips = await queryServiceContainers(ssh, serviceName);
+                for (const ip of ips) {
+                  // Check if IP belongs to this server's subnet
+                  if (
+                    ip.startsWith(
+                      server.subnet.split("/")[0].substring(
+                        0,
+                        server.subnet.lastIndexOf(".") - 1,
+                      ),
+                    )
+                  ) {
+                    containers.push({ service: serviceName, ip });
+                  }
+                }
+              }
+
+              if (containers.length > 0) {
+                log.info("  Containers:", "network");
+                for (const container of containers) {
+                  log.info(
+                    `    - ${container.service}: ${container.ip}`,
+                    "network",
+                  );
+                }
+              } else {
+                log.info("  Containers: none", "network");
+              }
             } catch (error) {
-              log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
+              log.warn(`  Containers: failed to query (${error})`, "network");
             }
           }
         }
+
+        log.info("\n", "network");
+        log.success("Network status check complete", "network");
       });
     } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      log.error("Failed to get network status:", "network");
-      log.error(errorMessage, "network");
-      Deno.exit(1);
+      await handleCommandError(error, {
+        operation: "Network status",
+        component: "network",
+        sshManagers: ctx?.sshManagers,
+        projectName: ctx?.config?.project,
+        targetHosts: ctx?.targetHosts,
+      });
+    } finally {
+      if (ctx?.sshManagers) {
+        cleanupSSHConnections(ctx.sshManagers);
+      }
     }
   });
