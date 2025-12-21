@@ -4,7 +4,10 @@
 
 import { Command } from "@cliffy/command";
 import { ImagePruneService } from "../../lib/services/image_prune_service.ts";
-import { setupCommandContext } from "../../utils/command_helpers.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
 import { log } from "../../utils/logger.ts";
 
@@ -98,9 +101,7 @@ export const pruneCommand = new Command()
       });
 
       // Close SSH connections
-      for (const ssh of context.sshManagers) {
-        ssh.dispose();
-      }
+      cleanupSSHConnections(context.sshManagers);
     } catch (error) {
       if (ctx) {
         await handleCommandError(error, {
