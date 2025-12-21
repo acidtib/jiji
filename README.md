@@ -2,27 +2,34 @@
 
 > **WIP**: Under heavy development, not production ready.
 
-Deploy containerized apps across servers with simplicity, speed, and portability. No infrastructure vendor lock-in required.
+Deploy containerized apps across servers with simplicity, speed, and
+portability. No infrastructure vendor lock-in required.
 
 ## Features
 
-**Service Management**: Build, deploy, and remove containerized services across multiple servers
+**Service Management**: Build, deploy, and remove containerized services across
+multiple servers
 
 **Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
 
-**Private Networking**: WireGuard mesh VPN with automatic service discovery via DNS for secure container-to-container communication across the cluster
+**Private Networking**: WireGuard mesh VPN with automatic service discovery via
+DNS for secure container-to-container communication across the cluster
 
-**Deployment Locks**: Prevent concurrent deployments with distributed lock management
+**Deployment Locks**: Prevent concurrent deployments with distributed lock
+management
 
 **Remote Command Execution**: Execute custom commands across multiple servers
 
 **Configuration Management**: Create and manage infrastructure configurations
 
-**Server-Side Audit Trail**: Comprehensive logging of all operations directly on target servers
+**Server-Side Audit Trail**: Comprehensive logging of all operations directly on
+target servers
 
-**Registry Management**: Manage container registries (local and remote) with automatic namespace detection for GHCR and Docker Hub
+**Registry Management**: Manage container registries (local and remote) with
+automatic namespace detection for GHCR and Docker Hub
 
-**Proxy Integration**: Built-in support for kamal-proxy for routing traffic to services
+**Proxy Integration**: Built-in support for kamal-proxy for routing traffic to
+services
 
 **Mount Management**: Support for file, directory, and volume mounts
 
@@ -57,11 +64,14 @@ curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.8 sh
 
 ### Windows
 
-Download the latest Windows binary from the [releases page](https://github.com/acidtib/jiji/releases) and add it to your PATH:
+Download the latest Windows binary from the
+[releases page](https://github.com/acidtib/jiji/releases) and add it to your
+PATH:
 
 1. Download `jiji-windows-x86_64.exe` from the latest release
 2. Rename it to `jiji.exe`
-3. Place it in a directory that's in your PATH (e.g., `C:\Windows\System32` or create a dedicated folder and add it to PATH)
+3. Place it in a directory that's in your PATH (e.g., `C:\Windows\System32` or
+   create a dedicated folder and add it to PATH)
 
 Or use PowerShell to download and install:
 
@@ -139,7 +149,8 @@ jiji remove --services "web,api"
 
 ### Registry Management
 
-Manage container registries for storing and retrieving images with automatic configuration:
+Manage container registries for storing and retrieving images with automatic
+configuration:
 
 ```bash
 # Setup local or remote registry
@@ -159,12 +170,15 @@ jiji registry logout
 jiji registry remove
 ```
 
-**Auto-Detection Support**: Jiji automatically detects namespace requirements for supported registries:
+**Auto-Detection Support**: Jiji automatically detects namespace requirements
+for supported registries:
+
 - **GHCR** (`ghcr.io`): Auto-namespace as `username/project-name`
 - **Docker Hub** (`docker.io`): Auto-namespace as `username`
 - **Local registries**: No namespace required
 
-See [Registry Auto-Detection](docs/registry-auto-detection.md) for detailed configuration examples.
+See [Registry Auto-Detection](docs/registry-auto-detection.md) for detailed
+configuration examples.
 
 ### Server Management
 
@@ -200,7 +214,8 @@ jiji server exec "apt update && apt upgrade -y" --timeout 600 --continue-on-erro
 
 ### Network Management
 
-Manage private networking infrastructure for secure container-to-container communication:
+Manage private networking infrastructure for secure container-to-container
+communication:
 
 ```bash
 # View network topology and status
@@ -213,12 +228,16 @@ jiji network teardown
 The private network feature provides:
 
 - **WireGuard mesh VPN** for encrypted communication between servers
-- **Automatic service discovery via DNS** - containers can connect using service names (e.g., `api.jiji`, `postgres.jiji`)
-- **Container-to-container networking** across multiple hosts with automatic DNS resolution
+- **Automatic service discovery via DNS** - containers can connect using service
+  names (e.g., `api.jiji`, `postgres.jiji`)
+- **Container-to-container networking** across multiple hosts with automatic DNS
+  resolution
 - **Zero-trust security** with encryption by default
-- **Daemon-level DNS configuration** for seamless service discovery across all containers
+- **Daemon-level DNS configuration** for seamless service discovery across all
+  containers
 
-See [Network Reference](docs/network_reference.md) for detailed configuration and usage.
+See [Network Reference](docs/network_reference.md) for detailed configuration
+and usage.
 
 ### Deployment Lock Management
 
@@ -238,7 +257,8 @@ jiji lock status
 jiji lock show
 ```
 
-Deployment locks prevent race conditions when multiple users or CI/CD pipelines attempt to deploy simultaneously.
+Deployment locks prevent race conditions when multiple users or CI/CD pipelines
+attempt to deploy simultaneously.
 
 ### Server-Side Audit Trail
 
@@ -266,19 +286,15 @@ jiji audit --raw
 
 The audit trail tracks all Jiji operations including:
 
-Server bootstrapping (start, success, failure)
-Container engine installations on each server
-Service deployments per server
-Configuration changes
-SSH connections and errors
+Server bootstrapping (start, success, failure) Container engine installations on
+each server Service deployments per server Configuration changes SSH connections
+and errors
 
 Audit logs are stored in `.jiji/audit.txt` on each target server and include:
 
-Timestamps (ISO 8601 format)
-Action types and status
-Server-specific operation context
-Detailed error messages and troubleshooting information
-Host identification for multi-server deployments
+Timestamps (ISO 8601 format) Action types and status Server-specific operation
+context Detailed error messages and troubleshooting information Host
+identification for multi-server deployments
 
 ### Global Options
 
@@ -321,18 +337,17 @@ jiji registry --help
 
 ## Configuration
 
-Jiji uses YAML configuration files (default: `.jiji/deploy.yml`) to define your infrastructure. A typical configuration includes:
+Jiji uses YAML configuration files (default: `.jiji/deploy.yml`) to define your
+infrastructure. A typical configuration includes:
 
-Project name
-Builder configuration (local or remote builds)
-SSH connection settings
-Container engine selection (Docker/Podman)
-Registry configuration (local or remote with auto-detection)
-Private networking settings (WireGuard mesh, service discovery)
-Service definitions with images, ports, mounts, environment variables, and proxy settings
+Project name Builder configuration (local or remote builds) SSH connection
+settings Container engine selection (Docker/Podman) Registry configuration
+(local or remote with auto-detection) Private networking settings (WireGuard
+mesh, service discovery) Service definitions with images, ports, mounts,
+environment variables, and proxy settings
 
-For a comprehensive configuration example with all available options and detailed
-explanations, see [src/jiji.yml](src/jiji.yml).
+For a comprehensive configuration example with all available options and
+detailed explanations, see [src/jiji.yml](src/jiji.yml).
 
 Example service with proxy configuration:
 

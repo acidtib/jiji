@@ -54,8 +54,9 @@ just need to bump the patch version.
 
 The script manages version information in two places:
 
-`./src/version.ts` - Contains the TypeScript constant that represents the version in the source code
-`./deno.json` - Contains the version field in the Deno configuration file
+`./src/version.ts` - Contains the TypeScript constant that represents the
+version in the source code `./deno.json` - Contains the version field in the
+Deno configuration file
 
 When updating the version, the script ensures both files are updated atomically,
 so they always contain the same version information.
@@ -64,5 +65,5 @@ so they always contain the same version information.
 
 The script requires the following Deno permissions:
 
-`--allow-read` to read the version file and Deno configuration
-`--allow-write` to update the version file and Deno configuration
+`--allow-read` to read the version file and Deno configuration `--allow-write`
+to update the version file and Deno configuration

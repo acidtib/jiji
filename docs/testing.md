@@ -124,9 +124,8 @@ maps to host ports 80/443. Ensure the container has the right configuration.
 
 Ensure your service container:
 
-Is running on the same network as kamal-proxy (`jiji`)
-Has the correct health check path configured
-Is actually responding to HTTP requests
+Is running on the same network as kamal-proxy (`jiji`) Has the correct health
+check path configured Is actually responding to HTTP requests
 
 ### "No such object" errors
 

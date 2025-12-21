@@ -1,25 +1,33 @@
 # Jiji Documentation
 
-This directory contains detailed documentation for developers and contributors working with Jiji.
+This directory contains detailed documentation for developers and contributors
+working with Jiji.
 
 ## Contents
 
 ### Configuration
 
-**[jiji.yml Example](../src/jiji.yml)** - Comprehensive example configuration file with all available options and detailed comments
+**[jiji.yml Example](../src/jiji.yml)** - Comprehensive example configuration
+file with all available options and detailed comments
 
 ### Networking
 
-**[Network Reference](network_reference.md)** - Quick reference guide for Jiji's private networking features including WireGuard mesh, automatic service discovery via DNS, and daemon-level DNS configuration
+**[Network Reference](network_reference.md)** - Quick reference guide for Jiji's
+private networking features including WireGuard mesh, automatic service
+discovery via DNS, and daemon-level DNS configuration
 
 ### Registry
 
-**[Registry Auto-Detection](registry-auto-detection.md)** - Guide for automatic namespace detection and authentication with container registries (GHCR, Docker Hub, local registries)
+**[Registry Auto-Detection](registry-auto-detection.md)** - Guide for automatic
+namespace detection and authentication with container registries (GHCR, Docker
+Hub, local registries)
 
 ### Development
 
-**[Testing Guide](testing.md)** - Instructions for testing Jiji deployments including proxy testing, SSH connections, and troubleshooting
-**[Version Script](version.md)** - Documentation for the version management utility
+**[Testing Guide](testing.md)** - Instructions for testing Jiji deployments
+including proxy testing, SSH connections, and troubleshooting
+**[Version Script](version.md)** - Documentation for the version management
+utility
 
 ## Quick Links
 
@@ -31,9 +39,11 @@ This directory contains detailed documentation for developers and contributors w
 ### For Contributors
 
 [Testing Guide](testing.md) - How to test your changes
-[Network Architecture](network_reference.md) - Understanding Jiji's networking layer and DNS service discovery
+[Network Architecture](network_reference.md) - Understanding Jiji's networking
+layer and DNS service discovery
 
 ## Getting Help
 
-[Issues](https://github.com/acidtib/jiji/issues) - Report bugs or request features
-[Discussions](https://github.com/acidtib/jiji/discussions) - Ask questions and share ideas
+[Issues](https://github.com/acidtib/jiji/issues) - Report bugs or request
+features [Discussions](https://github.com/acidtib/jiji/discussions) - Ask
+questions and share ideas

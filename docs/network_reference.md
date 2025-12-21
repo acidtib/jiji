@@ -4,11 +4,8 @@
 
 ### WireGuard Mesh Network
 
-Interface: `jiji0`
-Port: `51820`
-Protocol: UDP
-Encryption: ChaCha20-Poly1305
-Key Exchange: Curve25519
+Interface: `jiji0` Port: `51820` Protocol: UDP Encryption: ChaCha20-Poly1305 Key
+Exchange: Curve25519
 
 ### IP Allocation
 
@@ -103,36 +100,32 @@ sudo wg show jiji0 endpoints
 
 ### Network State
 
-File: `.jiji/network.json`
-Contents: Server topology, IPs, WireGuard keys (public only)
+File: `.jiji/network.json` Contents: Server topology, IPs, WireGuard keys
+(public only)
 
 ### WireGuard Config
 
-File: `/etc/wireguard/jiji0.conf`
-Service: `wg-quick@jiji0.service`
+File: `/etc/wireguard/jiji0.conf` Service: `wg-quick@jiji0.service`
 
 ### Corrosion (Discovery)
 
-Config: `/opt/jiji/corrosion/config.toml`
-Database: `/opt/jiji/corrosion/state.db`
-Service: `jiji-corrosion.service`
+Config: `/opt/jiji/corrosion/config.toml` Database:
+`/opt/jiji/corrosion/state.db` Service: `jiji-corrosion.service`
 
 ### CoreDNS
 
-Config: `/opt/jiji/coredns/Corefile`
-Hosts: `/opt/jiji/coredns/hosts`
-Service: `jiji-coredns.service`
+Config: `/opt/jiji/coredns/Corefile` Hosts: `/opt/jiji/coredns/hosts` Service:
+`jiji-coredns.service`
 
 ### Daemon DNS Configuration
 
-Docker: `/etc/docker/daemon.json`
-Podman: `/etc/containers/containers.conf`
+Docker: `/etc/docker/daemon.json` Podman: `/etc/containers/containers.conf`
 Search domain: `jiji` (configurable)
 
 ### Peer Monitor
 
-Script: `/opt/jiji/bin/monitor-wireguard-peers.sh`
-Service: `jiji-peer-monitor.service`
+Script: `/opt/jiji/bin/monitor-wireguard-peers.sh` Service:
+`jiji-peer-monitor.service`
 
 ## Firewall Rules
 
@@ -170,8 +163,7 @@ ufw allow 8787/tcp
 
 ### Service Names
 
-Format: `<service-name>.<domain>`
-Domain: `jiji` (configurable in jiji.yml)
+Format: `<service-name>.<domain>` Domain: `jiji` (configurable in jiji.yml)
 Example: `api.jiji`, `postgres.jiji`
 
 ### Resolution Flow
@@ -189,6 +181,7 @@ Container connects to 10.210.1.15
 ```
 
 **Note**: DNS configuration is applied at both daemon and container levels:
+
 - **Daemon level**: All new containers inherit DNS settings automatically
 - **Container level**: Existing containers get DNS servers passed explicitly
 
@@ -196,38 +189,33 @@ Container connects to 10.210.1.15
 
 ### Latency
 
-WireGuard overhead: ~0.1-0.5ms
-Typical ping times: 1-10ms (LAN), 20-100ms (WAN)
+WireGuard overhead: ~0.1-0.5ms Typical ping times: 1-10ms (LAN), 20-100ms (WAN)
 
 ### Throughput
 
-WireGuard: Near line-rate (10Gbps+)
-Container networking: Limited by Docker bridge (~5-9Gbps)
+WireGuard: Near line-rate (10Gbps+) Container networking: Limited by Docker
+bridge (~5-9Gbps)
 
 ### Resource Usage
 
-WireGuard: Minimal (~1-2% CPU)
-Corrosion: ~50MB RAM, <1% CPU
-CoreDNS: ~20MB RAM, <1% CPU
-Peer Monitor: Negligible
+WireGuard: Minimal (~1-2% CPU) Corrosion: ~50MB RAM, <1% CPU CoreDNS: ~20MB RAM,
+<1% CPU Peer Monitor: Negligible
 
 ## Security
 
 ### Encryption
 
-All inter-machine traffic encrypted via WireGuard
-No plaintext container traffic on network
+All inter-machine traffic encrypted via WireGuard No plaintext container traffic
+on network
 
 ### Key Management
 
-Private keys never leave servers
-Public keys stored in `.jiji/network.json`
-Keys generated on each server
+Private keys never leave servers Public keys stored in `.jiji/network.json` Keys
+generated on each server
 
 ### Network Isolation
 
-Containers isolated in WireGuard network
-Not directly accessible from internet
+Containers isolated in WireGuard network Not directly accessible from internet
 Expose via proxy/load balancer only
 
 ## Troubleshooting Quick Tips
@@ -237,7 +225,7 @@ Expose via proxy/load balancer only
 | No peer handshakes            | Check firewall allows UDP 51820                              |
 | Containers can't ping peers   | Verify routes: `ip route \| grep jiji0`                      |
 | DNS not resolving             | Check CoreDNS: `systemctl status jiji-coredns`               |
-| Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`      |
+| Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`       |
 | Endpoint rotation not working | Check peer monitor logs                                      |
 | Slow cross-machine traffic    | Check WireGuard MTU settings                                 |
 | Container wrong subnet        | Recreate network: `docker network rm jiji` then re-bootstrap |
@@ -316,10 +304,9 @@ balancing.
 
 ## Network Limits
 
-Max servers: 254 (with /24 subnets in /16 cluster)
-Max containers per server: 254 (with /24 subnet)
-Max total containers: ~64,000 (254 servers × 254 containers)
-WireGuard peers: Unlimited (mesh scales to hundreds)
+Max servers: 254 (with /24 subnets in /16 cluster) Max containers per server:
+254 (with /24 subnet) Max total containers: ~64,000 (254 servers × 254
+containers) WireGuard peers: Unlimited (mesh scales to hundreds)
 
 ## Best Practices
 
@@ -334,7 +321,5 @@ WireGuard peers: Unlimited (mesh scales to hundreds)
 
 ## Getting Help
 
-Logs: `journalctl -u jiji-* -f`
-Debug mode: Set `JIJI_LOG_LEVEL=debug`
-Network diagram: See `NETWORK_FIXES.md`
-Issues: https://github.com/acidtib/jiji/issues
+Logs: `journalctl -u jiji-* -f` Debug mode: Set `JIJI_LOG_LEVEL=debug` Network
+diagram: See `NETWORK_FIXES.md` Issues: https://github.com/acidtib/jiji/issues

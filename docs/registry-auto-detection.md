@@ -7,8 +7,7 @@ registries, providing a simple configuration experience.
 
 ### GitHub Container Registry (GHCR)
 
-Server: `ghcr.io`
-Auto-namespace: `username/project-name`
+Server: `ghcr.io` Auto-namespace: `username/project-name`
 
 ```yaml
 builder:
@@ -24,8 +23,8 @@ Result: Images are pushed to
 
 ### Docker Hub
 
-Server: `docker.io`, `registry-1.docker.io`, `index.docker.io`
-Auto-namespace: `username`
+Server: `docker.io`, `registry-1.docker.io`, `index.docker.io` Auto-namespace:
+`username`
 
 ```yaml
 builder:
@@ -41,8 +40,7 @@ Result: Images are pushed to
 
 ### Local Registry
 
-Type: `local`
-No namespace required
+Type: `local` No namespace required
 
 ```yaml
 builder:
