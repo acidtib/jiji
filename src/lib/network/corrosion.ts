@@ -144,7 +144,7 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
  * @returns TOML configuration content
  */
 export function generateCorrosionConfig(config: CorrosionConfig): string {
-  const bootstrapPeers = config.bootstrap
+  const initialPeers = config.bootstrap
     .map((peer) => `"${peer}"`)
     .join(", ");
 
@@ -154,7 +154,7 @@ schema_paths = ["${config.schemaPath}"]
 
 [gossip]
 addr = "${config.gossipAddr}"
-bootstrap = [${bootstrapPeers}]
+bootstrap = [${initialPeers}]
 plaintext = ${config.plaintext}
 
 [api]

@@ -27,8 +27,8 @@ Cluster CIDR: 10.210.0.0/16
 ### Setup Network
 
 ```bash
-# During initial bootstrap
-jiji bootstrap -H server1.example.com,server2.example.com
+# During initial server initialization
+jiji server init -H server1.example.com,server2.example.com
 
 # Network is automatically configured in phases:
 # 1. Install dependencies (WireGuard, Corrosion, CoreDNS)
@@ -228,11 +228,11 @@ Expose via proxy/load balancer only
 | Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`       |
 | Endpoint rotation not working | Check peer monitor logs                                      |
 | Slow cross-machine traffic    | Check WireGuard MTU settings                                 |
-| Container wrong subnet        | Recreate network: `docker network rm jiji` then re-bootstrap |
+| Container wrong subnet        | Recreate network: `docker network rm jiji` then re-initialize |
 
 ## Environment Variables
 
-Set these before bootstrap if needed:
+Set these before initialization if needed:
 
 ```bash
 # Custom cluster CIDR

@@ -273,7 +273,7 @@ ssh:
 #
 # How It Works:
 # ============
-# 1. Bootstrap: Run 'jiji server bootstrap' to set up network infrastructure
+# 1. Initialization: Run 'jiji server init' to set up network infrastructure
 #    - Installs WireGuard on all servers
 #    - Generates keypairs and establishes mesh VPN
 #    - Installs Corrosion for distributed service registry
@@ -334,8 +334,8 @@ ssh:
 #
 # Service Filtering:
 # Target specific services with the --services flag:
-#   jiji server bootstrap --services web-frontend
-#   jiji server bootstrap --services web-frontend,api-backend
+#   jiji server init --services web-frontend
+#   jiji server init --services web-frontend,api-backend
 #   jiji server exec "docker ps" --services web-*
 #
 # Service filters support wildcards (* pattern matching):

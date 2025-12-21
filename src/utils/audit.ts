@@ -382,16 +382,17 @@ export class ServerAuditLogger {
   }
 
   /**
-   * Log a server bootstrap start event
+   * Log a server initialization start event
    */
-  async logBootstrapStart(
+  async logInitStart(
     hosts: string[],
     engine: string,
   ): Promise<{ host: string; success: boolean }[]> {
     const entry = {
-      action: "server_bootstrap",
+      action: "server_init",
       status: "started" as const,
-      message: `Bootstrap started for ${hosts.length} host(s) with ${engine}`,
+      message:
+        `Initialization started for ${hosts.length} host(s) with ${engine}`,
       details: {
         hosts,
         engine,
@@ -402,16 +403,17 @@ export class ServerAuditLogger {
   }
 
   /**
-   * Log a server bootstrap success event
+   * Log a server initialization success event
    */
-  async logBootstrapSuccess(
+  async logInitSuccess(
     hosts: string[],
     engine: string,
   ): Promise<{ host: string; success: boolean }[]> {
     const entry = {
-      action: "server_bootstrap",
+      action: "server_init",
       status: "success" as const,
-      message: `Bootstrap completed successfully for ${hosts.length} host(s)`,
+      message:
+        `Initialization completed successfully for ${hosts.length} host(s)`,
       details: {
         hosts,
         engine,
@@ -422,17 +424,17 @@ export class ServerAuditLogger {
   }
 
   /**
-   * Log a server bootstrap failure event
+   * Log a server initialization failure event
    */
-  async logBootstrapFailure(
+  async logInitFailure(
     error: string,
     hosts?: string[],
     engine?: string,
   ): Promise<{ host: string; success: boolean }[]> {
     const entry = {
-      action: "server_bootstrap",
+      action: "server_init",
       status: "failed" as const,
-      message: `Bootstrap failed: ${error}`,
+      message: `Initialization failed: ${error}`,
       details: {
         hosts,
         engine,

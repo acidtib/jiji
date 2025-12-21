@@ -11,11 +11,11 @@ import { createServerAuditLogger } from "./audit.ts";
  */
 export interface ErrorHandlerContext {
   /**
-   * The operation being performed (e.g., "Bootstrap", "Deployment")
+   * The operation being performed (e.g., "Initialization", "Deployment")
    */
   operation: string;
   /**
-   * The component identifier for logging (e.g., "bootstrap", "deploy")
+   * The component identifier for logging (e.g., "init", "deploy")
    */
   component: string;
   /**
@@ -59,8 +59,8 @@ export interface ErrorHandlerContext {
  *   // ... command logic
  * } catch (error) {
  *   await handleCommandError(error, {
- *     operation: "Bootstrap",
- *     component: "bootstrap",
+ *     operation: "Initialization",
+ *     component: "init",
  *     sshManagers,
  *     projectName: config.project,
  *     targetHosts: ctx.targetHosts,
@@ -173,8 +173,8 @@ async function logFailureToAudit(
  *     // ... command logic
  *   },
  *   {
- *     operation: "Bootstrap",
- *     component: "bootstrap",
+ *     operation: "Initialization",
+ *     component: "init",
  *     sshManagers,
  *     projectName: config.project,
  *   }

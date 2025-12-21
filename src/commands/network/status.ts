@@ -47,7 +47,7 @@ export const statusCommand = new Command()
         if (!topology) {
           log.info("No network cluster found in Corrosion", "network");
           log.info(
-            "Run 'jiji server bootstrap' with network.enabled: true to set up private networking",
+            "Run 'jiji server init' with network.enabled: true to set up private networking",
             "network",
           );
           return;

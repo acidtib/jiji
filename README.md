@@ -10,7 +10,7 @@ portability. No infrastructure vendor lock-in required.
 **Service Management**: Build, deploy, and remove containerized services across
 multiple servers
 
-**Server Bootstrap**: Bootstrap servers with curl and Podman or Docker
+**Server Initialization**: Initialize servers with curl and Podman or Docker
 
 **Private Networking**: WireGuard mesh VPN with automatic service discovery via
 DNS for secure container-to-container communication across the cluster
@@ -182,10 +182,10 @@ configuration examples.
 
 ### Server Management
 
-Bootstrap servers with container runtime:
+Initialize servers with container runtime:
 
 ```bash
-jiji server bootstrap
+jiji server init
 ```
 
 Execute custom commands on remote hosts:
@@ -272,7 +272,7 @@ jiji audit
 jiji audit --host server1.example.com
 
 # Filter by action type across all servers
-jiji audit --filter bootstrap
+jiji audit --filter init
 
 # Filter by status across all servers
 jiji audit --status failed
@@ -286,7 +286,7 @@ jiji audit --raw
 
 The audit trail tracks all Jiji operations including:
 
-Server bootstrapping (start, success, failure) Container engine installations on
+Server initialization (start, success, failure) Container engine installations on
 each server Service deployments per server Configuration changes SSH connections
 and errors
 
@@ -327,7 +327,7 @@ Get help for any command:
 ```bash
 jiji --help
 jiji server --help
-jiji server bootstrap --help
+jiji server init --help
 jiji server exec --help
 jiji deploy --help
 jiji build --help

@@ -2,7 +2,7 @@
  * Network setup orchestrator
  *
  * Main orchestration logic for setting up private networking
- * during server bootstrap. Coordinates WireGuard, Corrosion, and DNS setup.
+ * during server initialization. Coordinates WireGuard, Corrosion, and DNS setup.
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";
@@ -58,7 +58,7 @@ const WIREGUARD_PORT = 51820;
 /**
  * Setup private networking on servers
  *
- * This is the main entry point for network setup, called from the bootstrap command.
+ * This is the main entry point for network setup, called from the init command.
  *
  * @param config - Jiji configuration
  * @param sshManagers - SSH connections to all servers
@@ -406,9 +406,9 @@ export async function setupNetwork(
             }
 
             try {
-              // Build bootstrap peer list (all other servers)
+              // Build initial peer list (all other servers)
               // Compress IPv6 addresses to match how the kernel assigns them
-              const bootstrapPeers = topology!.servers
+              const initialPeers = topology!.servers
                 .filter((s: NetworkServer) => s.id !== server.id)
                 .map((peer: NetworkServer) =>
                   `[${compressIpv6(peer.managementIp)}]:8787`
@@ -421,7 +421,7 @@ export async function setupNetwork(
                 gossipAddr: `[${compressIpv6(server.managementIp)}]:8787`,
                 apiAddr: "127.0.0.1:8080",
                 adminPath: "/var/run/jiji/corrosion-admin.sock",
-                bootstrap: bootstrapPeers,
+                bootstrap: initialPeers,
                 plaintext: true,
               });
 

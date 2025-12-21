@@ -271,7 +271,7 @@ export type CommandHandler<T = void> = (
  * 4. Cleans up SSH connections
  *
  * @param globalOptions Global command options
- * @param operation Operation name (e.g., "Bootstrap", "Deployment")
+ * @param operation Operation name (e.g., "Initialization", "Deployment")
  * @param component Component identifier for logging
  * @param handler Command handler function
  * @param contextOptions Options for context setup

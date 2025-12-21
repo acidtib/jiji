@@ -9,15 +9,15 @@ import type { GlobalOptions } from "../../types.ts";
 import { setupNetwork } from "../../lib/network/setup.ts";
 import { DEFAULT_MAX_PREFIX_LENGTH } from "../../constants.ts";
 
-export const bootstrapCommand = new Command()
-  .description("Bootstrap servers")
+export const initCommand = new Command()
+  .description("Initialize servers")
   .action(async (options) => {
     const globalOptions = options as unknown as GlobalOptions;
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      await log.group("Server Bootstrap", async () => {
-        log.info("Starting server bootstrap process", "bootstrap");
+      await log.group("Server Initialization", async () => {
+        log.info("Starting server initialization process", "init");
 
         // Set up command context (config, SSH, filtering)
         ctx = await setupCommandContext(globalOptions);
@@ -36,8 +36,8 @@ export const bootstrapCommand = new Command()
           config.project,
         );
 
-        // Log bootstrap start to connected servers
-        await auditLogger.logBootstrapStart(
+        // Log initialization start to connected servers
+        await auditLogger.logInitStart(
           targetHosts,
           config.builder.engine,
         );
@@ -141,7 +141,7 @@ export const bootstrapCommand = new Command()
               }
             }
 
-            log.status(`Continuing with bootstrap process...`, "bootstrap");
+            log.status(`Continuing with initialization process...`, "init");
           }
         });
 
@@ -213,12 +213,12 @@ export const bootstrapCommand = new Command()
               }
             }
 
-            log.status(`Continuing with bootstrap process...`, "bootstrap");
+            log.status(`Continuing with initialization process...`, "init");
           }
         }
 
-        // Log successful bootstrap completion to connected servers
-        const auditResults = await auditLogger.logBootstrapSuccess(
+        // Log successful initialization completion to connected servers
+        const auditResults = await auditLogger.logInitSuccess(
           targetHosts,
           config.builder.engine,
         );
@@ -229,8 +229,8 @@ export const bootstrapCommand = new Command()
           .map((result) => result.host);
 
         log.success(
-          `Bootstrap completed successfully on ${targetHosts.length} server(s)`,
-          "bootstrap",
+          `Initialization completed successfully on ${targetHosts.length} server(s)`,
+          "init",
         );
         log.info(
           `Audit trail updated on ${successfulHosts.length} server(s): ${
@@ -241,8 +241,8 @@ export const bootstrapCommand = new Command()
       });
     } catch (error) {
       await handleCommandError(error, {
-        operation: "Bootstrap",
-        component: "bootstrap",
+        operation: "Initialization",
+        component: "init",
         sshManagers: ctx?.sshManagers,
         projectName: ctx?.config?.project,
         targetHosts: ctx?.targetHosts,
@@ -252,7 +252,7 @@ export const bootstrapCommand = new Command()
               ctx.sshManagers,
               ctx.config.project,
             );
-            const failureResults = await auditLogger.logBootstrapFailure(
+            const failureResults = await auditLogger.logInitFailure(
               errorMessage,
               ctx.targetHosts,
               ctx.config.builder.engine,

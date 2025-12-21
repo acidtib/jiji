@@ -143,7 +143,7 @@ export const initCommand = new Command()
       log.info("  1. Review and customize the configuration file");
       log.info("  2. Configure your services and deployment targets");
       log.info("  3. Set up any required environment variables or secrets");
-      log.info("  4. Run 'jiji server bootstrap' to prepare your servers");
+      log.info("  4. Run 'jiji server init' to prepare your servers");
       log.info("  5. Run 'jiji deploy' to start deploying your services");
 
       console.log();

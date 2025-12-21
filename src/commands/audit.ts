@@ -25,7 +25,7 @@ export const auditCommand = new Command()
   })
   .option(
     "--filter <action:string>",
-    "Filter by action type (deploy, lock, bootstrap, etc.)",
+    "Filter by action type (deploy, lock, init, etc.)",
   )
   .option(
     "--status <status:string>",
