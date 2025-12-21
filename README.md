@@ -113,8 +113,11 @@ jiji build --services "web,api"
 Deploy services to remote servers with full lifecycle management:
 
 ```bash
-# Deploy all services
+# Deploy all services (shows confirmation prompt with deployment plan)
 jiji deploy
+
+# Skip confirmation prompt (useful for CI/CD)
+jiji deploy --yes
 
 # Build and deploy services in one command
 jiji deploy --build
@@ -132,6 +135,10 @@ jiji deploy --version v1.2.3
 jiji deploy --hosts "server1.example.com,server2.example.com"
 ```
 
+The deploy command displays a deployment plan before proceeding, showing which
+services will be deployed, build configurations, and target hosts. Use `--yes`
+to skip the confirmation prompt.
+
 ### Remove Services
 
 Remove services and clean up project directories:
@@ -146,6 +153,35 @@ jiji remove --confirmed
 # Remove specific services only
 jiji remove --services "web,api"
 ```
+
+### Service Management
+
+Manage running services with restart and cleanup operations:
+
+```bash
+# Restart specific services (stops, removes, and redeploys containers)
+jiji services restart --services "web,api"
+
+# Restart services on specific hosts
+jiji services restart --hosts "server1.example.com"
+
+# Restart by combining both filters
+jiji services restart --services "web" --hosts "server1.example.com"
+
+# Clean up old container images (keeps last 5 versions by default)
+jiji services prune
+
+# Keep a specific number of recent image versions
+jiji services prune --retain 10
+
+# Skip cleanup of dangling (untagged) images
+jiji services prune --no-dangling
+```
+
+**Note**: The `restart` command requires either `--hosts` or `--services` to be
+specified to prevent accidental restarts of all services. Image pruning
+automatically runs after deployments to manage disk space, keeping the
+configured number of recent versions while removing older images.
 
 ### Registry Management
 
@@ -332,7 +368,12 @@ jiji server exec --help
 jiji deploy --help
 jiji build --help
 jiji remove --help
+jiji services --help
+jiji services restart --help
+jiji services prune --help
 jiji registry --help
+jiji network --help
+jiji lock --help
 ```
 
 ## Configuration

@@ -67,9 +67,15 @@ Commands follow a hierarchical pattern using Cliffy:
 
 - **Top-level commands** in `src/commands/`: `init`, `build`, `deploy`,
   `remove`, `version`, `audit`, `lock`
-- **Nested commands** in subdirectories: `server/`, `registry/`, `network/`
+- **Nested commands** in subdirectories: `server/`, `registry/`, `network/`,
+  `services/`
 - **Main entry** at `src/main.ts` sets up global options and command
   registration
+
+**Service commands** (`src/commands/services/`):
+
+- `restart` - Restart running services (stop, remove, redeploy containers)
+- `prune` - Clean up old container images with configurable retention
 
 Global options are available on all commands:
 
@@ -111,6 +117,7 @@ Core business logic is extracted into service classes in `src/lib/services/`:
 - **`ProxyService`**: Manages kamal-proxy installation and configuration
 - **`RegistryAuthService`**: Handles registry authentication
 - **`ImagePushService`**: Pushes images to registries
+- **`ImagePruneService`**: Manages container image cleanup with retention policy
 
 Services are instantiated in commands and called with appropriate parameters.
 
@@ -219,6 +226,41 @@ Distributed deployment locks prevent concurrent deployments:
   `jiji lock show`
 - Lock acquisition requires majority consensus across hosts
 
+### Deployment Confirmation and Planning
+
+The deploy command shows an interactive confirmation dialog before deployment:
+
+- Displays formatted deployment plan with ASCII separator
+- Shows services to deploy, build configurations, target hosts, and options
+- Lists version override if `--version` flag used
+- Skippable with `--yes` flag for CI/CD automation
+- Implemented in `src/commands/deploy.ts` (lines 32-155)
+
+### Image Pruning and Retention
+
+Automatic image cleanup (`ImagePruneService`) manages disk space:
+
+- **Two-tier pruning**: Tagged images (keeps N recent) + dangling images
+- **Active image detection**: Prevents removal of in-use images
+- **Per-service grouping**: Tracks retention separately for each service
+- **Automatic cleanup**: Runs after successful deployments
+- **Manual cleanup**: `jiji services prune` command with `--retain` option
+- **Engine support**: Works with both Docker and Podman
+
+Configuration in `deploy.yml` (per service):
+
+```yaml
+services:
+  web:
+    image: nginx:latest
+    retain: 5 # Keep last 5 versions (default: 3)
+    servers:
+      - host: 192.168.1.100
+```
+
+The `retain` setting is configured per service, allowing different retention
+policies for critical vs. non-critical services.
+
 ### Proxy Integration
 
 Built-in kamal-proxy support for HTTP routing:
@@ -306,11 +348,16 @@ Use `executeInParallel()` from `src/utils/promise_helpers.ts`:
 
 ### Version Tagging
 
-Images are tagged with version identifiers:
+Images are tagged with version identifiers (managed by
+`VersionManager.determineVersionTag()`):
 
-- Default: git SHA (short form, 7 chars)
-- Override with `--version` flag
-- Managed by `VersionManager.determineVersionTag()`
+- **Priority 1**: Custom version from `--version` flag (e.g., `v1.2.3`)
+- **Priority 2**: Image-based services default to `latest`
+- **Priority 3**: Build services use git SHA (short form, 7 chars)
+- **Fallback**: ULID generation for non-git repositories
+
+The version manager also detects uncommitted changes and warns users when
+deploying from a dirty git tree.
 
 ### Configuration File Search
 
