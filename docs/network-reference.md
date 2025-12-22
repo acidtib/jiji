@@ -22,7 +22,9 @@ Cluster CIDR: 10.210.0.0/16 (IPv4 - configurable)
 └── Server N: 10.210.N.0/24 (up to 255 servers with /16 cluster CIDR)
 ```
 
-**Note**: The network uses IPv4 for WireGuard tunnels and container networking. IPv6 addresses (fdcc::/16 prefix) are used only for Corrosion gossip protocol management communication.
+**Note**: The network uses IPv4 for WireGuard tunnels and container networking.
+IPv6 addresses (fdcc::/16 prefix) are used only for Corrosion gossip protocol
+management communication.
 
 ## Commands
 
@@ -306,19 +308,26 @@ balancing.
 
 ## Network Limits
 
-Max servers: 256 (with /24 subnets in /16 cluster CIDR) Max containers per server:
-253 (with /24 subnet, .1 reserved for WireGuard interface) Max total containers: ~64,768 (256 servers × 253 containers) WireGuard peers: Unlimited (mesh scales to hundreds)
+Max servers: 256 (with /24 subnets in /16 cluster CIDR) Max containers per
+server: 253 (with /24 subnet, .1 reserved for WireGuard interface) Max total
+containers: ~64,768 (256 servers × 253 containers) WireGuard peers: Unlimited
+(mesh scales to hundreds)
 
-**CIDR Requirements**: Cluster CIDR must be /24 or larger (smaller prefix numbers) to support multiple servers. Each server receives a /24 subnet allocation.
+**CIDR Requirements**: Cluster CIDR must be /24 or larger (smaller prefix
+numbers) to support multiple servers. Each server receives a /24 subnet
+allocation.
 
 ## Best Practices
 
-1. **Use consistent CIDR** - Don't change cluster_cidr after setup (default: 10.210.0.0/16)
+1. **Use consistent CIDR** - Don't change cluster_cidr after setup (default:
+   10.210.0.0/16)
 2. **Monitor peer health** - Check monitoring logs regularly
 3. **Keep WireGuard updated** - Security patches are important
 4. **Use DNS names** - Avoid hardcoding container IPs (use service.jiji format)
-5. **Plan subnet allocation** - Each server gets consecutive /24 subnet (0, 1, 2, etc.)
+5. **Plan subnet allocation** - Each server gets consecutive /24 subnet (0, 1,
+   2, etc.)
 6. **Test failover** - Regularly test endpoint rotation and peer connectivity
 7. **Document endpoints** - Keep track of server public IPs for WireGuard peers
 8. **Backup network.json** - Critical for cluster state and topology
-9. **IPv4 only** - Don't configure IPv6 on WireGuard interface (used internally for management)
+9. **IPv4 only** - Don't configure IPv6 on WireGuard interface (used internally
+   for management)
