@@ -493,7 +493,7 @@ export async function setupNetwork(
                 wireguardIp: server.wireguardIp,
                 wireguardPublicKey: server.wireguardPublicKey,
                 managementIp: server.managementIp,
-                endpoints: JSON.stringify(server.endpoints),
+                endpoints: server.endpoints,
                 lastSeen: Date.now(),
               });
 

@@ -46,7 +46,7 @@ export async function loadTopology(
       wireguardIp: reg.wireguardIp,
       wireguardPublicKey: reg.wireguardPublicKey,
       managementIp: reg.managementIp,
-      endpoints: JSON.parse(reg.endpoints) as string[],
+      endpoints: reg.endpoints,
     }));
 
     const topology: NetworkTopology = {

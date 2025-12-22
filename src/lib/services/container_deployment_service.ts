@@ -54,6 +54,7 @@ export interface DeploymentResult {
   containerName?: string;
   imageName?: string;
   containerIp?: string;
+  oldContainerName?: string; // Name of the old container that was renamed (for cleanup after health checks)
   error?: string;
 }
 
@@ -122,47 +123,93 @@ export class ContainerDeploymentService {
         await this.cleanupOldContainers(service, ssh);
       }
 
-      // Stop and remove existing container
-      await executeBestEffort(
-        ssh,
-        `${this.engine} rm -f ${containerName}`,
-        `removing existing container ${containerName}`,
-      );
+      // Check if old container exists and rename it to keep it running during deployment
+      const oldContainerExists = await this.containerExists(containerName, ssh);
+      let renamedContainerName: string | undefined;
 
-      // Start new container
-      await this.startContainer(
-        service,
-        fullImageName,
-        containerName,
-        ssh,
-        host,
-      );
-
-      // Wait for container to be running
-      await this.waitForContainerRunning(containerName, ssh);
-
-      // Register in network if enabled
-      let containerIp: string | undefined;
-      if (this.config.network.enabled) {
-        containerIp = await this.registerInNetwork(
-          service,
-          containerName,
-          host,
-          ssh,
-          options.allSshManagers,
+      if (oldContainerExists) {
+        renamedContainerName = `${containerName}_old_${Date.now()}`;
+        log.status(
+          `Renaming existing container ${containerName} to ${renamedContainerName}`,
+          "deploy",
+        );
+        await this.renameContainer(containerName, renamedContainerName, ssh);
+        log.debug(
+          `Old container kept running: ${renamedContainerName}`,
+          "deploy",
         );
       }
 
-      log.success(`${service.name} deployed successfully on ${host}`, "deploy");
+      // Start new container (old one still running if it existed)
+      let newContainerStarted = false;
+      try {
+        await this.startContainer(
+          service,
+          fullImageName,
+          containerName,
+          ssh,
+          host,
+        );
+        newContainerStarted = true;
 
-      return {
-        service: service.name,
-        host,
-        success: true,
-        containerName,
-        imageName: fullImageName,
-        containerIp,
-      };
+        // Wait for container to be running
+        await this.waitForContainerRunning(containerName, ssh);
+
+        // Register in network if enabled
+        let containerIp: string | undefined;
+        if (this.config.network.enabled) {
+          containerIp = await this.registerInNetwork(
+            service,
+            containerName,
+            host,
+            ssh,
+            options.allSshManagers,
+          );
+        }
+
+        // If proxy is enabled, we'll configure it and wait for health checks in the caller
+        // For now, just return success with the container IP
+        // The old container cleanup will happen after proxy health checks pass
+
+        log.success(
+          `${service.name} deployed successfully on ${host}`,
+          "deploy",
+        );
+
+        return {
+          service: service.name,
+          host,
+          success: true,
+          containerName,
+          imageName: fullImageName,
+          containerIp,
+          oldContainerName: renamedContainerName, // Pass this for cleanup after health checks
+        };
+      } catch (error) {
+        // Deployment failed - rollback by removing new container and keeping old one
+        if (newContainerStarted) {
+          log.warn(
+            `Deployment failed, removing new container and keeping old one running`,
+            "deploy",
+          );
+          await this.removeContainer(containerName, ssh);
+        }
+
+        // Restore old container name if we renamed it
+        if (renamedContainerName) {
+          log.status(
+            `Restoring old container: ${renamedContainerName}`,
+            "deploy",
+          );
+          await this.renameContainer(renamedContainerName, containerName, ssh);
+          log.info(
+            `Rollback complete: old container ${containerName} still serving traffic`,
+            "deploy",
+          );
+        }
+
+        throw error;
+      }
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
@@ -488,6 +535,66 @@ export class ContainerDeploymentService {
     throw new Error(
       `Container ${containerName} did not start within ${CONTAINER_START_MAX_ATTEMPTS} seconds. Logs: ${logsResult.stdout}`,
     );
+  }
+
+  /**
+   * Check if a container exists
+   */
+  private async containerExists(
+    containerName: string,
+    ssh: SSHManager,
+  ): Promise<boolean> {
+    const result = await ssh.executeCommand(
+      `${this.engine} ps -a --filter "name=^${containerName}$" --format "{{.Names}}" | grep -q "^${containerName}$"`,
+    );
+    return result.success;
+  }
+
+  /**
+   * Rename a container
+   */
+  private async renameContainer(
+    oldName: string,
+    newName: string,
+    ssh: SSHManager,
+  ): Promise<void> {
+    const result = await ssh.executeCommand(
+      `${this.engine} rename ${oldName} ${newName}`,
+    );
+    if (!result.success) {
+      throw new Error(`Failed to rename container: ${result.stderr}`);
+    }
+  }
+
+  /**
+   * Stop and remove a container
+   */
+  private async removeContainer(
+    containerName: string,
+    ssh: SSHManager,
+  ): Promise<void> {
+    await executeBestEffort(
+      ssh,
+      `${this.engine} rm -f ${containerName}`,
+      `removing container ${containerName}`,
+    );
+  }
+
+  /**
+   * Clean up old container after successful deployment
+   * This should be called after health checks pass
+   */
+  async cleanupOldContainer(
+    oldContainerName: string,
+    host: string,
+    ssh: SSHManager,
+  ): Promise<void> {
+    log.status(
+      `Cleaning up old container: ${oldContainerName} on ${host}`,
+      "deploy",
+    );
+    await this.removeContainer(oldContainerName, ssh);
+    log.success(`Old container removed: ${oldContainerName}`, "deploy");
   }
 
   /**

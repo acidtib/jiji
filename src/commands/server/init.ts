@@ -111,10 +111,10 @@ export const initCommand = new Command()
             }
 
             if (failedInstalls > 0) {
-              log.warn(
-                `${engineCommand} installation failed on ${failedInstalls} host(s)`,
-                "install",
-              );
+              const msg =
+                `${engineCommand} installation failed on ${failedInstalls} host(s)`;
+              log.warn(msg, "install");
+              throw new Error(msg);
             }
           } catch (error) {
             const errorMessage = error instanceof Error
@@ -141,7 +141,7 @@ export const initCommand = new Command()
               }
             }
 
-            log.status(`Continuing with initialization process...`, "init");
+            throw error;
           }
         });
 
