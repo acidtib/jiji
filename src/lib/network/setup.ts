@@ -173,12 +173,15 @@ export async function setupNetwork(
 
             serverLogger.success("Dependencies installed");
           } catch (error) {
-            serverLogger.error(`Installation failed: ${error}`);
+            const errorMsg = `Installation failed: ${error}`;
+            serverLogger.error(errorMsg);
             results.push({
               host,
               success: false,
               error: String(error),
             });
+            // Throw to stop processing - can't continue without dependencies
+            throw new Error(`${host}: ${errorMsg}`);
           }
         }
       });
