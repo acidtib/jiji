@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/jiji_logo.svg" alt="Jiji Logo" width="400">
+</p>
+
 # Jiji
 
 > **WIP**: Under heavy development, not production ready.
@@ -156,7 +160,7 @@ jiji remove --services "web,api"
 
 ### Service Management
 
-Manage running services with restart and cleanup operations:
+Manage running services with restart, cleanup, and logging operations:
 
 ```bash
 # Restart specific services (stops, removes, and redeploys containers)
@@ -176,12 +180,61 @@ jiji services prune --retain 10
 
 # Skip cleanup of dangling (untagged) images
 jiji services prune --no-dangling
+
+# View logs from services
+jiji services logs --services "web"
+
+# View last 50 lines from services
+jiji services logs --services "api" --lines 50
+
+# Follow logs in real-time from primary server
+jiji services logs --services "web" --follow
+
+# Filter logs with grep
+jiji services logs --services "api" --grep "ERROR"
+
+# View logs since a specific time (timestamp or relative)
+jiji services logs --services "web" --since "2023-01-01T00:00:00Z"
+jiji services logs --services "web" --since "30m"
+
+# View logs from a specific container by ID
+jiji services logs --container-id abc123def456
 ```
 
 **Note**: The `restart` command requires either `--hosts` or `--services` to be
 specified to prevent accidental restarts of all services. Image pruning
 automatically runs after deployments to manage disk space, keeping the
-configured number of recent versions while removing older images.
+configured number of recent versions while removing older images. The `logs`
+command requires `--services` to be specified or `--container-id` for a specific
+container.
+
+### Proxy Management
+
+Manage and monitor kamal-proxy for HTTP/HTTPS traffic routing:
+
+```bash
+# View logs from kamal-proxy
+jiji proxy logs
+
+# View last 50 lines from kamal-proxy
+jiji proxy logs --lines 50
+
+# Follow kamal-proxy logs in real-time
+jiji proxy logs --follow
+
+# Filter proxy logs with grep
+jiji proxy logs --grep "ERROR"
+
+# View proxy logs since a specific time
+jiji proxy logs --since "1h"
+jiji proxy logs --since "2023-01-01T00:00:00Z"
+
+# View proxy logs from specific hosts
+jiji proxy logs --hosts "server1.example.com"
+```
+
+The proxy logs command helps monitor HTTP/HTTPS traffic routing, debug routing
+issues, and track requests flowing through kamal-proxy.
 
 ### Registry Management
 
@@ -372,6 +425,9 @@ jiji remove --help
 jiji services --help
 jiji services restart --help
 jiji services prune --help
+jiji services logs --help
+jiji proxy --help
+jiji proxy logs --help
 jiji registry --help
 jiji network --help
 jiji lock --help

@@ -9,6 +9,7 @@ import { deployCommand } from "./commands/deploy.ts";
 import { buildCommand } from "./commands/build.ts";
 import { removeCommand } from "./commands/remove.ts";
 import { servicesCommand } from "./commands/services/index.ts";
+import { proxyCommand } from "./commands/proxy/index.ts";
 import { registryCommand } from "./commands/registry/index.ts";
 import { networkCommand } from "./commands/network.ts";
 import { setGlobalLogLevel } from "./utils/logger.ts";
@@ -49,6 +50,7 @@ const command = new Command()
   .command("deploy", deployCommand)
   .command("remove", removeCommand)
   .command("services", servicesCommand)
+  .command("proxy", proxyCommand)
   .command("server", serverCommand)
   .command("registry", registryCommand)
   .command("network", networkCommand)

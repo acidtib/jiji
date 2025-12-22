@@ -82,6 +82,8 @@ Key services:
 - **`ImagePushService`** - Push images to registries
 - **`ImagePruneService`** - Clean up old images (keeps last N versions)
 - **`RegistryAuthService`** - Registry authentication management
+- **`LogsService`** - Container log fetching and following (supports grep,
+  since, follow modes)
 
 ### Private Networking (`src/lib/network/`)
 
@@ -123,6 +125,7 @@ SSH connections support:
 - ProxyJump/ProxyCommand
 - Connection reuse via pooling
 - Parallel execution across multiple hosts
+- Interactive sessions for following logs or running bash
 
 ### Command Structure (`src/commands/`)
 
@@ -132,7 +135,8 @@ Commands are organized by domain:
 - **`build.ts`** - Build container images
 - **`deploy.ts`** - Deploy services (with deployment plan confirmation)
 - **`remove.ts`** - Remove services and cleanup
-- **`services/`** - Service management (restart, prune)
+- **`services/`** - Service management (restart, prune, logs)
+- **`proxy/`** - Proxy log management
 - **`server/`** - Server operations (init, exec, teardown)
 - **`registry/`** - Registry management (setup, login, logout, remove)
 - **`network.ts`** - Network operations (status, teardown)
@@ -154,6 +158,9 @@ Commands are organized by domain:
   (auto-detects GHCR, Docker Hub)
 - **`service_filter.ts`** - Wildcard filtering for hosts/services
 - **`engine.ts`** - Container engine abstraction (Docker/Podman)
+- **`command_helpers.ts`** - Common command setup utilities (context setup, SSH
+  cleanup)
+- **`error_handler.ts`** - Centralized error handling for commands
 
 ## Configuration
 
@@ -207,8 +214,27 @@ const result = await ssh.execute("docker ps", { timeout: 30000 });
 // Execute with best-effort (doesn't throw)
 await ssh.executeBestEffort("systemctl restart service");
 
+// Interactive session (for logs following or bash)
+await ssh.startInteractiveSession("docker logs -f container_name");
+
 // Cleanup
 await ssh.dispose();
+```
+
+### Command Context Setup
+
+```typescript
+// Use helper to setup common command context
+const ctx = await setupCommandContext(globalOptions);
+
+// Context includes:
+// - config: Configuration
+// - targetHosts: string[]
+// - matchingServices: string[]
+// - sshManagers: SSHManager[]
+
+// Always cleanup SSH connections
+cleanupSSHConnections(ctx.sshManagers);
 ```
 
 ### Service Deployment
@@ -227,6 +253,26 @@ if (result.success) {
 }
 ```
 
+### Logs Service
+
+```typescript
+// Create logs service
+const logsService = new LogsService(config.builder.engine, "logs");
+
+// Fetch logs
+await logsService.fetchContainerLogs(ssh, host, containerName, {
+  lines: 100,
+  grep: "ERROR",
+  since: "30m",
+});
+
+// Follow logs (uses interactive SSH session)
+await logsService.followContainerLogs(ssh, containerName, {
+  lines: 100,
+  grep: "ERROR",
+});
+```
+
 ### Error Handling
 
 Use custom error types from `utils/error_handling.ts`:
@@ -235,6 +281,23 @@ Use custom error types from `utils/error_handling.ts`:
 - `RegistryError` - Registry operation failures
 - `SSHError` - SSH connection/execution errors
 - `DeploymentError` - Deployment failures
+
+Use centralized error handler from `utils/error_handler.ts`:
+
+```typescript
+try {
+  // Command logic
+} catch (error) {
+  await handleCommandError(error, {
+    operation: "Service Logs",
+    component: "logs",
+    sshManagers: ctx.sshManagers,
+    projectName: ctx.config.project,
+    targetHosts: ctx.targetHosts,
+  });
+  Deno.exit(1);
+}
+```
 
 ## Testing
 
@@ -306,3 +369,18 @@ for topology changes.
 Environment variables from non-string types (numbers, booleans) are
 automatically converted to strings during deployment. This is handled in the
 service configuration layer to ensure container compatibility.
+
+### Logs Architecture
+
+The logs system supports both fetching and following container logs:
+
+- **Fetch mode**: Retrieves logs from all matching services across all target
+  hosts
+- **Follow mode**: Uses interactive SSH sessions to stream logs from primary
+  host only
+- **Options**: Supports `--since`, `--lines`, `--grep`, `--grep-options`,
+  `--follow`
+- **Container ID**: Can fetch logs from any container using `--container-id`
+  (not just managed services)
+- **Command building**: `LogsService.buildLogsCommand()` constructs
+  Docker/Podman logs commands with proper flags
