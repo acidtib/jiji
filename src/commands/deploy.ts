@@ -50,68 +50,70 @@ async function displayDeploymentPlan(
       );
     }
 
-    console.log("\nDeployment Plan");
-    console.log("═".repeat(50));
-    console.log(`Project: ${config.project}`);
-    console.log(`Container Engine: ${config.builder.engine}`);
-    console.log(`Registry: ${config.builder.registry.getRegistryUrl()}`);
+    log.info("Deployment Plan", "plan");
+    log.info("═".repeat(50), "plan");
+    log.info(`Project: ${config.project}`, "plan");
+    log.info(`Container Engine: ${config.builder.engine}`, "plan");
+    log.info(`Registry: ${config.builder.registry.getRegistryUrl()}`, "plan");
 
     if (globalOptions.version) {
-      console.log(`Version: ${globalOptions.version}`);
+      log.info(`Version: ${globalOptions.version}`, "plan");
     }
 
     if (deployOptions.build && buildServices.length > 0) {
-      console.log("\nServices to Build:");
+      log.info("Services to Build:", "plan");
       for (const service of buildServices) {
-        console.log(`  • ${service.name}`);
+        log.info(`  • ${service.name}`, "plan");
         if (typeof service.build === "string") {
-          console.log(`    Context: ${service.build}`);
+          log.info(`    Context: ${service.build}`, "plan");
         } else if (service.build) {
-          console.log(`    Context: ${service.build.context}`);
+          log.info(`    Context: ${service.build.context}`, "plan");
           if (service.build.dockerfile) {
-            console.log(`    Dockerfile: ${service.build.dockerfile}`);
+            log.info(`    Dockerfile: ${service.build.dockerfile}`, "plan");
           }
           if (service.build.target) {
-            console.log(`    Target: ${service.build.target}`);
+            log.info(`    Target: ${service.build.target}`, "plan");
           }
         }
       }
     }
 
-    console.log("\nServices to Deploy:");
+    log.info("Services to Deploy:", "plan");
     if (allServices.length === 0) {
-      console.log("  No services to deploy");
+      log.info("  No services to deploy", "plan");
     } else {
       for (const service of allServices) {
-        console.log(`  • ${service.name}`);
+        log.info(`  ${service.name}`, "plan");
 
         if (service.image) {
-          console.log(`    Image: ${service.image}`);
+          log.info(`    Image: ${service.image}`, "plan");
         } else if (service.build) {
-          console.log(
+          log.info(
             `    Built from: ${
               typeof service.build === "string"
                 ? service.build
                 : service.build.context
             }`,
+            "plan",
           );
         }
 
         if (service.servers.length > 0) {
-          console.log(
+          log.info(
             `    Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+            "plan",
           );
         }
 
         if (service.ports.length > 0) {
-          console.log(`    Ports: ${service.ports.join(", ")}`);
+          log.info(`    Ports: ${service.ports.join(", ")}`, "plan");
         }
 
         if (service.proxy?.enabled) {
           const hosts = service.proxy.hosts.length > 0
             ? service.proxy.hosts.join(", ")
             : "auto";
-          console.log(`    Proxy: Enabled (${hosts})`);
+          log.info(`    Proxy: Enabled (${hosts})`, "plan");
         }
       }
     }
@@ -124,11 +126,11 @@ async function displayDeploymentPlan(
     }
 
     if (options.length > 0) {
-      console.log("\nOptions:");
-      options.forEach((option) => console.log(`  • ${option}`));
+      log.info("\nOptions:", "plan");
+      options.forEach((option) => log.info(`  • ${option}`, "plan"));
     }
 
-    console.log("═".repeat(50));
+    log.info("═".repeat(50), "plan");
   });
 
   if (deployOptions.yes) {
@@ -136,7 +138,7 @@ async function displayDeploymentPlan(
     return true;
   }
 
-  console.log();
+  log.info("", "plan");
   const confirmed = await Confirm.prompt({
     message: "Do you want to proceed with this deployment?",
     default: false,
