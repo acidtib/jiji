@@ -10,17 +10,19 @@ Exchange: Curve25519
 ### IP Allocation
 
 ```
-Cluster CIDR: 10.210.0.0/16
-├── Server 1: 10.210.0.0/24
+Cluster CIDR: 10.210.0.0/16 (IPv4 - configurable)
+├── Server 0: 10.210.0.0/24
 │   ├── WireGuard IP: 10.210.0.1
-│   ├── Management IP: fd00::/64 (derived from pubkey)
+│   ├── Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
 │   └── Containers: 10.210.0.2 - 10.210.0.254
-├── Server 2: 10.210.1.0/24
+├── Server 1: 10.210.1.0/24
 │   ├── WireGuard IP: 10.210.1.1
-│   ├── Management IP: fd00::/64 (derived from pubkey)
+│   ├── Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
 │   └── Containers: 10.210.1.2 - 10.210.1.254
-└── Server N: 10.210.N.0/24
+└── Server N: 10.210.N.0/24 (up to 255 servers with /16 cluster CIDR)
 ```
+
+**Note**: The network uses IPv4 for WireGuard tunnels and container networking. IPv6 addresses (fdcc::/16 prefix) are used only for Corrosion gossip protocol management communication.
 
 ## Commands
 
@@ -152,10 +154,10 @@ iptables -t nat -A POSTROUTING -s 10.210.0.0/24 -o jiji0 -j MASQUERADE
 ### Host Firewall
 
 ```bash
-# Allow WireGuard
+# Allow WireGuard (IPv4 tunnel traffic)
 ufw allow 51820/udp
 
-# Allow Corrosion gossip (IPv6)
+# Allow Corrosion gossip (uses IPv6 management addresses)
 ufw allow 8787/tcp
 ```
 
@@ -235,7 +237,7 @@ Expose via proxy/load balancer only
 Set these before initialization if needed:
 
 ```bash
-# Custom cluster CIDR
+# Custom cluster CIDR (IPv4 only, must be /24 or larger)
 export JIJI_CLUSTER_CIDR="10.220.0.0/16"
 
 # Disable networking
@@ -304,22 +306,19 @@ balancing.
 
 ## Network Limits
 
-Max servers: 254 (with /24 subnets in /16 cluster) Max containers per server:
-254 (with /24 subnet) Max total containers: ~64,000 (254 servers × 254
-containers) WireGuard peers: Unlimited (mesh scales to hundreds)
+Max servers: 256 (with /24 subnets in /16 cluster CIDR) Max containers per server:
+253 (with /24 subnet, .1 reserved for WireGuard interface) Max total containers: ~64,768 (256 servers × 253 containers) WireGuard peers: Unlimited (mesh scales to hundreds)
+
+**CIDR Requirements**: Cluster CIDR must be /24 or larger (smaller prefix numbers) to support multiple servers. Each server receives a /24 subnet allocation.
 
 ## Best Practices
 
-1. **Use consistent CIDR** - Don't change cluster_cidr after setup
+1. **Use consistent CIDR** - Don't change cluster_cidr after setup (default: 10.210.0.0/16)
 2. **Monitor peer health** - Check monitoring logs regularly
 3. **Keep WireGuard updated** - Security patches are important
-4. **Use DNS names** - Avoid hardcoding container IPs
-5. **Plan subnet allocation** - Reserve servers 0-9 for infrastructure
-6. **Test failover** - Regularly test endpoint rotation
-7. **Document endpoints** - Keep track of server public IPs
-8. **Backup network.json** - Critical for cluster state
-
-## Getting Help
-
-Logs: `journalctl -u jiji-* -f` Debug mode: Set `JIJI_LOG_LEVEL=debug` Network
-diagram: See `NETWORK_FIXES.md` Issues: https://github.com/acidtib/jiji/issues
+4. **Use DNS names** - Avoid hardcoding container IPs (use service.jiji format)
+5. **Plan subnet allocation** - Each server gets consecutive /24 subnet (0, 1, 2, etc.)
+6. **Test failover** - Regularly test endpoint rotation and peer connectivity
+7. **Document endpoints** - Keep track of server public IPs for WireGuard peers
+8. **Backup network.json** - Critical for cluster state and topology
+9. **IPv4 only** - Don't configure IPv6 on WireGuard interface (used internally for management)
