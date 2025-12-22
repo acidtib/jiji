@@ -4,13 +4,9 @@ This file provides guidance to LLM's when working with code in this repository.
 
 ## Project Overview
 
-Jiji is an infrastructure management tool for deploying containerized
-applications across multiple servers. It provides service deployment, private
-networking with WireGuard/DNS, registry management, and deployment orchestration
-with zero-downtime rollouts.
+Jiji is an infrastructure management tool for deploying containerized applications across multiple servers. It provides service deployment, private networking with WireGuard/DNS, registry management, and deployment orchestration with zero-downtime rollouts.
 
-**Tech Stack**: Deno 2.5+, TypeScript, Cliffy CLI framework, SSH2/node-ssh for
-remote execution
+**Tech Stack**: Deno 2.5+, TypeScript, Cliffy CLI framework, SSH2/node-ssh for remote execution
 
 ## Development Commands
 
@@ -45,22 +41,16 @@ deno test --allow-all tests/deploy_plan_test.ts
 
 ### Configuration System (`src/lib/configuration/`)
 
-The configuration system uses a class-based hierarchy for type-safe YAML config
-parsing:
+The configuration system uses a class-based hierarchy for type-safe YAML config parsing:
 
-- **`Configuration`** - Main entry point orchestrating all config aspects
-  (project, services, SSH, network, builder, environment)
-- **`ServiceConfiguration`** - Individual service config (image/build, hosts,
-  ports, volumes, proxy, env vars)
-- **`SSHConfiguration`** - SSH connection settings with support for proxies,
-  keys, and .ssh/config parsing
-- **`NetworkConfiguration`** - WireGuard mesh networking and DNS service
-  discovery settings
+- **`Configuration`** - Main entry point orchestrating all config aspects (project, services, SSH, network, builder, environment)
+- **`ServiceConfiguration`** - Individual service config (image/build, hosts, ports, volumes, proxy, env vars)
+- **`SSHConfiguration`** - SSH connection settings with support for proxies, keys, and .ssh/config parsing
+- **`NetworkConfiguration`** - WireGuard mesh networking and DNS service discovery settings
 - **`BuilderConfiguration`** - Local or remote build configuration
 - **`EnvironmentConfiguration`** - Shared environment variables across services
 
-All configs extend `BaseConfiguration` which provides validation helpers. The
-system uses lazy loading and caching for performance.
+All configs extend `BaseConfiguration` which provides validation helpers. The system uses lazy loading and caching for performance.
 
 ### Service Deployment (`src/lib/services/`)
 
@@ -69,42 +59,35 @@ system uses lazy loading and caching for performance.
 1. **Proxy Installation** - Install kamal-proxy on hosts if services use proxy
 2. **Container Deployment** - Zero-downtime rollout with health checks
 3. **Proxy Configuration** - Route traffic to new containers
-4. **Old Container Cleanup** - Remove previous versions after successful
-   deployment
+4. **Old Container Cleanup** - Remove previous versions after successful deployment
 
 Key services:
 
 - **`DeploymentOrchestrator`** - Main deployment workflow coordinator
-- **`ContainerDeploymentService`** - Zero-downtime container rollout (keeps old
-  running until new is healthy)
+- **`ContainerDeploymentService`** - Zero-downtime container rollout (keeps old running until new is healthy)
 - **`ProxyService`** - kamal-proxy installation and configuration
 - **`BuildService`** - Image building (local or remote)
 - **`ImagePushService`** - Push images to registries
 - **`ImagePruneService`** - Clean up old images (keeps last N versions)
 - **`RegistryAuthService`** - Registry authentication management
+- **`LogsService`** - Container log fetching and following (supports grep, since, follow modes)
 
 ### Private Networking (`src/lib/network/`)
 
 Creates WireGuard mesh VPN with automatic DNS-based service discovery:
 
 - **`setup.ts`** - Main orchestrator for network initialization
-- **`wireguard.ts`** - WireGuard interface management, key generation, config
-  writing
-- **`corrosion.ts`** - Distributed key-value store for cluster state (built on
-  CRDT)
-- **`dns.ts`** - CoreDNS setup for service discovery (containers resolve
-  `service.jiji`)
-- **`topology.ts`** - Network topology management (server discovery, peer
-  relationships)
-- **`subnet_allocator.ts`** - IPv4 subnet allocation (/24 subnets) for WireGuard
-  interfaces
+- **`wireguard.ts`** - WireGuard interface management, key generation, config writing
+- **`corrosion.ts`** - Distributed key-value store for cluster state (built on CRDT)
+- **`dns.ts`** - CoreDNS setup for service discovery (containers resolve `service.jiji`)
+- **`topology.ts`** - Network topology management (server discovery, peer relationships)
+- **`subnet_allocator.ts`** - IPv4 subnet allocation (/24 subnets) for WireGuard interfaces
 - **`peer_monitor.ts`** - Monitor peer connectivity and update configurations
 - **`control_loop.ts`** - Continuous reconciliation of network state
 
 Network flow:
 
-1. Each server gets unique WireGuard keys and IPv4 subnet (/24 from cluster
-   CIDR)
+1. Each server gets unique WireGuard keys and IPv4 subnet (/24 from cluster CIDR)
 2. Corrosion syncs cluster metadata across servers
 3. CoreDNS provides DNS resolution for service names
 4. Control loop maintains peer connections and updates configs
@@ -123,6 +106,7 @@ SSH connections support:
 - ProxyJump/ProxyCommand
 - Connection reuse via pooling
 - Parallel execution across multiple hosts
+- Interactive sessions for following logs or running bash
 
 ### Command Structure (`src/commands/`)
 
@@ -132,7 +116,8 @@ Commands are organized by domain:
 - **`build.ts`** - Build container images
 - **`deploy.ts`** - Deploy services (with deployment plan confirmation)
 - **`remove.ts`** - Remove services and cleanup
-- **`services/`** - Service management (restart, prune)
+- **`services/`** - Service management (restart, prune, logs)
+- **`proxy/`** - Proxy log management
 - **`server/`** - Server operations (init, exec, teardown)
 - **`registry/`** - Registry management (setup, login, logout, remove)
 - **`network.ts`** - Network operations (status, teardown)
@@ -150,18 +135,17 @@ Commands are organized by domain:
 - **`git.ts`** - Git SHA extraction for image tagging
 - **`version_manager.ts`** - Image version tracking and management
 - **`mount_manager.ts`** - Volume/file/directory mount handling
-- **`registry_manager.ts`** - Registry URL parsing and namespace detection
-  (auto-detects GHCR, Docker Hub)
+- **`registry_manager.ts`** - Registry URL parsing and namespace detection (auto-detects GHCR, Docker Hub)
 - **`service_filter.ts`** - Wildcard filtering for hosts/services
 - **`engine.ts`** - Container engine abstraction (Docker/Podman)
+- **`command_helpers.ts`** - Common command setup utilities (context setup, SSH cleanup)
+- **`error_handler.ts`** - Centralized error handling for commands
 
 ## Configuration
 
-Main config file: `.jiji/deploy.yml` (or `jiji.<environment>.yml` with
-`--environment` flag)
+Main config file: `.jiji/deploy.yml` (or `jiji.<environment>.yml` with `--environment` flag)
 
-The reference configuration with all options is in `src/jiji.yml` - this is the
-authoritative source for config structure.
+The reference configuration with all options is in `src/jiji.yml` - this is the authoritative source for config structure.
 
 ### Global Options
 
@@ -207,8 +191,27 @@ const result = await ssh.execute("docker ps", { timeout: 30000 });
 // Execute with best-effort (doesn't throw)
 await ssh.executeBestEffort("systemctl restart service");
 
+// Interactive session (for logs following or bash)
+await ssh.startInteractiveSession("docker logs -f container_name");
+
 // Cleanup
 await ssh.dispose();
+```
+
+### Command Context Setup
+
+```typescript
+// Use helper to setup common command context
+const ctx = await setupCommandContext(globalOptions);
+
+// Context includes:
+// - config: Configuration
+// - targetHosts: string[]
+// - matchingServices: string[]
+// - sshManagers: SSHManager[]
+
+// Always cleanup SSH connections
+cleanupSSHConnections(ctx.sshManagers);
 ```
 
 ### Service Deployment
@@ -227,6 +230,26 @@ if (result.success) {
 }
 ```
 
+### Logs Service
+
+```typescript
+// Create logs service
+const logsService = new LogsService(config.builder.engine, "logs");
+
+// Fetch logs
+await logsService.fetchContainerLogs(ssh, host, containerName, {
+  lines: 100,
+  grep: "ERROR",
+  since: "30m",
+});
+
+// Follow logs (uses interactive SSH session)
+await logsService.followContainerLogs(ssh, containerName, {
+  lines: 100,
+  grep: "ERROR",
+});
+```
+
 ### Error Handling
 
 Use custom error types from `utils/error_handling.ts`:
@@ -235,6 +258,23 @@ Use custom error types from `utils/error_handling.ts`:
 - `RegistryError` - Registry operation failures
 - `SSHError` - SSH connection/execution errors
 - `DeploymentError` - Deployment failures
+
+Use centralized error handler from `utils/error_handler.ts`:
+
+```typescript
+try {
+  // Command logic
+} catch (error) {
+  await handleCommandError(error, {
+    operation: "Service Logs",
+    component: "logs",
+    sshManagers: ctx.sshManagers,
+    projectName: ctx.config.project,
+    targetHosts: ctx.targetHosts,
+  });
+  Deno.exit(1);
+}
+```
 
 ## Testing
 
@@ -255,12 +295,10 @@ Test patterns:
 
 ### Zero-Downtime Deployments
 
-The deployment system keeps old containers running until new ones pass health
-checks:
+The deployment system keeps old containers running until new ones pass health checks:
 
 1. Deploy new container with version tag
-2. Wait for health check to pass (via proxy health endpoint or container
-   readiness)
+2. Wait for health check to pass (via proxy health endpoint or container readiness)
 3. Configure proxy to route to new container
 4. Stop and remove old container
 5. Clean up old images (keeping last N versions)
@@ -280,29 +318,32 @@ Images are tagged with:
 1. Git SHA (default) - `registry/project/service:abc1234`
 2. Custom version (via `--version`) - `registry/project/service:v1.2.3`
 
-The `version_manager.ts` tracks deployed versions per service/host for rollback
-and pruning.
+The `version_manager.ts` tracks deployed versions per service/host for rollback and pruning.
 
 ### Private Network Architecture
 
-The private network uses IPv4 addressing (10.210.0.0/16 by default) for
-WireGuard tunnels, with IPv6 management addresses (fdcc::/16) for Corrosion
-gossip protocol. Each server:
+The private network uses IPv4 addressing (10.210.0.0/16 by default) for WireGuard tunnels, with IPv6 management addresses (fdcc::/16) for Corrosion gossip protocol. Each server:
 
 1. Generates unique WireGuard keypair
-2. Gets allocated /24 IPv4 subnet from allocator (e.g., 10.210.0.0/24,
-   10.210.1.0/24)
+2. Gets allocated /24 IPv4 subnet from allocator (e.g., 10.210.0.0/24, 10.210.1.0/24)
 3. Derives deterministic IPv6 management address from public key for Corrosion
 4. Registers in Corrosion distributed store
 5. Establishes WireGuard peers to all other servers
 6. Runs CoreDNS for service.jiji DNS resolution
 7. Container engine configured to use CoreDNS as resolver
 
-The control loop continuously reconciles network state by monitoring Corrosion
-for topology changes.
+The control loop continuously reconciles network state by monitoring Corrosion for topology changes.
 
 ### Environment Variable Handling
 
-Environment variables from non-string types (numbers, booleans) are
-automatically converted to strings during deployment. This is handled in the
-service configuration layer to ensure container compatibility.
+Environment variables from non-string types (numbers, booleans) are automatically converted to strings during deployment. This is handled in the service configuration layer to ensure container compatibility.
+
+### Logs Architecture
+
+The logs system supports both fetching and following container logs:
+
+- **Fetch mode**: Retrieves logs from all matching services across all target hosts
+- **Follow mode**: Uses interactive SSH sessions to stream logs from primary host only
+- **Options**: Supports `--since`, `--lines`, `--grep`, `--grep-options`, `--follow`
+- **Container ID**: Can fetch logs from any container using `--container-id` (not just managed services)
+- **Command building**: `LogsService.buildLogsCommand()` constructs Docker/Podman logs commands with proper flags
