@@ -5,63 +5,21 @@ import {
   type RegistryConfig,
   RegistryConfigManager,
 } from "../utils/registry_config.ts";
-import {
-  type AuthenticationResult,
-  RegistryAuthenticator,
-} from "./registry_authenticator.ts";
-import type { RegistryCredentials } from "../types/registry.ts";
+import { RegistryAuthenticator } from "./registry_authenticator.ts";
 import type { ContainerEngine } from "./configuration/builder.ts";
 import {
   createRegistryError,
   getErrorMessage,
   RegistryErrorCodes,
 } from "../utils/error_handling.ts";
-
-/**
- * Registry information interface
- */
-export interface RegistryInfo {
-  url: string;
-  type: "local" | "remote";
-  port?: number;
-  username?: string;
-  isDefault: boolean;
-  lastLogin?: string;
-  status: RegistryStatus;
-}
-
-/**
- * Registry status information
- */
-export interface RegistryStatus {
-  available: boolean;
-  authenticated: boolean;
-  running?: boolean; // For local registries
-  containerId?: string; // For local registries
-  message?: string;
-}
-
-/**
- * Registry setup options
- */
-export interface RegistrySetupOptions {
-  type?: "local" | "remote";
-  port?: number;
-  credentials?: RegistryCredentials;
-  isDefault?: boolean;
-  skipAuthentication?: boolean;
-}
-
-/**
- * Registry operation result
- */
-export interface RegistryOperationResult {
-  success: boolean;
-  registry: string;
-  operation: string;
-  message?: string;
-  data?: Record<string, unknown>;
-}
+import type {
+  AuthenticationResult,
+  RegistryCredentials,
+  RegistryInfo,
+  RegistryOperationResult,
+  RegistrySetupOptions,
+  RegistryStatus,
+} from "../types.ts";
 
 /**
  * Main registry service that encapsulates all registry operations

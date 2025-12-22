@@ -14,8 +14,11 @@ export type RegistryOperation =
   | "login"
   | "logout"
   | "setup"
+  | "setup-local"
+  | "setup-remote"
   | "list"
   | "use"
+  | "set-default"
   | "status"
   | "authenticate";
 

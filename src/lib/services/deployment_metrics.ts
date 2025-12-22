@@ -5,64 +5,12 @@
  */
 
 import { log } from "../../utils/logger.ts";
-import type { DeploymentResult } from "./container_deployment_service.ts";
-import type { ProxyConfigResult, ProxyInstallResult } from "./proxy_service.ts";
-
-/**
- * Deployment metrics data
- */
-export interface DeploymentMetrics {
-  deploymentId: string;
-  timestamp: Date;
-  projectName: string;
-  version?: string;
-
-  // Timing metrics
-  startTime: Date;
-  endTime?: Date;
-  totalDurationMs?: number;
-
-  // Service metrics
-  totalServices: number;
-  successfulDeployments: number;
-  failedDeployments: number;
-  rolledBackDeployments: number;
-
-  // Proxy metrics
-  proxyHostsConfigured: number;
-  proxyServicesConfigured: number;
-  proxyInstallFailures: number;
-  proxyConfigFailures: number;
-
-  // Health check metrics
-  healthChecksPassed: number;
-  healthChecksFailed: number;
-  avgHealthCheckDurationMs?: number;
-
-  // Rollback metrics
-  rollbacksTriggered: number;
-  rollbacksSuccessful: number;
-  rollbacksFailed: number;
-
-  // Error tracking
-  errors: Array<{
-    type: "deployment" | "proxy" | "health_check" | "rollback" | "other";
-    service?: string;
-    host?: string;
-    message: string;
-    timestamp: Date;
-  }>;
-
-  // Performance metrics
-  deploymentSteps: Array<{
-    step: string;
-    startTime: Date;
-    endTime?: Date;
-    durationMs?: number;
-    success: boolean;
-    error?: string;
-  }>;
-}
+import type {
+  DeploymentMetrics,
+  DeploymentResult,
+  ProxyConfigResult,
+  ProxyInstallResult,
+} from "../../types.ts";
 
 /**
  * Deployment step timing helper

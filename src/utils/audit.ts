@@ -2,13 +2,7 @@ import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
 import { executeHostOperations } from "./promise_helpers.ts";
 import { log, Logger } from "./logger.ts";
-import type { AuditEntry } from "../types.ts";
-
-export interface RemoteAuditResult {
-  host: string;
-  success: boolean;
-  error?: string;
-}
+import type { AuditEntry, RemoteAuditResult } from "../types.ts";
 
 export class RemoteAuditLogger {
   private sshManager: SSHManager;

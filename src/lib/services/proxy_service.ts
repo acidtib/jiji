@@ -11,28 +11,7 @@ import { createServerAuditLogger } from "../../utils/audit.ts";
 import { getDnsServerForHost } from "../../utils/network_helpers.ts";
 import { getContainerIp } from "./container_registry.ts";
 import { log } from "../../utils/logger.ts";
-
-/**
- * Result of proxy installation on a host
- */
-export interface ProxyInstallResult {
-  host: string;
-  success: boolean;
-  message?: string;
-  error?: string;
-  version?: string;
-}
-
-/**
- * Result of proxy service configuration
- */
-export interface ProxyConfigResult {
-  service: string;
-  host: string;
-  success: boolean;
-  message?: string;
-  error?: string;
-}
+import type { ProxyConfigResult, ProxyInstallResult } from "../../types.ts";
 
 /**
  * Service for managing kamal-proxy across multiple hosts

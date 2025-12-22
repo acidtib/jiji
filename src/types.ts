@@ -1,12 +1,10 @@
-export interface AuditEntry {
-  timestamp: string;
-  action: string;
-  details?: Record<string, unknown>;
-  user?: string;
-  host?: string;
-  status: "started" | "success" | "failed" | "warning";
-  message?: string;
-}
+/**
+ * Central type definitions and re-exports for the Jiji application
+ */
+
+// ============================================================================
+// Global Options and Command Types
+// ============================================================================
 
 export interface GlobalOptions {
   environment?: string;
@@ -17,7 +15,10 @@ export interface GlobalOptions {
   services?: string;
 }
 
-// Configuration system types
+// ============================================================================
+// Configuration System Types
+// ============================================================================
+
 export interface ValidationError {
   path: string;
   message: string;
@@ -42,7 +43,7 @@ export interface ConfigurationContext {
   [key: string]: unknown;
 }
 
-// Re-export types from configuration system
+// Re-export configuration types
 export type { ContainerEngine } from "./lib/configuration.ts";
 export type { Configuration } from "./lib/configuration.ts";
 export type { ServiceConfiguration } from "./lib/configuration.ts";
@@ -50,23 +51,125 @@ export type { SSHConfiguration } from "./lib/configuration.ts";
 export type { EnvironmentConfiguration } from "./lib/configuration.ts";
 export { ConfigurationError } from "./lib/configuration.ts";
 
-// Re-export registry types
+// ============================================================================
+// Common Utility Types
+// ============================================================================
+
+export type {
+  AggregatedResults,
+  CommandContext,
+  CommandContextOptions,
+  CommandHandler,
+  ConfigLoadResult,
+  EngineInstallResult,
+  ErrorHandlerContext,
+  GitFileStatus,
+  KamalProxyDeployOptions,
+  LoggerOptions,
+  LogLevel,
+  OperationResult,
+  ParsedMount,
+  ServiceFilterOptions,
+  ServiceGroupingOptions,
+  VersionOptions,
+} from "./types/common.ts";
+
+// ============================================================================
+// SSH and Remote Execution Types
+// ============================================================================
+
+export type { CommandResult, SSHConnectionConfig } from "./types/ssh.ts";
+
+export { SSH_ALGORITHMS } from "./types/ssh.ts";
+
+// ============================================================================
+// Audit and Logging Types
+// ============================================================================
+
+export type {
+  AuditEntry,
+  LockInfo,
+  LockManager,
+  RemoteAuditResult,
+} from "./types/audit.ts";
+
+// ============================================================================
+// Deployment Types
+// ============================================================================
+
+export type {
+  BuildResult,
+  BuildServiceOptions,
+  DeploymentMetrics,
+  DeploymentOptions,
+  DeploymentResult,
+  OrchestrationOptions,
+  OrchestrationResult,
+  ProxyConfigResult,
+  ProxyInstallResult,
+  PruneOptions,
+  PruneResult,
+  PushOptions,
+  PushResult,
+  RemoteAuthResult,
+} from "./types/deployment.ts";
+
+// ============================================================================
+// Registry Types
+// ============================================================================
+
 export type {
   AuthenticationResult,
+  LocalRegistryContainer,
+  RegistryBackupInfo,
   RegistryCommandOptions,
+  RegistryConfig,
   RegistryCredentials,
+  RegistryEnvironment,
+  RegistryEvent,
+  RegistryEventType,
   RegistryHealthCheck,
+  RegistryImageInfo,
   RegistryInfo,
   RegistryListOptions,
+  RegistryMetrics,
+  RegistryMigrationOptions,
   RegistryOperation,
   RegistryOperationResult,
+  RegistrySearchResult,
+  RegistryServiceConfig,
   RegistrySetupOptions,
   RegistryStatus,
   RegistryType,
+  RegistryUrlComponents,
   RegistryValidationResult,
+  RegistryValidationRules,
 } from "./types/registry.ts";
 
-// Re-export error handling types
+// ============================================================================
+// Network Types
+// ============================================================================
+
+export type {
+  ContainerRegistration,
+  CorrosionConfig,
+  DNSConfig,
+  NetworkDependencies,
+  NetworkDiscovery,
+  NetworkServer,
+  NetworkSetupResult,
+  NetworkStatus,
+  NetworkTopology,
+  ServerRegistration,
+  ServiceRegistration,
+  WireGuardConfig,
+  WireGuardPeer,
+} from "./types/network.ts";
+
+// ============================================================================
+// Error Handling Types
+// ============================================================================
+
 export {
   RegistryError,
   type RegistryErrorCode,
