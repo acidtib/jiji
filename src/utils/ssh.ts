@@ -2,64 +2,17 @@ import { NodeSSH } from "node-ssh";
 import { Client, type ClientChannel } from "ssh2";
 import { SSHProxy } from "./ssh_proxy.ts";
 import { SSHConfigParser } from "./ssh_config_parser.ts";
-import { Logger, type LogLevel } from "./logger.ts";
+import { Logger } from "./logger.ts";
+import type { LogLevel } from "../types.ts";
+import {
+  type CommandResult,
+  SSH_ALGORITHMS,
+  type SSHConnectionConfig,
+} from "../types.ts";
 
-/**
- * Default SSH algorithms for compatibility with various SSH servers
- * These can be customized if needed for specific server configurations
- */
-export const SSH_ALGORITHMS = {
-  serverHostKey: [
-    "ssh-rsa",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "ssh-ed25519",
-  ],
-  kex: [
-    "ecdh-sha2-nistp256",
-    "ecdh-sha2-nistp384",
-    "ecdh-sha2-nistp521",
-    "diffie-hellman-group14-sha256",
-    "diffie-hellman-group16-sha512",
-    "diffie-hellman-group1-sha1",
-  ],
-  cipher: [
-    "aes128-ctr",
-    "aes256-ctr",
-    "aes128-cbc",
-  ],
-  hmac: [
-    "hmac-sha2-256",
-    "hmac-sha2-512",
-    "hmac-sha1",
-  ],
-  compress: ["none"],
-} as const;
-
-export interface SSHConnectionConfig {
-  host: string;
-  username: string;
-  port?: number;
-  useAgent?: boolean;
-  proxy?: string;
-  proxyCommand?: string;
-  keys?: string[];
-  keyData?: string[];
-  keysOnly?: boolean;
-  dnsRetries?: number;
-  sshConfigFiles?: string[] | false;
-  connectTimeout?: number;
-  keyPath?: string;
-  logLevel?: LogLevel;
-}
-
-export interface CommandResult {
-  stdout: string;
-  stderr: string;
-  success: boolean;
-  code: number | null;
-}
+// Re-export types for convenience
+export type { CommandResult, SSHConnectionConfig };
+export { SSH_ALGORITHMS };
 
 /**
  * SSH connection manager for remote operations

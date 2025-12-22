@@ -6,31 +6,7 @@ import type { ContainerEngine } from "../configuration/builder.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import { executeBestEffort } from "../../utils/command_helpers.ts";
-
-/**
- * Options for image pruning
- */
-export interface PruneOptions {
-  /**
-   * Number of recent images to retain per service (default: 3)
-   */
-  retain?: number;
-  /**
-   * Whether to remove dangling images (default: true)
-   */
-  removeDangling?: boolean;
-}
-
-/**
- * Result of image pruning operation
- */
-export interface PruneResult {
-  host: string;
-  success: boolean;
-  imagesRemoved: number;
-  spaceSaved?: string;
-  error?: string;
-}
+import type { PruneOptions, PruneResult } from "../../types.ts";
 
 /**
  * Service for managing Docker/Podman image retention

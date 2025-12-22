@@ -1,4 +1,5 @@
 import { log } from "./logger.ts";
+import type { AggregatedResults } from "../types.ts";
 
 /**
  * Enhanced promise utilities for better error handling in multi-host operations
@@ -6,27 +7,6 @@ import { log } from "./logger.ts";
  * These utilities provide patterns that wait for all operations to complete
  * and collect comprehensive error information instead of failing fast.
  */
-
-/**
- * Result of an operation that can succeed or fail
- */
-export interface OperationResult<T> {
-  success: boolean;
-  result?: T;
-  error?: Error;
-  host?: string;
-}
-
-/**
- * Aggregated results containing both successes and failures
- */
-export interface AggregatedResults<T> {
-  results: T[];
-  errors: Error[];
-  successCount: number;
-  errorCount: number;
-  totalCount: number;
-}
 
 /**
  * Execute operations with comprehensive error collection

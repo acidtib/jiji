@@ -6,16 +6,7 @@ import {
   type RegistryErrorCode,
   RegistryErrorCodes,
 } from "../utils/error_handling.ts";
-import type { RegistryCredentials } from "../types/registry.ts";
-
-/**
- * Authentication result interface
- */
-export interface AuthenticationResult {
-  success: boolean;
-  registry: string;
-  message?: string;
-}
+import type { AuthenticationResult, RegistryCredentials } from "../types.ts";
 
 /**
  * Registry authenticator for handling container engine authentication

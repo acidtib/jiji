@@ -1,25 +1,5 @@
-import type { ContainerEngine } from "../configuration/builder.ts";
-import type { RegistryConfiguration } from "../configuration/registry.ts";
 import { log } from "../../utils/logger.ts";
-import type { GlobalOptions } from "../../types.ts";
-
-/**
- * Options for image push operations
- */
-export interface PushOptions {
-  engine: ContainerEngine;
-  registry: RegistryConfiguration;
-  globalOptions: GlobalOptions;
-}
-
-/**
- * Result of a push operation
- */
-export interface PushResult {
-  imageName: string;
-  success: boolean;
-  error?: Error;
-}
+import type { PushOptions, PushResult } from "../../types.ts";
 
 /**
  * Service for pushing container images to registries

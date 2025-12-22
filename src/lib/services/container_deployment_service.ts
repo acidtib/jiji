@@ -29,34 +29,7 @@ import {
   CONTAINER_START_RETRY_DELAY_MS,
   JIJI_NETWORK_NAME,
 } from "../../constants.ts";
-
-/**
- * Options for container deployment
- */
-export interface DeploymentOptions {
-  /**
-   * Custom version tag (defaults to "latest")
-   */
-  version?: string;
-  /**
-   * All SSH managers for cluster-wide operations
-   */
-  allSshManagers?: SSHManager[];
-}
-
-/**
- * Result of container deployment
- */
-export interface DeploymentResult {
-  service: string;
-  host: string;
-  success: boolean;
-  containerName?: string;
-  imageName?: string;
-  containerIp?: string;
-  oldContainerName?: string; // Name of the old container that was renamed (for cleanup after health checks)
-  error?: string;
-}
+import type { DeploymentOptions, DeploymentResult } from "../../types.ts";
 
 /**
  * Service for deploying containers to remote servers

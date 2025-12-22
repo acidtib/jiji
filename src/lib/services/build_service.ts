@@ -1,33 +1,8 @@
-import type { ContainerEngine } from "../configuration/builder.ts";
-import type { RegistryConfiguration } from "../configuration/registry.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
-import type { GlobalOptions } from "../../types.ts";
 import { ImagePushService } from "./image_push_service.ts";
 import { RegistryAuthService } from "./registry_auth_service.ts";
 import { log } from "../../utils/logger.ts";
-
-/**
- * Options for BuildService
- */
-export interface BuildServiceOptions {
-  engine: ContainerEngine;
-  registry: RegistryConfiguration;
-  globalOptions: GlobalOptions;
-  noCache?: boolean;
-  push?: boolean;
-  cacheEnabled?: boolean;
-}
-
-/**
- * Result of building a service
- */
-export interface BuildResult {
-  serviceName: string;
-  success: boolean;
-  imageName: string;
-  latestImageName: string;
-  error?: string;
-}
+import type { BuildResult, BuildServiceOptions } from "../../types.ts";
 
 /**
  * Service for building container images

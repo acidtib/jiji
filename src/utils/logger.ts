@@ -1,21 +1,5 @@
 import { colors } from "@cliffy/ansi/colors";
-
-export interface LoggerOptions {
-  prefix?: string;
-  showTimestamp?: boolean;
-  maxPrefixLength?: number;
-  colors?: boolean;
-  minLevel?: LogLevel;
-}
-
-export type LogLevel =
-  | "debug"
-  | "info"
-  | "warn"
-  | "error"
-  | "fatal"
-  | "success"
-  | "trace";
+import type { LoggerOptions, LogLevel } from "../types.ts";
 
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   fatal: 0,

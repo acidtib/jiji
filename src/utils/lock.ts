@@ -1,23 +1,7 @@
 import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
 import { executeHostOperations } from "./promise_helpers.ts";
-
-export interface LockInfo {
-  locked: boolean;
-  message?: string;
-  acquiredAt?: string;
-  acquiredBy?: string;
-  host?: string;
-  pid?: number;
-  version?: string;
-}
-
-export interface LockManager {
-  acquire(message: string): Promise<boolean>;
-  release(): Promise<boolean>;
-  status(): Promise<LockInfo>;
-  isLocked(): Promise<boolean>;
-}
+import type { LockInfo, LockManager } from "../types.ts";
 
 /**
  * Remote lock manager for SSH-based deployments

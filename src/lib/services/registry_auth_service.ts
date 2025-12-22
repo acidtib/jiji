@@ -7,15 +7,7 @@ import type { RegistryConfiguration } from "../configuration/registry.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
 import { RegistryAuthenticator } from "../registry_authenticator.ts";
 import { log } from "../../utils/logger.ts";
-
-/**
- * Result of remote registry authentication
- */
-export interface RemoteAuthResult {
-  host: string;
-  success: boolean;
-  error?: string;
-}
+import type { RemoteAuthResult } from "../../types.ts";
 
 /**
  * Service for handling registry authentication across local and remote hosts

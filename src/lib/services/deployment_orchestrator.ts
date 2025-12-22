@@ -12,36 +12,17 @@
 import type { Configuration } from "../configuration.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
-import {
-  ContainerDeploymentService,
-  type DeploymentResult,
-} from "./container_deployment_service.ts";
-import {
-  type ProxyConfigResult,
-  type ProxyInstallResult,
-  ProxyService,
-} from "./proxy_service.ts";
-import {
-  type DeploymentMetrics,
-  deploymentMetrics,
-} from "./deployment_metrics.ts";
+import { ContainerDeploymentService } from "./container_deployment_service.ts";
+import { ProxyService } from "./proxy_service.ts";
+import { deploymentMetrics } from "./deployment_metrics.ts";
 import { log } from "../../utils/logger.ts";
-
-export interface OrchestrationOptions {
-  version?: string;
-  allSshManagers?: SSHManager[];
-}
-
-export interface OrchestrationResult {
-  success: boolean;
-  proxyInstallResults: ProxyInstallResult[];
-  deploymentResults: DeploymentResult[];
-  proxyConfigResults: ProxyConfigResult[];
-  errors: string[];
-  warnings: string[];
-  deploymentId?: string;
-  metrics?: DeploymentMetrics;
-}
+import type {
+  DeploymentResult,
+  OrchestrationOptions,
+  OrchestrationResult,
+  ProxyConfigResult,
+  ProxyInstallResult,
+} from "../../types.ts";
 
 /**
  * Orchestrates the complete deployment workflow
