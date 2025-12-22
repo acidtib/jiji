@@ -18,15 +18,26 @@ export class EnvironmentConfiguration extends BaseConfiguration
 
   /**
    * Clear text environment variables
+   * Automatically converts numbers and booleans to strings
    */
   get clear(): Record<string, string> {
     if (!this._clear) {
-      this._clear = this.has("clear")
-        ? this.validateObject(this.get("clear"), "clear") as Record<
-          string,
-          string
-        >
+      const rawClear = this.has("clear")
+        ? this.validateObject(this.get("clear"), "clear")
         : {};
+
+      // Convert all values to strings
+      this._clear = {};
+      for (const [key, value] of Object.entries(rawClear)) {
+        if (
+          typeof value === "string" || typeof value === "number" ||
+          typeof value === "boolean"
+        ) {
+          this._clear[key] = String(value);
+        } else {
+          this._clear[key] = value as string; // Will be caught by validation
+        }
+      }
     }
     return this._clear;
   }
@@ -47,17 +58,28 @@ export class EnvironmentConfiguration extends BaseConfiguration
    * Validates the environment configuration
    */
   validate(): void {
-    const vars = this.clear;
-    for (const [key, value] of Object.entries(vars)) {
-      if (typeof value !== "string") {
-        throw new ConfigurationError(
-          `Environment variable '${key}' must be a string`,
-        );
-      }
-      if (!this.isValidEnvVarName(key)) {
-        throw new ConfigurationError(
-          `Invalid environment variable name '${key}'. Must contain only alphanumeric characters and underscores.`,
-        );
+    // Validate clear variables - accessing this.clear converts values to strings
+    const rawClear = this.has("clear") ? this.get("clear") : {};
+    if (typeof rawClear === "object" && rawClear !== null) {
+      for (
+        const [key, value] of Object.entries(
+          rawClear as Record<string, unknown>,
+        )
+      ) {
+        // Accept string, number, and boolean values
+        if (
+          typeof value !== "string" && typeof value !== "number" &&
+          typeof value !== "boolean"
+        ) {
+          throw new ConfigurationError(
+            `Environment variable '${key}' must be a string, number, or boolean`,
+          );
+        }
+        if (!this.isValidEnvVarName(key)) {
+          throw new ConfigurationError(
+            `Invalid environment variable name '${key}'. Must contain only alphanumeric characters and underscores.`,
+          );
+        }
       }
     }
 

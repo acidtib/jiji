@@ -12,7 +12,7 @@ file with all available options and detailed comments
 
 ### Networking
 
-**[Network Reference](network_reference.md)** - Quick reference guide for Jiji's
+**[Network Reference](network-reference.md)** - Quick reference guide for Jiji's
 private networking features including WireGuard mesh, automatic service
 discovery via DNS, and daemon-level DNS configuration
 
@@ -27,7 +27,7 @@ Hub, local registries)
 **[Testing Guide](testing.md)** - Instructions for testing Jiji deployments
 including proxy testing, SSH connections, and troubleshooting
 **[Version Script](version.md)** - Documentation for the version management
-utility
+utility and `jiji version` command
 
 ## Quick Links
 
@@ -39,7 +39,7 @@ utility
 ### For Contributors
 
 [Testing Guide](testing.md) - How to test your changes
-[Network Architecture](network_reference.md) - Understanding Jiji's networking
+[Network Architecture](network-reference.md) - Understanding Jiji's networking
 layer and DNS service discovery
 
 ## Getting Help

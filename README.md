@@ -77,7 +77,7 @@ Or use PowerShell to download and install:
 
 ```powershell
 # Download to current directory
-Invoke-WebRequest -Uri "https://github.com/acidtib/jiji/releases/download/v0.1.8/jiji-windows-x86_64.exe" -OutFile "jiji.exe"
+Invoke-WebRequest -Uri "https://github.com/acidtib/jiji/releases/download/v0.1.11/jiji-windows-x86_64.exe" -OutFile "jiji.exe"
 ```
 
 ## Usage
@@ -272,7 +272,7 @@ The private network feature provides:
 - **Daemon-level DNS configuration** for seamless service discovery across all
   containers
 
-See [Network Reference](docs/network_reference.md) for detailed configuration
+See [Network Reference](docs/network-reference.md) for detailed configuration
 and usage.
 
 ### Deployment Lock Management
@@ -362,6 +362,7 @@ Get help for any command:
 
 ```bash
 jiji --help
+jiji version
 jiji server --help
 jiji server init --help
 jiji server exec --help
