@@ -19,7 +19,7 @@ import {
   CORROSION_SYNC_TIMEOUT_SECONDS,
 } from "../../constants.ts";
 
-const CORROSION_REPO = "psviderski/corrosion";
+const CORROSION_REPO = "superfly/corrosion";
 const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
 
 /**

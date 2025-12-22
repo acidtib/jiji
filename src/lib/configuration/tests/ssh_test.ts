@@ -579,25 +579,51 @@ Deno.test("SSHConfiguration - proxy without user defaults to SSH config", () => 
 // ============================================================================
 
 Deno.test("SSHConfiguration - keys array with single key", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    keys: ["~/.ssh/id_rsa"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  assertEquals(config.keys?.length, 1);
-  assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      keys: ["~/.ssh/id_rsa"],
+    });
+
+    assertEquals(config.keys?.length, 1);
+    assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
+  }
 });
 
 Deno.test("SSHConfiguration - keys array with multiple keys", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key", "/path/to/key"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  assertEquals(config.keys?.length, 3);
-  assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
-  assertEquals(config.keys?.[1].endsWith("/.ssh/deploy_key"), true);
-  assertEquals(config.keys?.[2], "/path/to/key");
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key", "/path/to/key"],
+    });
+
+    assertEquals(config.keys?.length, 3);
+    assertEquals(config.keys?.[0].endsWith("/.ssh/id_rsa"), true);
+    assertEquals(config.keys?.[1].endsWith("/.ssh/deploy_key"), true);
+    assertEquals(config.keys?.[2], "/path/to/key");
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
+  }
 });
 
 Deno.test("SSHConfiguration - keys array validation fails for non-array", () => {
@@ -724,15 +750,28 @@ Deno.test("SSHConfiguration - keys_only validation fails for non-boolean", () =>
 });
 
 Deno.test("SSHConfiguration - allKeys returns keys array", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  const allKeys = config.allKeys;
-  assertEquals(allKeys.length, 2);
-  assertEquals(allKeys[0].endsWith("/.ssh/id_rsa"), true);
-  assertEquals(allKeys[1].endsWith("/.ssh/deploy_key"), true);
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
+    });
+
+    const allKeys = config.allKeys;
+    assertEquals(allKeys.length, 2);
+    assertEquals(allKeys[0].endsWith("/.ssh/id_rsa"), true);
+    assertEquals(allKeys[1].endsWith("/.ssh/deploy_key"), true);
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
+  }
 });
 
 Deno.test("SSHConfiguration - allKeys returns empty array when no keys", () => {
@@ -744,13 +783,26 @@ Deno.test("SSHConfiguration - allKeys returns empty array when no keys", () => {
 });
 
 Deno.test("SSHConfiguration - toObject includes keys", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  const obj = config.toObject();
-  assertEquals(obj.keys, config.keys);
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      keys: ["~/.ssh/id_rsa", "~/.ssh/deploy_key"],
+    });
+
+    const obj = config.toObject();
+    assertEquals(obj.keys, config.keys);
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
+  }
 });
 
 Deno.test("SSHConfiguration - toObject masks key_data for security", () => {
@@ -802,31 +854,57 @@ Deno.test("SSHConfiguration - SSH config file support - boolean true", () => {
 });
 
 Deno.test("SSHConfiguration - SSH config file support - single string", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    config: "~/.ssh/custom_config",
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  const configFiles = config.sshConfigFiles;
-  assertEquals(Array.isArray(configFiles), true);
-  if (Array.isArray(configFiles)) {
-    assertEquals(configFiles.length, 1);
-    assertEquals(configFiles[0].endsWith("/.ssh/custom_config"), true);
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      config: "~/.ssh/custom_config",
+    });
+
+    const configFiles = config.sshConfigFiles;
+    assertEquals(Array.isArray(configFiles), true);
+    if (Array.isArray(configFiles)) {
+      assertEquals(configFiles.length, 1);
+      assertEquals(configFiles[0].endsWith("/.ssh/custom_config"), true);
+    }
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
   }
 });
 
 Deno.test("SSHConfiguration - SSH config file support - array", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    config: ["~/.ssh/config1", "/etc/ssh/config2"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  const configFiles = config.sshConfigFiles;
-  assertEquals(Array.isArray(configFiles), true);
-  if (Array.isArray(configFiles)) {
-    assertEquals(configFiles.length, 2);
-    assertEquals(configFiles[0].endsWith("/.ssh/config1"), true);
-    assertEquals(configFiles[1], "/etc/ssh/config2");
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      config: ["~/.ssh/config1", "/etc/ssh/config2"],
+    });
+
+    const configFiles = config.sshConfigFiles;
+    assertEquals(Array.isArray(configFiles), true);
+    if (Array.isArray(configFiles)) {
+      assertEquals(configFiles.length, 2);
+      assertEquals(configFiles[0].endsWith("/.ssh/config1"), true);
+      assertEquals(configFiles[1], "/etc/ssh/config2");
+    }
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
   }
 });
 
@@ -876,17 +954,30 @@ Deno.test("SSHConfiguration - SSH config file support - invalid array element", 
 });
 
 Deno.test("SSHConfiguration - SSH config file support - toObject", () => {
-  const config = new SSHConfiguration({
-    user: "testuser",
-    config: ["~/.ssh/config1", "~/.ssh/config2"],
-  });
+  // Set HOME environment variable for tilde expansion
+  const originalHome = Deno.env.get("HOME");
+  Deno.env.set("HOME", "/home/testuser");
 
-  const obj = config.toObject();
-  assertEquals(Array.isArray(obj.config), true);
-  if (Array.isArray(obj.config)) {
-    assertEquals(obj.config.length, 2);
-    assertEquals(obj.config[0].endsWith("/.ssh/config1"), true);
-    assertEquals(obj.config[1].endsWith("/.ssh/config2"), true);
+  try {
+    const config = new SSHConfiguration({
+      user: "testuser",
+      config: ["~/.ssh/config1", "~/.ssh/config2"],
+    });
+
+    const obj = config.toObject();
+    assertEquals(Array.isArray(obj.config), true);
+    if (Array.isArray(obj.config)) {
+      assertEquals(obj.config.length, 2);
+      assertEquals(obj.config[0].endsWith("/.ssh/config1"), true);
+      assertEquals(obj.config[1].endsWith("/.ssh/config2"), true);
+    }
+  } finally {
+    // Restore original HOME environment variable
+    if (originalHome) {
+      Deno.env.set("HOME", originalHome);
+    } else {
+      Deno.env.delete("HOME");
+    }
   }
 });
 

@@ -502,12 +502,69 @@ export class DeploymentOrchestrator {
 
     // Log detailed metrics summary if available
     if (result.deploymentId && result.metrics) {
-      const metricsReport = deploymentMetrics.generateSummary(
-        result.deploymentId,
-      );
-      if (metricsReport) {
-        log.info(metricsReport, "metrics");
-      }
+      const metrics = result.metrics;
+      log.group(`Deployment Summary: ${metrics.deploymentId}`, () => {
+        log.info(`Project: ${metrics.projectName}`, "metrics");
+        if (metrics.version) {
+          log.info(`Version: ${metrics.version}`, "metrics");
+        }
+        log.info(`Started: ${metrics.startTime.toISOString()}`, "metrics");
+        if (metrics.endTime) {
+          log.info(`Finished: ${metrics.endTime.toISOString()}`, "metrics");
+        }
+        if (metrics.totalDurationMs) {
+          log.info(
+            `Duration: ${(metrics.totalDurationMs / 1000).toFixed(2)}s`,
+            "metrics",
+          );
+        }
+
+        log.info("Service Deployments", "metrics");
+        log.info(`  Total Services: ${metrics.totalServices}`, "metrics");
+        log.info(
+          `  Successful: ${metrics.successfulDeployments}`,
+          "metrics",
+        );
+        log.info(`  Failed: ${metrics.failedDeployments}`, "metrics");
+        log.info(
+          `  Rolled Back: ${metrics.rolledBackDeployments}`,
+          "metrics",
+        );
+
+        if (
+          metrics.proxyHostsConfigured > 0 ||
+          metrics.proxyServicesConfigured > 0
+        ) {
+          log.info("Proxy Configuration", "metrics");
+          log.info(
+            `  Hosts Configured: ${metrics.proxyHostsConfigured}`,
+            "metrics",
+          );
+          log.info(
+            `  Services Configured: ${metrics.proxyServicesConfigured}`,
+            "metrics",
+          );
+          log.info(
+            `  Install Failures: ${metrics.proxyInstallFailures}`,
+            "metrics",
+          );
+          log.info(
+            `  Config Failures: ${metrics.proxyConfigFailures}`,
+            "metrics",
+          );
+        }
+
+        if (metrics.deploymentSteps.length > 0) {
+          log.info("Step Timing", "metrics");
+          for (const step of metrics.deploymentSteps) {
+            const status = step.success ? "OK" : "FAILED";
+            const duration = step.durationMs
+              ? `${(step.durationMs / 1000).toFixed(2)}s`
+              : "N/A";
+            log.info(`  ${step.step}: ${duration} [${status}]`, "metrics");
+          }
+        }
+      });
     }
   }
 }
