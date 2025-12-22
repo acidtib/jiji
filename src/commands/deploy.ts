@@ -9,12 +9,8 @@ import { VersionManager } from "../utils/version_manager.ts";
 import { RegistryManager } from "../utils/registry_manager.ts";
 import { filterServicesByPatterns } from "../utils/config.ts";
 import { BuildService } from "../lib/services/build_service.ts";
-import { ProxyService } from "../lib/services/proxy_service.ts";
-import {
-  ContainerDeploymentService,
-  type DeploymentResult,
-} from "../lib/services/container_deployment_service.ts";
 import { ImagePruneService } from "../lib/services/image_prune_service.ts";
+import { DeploymentOrchestrator } from "../lib/services/deployment_orchestrator.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -327,133 +323,26 @@ export const deployCommand = new Command()
           );
         }
 
-        const servicesWithProxy = allServices.filter((service) =>
-          service.proxy?.enabled
+        // Use DeploymentOrchestrator for complex deployment workflow
+        const orchestrator = new DeploymentOrchestrator(config, sshManagers);
+
+        const orchestrationResult = await orchestrator.orchestrateDeployment(
+          allServices,
+          targetHosts,
+          {
+            version: globalOptions.version,
+            allSshManagers: sshManagers,
+          },
         );
 
-        if (servicesWithProxy.length > 0) {
-          await log.group("Proxy Installation", async () => {
-            log.info(
-              `Found ${servicesWithProxy.length} service(s) with proxy configuration`,
-              "proxy",
-            );
+        // Log structured deployment summary
+        orchestrator.logDeploymentSummary(orchestrationResult);
 
-            const proxyService = new ProxyService(
-              config.builder.engine,
-              config,
-              sshManagers,
-            );
-
-            const proxyHosts = ProxyService.getHostsNeedingProxy(
-              servicesWithProxy,
-              targetHosts,
-            );
-
-            await proxyService.ensureProxyOnHosts(proxyHosts);
-          });
-        }
-
-        let deploymentResults: DeploymentResult[] = [];
-
-        if (allServices.length > 0) {
-          await log.group("Service Container Deployment", async () => {
-            const deploymentService = new ContainerDeploymentService(
-              config.builder.engine,
-              config,
-            );
-
-            deploymentResults = await deploymentService.deployServices(
-              allServices,
-              sshManagers,
-              targetHosts,
-              {
-                version: globalOptions.version,
-              },
-            );
-          });
-
-          if (servicesWithProxy.length > 0) {
-            await log.group(
-              "Service Proxy Configuration & Health Checks",
-              async () => {
-                const proxyService = new ProxyService(
-                  config.builder.engine,
-                  config,
-                  sshManagers,
-                );
-
-                const deploymentService = new ContainerDeploymentService(
-                  config.builder.engine,
-                  config,
-                );
-
-                // Configure proxy for each service
-                await proxyService.configureProxyForServices(servicesWithProxy);
-
-                // Wait for health checks and cleanup old containers
-                for (const result of deploymentResults) {
-                  if (!result.success || !result.oldContainerName) {
-                    continue; // Skip failed deployments or deployments without old containers
-                  }
-
-                  const service = allServices.find((s) =>
-                    s.name === result.service
-                  );
-                  if (!service || !service.proxy?.enabled) {
-                    continue; // Skip services without proxy
-                  }
-
-                  const hostSsh = sshManagers.find((ssh) =>
-                    ssh.getHost() === result.host
-                  );
-                  if (!hostSsh) {
-                    continue;
-                  }
-
-                  // Wait for service to become healthy
-                  const isHealthy = await proxyService.waitForServiceHealthy(
-                    service,
-                    result.host,
-                    hostSsh,
-                  );
-
-                  if (isHealthy) {
-                    // Clean up old container after health checks pass
-                    await deploymentService.cleanupOldContainer(
-                      result.oldContainerName,
-                      result.host,
-                      hostSsh,
-                    );
-                  } else {
-                    // Health checks failed - rollback by removing new container and restoring old one
-                    log.error(
-                      `Health checks failed for ${service.name} on ${result.host}, rolling back...`,
-                      "deploy",
-                    );
-
-                    if (result.containerName) {
-                      await deploymentService.cleanupOldContainer(
-                        result.containerName,
-                        result.host,
-                        hostSsh,
-                      );
-                    }
-
-                    // Rename old container back
-                    const renameCmd =
-                      `${config.builder.engine} rename ${result.oldContainerName} ${result.containerName}`;
-                    await hostSsh.executeCommand(renameCmd);
-
-                    log.info(
-                      `Rollback complete: ${service.name} on ${result.host} restored to previous version`,
-                      "deploy",
-                    );
-                  }
-                }
-              },
-            );
-          }
-
+        // Image cleanup for successful deployments
+        if (
+          allServices.length > 0 &&
+          orchestrationResult.deploymentResults.some((r) => r.success)
+        ) {
           await log.group("Image Cleanup", async () => {
             log.info(
               "Pruning old images to retain configured versions",
@@ -493,7 +382,7 @@ export const deployCommand = new Command()
               log.info("No old images to prune", "prune");
             }
           });
-        } else {
+        } else if (allServices.length === 0) {
           log.info("No services found to deploy", "deploy");
         }
 

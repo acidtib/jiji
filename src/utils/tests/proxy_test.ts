@@ -238,7 +238,7 @@ Deno.test("ProxyCommands - deploy with partial health check", async () => {
 });
 
 Deno.test("ProxyCommands - deploy command failure", async () => {
-  const mockSSH = new MockSSHManager(false); // Configure to fail
+  const mockSSH = new MockSSHManager("test-host", false); // Configure to fail
   const proxyCommands = new ProxyCommands(
     "docker",
     mockSSH as unknown as SSHManager,

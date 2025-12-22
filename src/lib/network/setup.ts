@@ -743,9 +743,17 @@ export async function setupNetwork(
         }
       });
 
-      // Clean up temporary private keys from topology
-      for (const server of topology!.servers) {
-        delete (server as NetworkServer & { _privateKey?: string })._privateKey;
+      // Create clean topology without temporary private keys
+      if (topology) {
+        topology = {
+          ...topology,
+          servers: topology.servers.map((server) => {
+            const { _privateKey, ...cleanServer } = server as NetworkServer & {
+              _privateKey?: string;
+            };
+            return cleanServer;
+          }),
+        };
       }
 
       // Validate topology

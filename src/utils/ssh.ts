@@ -340,9 +340,9 @@ export class SSHManager {
         baseConfig._sshConfigProxyJump,
         sshAuthSock || "",
       );
-      // Clean up temporary property
-      delete baseConfig._sshConfigProxyJump;
-      return { ...baseConfig, ...proxyConfig };
+      // Return clean config without temporary properties
+      const { _sshConfigProxyJump, ...cleanConfig } = baseConfig;
+      return { ...cleanConfig, ...proxyConfig };
     }
 
     if (
@@ -352,9 +352,9 @@ export class SSHManager {
       const proxyConfig = this.buildProxyCommandConfig(
         baseConfig._sshConfigProxyCommand,
       );
-      // Clean up temporary property
-      delete baseConfig._sshConfigProxyCommand;
-      return { ...baseConfig, ...proxyConfig };
+      // Return clean config without temporary properties
+      const { _sshConfigProxyCommand, ...cleanConfig } = baseConfig;
+      return { ...cleanConfig, ...proxyConfig };
     }
 
     return baseConfig;
@@ -482,14 +482,16 @@ export class SSHManager {
         config.privateKey = privateKeys;
       }
 
-      // Clean up SSH config temporary properties
-      delete config._sshConfigIdentityFile;
+      // Create clean config without temporary properties
+      const { _sshConfigIdentityFile, ...cleanConfig } = config;
 
       // Handle keys_only flag
       if (this.config.keysOnly) {
-        // Don't use ssh-agent
-        delete config.agent;
+        // Don't use ssh-agent - return config without agent property
+        const { agent: _agent, ...configWithoutAgent } = cleanConfig;
+        config = configWithoutAgent;
       } else if (sshAuthSock) {
+        config = cleanConfig;
         // Use both agent and explicit keys
         config.agent = sshAuthSock;
       }
