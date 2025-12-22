@@ -8,6 +8,39 @@ import { setupSSHConnections, type SSHManager } from "./ssh.ts";
 import { log } from "./logger.ts";
 
 /**
+ * Execute a command with best-effort semantics (ignore failures)
+ *
+ * Use this for cleanup operations where failures should be logged but not block execution.
+ * Replaces the pattern: `command 2>/dev/null || true`
+ *
+ * @param ssh SSH manager to execute command on
+ * @param command Command to execute
+ * @param context Optional context for logging (e.g., "removing container", "stopping service")
+ * @returns Promise that resolves when command completes (success or failure)
+ *
+ * @example
+ * ```typescript
+ * await executeBestEffort(ssh, "docker rm -f my-container", "removing container");
+ * ```
+ */
+export async function executeBestEffort(
+  ssh: SSHManager,
+  command: string,
+  context?: string,
+): Promise<void> {
+  const result = await ssh.executeCommand(command);
+
+  if (!result.success && context) {
+    log.debug(
+      `Best-effort command failed (${context}): ${
+        result.stderr || result.stdout
+      }`,
+      "command",
+    );
+  }
+}
+
+/**
  * Options for setting up command context
  */
 export interface CommandContextOptions {

@@ -1,6 +1,12 @@
 import type { ProxyConfiguration } from "../lib/configuration/proxy.ts";
 import type { SSHManager } from "./ssh.ts";
 import { log } from "./logger.ts";
+import { executeBestEffort } from "./command_helpers.ts";
+import {
+  KAMAL_PROXY_CONFIG_VOLUME,
+  KAMAL_PROXY_INTERNAL_HTTP_PORT,
+  KAMAL_PROXY_INTERNAL_HTTPS_PORT,
+} from "../constants.ts";
 
 /**
  * Options for deploying a service to kamal-proxy
@@ -95,9 +101,9 @@ export function buildDeployCommandArgs(
 export class ProxyCommands {
   private readonly containerName = "kamal-proxy";
   private readonly networkName = "jiji";
-  private readonly configVolume = "kamal-proxy-config";
-  private readonly internalHttpPort = 8080;
-  private readonly internalHttpsPort = 8443;
+  private readonly configVolume = KAMAL_PROXY_CONFIG_VOLUME;
+  private readonly internalHttpPort = KAMAL_PROXY_INTERNAL_HTTP_PORT;
+  private readonly internalHttpsPort = KAMAL_PROXY_INTERNAL_HTTPS_PORT;
 
   constructor(
     private engine: "docker" | "podman",
@@ -105,9 +111,11 @@ export class ProxyCommands {
   ) {}
 
   async ensureNetwork(): Promise<void> {
-    const command =
-      `${this.engine} network create ${this.networkName} 2>/dev/null || true`;
-    await this.ssh.executeCommand(command);
+    await executeBestEffort(
+      this.ssh,
+      `${this.engine} network create ${this.networkName}`,
+      "creating proxy network",
+    );
   }
 
   async isRunning(): Promise<boolean> {
@@ -245,15 +253,19 @@ export class ProxyCommands {
   }
 
   async removeContainer(): Promise<void> {
-    const command =
-      `${this.engine} container rm -f ${this.containerName} 2>/dev/null || true`;
-    await this.ssh.executeCommand(command);
+    await executeBestEffort(
+      this.ssh,
+      `${this.engine} container rm -f ${this.containerName}`,
+      "removing kamal-proxy container",
+    );
   }
 
   async removeImage(): Promise<void> {
-    const command =
-      `${this.engine} image rm -f basecamp/kamal-proxy 2>/dev/null || true`;
-    await this.ssh.executeCommand(command);
+    await executeBestEffort(
+      this.ssh,
+      `${this.engine} image rm -f basecamp/kamal-proxy`,
+      "removing kamal-proxy image",
+    );
   }
 
   async refreshDNS(): Promise<void> {
@@ -325,9 +337,11 @@ export class ProxyCommands {
   }
 
   async remove(service: string): Promise<void> {
-    const command =
-      `${this.engine} exec ${this.containerName} kamal-proxy remove ${service} 2>/dev/null || true`;
-    await this.ssh.executeCommand(command);
+    await executeBestEffort(
+      this.ssh,
+      `${this.engine} exec ${this.containerName} kamal-proxy remove ${service}`,
+      `removing service ${service} from proxy`,
+    );
   }
 
   async list(): Promise<string[]> {
