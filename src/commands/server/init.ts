@@ -162,7 +162,7 @@ export const initCommand = new Command()
             }
 
             if (failedSetups.length > 0) {
-              log.warn(
+              log.error(
                 `Network setup failed on ${failedSetups.length} server(s)`,
                 "network",
               );
@@ -172,6 +172,14 @@ export const initCommand = new Command()
                   "network",
                 );
               }
+
+              // Throw error for critical network component failures
+              const criticalErrors = failedSetups.map((r) =>
+                `${r.host}: ${r.error || "Network setup failed"}`
+              ).join("; ");
+              throw new Error(
+                `Critical network setup failures: ${criticalErrors}`,
+              );
             }
 
             // Log network setup to audit trail
@@ -213,7 +221,7 @@ export const initCommand = new Command()
               }
             }
 
-            log.status(`Continuing with initialization process...`, "init");
+            throw error;
           }
         }
 

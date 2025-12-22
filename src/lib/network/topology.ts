@@ -60,7 +60,7 @@ export async function loadTopology(
     log.debug("Loaded network topology from Corrosion", "network");
     return topology;
   } catch (error) {
-    log.warn(`Failed to load topology from Corrosion: ${error}`, "network");
+    log.debug(`No existing topology found in Corrosion: ${error}`, "network");
     return null;
   }
 }

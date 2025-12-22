@@ -93,6 +93,8 @@ export async function setupNetwork(
       let topology: NetworkTopology | null = null;
       let isNewNetwork = true;
 
+      log.info("Checking for existing network cluster...", "network");
+
       // Try to load topology from any existing server
       for (const ssh of sshManagers) {
         try {
@@ -120,7 +122,10 @@ export async function setupNetwork(
       }
 
       if (isNewNetwork) {
-        log.info("Creating new network cluster", "network");
+        log.info(
+          "No existing cluster found - creating new network cluster",
+          "network",
+        );
         topology = createTopology(
           config.network.clusterCidr,
           config.network.serviceDomain,
@@ -417,7 +422,7 @@ export async function setupNetwork(
               // Write Corrosion config
               await writeCorrosionConfig(ssh, {
                 dbPath: "/opt/jiji/corrosion/state.db",
-                schemaPath: "/opt/jiji/corrosion/schemas",
+                schemaPath: "/opt/jiji/corrosion/schemas/jiji.sql",
                 gossipAddr: `[${compressIpv6(server.managementIp)}]:8787`,
                 apiAddr: "127.0.0.1:8080",
                 adminPath: "/var/run/jiji/corrosion-admin.sock",
