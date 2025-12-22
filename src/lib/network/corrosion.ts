@@ -13,9 +13,22 @@ import type {
   ServerRegistration,
   ServiceRegistration,
 } from "../../types/network.ts";
+import {
+  CORROSION_SYNC_LOG_INTERVAL_MS,
+  CORROSION_SYNC_POLL_INTERVAL_MS,
+  CORROSION_SYNC_TIMEOUT_SECONDS,
+} from "../../constants.ts";
 
 const CORROSION_REPO = "psviderski/corrosion";
 const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
+
+/**
+ * Escape SQL string values to prevent SQL injection
+ * Follows SQLite string literal escaping rules
+ */
+function escapeSql(value: string): string {
+  return value.replace(/'/g, "''");
+}
 
 /**
  * Database schema for Corrosion
@@ -305,13 +318,14 @@ export async function registerServer(
   ssh: SSHManager,
   server: ServerRegistration,
 ): Promise<void> {
-  // Escape double quotes in the endpoints JSON string so it can be safely embedded in SQL
-  // The endpoints field is already a JSON string like '["ip:port"]'
-  // We need to escape the inner quotes: '["ip:port"]' becomes '[\"ip:port\"]'
-  const escapedEndpoints = server.endpoints.replace(/"/g, '\\"');
-
   const sql =
-    `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${server.id}', '${server.hostname}', '${server.subnet}', '${server.wireguardIp}', '${server.wireguardPublicKey}', '${server.managementIp}', '${escapedEndpoints}', ${server.lastSeen});`;
+    `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${
+      escapeSql(server.id)
+    }', '${escapeSql(server.hostname)}', '${escapeSql(server.subnet)}', '${
+      escapeSql(server.wireguardIp)
+    }', '${escapeSql(server.wireguardPublicKey)}', '${
+      escapeSql(server.managementIp)
+    }', '${escapeSql(server.endpoints)}', ${server.lastSeen});`;
 
   const result = await ssh.executeCommand(
     `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
@@ -334,7 +348,7 @@ export async function registerService(
 ): Promise<void> {
   const sql = `
     INSERT OR REPLACE INTO services (name, project)
-    VALUES ('${service.name}', '${service.project}');
+    VALUES ('${escapeSql(service.name)}', '${escapeSql(service.project)}');
   `;
 
   const result = await ssh.executeCommand(
@@ -364,8 +378,10 @@ export async function registerContainer(
     INSERT OR REPLACE INTO containers
     (id, service, server_id, ip, healthy, started_at)
     VALUES
-    ('${container.id}', '${container.service}', '${container.serverId}',
-     '${container.ip}', ${healthy}, ${container.startedAt});
+    ('${escapeSql(container.id)}', '${escapeSql(container.service)}', '${
+    escapeSql(container.serverId)
+  }',
+     '${escapeSql(container.ip)}', ${healthy}, ${container.startedAt});
   `;
 
   const result = await ssh.executeCommand(
@@ -389,7 +405,7 @@ export async function unregisterContainer(
   ssh: SSHManager,
   containerId: string,
 ): Promise<void> {
-  const sql = `DELETE FROM containers WHERE id = '${containerId}';`;
+  const sql = `DELETE FROM containers WHERE id = '${escapeSql(containerId)}';`;
 
   const result = await ssh.executeCommand(
     `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
@@ -411,8 +427,9 @@ export async function queryServiceContainers(
   ssh: SSHManager,
   serviceName: string,
 ): Promise<string[]> {
-  const sql =
-    `SELECT ip FROM containers WHERE service = '${serviceName}' AND healthy = 1;`;
+  const sql = `SELECT ip FROM containers WHERE service = '${
+    escapeSql(serviceName)
+  }' AND healthy = 1;`;
 
   const result = await ssh.executeCommand(
     `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
@@ -467,12 +484,14 @@ export async function isCorrosionRunning(ssh: SSHManager): Promise<boolean> {
 export async function waitForCorrosionSync(
   ssh: SSHManager,
   _expectedServerCount: number,
-  maxWaitSeconds: number = 300,
-  pollIntervalMs: number = 2000,
+  maxWaitSeconds: number = CORROSION_SYNC_TIMEOUT_SECONDS,
+  pollIntervalMs: number = CORROSION_SYNC_POLL_INTERVAL_MS,
 ): Promise<void> {
   const host = ssh.getHost();
   const maxRetries = Math.floor((maxWaitSeconds * 1000) / pollIntervalMs);
-  const logIntervalRetries = Math.floor(5000 / pollIntervalMs); // Log every 5 seconds
+  const logIntervalRetries = Math.floor(
+    CORROSION_SYNC_LOG_INTERVAL_MS / pollIntervalMs,
+  );
 
   log.info(
     `Waiting for Corrosion to be ready on ${host}...`,
@@ -540,8 +559,8 @@ export async function updateServerEndpoints(
   const endpointsJson = JSON.stringify(endpoints);
   const sql = `
     UPDATE servers
-    SET endpoints = '${endpointsJson}'
-    WHERE id = '${serverId}';
+    SET endpoints = '${escapeSql(endpointsJson)}'
+    WHERE id = '${escapeSql(serverId)}';
   `;
 
   const result = await ssh.executeCommand(
@@ -576,7 +595,7 @@ export async function updateServerHeartbeat(
   const sql = `
     UPDATE servers
     SET last_seen = ${now}
-    WHERE id = '${serverId}';
+    WHERE id = '${escapeSql(serverId)}';
   `;
 
   const result = await ssh.executeCommand(
@@ -719,7 +738,7 @@ export async function setClusterMetadata(
 ): Promise<void> {
   const sql = `
     INSERT OR REPLACE INTO cluster_metadata (key, value)
-    VALUES ('${key}', '${value}');
+    VALUES ('${escapeSql(key)}', '${escapeSql(value)}');
   `;
 
   const result = await ssh.executeCommand(
@@ -746,7 +765,9 @@ export async function getClusterMetadata(
   ssh: SSHManager,
   key: string,
 ): Promise<string | null> {
-  const sql = `SELECT value FROM cluster_metadata WHERE key = '${key}';`;
+  const sql = `SELECT value FROM cluster_metadata WHERE key = '${
+    escapeSql(key)
+  }';`;
 
   const result = await ssh.executeCommand(
     `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,

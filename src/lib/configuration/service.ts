@@ -563,6 +563,33 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
+   * Extracts named volumes from service's volume configuration.
+   * Named volumes are those that don't start with "/" or "./" (not host paths).
+   *
+   * @returns Array of named volume names
+   *
+   * @example
+   * volumes: ["db-data:/var/lib/postgresql/data", "./config:/etc/app"]
+   * Returns: ["db-data"]
+   */
+  getNamedVolumes(): string[] {
+    const namedVolumes: string[] = [];
+
+    for (const volume of this.volumes) {
+      const parts = volume.split(":");
+      if (parts.length >= 2) {
+        const source = parts[0];
+        // Named volumes don't start with "/" or "./" (host paths do)
+        if (!source.startsWith("/") && !source.startsWith("./")) {
+          namedVolumes.push(source);
+        }
+      }
+    }
+
+    return namedVolumes;
+  }
+
+  /**
    * Validate architecture values
    */
   private validateArch(arch: unknown): string | string[] {

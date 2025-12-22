@@ -41,6 +41,16 @@ export const KAMAL_PROXY_NETWORK_NAME = "kamal-proxy";
  * Proxy configuration
  */
 export const KAMAL_PROXY_CONTAINER_NAME = "kamal-proxy";
+export const KAMAL_PROXY_INTERNAL_HTTP_PORT = 8080;
+export const KAMAL_PROXY_INTERNAL_HTTPS_PORT = 8443;
+export const KAMAL_PROXY_CONFIG_VOLUME = "kamal-proxy-config";
+
+/**
+ * Corrosion (distributed database) configuration
+ */
+export const CORROSION_SYNC_TIMEOUT_SECONDS = 300; // 5 minutes
+export const CORROSION_SYNC_POLL_INTERVAL_MS = 2000; // 2 seconds
+export const CORROSION_SYNC_LOG_INTERVAL_MS = 5000; // 5 seconds
 
 /**
  * Audit trail configuration

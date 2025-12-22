@@ -12,6 +12,7 @@ import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
+  executeBestEffort,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
@@ -28,27 +29,6 @@ import { stopCoreDNSService } from "../../lib/network/dns.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
 import { DEFAULT_MAX_PREFIX_LENGTH } from "../../constants.ts";
 import type { GlobalOptions } from "../../types.ts";
-import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
-
-/**
- * Extracts named volumes from a service's volume configuration.
- * Named volumes are those that don't start with "/" or "./" (not host paths).
- */
-function getNamedVolumes(service: ServiceConfiguration): string[] {
-  const namedVolumes: string[] = [];
-
-  for (const volume of service.volumes) {
-    const parts = volume.split(":");
-    if (parts.length >= 2) {
-      const source = parts[0];
-      if (!source.startsWith("/") && !source.startsWith("./")) {
-        namedVolumes.push(source);
-      }
-    }
-  }
-
-  return namedVolumes;
-}
 
 export const teardownCommand = new Command()
   .description("Complete server teardown (containers, engine, network)")
@@ -187,24 +167,22 @@ export const teardownCommand = new Command()
                 }
 
                 // Stop and remove the container
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} rm -f ${containerName} 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} rm -f ${containerName}`,
+                  `removing container ${containerName}`,
                 );
                 serverLogger.success(`Removed container ${containerName}`);
 
                 // Remove named volumes
-                const namedVolumes = getNamedVolumes(service);
+                const namedVolumes = service.getNamedVolumes();
                 for (const volumeName of namedVolumes) {
-                  try {
-                    await hostSsh.executeCommand(
-                      `${config.builder.engine} volume rm ${volumeName} 2>/dev/null || true`,
-                    );
-                    serverLogger.info(`Removed volume ${volumeName}`);
-                  } catch (error) {
-                    serverLogger.warn(
-                      `Failed to remove volume ${volumeName}: ${error}`,
-                    );
-                  }
+                  await executeBestEffort(
+                    hostSsh,
+                    `${config.builder.engine} volume rm ${volumeName}`,
+                    `removing volume ${volumeName}`,
+                  );
+                  serverLogger.info(`Removed volume ${volumeName}`);
                 }
               } catch (error) {
                 serverLogger.error(
@@ -229,33 +207,45 @@ export const teardownCommand = new Command()
 
               try {
                 serverLogger.info("Stopping all containers...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} stop $(${config.builder.engine} ps -aq) 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} stop $(${config.builder.engine} ps -aq)`,
+                  "stopping containers",
                 );
 
                 serverLogger.info("Removing all containers...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} rm -f $(${config.builder.engine} ps -aq) 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} rm -f $(${config.builder.engine} ps -aq)`,
+                  "removing containers",
                 );
 
                 serverLogger.info("Removing all images...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} rmi -f $(${config.builder.engine} images -aq) 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} rmi -f $(${config.builder.engine} images -aq)`,
+                  "removing images",
                 );
 
                 serverLogger.info("Removing all volumes...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} volume rm $(${config.builder.engine} volume ls -q) 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} volume rm $(${config.builder.engine} volume ls -q)`,
+                  "removing volumes",
                 );
 
                 serverLogger.info("Removing all networks...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} network prune -f 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} network prune -f`,
+                  "pruning networks",
                 );
 
                 serverLogger.info("Running system prune...");
-                await hostSsh.executeCommand(
-                  `${config.builder.engine} system prune -a -f --volumes 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} system prune -a -f --volumes`,
+                  "system prune",
                 );
 
                 serverLogger.success("Container engine system purged");
@@ -284,33 +274,59 @@ export const teardownCommand = new Command()
 
               if (engine === "docker") {
                 serverLogger.info("Stopping Docker service...");
-                await hostSsh.executeCommand(
-                  "systemctl stop docker.socket docker.service 2>/dev/null || true",
+                await executeBestEffort(
+                  hostSsh,
+                  "systemctl stop docker.socket docker.service",
+                  "stopping Docker service",
                 );
 
                 serverLogger.info("Removing Docker packages...");
-                await hostSsh.executeCommand(
-                  "apt-get remove -y docker.io docker-compose 2>/dev/null || true",
+                await executeBestEffort(
+                  hostSsh,
+                  "apt-get remove -y docker.io docker-compose",
+                  "removing Docker packages",
                 );
-                await hostSsh.executeCommand(
-                  "apt-get autoremove -y 2>/dev/null || true",
+                await executeBestEffort(
+                  hostSsh,
+                  "apt-get autoremove -y",
+                  "autoremove packages",
                 );
 
                 serverLogger.info("Removing Docker files...");
-                await hostSsh.executeCommand("rm -rf /var/lib/docker");
-                await hostSsh.executeCommand("rm -rf /etc/docker");
+                await executeBestEffort(
+                  hostSsh,
+                  "rm -rf /var/lib/docker",
+                  "removing Docker data",
+                );
+                await executeBestEffort(
+                  hostSsh,
+                  "rm -rf /etc/docker",
+                  "removing Docker config",
+                );
               } else if (engine === "podman") {
                 serverLogger.info("Removing Podman packages...");
-                await hostSsh.executeCommand(
-                  "apt-get remove -y podman 2>/dev/null || true",
+                await executeBestEffort(
+                  hostSsh,
+                  "apt-get remove -y podman",
+                  "removing Podman packages",
                 );
-                await hostSsh.executeCommand(
-                  "apt-get autoremove -y 2>/dev/null || true",
+                await executeBestEffort(
+                  hostSsh,
+                  "apt-get autoremove -y",
+                  "autoremove packages",
                 );
 
                 serverLogger.info("Removing Podman files...");
-                await hostSsh.executeCommand("rm -rf /var/lib/containers");
-                await hostSsh.executeCommand("rm -rf /etc/containers");
+                await executeBestEffort(
+                  hostSsh,
+                  "rm -rf /var/lib/containers",
+                  "removing Podman data",
+                );
+                await executeBestEffort(
+                  hostSsh,
+                  "rm -rf /etc/containers",
+                  "removing Podman config",
+                );
               }
 
               serverLogger.success(`${engine} removed`);

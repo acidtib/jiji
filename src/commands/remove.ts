@@ -2,6 +2,7 @@ import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
+  executeBestEffort,
   setupCommandContext,
 } from "../utils/command_helpers.ts";
 import { handleCommandError } from "../utils/error_handler.ts";
@@ -9,29 +10,6 @@ import { log } from "../utils/logger.ts";
 import { ProxyCommands } from "../utils/proxy.ts";
 import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
 import type { GlobalOptions } from "../types.ts";
-import type { ServiceConfiguration } from "../lib/configuration/service.ts";
-
-/**
- * Extracts named volumes from a service's volume configuration.
- * Named volumes are those that don't start with "/" or "./" (not host paths).
- * Format: "volume_name:/container/path" or "volume_name:/container/path:options"
- */
-function getNamedVolumes(service: ServiceConfiguration): string[] {
-  const namedVolumes: string[] = [];
-
-  for (const volume of service.volumes) {
-    const parts = volume.split(":");
-    if (parts.length >= 2) {
-      const source = parts[0];
-      // Named volumes don't start with "/" or "./" (host paths do)
-      if (!source.startsWith("/") && !source.startsWith("./")) {
-        namedVolumes.push(source);
-      }
-    }
-  }
-
-  return namedVolumes;
-}
 
 export const removeCommand = new Command()
   .description("Remove services and .jiji/project_dir from servers")
@@ -162,18 +140,17 @@ export const removeCommand = new Command()
                   `Removing container ${containerName} on ${host}`,
                   "remove",
                 );
-                const rmResult = await hostSsh.executeCommand(
-                  `${ctxConfig.builder.engine} rm -f ${containerName} 2>/dev/null || true`,
+                await executeBestEffort(
+                  hostSsh,
+                  `${ctxConfig.builder.engine} rm -f ${containerName}`,
+                  `removing container ${containerName}`,
+                );
+                log.success(
+                  `Removed container ${containerName} on ${host}`,
+                  "remove",
                 );
 
-                if (rmResult.success) {
-                  log.success(
-                    `Removed container ${containerName} on ${host}`,
-                    "remove",
-                  );
-                }
-
-                const namedVolumes = getNamedVolumes(service);
+                const namedVolumes = service.getNamedVolumes();
                 if (namedVolumes.length > 0) {
                   log.status(
                     `Removing ${namedVolumes.length} named volume(s) for ${service.name} on ${host}`,
@@ -181,27 +158,15 @@ export const removeCommand = new Command()
                   );
 
                   for (const volumeName of namedVolumes) {
-                    try {
-                      const volResult = await hostSsh.executeCommand(
-                        `${ctxConfig.builder.engine} volume rm ${volumeName} 2>/dev/null || true`,
-                      );
-
-                      if (volResult.success) {
-                        log.success(
-                          `Removed volume ${volumeName} on ${host}`,
-                          "remove",
-                        );
-                      }
-                    } catch (volError) {
-                      log.warn(
-                        `Failed to remove volume ${volumeName} on ${host}: ${
-                          volError instanceof Error
-                            ? volError.message
-                            : String(volError)
-                        }`,
-                        "remove",
-                      );
-                    }
+                    await executeBestEffort(
+                      hostSsh,
+                      `${ctxConfig.builder.engine} volume rm ${volumeName}`,
+                      `removing volume ${volumeName}`,
+                    );
+                    log.success(
+                      `Removed volume ${volumeName} on ${host}`,
+                      "remove",
+                    );
                   }
                 }
               } catch (error) {

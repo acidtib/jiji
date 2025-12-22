@@ -22,6 +22,7 @@ import { getDnsServerForHost } from "../../utils/network_helpers.ts";
 import { getServerByHostname, loadTopology } from "../network/topology.ts";
 import { RegistryAuthService } from "./registry_auth_service.ts";
 import { log } from "../../utils/logger.ts";
+import { executeBestEffort } from "../../utils/command_helpers.ts";
 import {
   CONTAINER_LOG_TAIL_LINES,
   CONTAINER_START_MAX_ATTEMPTS,
@@ -122,8 +123,10 @@ export class ContainerDeploymentService {
       }
 
       // Stop and remove existing container
-      await ssh.executeCommand(
-        `${this.engine} rm -f ${containerName} 2>/dev/null || true`,
+      await executeBestEffort(
+        ssh,
+        `${this.engine} rm -f ${containerName}`,
+        `removing existing container ${containerName}`,
       );
 
       // Start new container

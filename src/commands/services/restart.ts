@@ -6,6 +6,7 @@ import { Command } from "@cliffy/command";
 import { ContainerDeploymentService } from "../../lib/services/container_deployment_service.ts";
 import {
   cleanupSSHConnections,
+  executeBestEffort,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
@@ -111,23 +112,20 @@ export const restartCommand = new Command()
             log.status(`Stopping ${containerName} on ${host}`, "restart");
 
             // Stop the container
-            const stopResult = await ssh.executeCommand(
-              `${context.config.builder.engine} stop ${containerName} 2>/dev/null || true`,
+            await executeBestEffort(
+              ssh,
+              `${context.config.builder.engine} stop ${containerName}`,
+              `stopping ${containerName}`,
             );
 
             // Remove the container
-            await ssh.executeCommand(
-              `${context.config.builder.engine} rm -f ${containerName} 2>/dev/null || true`,
+            await executeBestEffort(
+              ssh,
+              `${context.config.builder.engine} rm -f ${containerName}`,
+              `removing ${containerName}`,
             );
 
-            if (stopResult.success) {
-              log.success(`Stopped ${containerName} on ${host}`, "restart");
-            } else {
-              log.warn(
-                `Failed to stop ${containerName} on ${host}: ${stopResult.stderr}`,
-                "restart",
-              );
-            }
+            log.success(`Stopped ${containerName} on ${host}`, "restart");
           }
 
           // Deploy the service (which will start new containers)

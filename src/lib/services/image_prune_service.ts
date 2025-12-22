@@ -5,6 +5,7 @@
 import type { ContainerEngine } from "../configuration/builder.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
 import { log } from "../../utils/logger.ts";
+import { executeBestEffort } from "../../utils/command_helpers.ts";
 
 /**
  * Options for image pruning
@@ -175,13 +176,13 @@ export class ImagePruneService {
     // Remove collected images
     if (imagesToRemove.length > 0) {
       for (const imageName of imagesToRemove) {
-        const removeCmd = `${this.engine} rmi ${imageName} 2>/dev/null || true`;
-        const removeResult = await ssh.executeCommand(removeCmd);
-
-        if (removeResult.success) {
-          removedCount++;
-          log.debug(`Removed image ${imageName}`, "prune");
-        }
+        await executeBestEffort(
+          ssh,
+          `${this.engine} rmi ${imageName}`,
+          `removing image ${imageName}`,
+        );
+        removedCount++;
+        log.debug(`Removed image ${imageName}`, "prune");
       }
     }
 
