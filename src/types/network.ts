@@ -108,7 +108,7 @@ export interface ServerRegistration {
   wireguardIp: string;
   wireguardPublicKey: string;
   managementIp: string;
-  endpoints: string;
+  endpoints: string[];
   lastSeen: number;
 }
 

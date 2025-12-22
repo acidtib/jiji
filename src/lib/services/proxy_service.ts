@@ -329,6 +329,94 @@ export class ProxyService {
   }
 
   /**
+   * Wait for a service to become healthy in kamal-proxy
+   *
+   * @param service Service configuration
+   * @param host Hostname where the proxy is running
+   * @param ssh SSH manager for the host
+   * @param timeoutMs Maximum time to wait in milliseconds (default: 30000)
+   * @returns true if service becomes healthy, false if timeout
+   */
+  async waitForServiceHealthy(
+    service: ServiceConfiguration,
+    host: string,
+    ssh: SSHManager,
+    timeoutMs: number = 30000,
+  ): Promise<boolean> {
+    const proxyConfig = service.proxy;
+    if (!proxyConfig || !proxyConfig.enabled) {
+      return true; // No proxy, nothing to wait for
+    }
+
+    // Use deploy_timeout from healthcheck config if available
+    const configuredTimeout = proxyConfig.healthcheck?.deploy_timeout;
+    if (configuredTimeout) {
+      // Parse timeout string (e.g., "30s", "1m") to milliseconds
+      const match = configuredTimeout.match(/^(\d+)(s|m)$/);
+      if (match) {
+        const value = parseInt(match[1], 10);
+        const unit = match[2];
+        timeoutMs = unit === "s" ? value * 1000 : value * 60 * 1000;
+      }
+    }
+
+    log.status(
+      `Waiting for ${service.name} to pass health checks (timeout: ${timeoutMs}ms)...`,
+      "proxy",
+    );
+
+    const startTime = Date.now();
+    const proxyCmd = new ProxyCommands(this.engine, ssh);
+    const checkInterval = 2000; // Check every 2 seconds
+
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const serviceDetails = await proxyCmd.getServiceDetails();
+        const details = serviceDetails.get(service.name);
+
+        if (details) {
+          log.debug(
+            `${service.name} state: ${details.state}, target: ${details.target}`,
+            "proxy",
+          );
+
+          // Check if service is in a healthy state
+          // kamal-proxy uses "deployed" or "running" state for healthy services
+          if (details.state === "deployed" || details.state === "running") {
+            log.success(
+              `${service.name} passed health checks on ${host}`,
+              "proxy",
+            );
+            return true;
+          }
+
+          // If state is "error" or "unhealthy", fail immediately
+          if (details.state === "error" || details.state === "unhealthy") {
+            log.error(
+              `${service.name} health check failed with state: ${details.state}`,
+              "proxy",
+            );
+            return false;
+          }
+        }
+      } catch (error) {
+        log.debug(
+          `Error checking service health: ${error}`,
+          "proxy",
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, checkInterval));
+    }
+
+    log.error(
+      `${service.name} did not become healthy within ${timeoutMs}ms`,
+      "proxy",
+    );
+    return false;
+  }
+
+  /**
    * Get hosts that need proxy based on service configurations
    *
    * @param services Services to check

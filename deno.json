@@ -30,5 +30,6 @@
     "cpu-features": "npm:cpu-features@^0.0.10",
     "node-ssh": "npm:node-ssh@^13.2.1",
     "ssh2": "npm:ssh2@^1.17.0"
-  }
+  },
+  "allowScripts": ["npm:cpu-features@0.0.10", "npm:ssh2@1.17.0"]
 }

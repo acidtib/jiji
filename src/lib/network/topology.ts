@@ -46,7 +46,7 @@ export async function loadTopology(
       wireguardIp: reg.wireguardIp,
       wireguardPublicKey: reg.wireguardPublicKey,
       managementIp: reg.managementIp,
-      endpoints: JSON.parse(reg.endpoints) as string[],
+      endpoints: reg.endpoints,
     }));
 
     const topology: NetworkTopology = {
@@ -105,16 +105,22 @@ export function addServer(
   const existingIndex = topology.servers.findIndex((s) => s.id === server.id);
 
   if (existingIndex >= 0) {
-    // Update existing server
-    topology.servers[existingIndex] = server;
+    // Update existing server - create new topology with updated server
+    const updatedServers = [...topology.servers];
+    updatedServers[existingIndex] = server;
     log.debug(`Updated server ${server.id} in topology`, "network");
+    return {
+      ...topology,
+      servers: updatedServers,
+    };
   } else {
-    // Add new server
-    topology.servers.push(server);
+    // Add new server - create new topology with added server
     log.debug(`Added server ${server.id} to topology`, "network");
+    return {
+      ...topology,
+      servers: [...topology.servers, server],
+    };
   }
-
-  return topology;
 }
 
 /**

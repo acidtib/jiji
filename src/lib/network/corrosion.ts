@@ -318,6 +318,11 @@ export async function registerServer(
   ssh: SSHManager,
   server: ServerRegistration,
 ): Promise<void> {
+  const endpointsJson = JSON.stringify(server.endpoints);
+
+  // Escape double quotes for shell command
+  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
+
   const sql =
     `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${
       escapeSql(server.id)
@@ -325,7 +330,7 @@ export async function registerServer(
       escapeSql(server.wireguardIp)
     }', '${escapeSql(server.wireguardPublicKey)}', '${
       escapeSql(server.managementIp)
-    }', '${escapeSql(server.endpoints)}', ${server.lastSeen});`;
+    }', '${escapedJsonForShell}', ${server.lastSeen});`;
 
   const result = await ssh.executeCommand(
     `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
@@ -557,9 +562,13 @@ export async function updateServerEndpoints(
   endpoints: string[],
 ): Promise<void> {
   const endpointsJson = JSON.stringify(endpoints);
+
+  // Escape double quotes for shell command
+  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
+
   const sql = `
     UPDATE servers
-    SET endpoints = '${escapeSql(endpointsJson)}'
+    SET endpoints = '${escapedJsonForShell}'
     WHERE id = '${escapeSql(serverId)}';
   `;
 
@@ -655,6 +664,17 @@ export async function queryActiveServers(
       lastSeenStr,
     ] = line.split("|");
 
+    let parsedEndpoints: string[];
+    try {
+      parsedEndpoints = JSON.parse(endpoints);
+    } catch (_error) {
+      log.warn(
+        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
+        "corrosion",
+      );
+      parsedEndpoints = [];
+    }
+
     return {
       id,
       hostname,
@@ -662,7 +682,7 @@ export async function queryActiveServers(
       wireguardIp,
       wireguardPublicKey,
       managementIp,
-      endpoints,
+      endpoints: parsedEndpoints,
       lastSeen: parseInt(lastSeenStr, 10),
     };
   });
@@ -711,6 +731,17 @@ export async function queryAllServers(
       lastSeenStr,
     ] = line.split("|");
 
+    let parsedEndpoints: string[];
+    try {
+      parsedEndpoints = JSON.parse(endpoints);
+    } catch (_error) {
+      log.warn(
+        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
+        "corrosion",
+      );
+      parsedEndpoints = [];
+    }
+
     return {
       id,
       hostname,
@@ -718,7 +749,7 @@ export async function queryAllServers(
       wireguardIp,
       wireguardPublicKey,
       managementIp,
-      endpoints,
+      endpoints: parsedEndpoints,
       lastSeen: parseInt(lastSeenStr, 10),
     };
   });

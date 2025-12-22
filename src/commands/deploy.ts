@@ -9,9 +9,8 @@ import { VersionManager } from "../utils/version_manager.ts";
 import { RegistryManager } from "../utils/registry_manager.ts";
 import { filterServicesByPatterns } from "../utils/config.ts";
 import { BuildService } from "../lib/services/build_service.ts";
-import { ProxyService } from "../lib/services/proxy_service.ts";
-import { ContainerDeploymentService } from "../lib/services/container_deployment_service.ts";
 import { ImagePruneService } from "../lib/services/image_prune_service.ts";
+import { DeploymentOrchestrator } from "../lib/services/deployment_orchestrator.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -324,61 +323,26 @@ export const deployCommand = new Command()
           );
         }
 
-        const servicesWithProxy = allServices.filter((service) =>
-          service.proxy?.enabled
+        // Use DeploymentOrchestrator for complex deployment workflow
+        const orchestrator = new DeploymentOrchestrator(config, sshManagers);
+
+        const orchestrationResult = await orchestrator.orchestrateDeployment(
+          allServices,
+          targetHosts,
+          {
+            version: globalOptions.version,
+            allSshManagers: sshManagers,
+          },
         );
 
-        if (servicesWithProxy.length > 0) {
-          await log.group("Proxy Installation", async () => {
-            log.info(
-              `Found ${servicesWithProxy.length} service(s) with proxy configuration`,
-              "proxy",
-            );
+        // Log structured deployment summary
+        orchestrator.logDeploymentSummary(orchestrationResult);
 
-            const proxyService = new ProxyService(
-              config.builder.engine,
-              config,
-              sshManagers,
-            );
-
-            const proxyHosts = ProxyService.getHostsNeedingProxy(
-              servicesWithProxy,
-              targetHosts,
-            );
-
-            await proxyService.ensureProxyOnHosts(proxyHosts);
-          });
-        }
-
-        if (allServices.length > 0) {
-          await log.group("Service Container Deployment", async () => {
-            const deploymentService = new ContainerDeploymentService(
-              config.builder.engine,
-              config,
-            );
-
-            await deploymentService.deployServices(
-              allServices,
-              sshManagers,
-              targetHosts,
-              {
-                version: globalOptions.version,
-              },
-            );
-          });
-
-          if (servicesWithProxy.length > 0) {
-            await log.group("Service Proxy Configuration", async () => {
-              const proxyService = new ProxyService(
-                config.builder.engine,
-                config,
-                sshManagers,
-              );
-
-              await proxyService.configureProxyForServices(servicesWithProxy);
-            });
-          }
-
+        // Image cleanup for successful deployments
+        if (
+          allServices.length > 0 &&
+          orchestrationResult.deploymentResults.some((r) => r.success)
+        ) {
           await log.group("Image Cleanup", async () => {
             log.info(
               "Pruning old images to retain configured versions",
@@ -418,7 +382,7 @@ export const deployCommand = new Command()
               log.info("No old images to prune", "prune");
             }
           });
-        } else {
+        } else if (allServices.length === 0) {
           log.info("No services found to deploy", "deploy");
         }
 

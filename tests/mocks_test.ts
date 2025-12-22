@@ -11,7 +11,7 @@ Deno.test("MockSSHManager - tracks executed commands", async () => {
 });
 
 Deno.test("MockSSHManager - simulates success", async () => {
-  const mock = new MockSSHManager(true);
+  const mock = new MockSSHManager("test-host", true);
   const result = await mock.executeCommand("test");
 
   assertEquals(result.success, true);
@@ -20,7 +20,7 @@ Deno.test("MockSSHManager - simulates success", async () => {
 });
 
 Deno.test("MockSSHManager - simulates failure", async () => {
-  const mock = new MockSSHManager(false);
+  const mock = new MockSSHManager("test-host", false);
   const result = await mock.executeCommand("test");
 
   assertEquals(result.success, false);

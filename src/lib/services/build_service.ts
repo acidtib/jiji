@@ -26,7 +26,7 @@ export interface BuildResult {
   success: boolean;
   imageName: string;
   latestImageName: string;
-  error?: Error;
+  error?: string;
 }
 
 /**
@@ -129,7 +129,7 @@ export class BuildService {
         success: false,
         imageName: "",
         latestImageName: "",
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
