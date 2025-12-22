@@ -53,8 +53,8 @@ jiji services logs --services "api-*"
 
 #### `--lines` (or `-n`)
 
-Number of lines to show from each server. Default is 100 lines when no
-`--since` or `--grep` is specified.
+Number of lines to show from each server. Default is 100 lines when no `--since`
+or `--grep` is specified.
 
 ```bash
 # Show last 50 lines
@@ -193,8 +193,8 @@ jiji services logs --services web --hosts "server1.example.com"
 
 ## Proxy Logs
 
-The `jiji proxy logs` command fetches logs from the kamal-proxy container,
-which handles HTTP/HTTPS routing to your services.
+The `jiji proxy logs` command fetches logs from the kamal-proxy container, which
+handles HTTP/HTTPS routing to your services.
 
 ### Basic Usage
 

@@ -96,7 +96,6 @@ export const logsCommand = new Command()
         await followLogs(
           context,
           logsService,
-          logsOptions,
           { lines, grep, grepOptions, since, containerId },
         );
       } else {
@@ -104,7 +103,6 @@ export const logsCommand = new Command()
         await fetchLogs(
           context,
           logsService,
-          logsOptions,
           { lines, grep, grepOptions, since, containerId },
         );
       }
@@ -138,7 +136,6 @@ export const logsCommand = new Command()
 async function followLogs(
   context: Awaited<ReturnType<typeof setupCommandContext>>,
   logsService: LogsService,
-  logsOptions: ServiceLogsOptions,
   logOptions: {
     lines?: number;
     grep?: string;
@@ -207,7 +204,6 @@ async function followLogs(
 async function fetchLogs(
   context: Awaited<ReturnType<typeof setupCommandContext>>,
   logsService: LogsService,
-  logsOptions: ServiceLogsOptions,
   logOptions: {
     lines?: number;
     grep?: string;

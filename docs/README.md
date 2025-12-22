@@ -44,10 +44,10 @@ utility and `jiji version` command
 
 ### For Contributors
 
-[Testing Guide](testing.md) - How to test your changes [Network
-Architecture](network-reference.md) - Understanding Jiji's networking layer and
-DNS service discovery [Logs Reference](logs-reference.md) - Debugging with logs
-and monitoring services
+[Testing Guide](testing.md) - How to test your changes
+[Network Architecture](network-reference.md) - Understanding Jiji's networking
+layer and DNS service discovery [Logs Reference](logs-reference.md) - Debugging
+with logs and monitoring services
 
 ## Getting Help
 
