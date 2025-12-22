@@ -415,7 +415,7 @@ export async function queryServiceContainers(
     `SELECT ip FROM containers WHERE service = '${serviceName}' AND healthy = 1;`;
 
   const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
   );
 
   if (result.code !== 0) {

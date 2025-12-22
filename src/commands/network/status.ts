@@ -20,6 +20,7 @@ import {
 import { isCoreDNSRunning } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
+import { ProxyCommands } from "../../utils/proxy.ts";
 
 export const statusCommand = new Command()
   .description("Show network status")
@@ -64,12 +65,12 @@ export const statusCommand = new Command()
           const ssh = sshManagers.find((s) => s.getHost() === server.hostname);
 
           if (!ssh) {
-            log.info(`\n${server.hostname} (${server.id})`, "network");
+            log.info(`  ${server.hostname} (${server.id})`, "network");
             log.error("  Status: OFFLINE (SSH connection failed)", "network");
             continue;
           }
 
-          log.info(`\n${server.hostname} (${server.id})`, "network");
+          log.info(`  ${server.hostname} (${server.id})`, "network");
           log.info(`  Subnet: ${server.subnet}`, "network");
           log.info(`  WireGuard IP: ${server.wireguardIp}`, "network");
           log.info(`  Management IP: ${server.managementIp}`, "network");
@@ -109,7 +110,9 @@ export const statusCommand = new Command()
           if (topology.discovery === "corrosion") {
             try {
               const services = config.getServiceNames();
-              const containers: Array<{ service: string; ip: string }> = [];
+              const containers: Array<
+                { service: string; ip: string; domain: string }
+              > = [];
 
               for (const serviceName of services) {
                 const ips = await queryServiceContainers(ssh, serviceName);
@@ -122,16 +125,56 @@ export const statusCommand = new Command()
                       ),
                     )
                   ) {
-                    containers.push({ service: serviceName, ip });
+                    const domain =
+                      `${config.project}-${serviceName}.${topology.serviceDomain}`;
+                    containers.push({ service: serviceName, ip, domain });
                   }
                 }
+              }
+
+              // Get kamal-proxy service details if proxy is running
+              let proxyDetails:
+                | Map<
+                  string,
+                  {
+                    host: string;
+                    path: string;
+                    target: string;
+                    state: string;
+                    tls: boolean;
+                  }
+                >
+                | undefined;
+              try {
+                const proxyCommands = new ProxyCommands(
+                  config.builder.engine,
+                  ssh,
+                );
+                const isRunning = await proxyCommands.isRunning();
+                if (isRunning) {
+                  proxyDetails = await proxyCommands.getServiceDetails();
+                }
+              } catch (_error) {
+                // Silently ignore proxy errors - it might not be installed
               }
 
               if (containers.length > 0) {
                 log.info("  Containers:", "network");
                 for (const container of containers) {
+                  let proxyInfo = "";
+                  if (proxyDetails && proxyDetails.has(container.service)) {
+                    const details = proxyDetails.get(container.service)!;
+                    const protocol = details.tls ? "https" : "http";
+                    // Handle multiple hosts (comma-separated)
+                    const hosts = details.host.split(",").map((h) => h.trim());
+                    const hostUrls = hosts.map((h) => `${protocol}://${h}`)
+                      .join(
+                        ", ",
+                      );
+                    proxyInfo = ` → ${hostUrls}`;
+                  }
                   log.info(
-                    `    - ${container.service}: ${container.ip}`,
+                    `    - ${container.service}: ${container.ip} (${container.domain})${proxyInfo}`,
                     "network",
                   );
                 }

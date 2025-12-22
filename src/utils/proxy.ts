@@ -339,6 +339,77 @@ export class ProxyCommands {
       .filter((line) => line.length > 0);
   }
 
+  /**
+   * Get detailed information about all services in kamal-proxy
+   * Returns a map of service name to proxy details
+   */
+  async getServiceDetails(): Promise<
+    Map<
+      string,
+      {
+        host: string;
+        path: string;
+        target: string;
+        state: string;
+        tls: boolean;
+      }
+    >
+  > {
+    // Disable color output by setting NO_COLOR environment variable
+    const command =
+      `NO_COLOR=1 ${this.engine} exec ${this.containerName} kamal-proxy list`;
+    const result = await this.ssh.executeCommand(command);
+
+    const serviceMap = new Map<
+      string,
+      {
+        host: string;
+        path: string;
+        target: string;
+        state: string;
+        tls: boolean;
+      }
+    >();
+
+    if (!result.success) {
+      return serviceMap;
+    }
+
+    // Helper function to strip ANSI color codes
+    const stripAnsi = (str: string): string => {
+      // deno-lint-ignore no-control-regex
+      return str.replace(/\x1b\[[0-9;]*m/g, "");
+    };
+
+    const lines = result.stdout.split("\n").map((line) =>
+      stripAnsi(line.trim())
+    );
+
+    // Skip the header line and empty lines
+    for (const line of lines) {
+      if (!line || line.startsWith("Service") || line.startsWith("---")) {
+        continue;
+      }
+
+      // Parse the table format: Service  Host  Path  Target  State  TLS
+      // Split by multiple spaces to handle column alignment
+      const parts = line.split(/\s{2,}/).map((p) => p.trim());
+
+      if (parts.length >= 6) {
+        const [service, host, path, target, state, tlsStr] = parts;
+        serviceMap.set(service, {
+          host,
+          path,
+          target,
+          state,
+          tls: tlsStr.toLowerCase() === "yes",
+        });
+      }
+    }
+
+    return serviceMap;
+  }
+
   async info(): Promise<string> {
     const command = `${this.engine} ps --filter "name=^${this.containerName}$"`;
     const result = await this.ssh.executeCommand(command);
