@@ -16,6 +16,12 @@ file with all available options and detailed comments
 private networking features including WireGuard mesh, automatic service
 discovery via DNS, and daemon-level DNS configuration
 
+### Logging
+
+**[Logs Reference](logs-reference.md)** - Comprehensive guide for viewing and
+filtering logs from services and kamal-proxy, including real-time following,
+grep filtering, and common debugging workflows
+
 ### Registry
 
 **[Registry Auto-Detection](registry-auto-detection.md)** - Guide for automatic
@@ -38,9 +44,10 @@ utility and `jiji version` command
 
 ### For Contributors
 
-[Testing Guide](testing.md) - How to test your changes
-[Network Architecture](network-reference.md) - Understanding Jiji's networking
-layer and DNS service discovery
+[Testing Guide](testing.md) - How to test your changes [Network
+Architecture](network-reference.md) - Understanding Jiji's networking layer and
+DNS service discovery [Logs Reference](logs-reference.md) - Debugging with logs
+and monitoring services
 
 ## Getting Help
 
