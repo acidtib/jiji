@@ -1,6 +1,6 @@
 {
   "name": "@jiji/cli",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "license": "MIT",
   "exports": "./src/main.ts",
   "nodeModulesDir": "auto",
@@ -31,5 +31,8 @@
     "node-ssh": "npm:node-ssh@^13.2.1",
     "ssh2": "npm:ssh2@^1.17.0"
   },
-  "allowScripts": ["npm:cpu-features@0.0.10", "npm:ssh2@1.17.0"]
+  "allowScripts": [
+    "npm:cpu-features@0.0.10",
+    "npm:ssh2@1.17.0"
+  ]
 }
