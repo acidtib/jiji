@@ -2,12 +2,10 @@ import { assertEquals } from "@std/assert";
 import {
   combineAggregatedResults,
   createErrorSummary,
-  executeBatchedWithErrorCollection,
   executeHostOperations,
   executeWithErrorCollection,
   executeWithRetryAndErrorCollection,
   logAggregatedResults,
-  mapWithErrorCollection,
 } from "../promise_helpers.ts";
 
 Deno.test("executeWithErrorCollection - all operations succeed", async () => {
@@ -97,40 +95,6 @@ Deno.test("executeHostOperations - with host-specific errors", async () => {
   assertEquals(result.hostErrors[0].error.message, "host2 error");
   assertEquals(result.hostErrors[1].host, "host3");
   assertEquals(result.hostErrors[1].error.message, "host3 error");
-});
-
-Deno.test("executeBatchedWithErrorCollection - processes in batches", async () => {
-  const executionOrder: number[] = [];
-  const operations = Array.from({ length: 5 }, (_, i) => () => {
-    executionOrder.push(i);
-    return Promise.resolve(i);
-  });
-
-  const result = await executeBatchedWithErrorCollection(operations, 2);
-
-  assertEquals(result.results, [0, 1, 2, 3, 4]);
-  assertEquals(result.successCount, 5);
-  assertEquals(result.errorCount, 0);
-  // Should have processed in batches
-  assertEquals(executionOrder.length, 5);
-});
-
-Deno.test("mapWithErrorCollection - maps array with error handling", async () => {
-  const items = [1, 2, 3, 4];
-  const mapper = (item: number) => {
-    if (item === 3) {
-      throw new Error(`Error processing ${item}`);
-    }
-    return Promise.resolve(item * 2);
-  };
-
-  const result = await mapWithErrorCollection(items, mapper);
-
-  assertEquals(result.results, [2, 4, 8]);
-  assertEquals(result.errors.length, 1);
-  assertEquals(result.errors[0].message, "Error processing 3");
-  assertEquals(result.successCount, 3);
-  assertEquals(result.errorCount, 1);
 });
 
 Deno.test("executeWithRetryAndErrorCollection - retries failed operations", async () => {

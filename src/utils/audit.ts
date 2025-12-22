@@ -2,16 +2,7 @@ import { join } from "@std/path";
 import type { SSHManager } from "./ssh.ts";
 import { executeHostOperations } from "./promise_helpers.ts";
 import { log, Logger } from "./logger.ts";
-
-export interface AuditEntry {
-  timestamp: string;
-  action: string;
-  details?: Record<string, unknown>;
-  user?: string;
-  host?: string;
-  status: "started" | "success" | "failed" | "warning";
-  message?: string;
-}
+import type { AuditEntry } from "../types.ts";
 
 export interface RemoteAuditResult {
   host: string;

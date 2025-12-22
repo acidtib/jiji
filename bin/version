@@ -72,7 +72,15 @@ async function updateReadme(version: string): Promise<void> {
 
     // Look for the pattern: VERSION=v<any_version> sh
     const versionRegex = /VERSION=v\d+\.\d+\.\d+\s+sh/g;
-    const newContent = content.replace(versionRegex, `VERSION=v${version} sh`);
+    let newContent = content.replace(versionRegex, `VERSION=v${version} sh`);
+
+    // Update PowerShell download URL
+    const powershellUrlRegex =
+      /https:\/\/github\.com\/acidtib\/jiji\/releases\/download\/v\d+\.\d+\.\d+\/jiji-windows-x86_64\.exe/g;
+    newContent = newContent.replace(
+      powershellUrlRegex,
+      `https://github.com/acidtib/jiji/releases/download/v${version}/jiji-windows-x86_64.exe`,
+    );
 
     await Deno.writeTextFile(readmePath, newContent);
     console.log(`Updated ${readmePath}`);

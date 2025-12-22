@@ -6,14 +6,7 @@ import {
   type RegistryErrorCode,
   RegistryErrorCodes,
 } from "../utils/error_handling.ts";
-
-/**
- * Registry credentials interface
- */
-export interface RegistryCredentials {
-  username: string;
-  password: string;
-}
+import type { RegistryCredentials } from "../types/registry.ts";
 
 /**
  * Authentication result interface

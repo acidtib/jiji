@@ -1,6 +1,6 @@
 {
   "name": "@jiji/cli",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "license": "MIT",
   "exports": "./src/main.ts",
   "nodeModulesDir": "auto",
@@ -11,10 +11,10 @@
     "build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include src/jiji.yml --output build/jiji src/main.ts",
     "install": "deno task build && sudo cp build/jiji /usr/local/bin/jiji",
     "version": "./bin/version",
-    "test": "deno test --allow-all",
+    "test": "deno test --allow-all --parallel",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "check": "deno fmt --check && deno lint && deno test --allow-all"
+    "check": "deno fmt --check && deno lint && deno test --allow-all --parallel"
   },
   "imports": {
     "@cliffy/ansi/colors": "jsr:@cliffy/ansi@^1.0.0-rc.8/colors",
@@ -31,5 +31,8 @@
     "node-ssh": "npm:node-ssh@^13.2.1",
     "ssh2": "npm:ssh2@^1.17.0"
   },
-  "allowScripts": ["npm:cpu-features@0.0.10", "npm:ssh2@1.17.0"]
+  "allowScripts": [
+    "npm:cpu-features@0.0.10",
+    "npm:ssh2@1.17.0"
+  ]
 }
