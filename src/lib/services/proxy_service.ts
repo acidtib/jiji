@@ -9,6 +9,7 @@ import type { SSHManager } from "../../utils/ssh.ts";
 import { extractAppPort, ProxyCommands } from "../../utils/proxy.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { getDnsServerForHost } from "../../utils/network_helpers.ts";
+import { getContainerIp } from "./container_registry.ts";
 import { log } from "../../utils/logger.ts";
 
 /**
@@ -201,12 +202,31 @@ export class ProxyService {
       const containerName = service.getContainerName();
       const appPort = extractAppPort(service.ports);
 
+      // Get container IP to avoid DNS caching issues
+      let containerIp: string | undefined;
+      try {
+        const ip = await getContainerIp(ssh, containerName, this.engine);
+        if (ip) {
+          containerIp = ip;
+          log.debug(
+            `Using container IP ${containerIp} for ${service.name}`,
+            "proxy",
+          );
+        }
+      } catch (error) {
+        log.warn(
+          `Could not get container IP for ${service.name}, will use DNS name: ${error}`,
+          "proxy",
+        );
+      }
+
       await proxyCmd.deploy(
         service.name,
         containerName,
         proxyConfig,
         appPort,
         this.config.project,
+        containerIp,
       );
 
       const hostsStr = proxyConfig.host || proxyConfig.hosts.join(", ");

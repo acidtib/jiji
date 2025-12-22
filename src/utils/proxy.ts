@@ -35,10 +35,17 @@ export function buildKamalProxyOptions(
   appPort: number,
   config: ProxyConfiguration,
   projectName: string,
+  containerIp?: string,
 ): KamalProxyDeployOptions {
+  // Use container IP directly if available to avoid DNS caching issues
+  // Otherwise fall back to DNS name
+  const target = containerIp
+    ? `${containerIp}:${appPort}`
+    : `${projectName}-${serviceName}.jiji:${appPort}`;
+
   return {
     serviceName,
-    target: `${projectName}-${serviceName}.jiji:${appPort}`,
+    target,
     hosts: config.hosts.length > 0 ? config.hosts : undefined,
     pathPrefix: config.pathPrefix,
     tls: config.ssl,
@@ -285,16 +292,15 @@ export class ProxyCommands {
     config: ProxyConfiguration,
     appPort: number,
     projectName: string,
+    containerIp?: string,
   ): Promise<void> {
-    // Refresh DNS before deployment to ensure fresh hostname resolution
-    await this.refreshDNS();
-
     const options = buildKamalProxyOptions(
       service,
       containerName,
       appPort,
       config,
       projectName,
+      containerIp,
     );
 
     const args = buildDeployCommandArgs(options);

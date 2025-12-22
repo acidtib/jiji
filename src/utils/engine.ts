@@ -71,6 +71,22 @@ export class EngineInstaller {
       }
     }
 
+    // Ensure containers directory exists and create default policy.json if missing
+    if (!hasError) {
+      const ensurePolicyResult = await this.ssh.executeCommand(
+        `sudo mkdir -p /etc/containers && sudo test -f /etc/containers/policy.json || echo '{"default":[{"type":"insecureAcceptAnything"}]}' | sudo tee /etc/containers/policy.json > /dev/null`,
+      );
+      if (!ensurePolicyResult.success) {
+        log.warn(
+          `Warning: Could not ensure policy.json exists: ${ensurePolicyResult.stderr}`,
+          "engine",
+        );
+        fullOutput += `\nWarning: ${ensurePolicyResult.stderr}\n`;
+      } else {
+        fullOutput += `\n$ Created /etc/containers/policy.json\n`;
+      }
+    }
+
     // Verify installation
     let version: string | undefined;
     if (!hasError) {
