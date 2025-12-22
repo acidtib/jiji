@@ -170,16 +170,6 @@ export function getServerByHostname(
 }
 
 /**
- * Get all server hostnames from the topology
- *
- * @param topology - Network topology
- * @returns Array of hostnames
- */
-export function getAllHostnames(topology: NetworkTopology): string[] {
-  return topology.servers.map((s) => s.hostname);
-}
-
-/**
  * Generate a unique server ID from hostname
  *
  * @param hostname - Server hostname

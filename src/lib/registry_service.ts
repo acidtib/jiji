@@ -8,9 +8,8 @@ import {
 import {
   type AuthenticationResult,
   RegistryAuthenticator,
-  type RegistryCredentials,
 } from "./registry_authenticator.ts";
-
+import type { RegistryCredentials } from "../types/registry.ts";
 import type { ContainerEngine } from "./configuration/builder.ts";
 import {
   createRegistryError,

@@ -11,10 +11,10 @@
     "build": "deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include src/jiji.yml --output build/jiji src/main.ts",
     "install": "deno task build && sudo cp build/jiji /usr/local/bin/jiji",
     "version": "./bin/version",
-    "test": "deno test --allow-all",
+    "test": "deno test --allow-all --parallel",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "check": "deno fmt --check && deno lint && deno test --allow-all"
+    "check": "deno fmt --check && deno lint && deno test --allow-all --parallel"
   },
   "imports": {
     "@cliffy/ansi/colors": "jsr:@cliffy/ansi@^1.0.0-rc.8/colors",
