@@ -154,9 +154,9 @@ export async function registerContainerInNetwork(
       log.warn(`Failed to trigger DNS update: ${error}`, "network");
     }
 
-    log.success(
-      `Registered container ${serviceName} (${ip}) in network`,
-      "network",
+    log.say(
+      `├── Registered container ${serviceName} (${ip}) in network`,
+      2,
     );
     return true;
   } catch (error) {

@@ -331,11 +331,11 @@ export class DeploymentMetricsService {
       }
     }
 
-    log.info(
-      `Deployment ${deploymentId} finished: ${
+    log.say(
+      `- Deployment ${deploymentId} finished: ${
         success ? "SUCCESS" : "FAILURE"
       } (${metrics.totalDurationMs}ms)`,
-      "metrics",
+      0,
     );
 
     return metrics;

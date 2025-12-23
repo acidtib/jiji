@@ -28,8 +28,7 @@ async function displayDeploymentPlan(
   deployOptions: DeployOptions,
   globalOptions: GlobalOptions,
 ): Promise<boolean> {
-  log.section("Deployment Plan");
-  log.say("Analyzing deployment configuration...");
+  log.section("Deployment Plan:");
 
   let allServices = config.getDeployableServices();
 
@@ -50,71 +49,70 @@ async function displayDeploymentPlan(
     );
   }
 
-  console.log();
-  log.say("Deployment Plan");
-  log.say("=".repeat(50));
-  log.say(`Project: ${config.project}`);
-  log.say(`Container Engine: ${config.builder.engine}`);
-  log.say(`Registry: ${config.builder.registry.getRegistryUrl()}`);
+  log.say(`Project: ${config.project}`, 1);
+  log.say(`Container Engine: ${config.builder.engine}`, 1);
+  log.say(`Registry: ${config.builder.registry.getRegistryUrl()}`, 1);
 
   if (globalOptions.version) {
-    log.say(`Version: ${globalOptions.version}`);
+    log.say(`Version: ${globalOptions.version}`, 1);
   }
 
   if (deployOptions.build && buildServices.length > 0) {
-    log.say("Services to Build:");
+    console.log();
+    log.say("Services to Build:", 1);
     for (const service of buildServices) {
-      log.say(`  - ${service.name}`);
+      log.say(`${service.name}`, 2);
       if (typeof service.build === "string") {
-        log.say(`    Context: ${service.build}`, 2);
+        log.say(`Context: ${service.build}`, 3);
       } else if (service.build) {
-        log.say(`    Context: ${service.build.context}`, 2);
+        log.say(`Context: ${service.build.context}`, 3);
         if (service.build.dockerfile) {
-          log.say(`    Dockerfile: ${service.build.dockerfile}`, 2);
+          log.say(`Dockerfile: ${service.build.dockerfile}`, 3);
         }
         if (service.build.target) {
-          log.say(`    Target: ${service.build.target}`, 2);
+          log.say(`Target: ${service.build.target}`, 3);
         }
       }
     }
   }
 
-  log.say("Services to Deploy:");
+  console.log();
+  log.say("Services to Deploy:", 1);
   if (allServices.length === 0) {
-    log.say("  No services to deploy");
+    log.say("No services to deploy", 2);
   } else {
     for (const service of allServices) {
-      log.say(`  ${service.name}`);
+      log.say(`${service.name}`, 2);
 
       if (service.image) {
-        log.say(`    Image: ${service.image}`, 2);
+        log.say(`Image: ${service.image}`, 3);
       } else if (service.build) {
         log.say(
-          `    Built from: ${
+          `Built from: ${
             typeof service.build === "string"
               ? service.build
               : service.build.context
           }`,
-          2,
+          3,
         );
       }
 
       if (service.servers.length > 0) {
         log.say(
-          `    Servers: ${service.servers.map((s) => s.host).join(", ")}`,
-          2,
+          `Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+          3,
         );
       }
 
       if (service.ports.length > 0) {
-        log.say(`    Ports: ${service.ports.join(", ")}`, 2);
+        log.say(`Ports: ${service.ports.join(", ")}`, 3);
       }
 
       if (service.proxy?.enabled) {
         const hosts = service.proxy.hosts.length > 0
           ? service.proxy.hosts.join(", ")
           : "auto";
-        log.say(`    Proxy: Enabled (${hosts})`, 2);
+        log.say(`Proxy: Enabled (${hosts})`, 3);
       }
     }
   }
@@ -127,15 +125,15 @@ async function displayDeploymentPlan(
   }
 
   if (options.length > 0) {
-    log.say("\nOptions:");
-    options.forEach((option) => log.say(`  - ${option}`));
+    console.log();
+    log.say("Options:", 1);
+    options.forEach((option) => log.say(`${option}`, 2));
   }
 
-  log.say("=".repeat(50));
   console.log();
 
   if (deployOptions.yes) {
-    log.say("Proceeding with deployment (--yes flag provided)");
+    log.say("Proceeding with deployment (--yes flag provided)", 1);
     return true;
   }
 
@@ -161,14 +159,22 @@ export const deployCommand = new Command()
     let portForwardManager: PortForwardManager | undefined;
 
     try {
-      log.section("Service Deployment");
-      log.say("Starting service deployment process");
+      log.section("Service Deployment:");
 
       const config = await Configuration.load(
         globalOptions.environment,
         globalOptions.configFile,
       );
-      log.say(`Container engine: ${config.builder.engine}`);
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
 
       const shouldProceed = await displayDeploymentPlan(
         config,
@@ -181,12 +187,12 @@ export const deployCommand = new Command()
       }
 
       if (deployOptions.build) {
-        const buildTracker = log.createStepTracker("Building Service Images");
+        log.section("Building Service Images:");
 
         const servicesToBuild = config.getBuildServices();
 
         if (servicesToBuild.length === 0) {
-          buildTracker.step("No services with 'build' configuration found");
+          log.say("No services with 'build' configuration found", 1);
         } else {
           let filteredServices = servicesToBuild;
           if (deployOptions.services) {
@@ -197,10 +203,11 @@ export const deployCommand = new Command()
             );
           }
 
-          buildTracker.step(
+          log.say(
             `Building ${filteredServices.length} service(s): ${
               filteredServices.map((s) => s.name).join(", ")
             }`,
+            1,
           );
 
           const versionTag = await VersionManager.determineVersionTag({
@@ -215,7 +222,7 @@ export const deployCommand = new Command()
           let registryManager: RegistryManager | undefined;
 
           if (registry.isLocal()) {
-            buildTracker.step("Setting up local registry...");
+            log.say("Setting up local registry...", 1);
             registryManager = new RegistryManager(
               config.builder.engine,
               registry.port,
@@ -234,20 +241,24 @@ export const deployCommand = new Command()
 
           await buildService.buildServices(filteredServices, versionTag);
 
-          buildTracker.step(`Version tag: ${versionTag}`);
-          buildTracker.step(`Registry: ${registry.getRegistryUrl()}`);
+          log.say(`Version tag: ${versionTag}`, 1);
+          log.say(`Registry: ${registry.getRegistryUrl()}`, 1);
         }
-
-        buildTracker.finish();
       }
 
       ctx = await setupCommandContext(globalOptions);
       const { sshManagers, targetHosts } = ctx;
 
+      // Show connection status for each host
+      if (!deployOptions.build) {
+        console.log(""); // Empty line
+        for (const ssh of sshManagers) {
+          log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+        }
+      }
+
       if (config.builder.registry.isLocal()) {
-        const portTracker = log.createStepTracker(
-          "Setting Up Local Registry Access",
-        );
+        log.section("Setting Up Local Registry Access:");
 
         const registryPort = config.builder.registry.port;
         portForwardManager = new PortForwardManager();
@@ -262,20 +273,20 @@ export const deployCommand = new Command()
             registryPort,
           );
 
-          try {
-            await forwarder.startForwarding();
-            portTracker.remote(host, "Port forwarding established");
-          } catch (error) {
-            portTracker.remote(
-              host,
-              `Failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
+          await log.hostBlock(host, async () => {
+            try {
+              await forwarder.startForwarding();
+              log.say("└── Port forwarding established", 2);
+            } catch (error) {
+              log.say(
+                `Failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+                2,
+              );
+            }
+          }, { indent: 1 });
         }
-
-        portTracker.finish();
       }
 
       let allServices = config.getDeployableServices();
@@ -287,13 +298,6 @@ export const deployCommand = new Command()
           config,
         );
       }
-
-      const serviceNames = allServices.map((s) => s.name).join(", ");
-      log.say(
-        `Deploying ${allServices.length} service${
-          allServices.length === 1 ? "" : "s"
-        }: ${serviceNames}`,
-      );
 
       // Use DeploymentOrchestrator for complex deployment workflow
       const orchestrator = new DeploymentOrchestrator(config, sshManagers);
@@ -315,7 +319,7 @@ export const deployCommand = new Command()
         allServices.length > 0 &&
         orchestrationResult.deploymentResults.some((r) => r.success)
       ) {
-        const pruneTracker = log.createStepTracker("Image Cleanup");
+        log.section("Image Cleanup:");
 
         const pruneService = new ImagePruneService(
           config.builder.engine,
@@ -323,8 +327,9 @@ export const deployCommand = new Command()
         );
 
         const maxRetain = Math.max(...allServices.map((s) => s.retain));
-        pruneTracker.step(
+        log.say(
           `Pruning old images (retaining last ${maxRetain} per service)`,
+          1,
         );
 
         const pruneResults = await pruneService.pruneImagesOnHosts(
@@ -343,17 +348,14 @@ export const deployCommand = new Command()
         if (totalRemoved > 0) {
           for (const result of pruneResults) {
             if (result.imagesRemoved > 0) {
-              pruneTracker.remote(
-                result.host,
-                `Pruned ${result.imagesRemoved} image(s)`,
-              );
+              await log.hostBlock(result.host, async () => {
+                log.say(`Pruned ${result.imagesRemoved} image(s)`, 2);
+              }, { indent: 1 });
             }
           }
         } else {
-          pruneTracker.step("No old images to prune");
+          log.say("No old images to prune", 1);
         }
-
-        pruneTracker.finish();
       } else if (allServices.length === 0) {
         log.say("No services found to deploy");
       }

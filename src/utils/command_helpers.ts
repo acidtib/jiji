@@ -110,7 +110,6 @@ export async function setupCommandContext(
     globalOptions.configFile,
   );
   const configPath = config.configPath || "unknown";
-  log.say(`Configuration loaded from: ${configPath}`, 1);
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
 
@@ -171,11 +170,6 @@ export async function setupCommandContext(
     Deno.exit(1);
   }
 
-  log.say(
-    `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-    1,
-  );
-
   const sshTracker = log.createStepTracker("SSH Connection Setup:");
   const sshResult = await setupSSHConnections(
     allHosts,
@@ -190,7 +184,6 @@ export async function setupCommandContext(
       dnsRetries: config.ssh.dnsRetries,
     },
     { allowPartialConnection: options.allowPartialConnection ?? true },
-    sshTracker,
   );
   sshTracker.finish();
 

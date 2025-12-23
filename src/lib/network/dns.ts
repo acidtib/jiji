@@ -389,9 +389,9 @@ export function registerContainerHostname(
   projectName: string,
   containerIp: string,
 ): void {
-  log.success(
-    `Registered ${projectName}-${serviceName}.jiji -> ${containerIp} in CoreDNS`,
-    "dns",
+  log.say(
+    `├── Registered ${projectName}-${serviceName}.jiji -> ${containerIp} in CoreDNS`,
+    2,
   );
 }
 
@@ -407,11 +407,6 @@ export function unregisterContainerHostname(
 ): void {
   // CoreDNS entries are automatically removed when containers are
   // unregistered from Corrosion database
-
-  log.say(
-    `Unregistered ${projectName}-${serviceName}.jiji from CoreDNS`,
-    3,
-  );
 }
 
 /**
