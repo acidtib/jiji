@@ -63,7 +63,7 @@ You can also install a specific version by setting the VERSION environment
 variable:
 
 ```bash
-curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.12 sh
+curl -fsSL https://get.jiji.run/install.sh | VERSION=v0.1.13 sh
 ```
 
 ### Windows
@@ -81,7 +81,7 @@ Or use PowerShell to download and install:
 
 ```powershell
 # Download to current directory
-Invoke-WebRequest -Uri "https://github.com/acidtib/jiji/releases/download/v0.1.12/jiji-windows-x86_64.exe" -OutFile "jiji.exe"
+Invoke-WebRequest -Uri "https://github.com/acidtib/jiji/releases/download/v0.1.13/jiji-windows-x86_64.exe" -OutFile "jiji.exe"
 ```
 
 ## Usage
