@@ -141,9 +141,9 @@ export async function getDockerBridgeInterface(
 
   if (verifyResult.code !== 0) {
     // Fallback to docker0 for default bridge
-    log.warn(
+    log.say(
       `Could not find bridge ${bridgeName}, using docker0`,
-      "network",
+      2,
     );
     return "docker0";
   }

@@ -59,6 +59,10 @@ export class Logger {
     this.quietMode = options.quiet ?? globalQuietMode;
   }
 
+  setMinLevel(level: LogLevel): void {
+    this.minLevel = level;
+  }
+
   private formatTimestamp(): string {
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, "0");
@@ -398,45 +402,28 @@ export class Logger {
   }
 
   /**
-   * Track and display runtime of an operation
-   * Inspired by kamal's print_runtime pattern
+   * Execute a block of operations for a specific host
+   * Prints host header and indents content
    */
-  async timed<T>(
-    operation: string,
-    fn: () => Promise<T>,
-    options: { showResult?: boolean; quiet?: boolean } = {},
-  ): Promise<T> {
-    const quiet = options.quiet ?? this.quietMode;
-
-    if (!quiet) {
-      this.action(operation, "magenta");
+  async hostBlock(
+    host: string,
+    fn: () => Promise<void> | void,
+    options: { indent?: number } = {},
+  ): Promise<void> {
+    if (this.quietMode) {
+      await fn();
+      return;
     }
 
-    const startTime = Date.now();
-    try {
-      const result = await fn();
-      const duration = (Date.now() - startTime) / 1000;
+    const indent = options.indent || 0;
+    const indentation = "  ".repeat(indent);
 
-      if (!quiet) {
-        const durationMsg = `Finished in ${duration.toFixed(1)} seconds`;
-        const coloredMsg = this.useColors
-          ? colors.dim(`  ${durationMsg}`)
-          : `  ${durationMsg}`;
-        console.log(coloredMsg);
-      }
+    // Print host header
+    console.log(
+      `${indentation}${this.useColors ? colors.bold(colors.cyan(host)) : host}`,
+    );
 
-      return result;
-    } catch (error) {
-      const duration = (Date.now() - startTime) / 1000;
-      if (!quiet) {
-        const durationMsg = `Failed after ${duration.toFixed(1)} seconds`;
-        const coloredMsg = this.useColors
-          ? colors.red(`  ${durationMsg}`)
-          : `  ${durationMsg}`;
-        console.log(coloredMsg);
-      }
-      throw error;
-    }
+    await fn();
   }
 
   /**
@@ -508,9 +495,7 @@ export class Logger {
       options?: { indent?: number; command?: string },
     ) => void;
     finish: (success?: boolean) => void;
-    timer: () => string;
   } {
-    const startTime = Date.now();
     let hasOutput = false;
 
     if (!this.quietMode) {
@@ -533,33 +518,9 @@ export class Logger {
         }
         this.remote(host, message, options);
       },
-      finish: (success = true) => {
-        const duration = (Date.now() - startTime) / 1000;
-        if (!this.quietMode && hasOutput) {
-          const msg = success
-            ? `Finished in ${duration.toFixed(1)} seconds`
-            : `Failed after ${duration.toFixed(1)} seconds`;
-          const colored = this.useColors
-            ? (success ? colors.dim(`  ${msg}`) : colors.red(`  ${msg}`))
-            : `  ${msg}`;
-          console.log(colored);
-        }
+      finish: (_success = true) => {
+        // No-op: timing removed
       },
-      timer: () => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        return `${elapsed.toFixed(1)}s`;
-      },
-    };
-  }
-
-  /**
-   * Simple runtime tracker that returns elapsed time
-   */
-  startTimer(): () => string {
-    const startTime = Date.now();
-    return () => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      return `${elapsed.toFixed(1)}s`;
     };
   }
 }
@@ -598,12 +559,11 @@ export const log = {
   ) => logger.action(message, color),
   command: (cmd: string, host?: string) => logger.command(cmd, host),
   raw: (output: string) => logger.raw(output),
-  timed: <T>(
-    operation: string,
-    fn: () => Promise<T>,
-    options?: { showResult?: boolean; quiet?: boolean },
-  ) => logger.timed(operation, fn, options),
-  startTimer: () => logger.startTimer(),
+  hostBlock: (
+    host: string,
+    fn: () => Promise<void> | void,
+    options?: { indent?: number },
+  ) => logger.hostBlock(host, fn, options),
   step: (message: string, indent?: number) => logger.step(message, indent),
   remote: (
     host: string,
@@ -613,4 +573,5 @@ export const log = {
   section: (title: string) => logger.section(title),
   say: (message: string, indent?: number) => logger.say(message, indent),
   createStepTracker: (title: string) => logger.createStepTracker(title),
+  setMinLevel: (level: LogLevel) => logger.setMinLevel(level),
 };

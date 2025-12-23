@@ -991,7 +991,7 @@ async function testConnections(
   maxConcurrent?: number,
   tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  tracker?.step("Testing connections to all hosts");
+  tracker?.step("Testing connections to all hosts", 1);
 
   // Import the pool dynamically to avoid circular dependencies
   const { SSHConnectionPool } = await import("./ssh_pool.ts");
@@ -1001,7 +1001,6 @@ async function testConnections(
     sshManagers.map((ssh) => async () => {
       try {
         await ssh.connectWithRetry(); // Use retry logic
-        tracker?.remote(ssh.getHost(), "Connected");
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
@@ -1132,14 +1131,14 @@ export async function setupSSHConnections(
   // Validate SSH setup unless explicitly skipped
   if (!options.skipValidation) {
     const { log } = await import("./logger.ts");
-    tracker?.step("Validating SSH configuration");
+    tracker?.step("Validating SSH configuration", 1);
     const sshValidation = await validateSSHSetup();
     if (!sshValidation.valid) {
       log.error(`SSH setup validation failed:`);
-      log.say(`${sshValidation.message}`, 1);
+      log.say(`${sshValidation.message}`, 2);
       throw new Error(`SSH validation failed: ${sshValidation.message}`);
     }
-    tracker?.step("SSH setup validation passed");
+    tracker?.step("SSH setup validation passed", 1);
   }
 
   // Create SSH connection configuration

@@ -176,7 +176,7 @@ export async function setupCommandContext(
     1,
   );
 
-  const sshTracker = log.createStepTracker("SSH Connection Setup");
+  const sshTracker = log.createStepTracker("SSH Connection Setup:");
   const sshResult = await setupSSHConnections(
     allHosts,
     {
