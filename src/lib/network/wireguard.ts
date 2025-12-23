@@ -100,12 +100,9 @@ export function generateWireGuardConfig(config: WireGuardConfig): string {
 export async function installWireGuard(ssh: SSHManager): Promise<boolean> {
   const host = ssh.getHost();
 
-  log.info(`Installing WireGuard on ${host}`, "wireguard");
-
   // Check if WireGuard is already installed
   const checkResult = await ssh.executeCommand("which wg");
   if (checkResult.code === 0) {
-    log.success(`WireGuard already installed on ${host}`, "wireguard");
     return true;
   }
 
@@ -202,8 +199,6 @@ export async function writeWireGuardConfig(
 
   // Set proper permissions (600)
   await ssh.executeCommand(`chmod 600 ${configPath}`);
-
-  log.success(`WireGuard config written to ${configPath}`, "wireguard");
 }
 
 /**
@@ -221,11 +216,6 @@ export async function bringUpWireGuardInterface(
   // Check if interface is already up
   const checkResult = await ssh.executeCommand(`ip link show ${interfaceName}`);
   if (checkResult.code === 0) {
-    log.info(
-      `WireGuard interface ${interfaceName} already exists on ${host}`,
-      "wireguard",
-    );
-
     // Bring it down first
     await ssh.executeCommand(`wg-quick down ${interfaceName} || true`);
   }
@@ -237,11 +227,6 @@ export async function bringUpWireGuardInterface(
       `Failed to bring up WireGuard interface: ${upResult.stderr}`,
     );
   }
-
-  log.success(
-    `WireGuard interface ${interfaceName} is up on ${host}`,
-    "wireguard",
-  );
 }
 
 /**
@@ -263,11 +248,6 @@ export async function enableWireGuardService(
       `Failed to enable WireGuard service: ${result.stderr}`,
     );
   }
-
-  log.success(
-    `WireGuard service enabled for ${interfaceName}`,
-    "wireguard",
-  );
 }
 
 /**

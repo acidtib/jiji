@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS containers (
  */
 export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
   const host = ssh.getHost();
-  log.info(`Installing Corrosion on ${host}`, "corrosion");
 
   // Check if Corrosion is already installed
   const checkResult = await ssh.executeCommand(
@@ -92,7 +91,6 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
   );
 
   if (checkResult.stdout.includes("exists")) {
-    log.success(`Corrosion already installed on ${host}`, "corrosion");
     return true;
   }
 
@@ -214,8 +212,6 @@ export async function writeCorrosionConfig(
   if (schemaResult.code !== 0) {
     throw new Error(`Failed to write Corrosion schema: ${schemaResult.stderr}`);
   }
-
-  log.success("Corrosion configuration written", "corrosion");
 }
 
 /**
@@ -250,8 +246,6 @@ WantedBy=multi-user.target
 
   // Reload systemd
   await ssh.executeCommand("systemctl daemon-reload");
-
-  log.success("Corrosion systemd service created", "corrosion");
 }
 
 /**
@@ -294,8 +288,6 @@ export async function startCorrosionService(ssh: SSHManager): Promise<void> {
       "Corrosion service did not become ready within expected time",
     );
   }
-
-  log.success("Corrosion service started", "corrosion");
 }
 
 /**
@@ -498,11 +490,6 @@ export async function waitForCorrosionSync(
     CORROSION_SYNC_LOG_INTERVAL_MS / pollIntervalMs,
   );
 
-  log.info(
-    `Waiting for Corrosion to be ready on ${host}...`,
-    "corrosion",
-  );
-
   for (let i = 0; i < maxRetries; i++) {
     try {
       // Simple query to check if Corrosion is responsive
@@ -513,10 +500,6 @@ export async function waitForCorrosionSync(
       );
 
       if (result.code === 0 && result.stdout.trim() === "1") {
-        log.success(
-          `Corrosion is ready on ${host}`,
-          "corrosion",
-        );
         return;
       }
 

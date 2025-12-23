@@ -235,11 +235,6 @@ export async function setupIPTablesRules(
   } else {
     log.warn(`Could not persist iptables rules on ${host}`, "network");
   }
-
-  log.success(
-    `iptables forwarding rules configured on ${host}`,
-    "network",
-  );
 }
 
 /**
@@ -293,8 +288,6 @@ export async function setupServerRouting(
       dockerBridge,
       wireguardInterface,
     );
-
-    log.success(`Routing configured on ${host}`, "network");
   } catch (error) {
     throw new Error(`Failed to setup routing on ${host}: ${error}`);
   }
