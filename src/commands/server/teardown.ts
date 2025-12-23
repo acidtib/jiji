@@ -140,7 +140,6 @@ export const teardownCommand = new Command()
                     service.name,
                     config.project,
                   );
-                  log.say(`Unregistered ${service.name} from network`, 3);
                 } catch (_error) {
                   // Best effort
                 }
@@ -221,8 +220,6 @@ export const teardownCommand = new Command()
               `${config.builder.engine} system prune -a -f --volumes`,
               "system prune",
             );
-
-            log.say("Container engine system purged", 2);
           } catch (error) {
             log.say(`System purge failed: ${error}`, 2);
           }

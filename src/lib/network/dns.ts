@@ -349,7 +349,6 @@ export async function startCoreDNSService(ssh: SSHManager): Promise<void> {
 export async function stopCoreDNSService(ssh: SSHManager): Promise<void> {
   await ssh.executeCommand("systemctl stop jiji-dns");
   await ssh.executeCommand("systemctl stop jiji-dns-update.timer");
-  log.success("CoreDNS service stopped", "dns");
 }
 
 /**
@@ -376,8 +375,6 @@ export async function triggerHostsUpdate(ssh: SSHManager): Promise<void> {
   if (result.code !== 0) {
     throw new Error(`Failed to update DNS hosts: ${result.stderr}`);
   }
-
-  log.success("DNS hosts file updated", "dns");
 }
 
 /**
@@ -411,9 +408,9 @@ export function unregisterContainerHostname(
   // CoreDNS entries are automatically removed when containers are
   // unregistered from Corrosion database
 
-  log.success(
+  log.say(
     `Unregistered ${projectName}-${serviceName}.jiji from CoreDNS`,
-    "dns",
+    3,
   );
 }
 

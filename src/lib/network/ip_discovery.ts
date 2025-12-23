@@ -31,7 +31,7 @@ const PUBLIC_IP_SERVICES = [
 export async function discoverPublicIP(
   ssh: SSHManager,
 ): Promise<string | null> {
-  const host = ssh.getHost();
+  const _host = ssh.getHost();
 
   for (const service of PUBLIC_IP_SERVICES) {
     try {

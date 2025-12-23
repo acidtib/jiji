@@ -212,15 +212,15 @@ export async function unregisterContainerFromNetwork(
       log.warn(`Failed to trigger DNS update: ${error}`, "network");
     }
 
-    log.success(
+    log.say(
       `Unregistered container ${containerId} from network`,
-      "network",
+      3,
     );
     return true;
   } catch (error) {
     log.error(
       `Failed to unregister container ${containerId} from network: ${error}`,
-      "network",
+      4,
     );
     return false;
   }
