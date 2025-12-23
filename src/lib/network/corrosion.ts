@@ -294,7 +294,6 @@ export async function startCorrosionService(ssh: SSHManager): Promise<void> {
  */
 export async function stopCorrosionService(ssh: SSHManager): Promise<void> {
   await ssh.executeCommand("systemctl stop jiji-corrosion");
-  log.success("Corrosion service stopped", "corrosion");
 }
 
 /**

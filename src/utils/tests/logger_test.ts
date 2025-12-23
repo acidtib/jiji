@@ -199,23 +199,6 @@ Deno.test("Default log utility functions", () => {
   restoreConsole();
 });
 
-Deno.test("Logger prefix truncation", () => {
-  mockConsole();
-
-  const logger = new Logger({
-    colors: false,
-    showTimestamp: false,
-    maxPrefixLength: 10,
-  });
-
-  logger.info("test message", "very-long-server-name-that-exceeds-limit");
-
-  assertEquals(capturedLogs.length, 1);
-  assertStringIncludes(capturedLogs[0], "very-lo...");
-
-  restoreConsole();
-});
-
 Deno.test("Logger group method", async () => {
   mockConsole();
 

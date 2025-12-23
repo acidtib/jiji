@@ -37,7 +37,7 @@ export const teardownCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Teardown");
+      log.section("Server Teardown:");
 
       // Set up command context
       ctx = await setupCommandContext(globalOptions);
@@ -83,8 +83,6 @@ export const teardownCommand = new Command()
         }
       }
 
-      log.say("Starting server teardown process...");
-
       // Create audit logger
       const auditLogger = createServerAuditLogger(
         sshManagers,
@@ -99,12 +97,12 @@ export const teardownCommand = new Command()
       );
 
       // Remove all services and containers
-      const removeTracker = log.createStepTracker("Removing Services");
+      log.section("Removing Services:");
 
       const services = Array.from(config.services.values());
 
       for (const service of services) {
-        removeTracker.step(`Removing service: ${service.name}`);
+        log.say(`Service: ${service.name}`, 1);
 
         for (const server of service.servers) {
           const host = server.host;
@@ -115,222 +113,195 @@ export const teardownCommand = new Command()
           const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
           if (!hostSsh) continue;
 
-          try {
-            const containerName = service.getContainerName();
+          await log.hostBlock(host, async () => {
+            try {
+              const containerName = service.getContainerName();
 
-            // Remove service from proxy if proxy is configured
-            if (service.proxy?.enabled) {
-              try {
-                const proxyCmd = new ProxyCommands(
-                  config.builder.engine,
-                  hostSsh,
-                );
-                await proxyCmd.remove(service.name);
-                removeTracker.remote(
-                  host,
-                  `Removed ${service.name} from proxy`,
-                  { indent: 1 },
-                );
-              } catch (_error) {
-                // Best effort
+              // Remove service from proxy if proxy is configured
+              if (service.proxy?.enabled) {
+                try {
+                  const proxyCmd = new ProxyCommands(
+                    config.builder.engine,
+                    hostSsh,
+                  );
+                  await proxyCmd.remove(service.name);
+                  log.say(`Removed ${service.name} from proxy`, 3);
+                } catch (_error) {
+                  // Best effort
+                }
               }
-            }
 
-            // Unregister from network (if enabled)
-            if (config.network.enabled) {
-              try {
-                await unregisterContainerFromNetwork(
-                  hostSsh,
-                  containerName,
-                  service.name,
-                  config.project,
-                );
-                removeTracker.remote(
-                  host,
-                  `Unregistered ${service.name} from network`,
-                  { indent: 1 },
-                );
-              } catch (_error) {
-                // Best effort
+              // Unregister from network (if enabled)
+              if (config.network.enabled) {
+                try {
+                  await unregisterContainerFromNetwork(
+                    hostSsh,
+                    containerName,
+                    service.name,
+                    config.project,
+                  );
+                } catch (_error) {
+                  // Best effort
+                }
               }
-            }
 
-            // Stop and remove the container
-            await executeBestEffort(
-              hostSsh,
-              `${config.builder.engine} rm -f ${containerName}`,
-              `removing container ${containerName}`,
-            );
-            removeTracker.remote(
-              host,
-              `Removed container ${containerName}`,
-              { indent: 1 },
-            );
-
-            // Remove named volumes
-            const namedVolumes = service.getNamedVolumes();
-            for (const volumeName of namedVolumes) {
+              // Stop and remove the container
               await executeBestEffort(
                 hostSsh,
-                `${config.builder.engine} volume rm ${volumeName}`,
-                `removing volume ${volumeName}`,
+                `${config.builder.engine} rm -f ${containerName}`,
+                `removing container ${containerName}`,
               );
-              removeTracker.remote(
-                host,
-                `Removed volume ${volumeName}`,
-                { indent: 1 },
-              );
+              log.say(`Removed container ${containerName}`, 3);
+
+              // Remove named volumes
+              const namedVolumes = service.getNamedVolumes();
+              for (const volumeName of namedVolumes) {
+                await executeBestEffort(
+                  hostSsh,
+                  `${config.builder.engine} volume rm ${volumeName}`,
+                  `removing volume ${volumeName}`,
+                );
+                log.say(`Removed volume ${volumeName}`, 3);
+              }
+            } catch (error) {
+              log.say(`Failed to remove ${service.name}: ${error}`, 3);
             }
-          } catch (error) {
-            removeTracker.remote(
-              host,
-              `Failed to remove ${service.name}: ${error}`,
-              { indent: 1 },
-            );
-          }
+          }, { indent: 2 });
         }
       }
-
-      removeTracker.finish();
 
       // Purge container engine system
-      const purgeTracker = log.createStepTracker(
-        "Purging Container Engine System",
-      );
+      log.section("Purging Container Engine System:");
 
       for (const host of targetHosts) {
         const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
         if (!hostSsh) continue;
 
-        try {
-          purgeTracker.remote(host, "Stopping all containers...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} stop $(${config.builder.engine} ps -aq)`,
-            "stopping containers",
-          );
+        await log.hostBlock(host, async () => {
+          try {
+            log.say("Stopping all containers", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} stop $(${config.builder.engine} ps -aq)`,
+              "stopping containers",
+            );
 
-          purgeTracker.remote(host, "Removing all containers...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} rm -f $(${config.builder.engine} ps -aq)`,
-            "removing containers",
-          );
+            log.say("Removing all containers", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} rm -f $(${config.builder.engine} ps -aq)`,
+              "removing containers",
+            );
 
-          purgeTracker.remote(host, "Removing all images...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} rmi -f $(${config.builder.engine} images -aq)`,
-            "removing images",
-          );
+            log.say("Removing all images", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} rmi -f $(${config.builder.engine} images -aq)`,
+              "removing images",
+            );
 
-          purgeTracker.remote(host, "Removing all volumes...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} volume rm $(${config.builder.engine} volume ls -q)`,
-            "removing volumes",
-          );
+            log.say("Removing all volumes", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} volume rm $(${config.builder.engine} volume ls -q)`,
+              "removing volumes",
+            );
 
-          purgeTracker.remote(host, "Removing all networks...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} network prune -f`,
-            "pruning networks",
-          );
+            log.say("Removing all networks", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} network prune -f`,
+              "pruning networks",
+            );
 
-          purgeTracker.remote(host, "Running system prune...");
-          await executeBestEffort(
-            hostSsh,
-            `${config.builder.engine} system prune -a -f --volumes`,
-            "system prune",
-          );
-
-          purgeTracker.remote(host, "Container engine system purged");
-        } catch (error) {
-          purgeTracker.remote(host, `System purge failed: ${error}`);
-        }
+            log.say("Running system prune", 2);
+            await executeBestEffort(
+              hostSsh,
+              `${config.builder.engine} system prune -a -f --volumes`,
+              "system prune",
+            );
+          } catch (error) {
+            log.say(`System purge failed: ${error}`, 2);
+          }
+        }, { indent: 1 });
       }
-
-      purgeTracker.finish();
 
       // Remove container engine
-      const engineTracker = log.createStepTracker(
-        "Removing Container Engine",
-      );
+      log.section("Removing Container Engine:");
 
       for (const host of targetHosts) {
         const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
         if (!hostSsh) continue;
 
-        try {
-          const engine = config.builder.engine;
+        await log.hostBlock(host, async () => {
+          try {
+            const engine = config.builder.engine;
 
-          if (engine === "docker") {
-            engineTracker.remote(host, "Removing Docker packages...");
-            await executeBestEffort(
-              hostSsh,
-              "systemctl stop docker.socket docker.service",
-              "stopping Docker service",
-            );
-            await executeBestEffort(
-              hostSsh,
-              "apt-get remove -y docker.io docker-compose",
-              "removing Docker packages",
-            );
-            await executeBestEffort(
-              hostSsh,
-              "apt-get autoremove -y",
-              "autoremove packages",
-            );
+            if (engine === "docker") {
+              log.say("Removing Docker packages", 2);
+              await executeBestEffort(
+                hostSsh,
+                "systemctl stop docker.socket docker.service",
+                "stopping Docker service",
+              );
+              await executeBestEffort(
+                hostSsh,
+                "apt-get remove -y docker.io docker-compose",
+                "removing Docker packages",
+              );
+              await executeBestEffort(
+                hostSsh,
+                "apt-get autoremove -y",
+                "autoremove packages",
+              );
 
-            engineTracker.remote(host, "Removing Docker files...");
-            await executeBestEffort(
-              hostSsh,
-              "rm -rf /var/lib/docker",
-              "removing Docker data",
-            );
-            await executeBestEffort(
-              hostSsh,
-              "rm -rf /etc/docker",
-              "removing Docker config",
-            );
-          } else if (engine === "podman") {
-            engineTracker.remote(host, "Removing Podman packages...");
-            await executeBestEffort(
-              hostSsh,
-              "apt-get remove -y podman",
-              "removing Podman packages",
-            );
-            await executeBestEffort(
-              hostSsh,
-              "apt-get autoremove -y",
-              "autoremove packages",
-            );
+              log.say("Removing Docker files", 2);
+              await executeBestEffort(
+                hostSsh,
+                "rm -rf /var/lib/docker",
+                "removing Docker data",
+              );
+              await executeBestEffort(
+                hostSsh,
+                "rm -rf /etc/docker",
+                "removing Docker config",
+              );
+            } else if (engine === "podman") {
+              log.say("Removing Podman packages", 2);
+              await executeBestEffort(
+                hostSsh,
+                "apt-get remove -y podman",
+                "removing Podman packages",
+              );
+              await executeBestEffort(
+                hostSsh,
+                "apt-get autoremove -y",
+                "autoremove packages",
+              );
 
-            engineTracker.remote(host, "Removing Podman files...");
-            await executeBestEffort(
-              hostSsh,
-              "rm -rf /var/lib/containers",
-              "removing Podman data",
-            );
-            await executeBestEffort(
-              hostSsh,
-              "rm -rf /etc/containers",
-              "removing Podman config",
-            );
+              log.say("Removing Podman files", 2);
+              await executeBestEffort(
+                hostSsh,
+                "rm -rf /var/lib/containers",
+                "removing Podman data",
+              );
+              await executeBestEffort(
+                hostSsh,
+                "rm -rf /etc/containers",
+                "removing Podman config",
+              );
+            }
+
+            log.say(`${engine} removed`, 2);
+          } catch (error) {
+            log.say(`Engine removal failed: ${error}`, 2);
           }
-
-          engineTracker.remote(host, `${engine} removed`);
-        } catch (error) {
-          engineTracker.remote(host, `Engine removal failed: ${error}`);
-        }
+        }, { indent: 1 });
       }
-
-      engineTracker.finish();
 
       // Tear down network
       if (config.network.enabled) {
-        const networkTracker = log.createStepTracker("Tearing Down Network");
+        log.section("Tearing Down Network:");
 
         // Try to load topology
         let topology = null;
@@ -344,11 +315,13 @@ export const teardownCommand = new Command()
         }
 
         if (!topology) {
-          networkTracker.step("No network cluster found, skipping");
+          log.say("No network cluster found, skipping", 1);
         } else {
-          networkTracker.step(
+          log.say(
             `Tearing down network on ${topology.servers.length} server(s)`,
+            1,
           );
+          console.log();
 
           for (const server of topology.servers) {
             const ssh = sshManagers.find((s) =>
@@ -359,69 +332,52 @@ export const teardownCommand = new Command()
               continue;
             }
 
-            try {
-              networkTracker.remote(server.hostname, "Stopping DNS service...");
-              await stopCoreDNSService(ssh);
+            await log.hostBlock(server.hostname, async () => {
+              try {
+                log.say("Stopping DNS service", 2);
+                await stopCoreDNSService(ssh);
 
-              if (topology.discovery === "corrosion") {
-                networkTracker.remote(
-                  server.hostname,
-                  "Stopping Corrosion service...",
+                if (topology.discovery === "corrosion") {
+                  log.say("Stopping Corrosion service", 2);
+                  await stopCorrosionService(ssh);
+                }
+
+                log.say("Stopping WireGuard interface", 2);
+                await bringDownWireGuardInterface(ssh);
+                await disableWireGuardService(ssh);
+
+                log.say("Removing network configuration files", 2);
+                await ssh.executeCommand("rm -f /etc/wireguard/jiji0.conf");
+                await ssh.executeCommand("rm -rf /opt/jiji/corrosion");
+                await ssh.executeCommand("rm -rf /opt/jiji/dns");
+                await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-corrosion.service",
                 );
-                await stopCorrosionService(ssh);
+                await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-dns.service",
+                );
+                await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-dns-update.service",
+                );
+                await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-dns-update.timer",
+                );
+                await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-control-loop.service",
+                );
+                await ssh.executeCommand("systemctl daemon-reload");
+
+                log.say("Network teardown complete", 2);
+              } catch (error) {
+                log.say(`Network teardown failed: ${error}`, 2);
               }
-
-              networkTracker.remote(
-                server.hostname,
-                "Stopping WireGuard interface...",
-              );
-              await bringDownWireGuardInterface(ssh);
-              await disableWireGuardService(ssh);
-
-              networkTracker.remote(
-                server.hostname,
-                "Removing network configuration files...",
-              );
-              await ssh.executeCommand("rm -f /etc/wireguard/jiji0.conf");
-              await ssh.executeCommand("rm -rf /opt/jiji/corrosion");
-              await ssh.executeCommand("rm -rf /opt/jiji/dns");
-              await ssh.executeCommand(
-                "rm -f /etc/systemd/system/jiji-corrosion.service",
-              );
-              await ssh.executeCommand(
-                "rm -f /etc/systemd/system/jiji-dns.service",
-              );
-              await ssh.executeCommand(
-                "rm -f /etc/systemd/system/jiji-dns-update.service",
-              );
-              await ssh.executeCommand(
-                "rm -f /etc/systemd/system/jiji-dns-update.timer",
-              );
-              await ssh.executeCommand(
-                "rm -f /etc/systemd/system/jiji-control-loop.service",
-              );
-              await ssh.executeCommand("systemctl daemon-reload");
-
-              networkTracker.remote(
-                server.hostname,
-                "Network teardown complete",
-              );
-            } catch (error) {
-              networkTracker.remote(
-                server.hostname,
-                `Network teardown failed: ${error}`,
-              );
-            }
+            }, { indent: 1 });
           }
         }
-
-        networkTracker.finish();
       }
 
       // Remove project directory
-      const cleanupTracker = log.createStepTracker(
-        "Removing Project Directory",
-      );
+      log.section("Removing Project Directory:");
 
       const projectDir = `.jiji/${config.project}`;
 
@@ -429,18 +385,15 @@ export const teardownCommand = new Command()
         const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
         if (!hostSsh) continue;
 
-        try {
-          await hostSsh.executeCommand(`rm -rf ${projectDir}`);
-          cleanupTracker.remote(host, `Removed ${projectDir}`);
-        } catch (error) {
-          cleanupTracker.remote(
-            host,
-            `Failed to remove ${projectDir}: ${error}`,
-          );
-        }
+        await log.hostBlock(host, async () => {
+          try {
+            await hostSsh.executeCommand(`rm -rf ${projectDir}`);
+            log.say(`Removed ${projectDir}`, 2);
+          } catch (error) {
+            log.say(`Failed to remove ${projectDir}: ${error}`, 2);
+          }
+        }, { indent: 1 });
       }
-
-      cleanupTracker.finish();
 
       // Log teardown completion
       await auditLogger.logCustomCommand(
@@ -450,7 +403,9 @@ export const teardownCommand = new Command()
       );
 
       console.log();
-      log.say("Server teardown completed successfully");
+      log.say(
+        `Teardown completed successfully on ${targetHosts.length} server(s)`,
+      );
     } catch (error) {
       await handleCommandError(error, {
         operation: "Server teardown",

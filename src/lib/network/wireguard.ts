@@ -211,7 +211,7 @@ export async function bringUpWireGuardInterface(
   ssh: SSHManager,
   interfaceName = "jiji0",
 ): Promise<void> {
-  const host = ssh.getHost();
+  const _host = ssh.getHost();
 
   // Check if interface is already up
   const checkResult = await ssh.executeCommand(`ip link show ${interfaceName}`);
@@ -269,8 +269,6 @@ export async function bringDownWireGuardInterface(
       );
     }
   }
-
-  log.success(`WireGuard interface ${interfaceName} is down`, "wireguard");
 }
 
 /**
@@ -286,7 +284,6 @@ export async function disableWireGuardService(
   await ssh.executeCommand(
     `systemctl disable wg-quick@${interfaceName} || true`,
   );
-  log.success(`WireGuard service disabled for ${interfaceName}`, "wireguard");
 }
 
 /**

@@ -110,8 +110,12 @@ export class Logger {
     level: LogLevel,
     message: string,
     prefix?: string,
+    indent?: number,
   ): string {
     const parts: string[] = [];
+
+    // Add indentation if specified
+    const indentation = indent !== undefined ? "  ".repeat(indent) : "";
 
     if (this.showTimestamp) {
       const timestamp = this.formatTimestamp();
@@ -135,15 +139,20 @@ export class Logger {
 
     parts.push(message);
 
-    return parts.join(" ");
+    return indentation + parts.join(" ");
   }
 
-  private log(level: LogLevel, message: string, prefix?: string): void {
+  private log(
+    level: LogLevel,
+    message: string,
+    prefix?: string,
+    indent?: number,
+  ): void {
     if (!this.shouldLog(level)) {
       return;
     }
 
-    const formattedMessage = this.formatMessage(level, message, prefix);
+    const formattedMessage = this.formatMessage(level, message, prefix, indent);
 
     switch (level) {
       case "fatal":
@@ -166,32 +175,49 @@ export class Logger {
     return LOG_LEVEL_PRIORITY[level] <= LOG_LEVEL_PRIORITY[this.minLevel];
   }
 
-  info(message: string, prefix?: string): void {
-    this.log("info", message, prefix);
+  info(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("info", message, prefix, indent);
   }
 
-  success(message: string, prefix?: string): void {
-    this.log("success", message, prefix);
+  success(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("success", message, prefix, indent);
   }
 
-  warn(message: string, prefix?: string): void {
-    this.log("warn", message, prefix);
+  warn(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("warn", message, prefix, indent);
   }
 
-  error(message: string, prefix?: string): void {
-    this.log("error", message, prefix);
+  error(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("error", message, prefix, indent);
   }
 
-  debug(message: string, prefix?: string): void {
-    this.log("debug", message, prefix);
+  debug(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("debug", message, prefix, indent);
   }
 
-  trace(message: string, prefix?: string): void {
-    this.log("trace", message, prefix);
+  trace(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("trace", message, prefix, indent);
   }
 
-  fatal(message: string, prefix?: string): void {
-    this.log("fatal", message, prefix);
+  fatal(message: string, prefixOrIndent?: string | number): void {
+    const { prefix, indent } = this.parseLogParams(prefixOrIndent);
+    this.log("fatal", message, prefix, indent);
+  }
+
+  private parseLogParams(
+    prefixOrIndent?: string | number,
+  ): { prefix?: string; indent?: number } {
+    if (typeof prefixOrIndent === "number") {
+      return { indent: prefixOrIndent };
+    }
+    // Ignore string parameters - we're moving away from prefix
+    return {};
   }
 
   executing(command: string, server?: string): void {
@@ -530,14 +556,20 @@ export const logger = new Logger();
 
 // Utility functions for quick logging
 export const log = {
-  info: (message: string, prefix?: string) => logger.info(message, prefix),
-  success: (message: string, prefix?: string) =>
-    logger.success(message, prefix),
-  warn: (message: string, prefix?: string) => logger.warn(message, prefix),
-  error: (message: string, prefix?: string) => logger.error(message, prefix),
-  fatal: (message: string, prefix?: string) => logger.fatal(message, prefix),
-  debug: (message: string, prefix?: string) => logger.debug(message, prefix),
-  trace: (message: string, prefix?: string) => logger.trace(message, prefix),
+  info: (message: string, prefixOrIndent?: string | number) =>
+    logger.info(message, prefixOrIndent),
+  success: (message: string, prefixOrIndent?: string | number) =>
+    logger.success(message, prefixOrIndent),
+  warn: (message: string, prefixOrIndent?: string | number) =>
+    logger.warn(message, prefixOrIndent),
+  error: (message: string, prefixOrIndent?: string | number) =>
+    logger.error(message, prefixOrIndent),
+  fatal: (message: string, prefixOrIndent?: string | number) =>
+    logger.fatal(message, prefixOrIndent),
+  debug: (message: string, prefixOrIndent?: string | number) =>
+    logger.debug(message, prefixOrIndent),
+  trace: (message: string, prefixOrIndent?: string | number) =>
+    logger.trace(message, prefixOrIndent),
   executing: (command: string, server?: string) =>
     logger.executing(command, server),
   status: (message: string, server?: string) => logger.status(message, server),

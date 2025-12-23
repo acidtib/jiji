@@ -303,7 +303,7 @@ export async function createControlLoopService(
   engine: "docker" | "podman",
   interfaceName: string = "jiji0",
 ): Promise<void> {
-  const host = ssh.getHost();
+  const _host = ssh.getHost();
 
   // Generate bash script
   const script = generateControlLoopScript(serverId, engine, interfaceName);
