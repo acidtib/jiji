@@ -121,7 +121,7 @@ export async function setupNetwork(
         if (isNewNetwork) {
           log.say(
             "No existing cluster found - creating new network cluster",
-            1,
+            2,
           );
         } else {
           log.say("Found existing network cluster in Corrosion", 2);

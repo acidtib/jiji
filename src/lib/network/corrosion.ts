@@ -116,8 +116,6 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
     const downloadUrl =
       `https://github.com/${CORROSION_REPO}/releases/latest/download/corrosion-${downloadArch}-unknown-linux-gnu.tar.gz`;
 
-    log.info(`Downloading Corrosion for ${downloadArch}...`, "corrosion");
-
     const downloadResult = await ssh.executeCommand(
       `cd ${CORROSION_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o corrosion.tar.gz`,
     );
@@ -140,7 +138,6 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
     // Make executable
     await ssh.executeCommand(`chmod +x ${CORROSION_INSTALL_DIR}/corrosion`);
 
-    log.success(`Corrosion installed successfully on ${host}`, "corrosion");
     return true;
   } catch (error) {
     log.error(`Failed to install Corrosion on ${host}: ${error}`, "corrosion");
@@ -815,6 +812,4 @@ export async function initializeClusterMetadata(
   await setClusterMetadata(ssh, "service_domain", serviceDomain);
   await setClusterMetadata(ssh, "discovery", discovery);
   await setClusterMetadata(ssh, "created_at", new Date().toISOString());
-
-  log.success("Cluster metadata initialized in Corrosion", "corrosion");
 }

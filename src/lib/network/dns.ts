@@ -51,11 +51,6 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
     const downloadUrl =
       `https://github.com/coredns/coredns/releases/download/v${COREDNS_VERSION}/coredns_${COREDNS_VERSION}_linux_${downloadArch}.tgz`;
 
-    log.info(
-      `Downloading CoreDNS ${COREDNS_VERSION} for ${downloadArch}...`,
-      "dns",
-    );
-
     const downloadResult = await ssh.executeCommand(
       `cd ${COREDNS_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o coredns.tgz`,
     );
@@ -76,7 +71,6 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
     // Make executable
     await ssh.executeCommand(`chmod +x ${COREDNS_INSTALL_DIR}/coredns`);
 
-    log.success(`CoreDNS installed successfully on ${host}`, "dns");
     return true;
   } catch (error) {
     log.error(`Failed to install CoreDNS on ${host}: ${error}`, "dns");
