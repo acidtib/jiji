@@ -8,10 +8,10 @@ echo "Setting up jiji project..."
 
 # Create symbolic links to LLM.md for different AI systems
 echo "Creating symbolic links..."
-ln -sf docs/LLM.md .rules
-ln -sf docs/LLM.md CLAUDE.md
-ln -sf docs/LLM.md GEMINI.md
-ln -sf docs/LLM.md QWEN.md
+[[ ! -e .rules ]] && ln -sf docs/LLM.md .rules
+[[ ! -e CLAUDE.md ]] && ln -sf docs/LLM.md CLAUDE.md
+[[ ! -e GEMINI.md ]] && ln -sf docs/LLM.md GEMINI.md
+[[ ! -e QWEN.md ]] && ln -sf docs/LLM.md QWEN.md
 
 echo "Installing deno dependencies..."
 deno install
