@@ -12,6 +12,7 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 };
 
 let globalMinLevel: LogLevel | undefined = undefined;
+let globalQuietMode = false;
 
 /**
  * Set the global minimum log level for all loggers
@@ -27,19 +28,35 @@ export function getGlobalLogLevel(): LogLevel | undefined {
   return globalMinLevel;
 }
 
+/**
+ * Set global quiet mode for all loggers
+ */
+export function setGlobalQuietMode(enabled: boolean): void {
+  globalQuietMode = enabled;
+}
+
+/**
+ * Get global quiet mode status
+ */
+export function getGlobalQuietMode(): boolean {
+  return globalQuietMode;
+}
+
 export class Logger {
   private prefix: string;
   private showTimestamp: boolean;
   private maxPrefixLength: number;
   private useColors: boolean;
   private minLevel: LogLevel;
+  private quietMode: boolean;
 
   constructor(options: LoggerOptions = {}) {
     this.prefix = options.prefix || "";
-    this.showTimestamp = options.showTimestamp ?? true;
+    this.showTimestamp = options.showTimestamp ?? false; // Changed default to false
     this.maxPrefixLength = options.maxPrefixLength || 20;
     this.useColors = options.colors ?? true;
     this.minLevel = options.minLevel || globalMinLevel || "info";
+    this.quietMode = options.quiet ?? globalQuietMode;
   }
 
   private formatTimestamp(): string {
@@ -105,9 +122,13 @@ export class Logger {
       parts.push(coloredPrefix);
     }
 
-    const levelIndicator = `[${level.toUpperCase().padEnd(5)}]`;
-    const coloredLevel = this.colorize(levelIndicator, level);
-    parts.push(coloredLevel);
+    // Only show level indicator for warn, error, and fatal
+    if (level === "warn" || level === "error" || level === "fatal") {
+      const levelIndicator = `[${level.toUpperCase().padEnd(5)}]`;
+      const coloredLevel = this.colorize(levelIndicator, level);
+      parts.push(coloredLevel);
+    }
+
     parts.push(message);
 
     return parts.join(" ");
@@ -190,6 +211,7 @@ export class Logger {
       maxPrefixLength: this.maxPrefixLength,
       colors: this.useColors,
       minLevel: this.minLevel,
+      quiet: this.quietMode,
     });
   }
 
@@ -203,7 +225,97 @@ export class Logger {
       maxPrefixLength: this.maxPrefixLength,
       colors: this.useColors,
       minLevel: level,
+      quiet: this.quietMode,
     });
+  }
+
+  /**
+   * Display output grouped by host with a clear header
+   * Inspired by kamal's puts_by_host pattern
+   */
+  hostOutput(host: string, output: string, options: {
+    type?: string;
+    skipHeader?: boolean;
+  } = {}): void {
+    if (this.quietMode && !options.skipHeader) {
+      // In quiet mode, skip the header but show the output
+      if (output.trim()) {
+        console.log(output);
+      }
+      return;
+    }
+
+    const type = options.type || "Host";
+
+    if (!options.skipHeader) {
+      const header = `${type}: ${host}`;
+      const coloredHeader = this.useColors
+        ? colors.bold(colors.cyan(header))
+        : header;
+      console.log(coloredHeader);
+    }
+
+    if (output.trim()) {
+      console.log(output);
+    }
+    console.log(""); // Empty line after output
+  }
+
+  /**
+   * Display a simple action message (like kamal's "say")
+   */
+  action(
+    message: string,
+    color: "cyan" | "magenta" | "yellow" | "green" | "red" = "cyan",
+  ): void {
+    if (this.quietMode) return;
+
+    let coloredMessage = message;
+    if (this.useColors) {
+      switch (color) {
+        case "cyan":
+          coloredMessage = colors.cyan(message);
+          break;
+        case "magenta":
+          coloredMessage = colors.magenta(message);
+          break;
+        case "yellow":
+          coloredMessage = colors.yellow(message);
+          break;
+        case "green":
+          coloredMessage = colors.green(message);
+          break;
+        case "red":
+          coloredMessage = colors.red(message);
+          break;
+      }
+    }
+    console.log(coloredMessage);
+  }
+
+  /**
+   * Display a command being executed (dimmed)
+   */
+  command(cmd: string, host?: string): void {
+    if (!this.shouldLog("debug")) return;
+
+    const prefix = host ? `${host}` : "local";
+    const message = this.useColors ? colors.dim(`$ ${cmd}`) : `$ ${cmd}`;
+    const parts: string[] = [];
+
+    if (prefix) {
+      parts.push(this.useColors ? colors.bold(colors.cyan(prefix)) : prefix);
+    }
+    parts.push(message);
+
+    console.log(parts.join(" "));
+  }
+
+  /**
+   * Display raw output without any formatting
+   */
+  raw(output: string): void {
+    console.log(output);
   }
 
   // Create multiple loggers for different servers
@@ -268,25 +380,187 @@ export class Logger {
 
   // Group related log messages
   group(title: string, fn: () => void | Promise<void>): void | Promise<void> {
-    const separator = "-".repeat(60);
-    const groupTitle = this.useColors ? colors.bold(colors.blue(title)) : title;
+    if (this.quietMode) {
+      return fn();
+    }
 
     console.log("");
-    console.log(this.useColors ? colors.dim(separator) : separator);
-    console.log(groupTitle);
-    console.log(this.useColors ? colors.dim(separator) : separator);
+    this.section(title);
 
     const result = fn();
 
     if (result instanceof Promise) {
       return result.then(() => {
-        console.log(this.useColors ? colors.dim(separator) : separator);
-        console.log("");
+        // Promise resolved, grouping complete
       });
-    } else {
-      console.log(this.useColors ? colors.dim(separator) : separator);
-      console.log("");
     }
+    // Synchronous function completed, grouping complete
+  }
+
+  /**
+   * Track and display runtime of an operation
+   * Inspired by kamal's print_runtime pattern
+   */
+  async timed<T>(
+    operation: string,
+    fn: () => Promise<T>,
+    options: { showResult?: boolean; quiet?: boolean } = {},
+  ): Promise<T> {
+    const quiet = options.quiet ?? this.quietMode;
+
+    if (!quiet) {
+      this.action(operation, "magenta");
+    }
+
+    const startTime = Date.now();
+    try {
+      const result = await fn();
+      const duration = (Date.now() - startTime) / 1000;
+
+      if (!quiet) {
+        const durationMsg = `Finished in ${duration.toFixed(1)} seconds`;
+        const coloredMsg = this.useColors
+          ? colors.dim(`  ${durationMsg}`)
+          : `  ${durationMsg}`;
+        console.log(coloredMsg);
+      }
+
+      return result;
+    } catch (error) {
+      const duration = (Date.now() - startTime) / 1000;
+      if (!quiet) {
+        const durationMsg = `Failed after ${duration.toFixed(1)} seconds`;
+        const coloredMsg = this.useColors
+          ? colors.red(`  ${durationMsg}`)
+          : `  ${durationMsg}`;
+        console.log(coloredMsg);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Display a step in a multi-step process
+   * Similar to kamal's step logging
+   */
+  step(message: string, indent = 0): void {
+    if (this.quietMode) return;
+
+    const indentation = "  ".repeat(indent);
+    const bullet = this.useColors ? colors.cyan("•") : "•";
+    console.log(`${indentation}${bullet} ${message}`);
+  }
+
+  /**
+   * Display remote command execution in kamal style
+   * Shows: Running command on server (dimmed command)
+   */
+  remote(
+    host: string,
+    message: string,
+    options: { indent?: number; command?: string } = {},
+  ): void {
+    const indent = "  ".repeat(options.indent || 0);
+    const hostLabel = this.useColors ? colors.bold(colors.cyan(host)) : host;
+
+    if (options.command && this.shouldLog("debug")) {
+      const cmd = this.useColors
+        ? colors.dim(`$ ${options.command}`)
+        : `$ ${options.command}`;
+      console.log(`${indent}${hostLabel} ${message}`);
+      console.log(`${indent}  ${cmd}`);
+    } else {
+      console.log(`${indent}${hostLabel} ${message}`);
+    }
+  }
+
+  /**
+   * Start a new section with clear visual separation
+   * Kamal-style section headers
+   */
+  section(title: string): void {
+    if (this.quietMode) return;
+
+    console.log(""); // Blank line before
+    const formatted = this.useColors ? colors.bold(title) : title;
+    console.log(formatted);
+  }
+
+  /**
+   * Print a summary line (like kamal's "say")
+   */
+  say(message: string, indent = 0): void {
+    if (this.quietMode) return;
+
+    const indentation = "  ".repeat(indent);
+    console.log(`${indentation}${message}`);
+  }
+
+  /**
+   * Create a step tracker for multi-step operations
+   * Returns functions to log steps and finish
+   */
+  createStepTracker(title: string): {
+    step: (message: string, indent?: number) => void;
+    remote: (
+      host: string,
+      message: string,
+      options?: { indent?: number; command?: string },
+    ) => void;
+    finish: (success?: boolean) => void;
+    timer: () => string;
+  } {
+    const startTime = Date.now();
+    let hasOutput = false;
+
+    if (!this.quietMode) {
+      this.section(title);
+      hasOutput = true;
+    }
+
+    return {
+      step: (message: string, indent = 0) => {
+        if (!hasOutput && !this.quietMode) {
+          this.section(title);
+          hasOutput = true;
+        }
+        this.step(message, indent);
+      },
+      remote: (host: string, message: string, options = {}) => {
+        if (!hasOutput && !this.quietMode) {
+          this.section(title);
+          hasOutput = true;
+        }
+        this.remote(host, message, options);
+      },
+      finish: (success = true) => {
+        const duration = (Date.now() - startTime) / 1000;
+        if (!this.quietMode && hasOutput) {
+          const msg = success
+            ? `Finished in ${duration.toFixed(1)} seconds`
+            : `Failed after ${duration.toFixed(1)} seconds`;
+          const colored = this.useColors
+            ? (success ? colors.dim(`  ${msg}`) : colors.red(`  ${msg}`))
+            : `  ${msg}`;
+          console.log(colored);
+        }
+      },
+      timer: () => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        return `${elapsed.toFixed(1)}s`;
+      },
+    };
+  }
+
+  /**
+   * Simple runtime tracker that returns elapsed time
+   */
+  startTimer(): () => string {
+    const startTime = Date.now();
+    return () => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      return `${elapsed.toFixed(1)}s`;
+    };
   }
 }
 
@@ -314,4 +588,29 @@ export const log = {
   ) => logger.progress(message, current, total, prefix),
   group: (title: string, fn: () => void | Promise<void>) =>
     logger.group(title, fn),
+  hostOutput: (host: string, output: string, options?: {
+    type?: string;
+    skipHeader?: boolean;
+  }) => logger.hostOutput(host, output, options),
+  action: (
+    message: string,
+    color?: "cyan" | "magenta" | "yellow" | "green" | "red",
+  ) => logger.action(message, color),
+  command: (cmd: string, host?: string) => logger.command(cmd, host),
+  raw: (output: string) => logger.raw(output),
+  timed: <T>(
+    operation: string,
+    fn: () => Promise<T>,
+    options?: { showResult?: boolean; quiet?: boolean },
+  ) => logger.timed(operation, fn, options),
+  startTimer: () => logger.startTimer(),
+  step: (message: string, indent?: number) => logger.step(message, indent),
+  remote: (
+    host: string,
+    message: string,
+    options?: { indent?: number; command?: string },
+  ) => logger.remote(host, message, options),
+  section: (title: string) => logger.section(title),
+  say: (message: string, indent?: number) => logger.say(message, indent),
+  createStepTracker: (title: string) => logger.createStepTracker(title),
 };

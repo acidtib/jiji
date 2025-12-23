@@ -1,7 +1,7 @@
 import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import type { GlobalOptions } from "../types.ts";
-import { log, Logger } from "../utils/logger.ts";
+import { log } from "../utils/logger.ts";
 import {
   buildConfigPath,
   checkEngineAvailability,
@@ -20,46 +20,41 @@ async function promptForOverwrite(configPath: string): Promise<boolean> {
 }
 
 async function validateEngine(engine: string): Promise<void> {
-  const initLogger = new Logger({ prefix: "init" });
-
-  initLogger.info(`Checking ${engine} availability...`);
+  log.step(`Checking ${engine} availability`);
 
   const isAvailable = await checkEngineAvailability(engine);
 
   if (!isAvailable) {
-    initLogger.warn(`${engine} is not available on this system`);
-    initLogger.info(
+    log.warn(`${engine} is not available on this system`);
+    log.say(
       `Please install ${engine} or edit the config to use a different engine`,
+      1,
     );
   } else {
-    initLogger.success(`${engine} is available`);
+    log.say(`${engine} is available`, 1);
   }
 }
 
 async function validateConfiguration(configPath: string): Promise<void> {
-  const initLogger = new Logger({ prefix: "init" });
-
   try {
-    initLogger.info("Validating configuration...");
+    log.step("Validating configuration");
     const validationResult = await Configuration.validateFile(configPath);
 
     if (validationResult.valid) {
-      initLogger.success("Configuration is valid");
+      log.say("Configuration is valid", 1);
 
       if (validationResult.warnings.length > 0) {
-        initLogger.warn(
-          `Found ${validationResult.warnings.length} warning(s):`,
-        );
+        log.say(`Found ${validationResult.warnings.length} warning(s):`, 1);
         validationResult.warnings.forEach((warning) => {
-          initLogger.warn(`  - ${warning.path}: ${warning.message}`);
+          log.say(`- ${warning.path}: ${warning.message}`, 2);
         });
       }
     } else {
-      initLogger.error(
+      log.error(
         `Configuration validation failed with ${validationResult.errors.length} error(s):`,
       );
       validationResult.errors.forEach((error) => {
-        initLogger.error(`  - ${error.path}: ${error.message}`);
+        log.say(`- ${error.path}: ${error.message}`, 1);
       });
       throw new Error("Configuration validation failed");
     }
@@ -78,69 +73,67 @@ async function validateConfiguration(configPath: string): Promise<void> {
 export const initCommand = new Command()
   .description("Create config stub in .jiji/deploy.yml")
   .action(async (options) => {
-    const initLogger = new Logger({ prefix: "init" });
-
     try {
-      await log.group("Initializing Jiji Configuration", async () => {
-        const globalOptions = options as unknown as GlobalOptions;
-        const configPath = buildConfigPath(globalOptions.environment);
+      const tracker = log.createStepTracker("Jiji Configuration");
+      const globalOptions = options as unknown as GlobalOptions;
+      const configPath = buildConfigPath(globalOptions.environment);
 
-        initLogger.info("Setting up deployment configuration...");
-        initLogger.status(`Target config: ${configPath}`, "config");
+      tracker.step("Setting up deployment configuration");
+      log.say(`Target config: ${configPath}`, 1);
 
-        const existingConfigs = await getAvailableConfigs();
-        if (existingConfigs.length > 0) {
-          initLogger.info(
-            `Found ${existingConfigs.length} existing configuration(s):`,
-          );
-          existingConfigs.forEach((config) => {
-            initLogger.info(`  - ${config}`);
-          });
-        }
-
-        const fileExists = await configFileExists(configPath);
-        if (fileExists) {
-          initLogger.warn(`Configuration already exists at ${configPath}`);
-
-          const shouldOverwrite = await promptForOverwrite(configPath);
-          if (!shouldOverwrite) {
-            initLogger.info("Init command cancelled by user");
-            return;
-          }
-
-          initLogger.info("Proceeding with overwrite...");
-        }
-
-        initLogger.info("Loading default configuration template...");
-        const configTemplate = await readConfigTemplate();
-
-        initLogger.info("Creating configuration file...");
-        await createConfigFile(configPath, configTemplate);
-
-        initLogger.success(`Config file created at ${configPath}`);
-
-        await validateConfiguration(configPath);
-        const templateLines = configTemplate.split("\n");
-        const engineLine = templateLines.find((line) =>
-          line.startsWith("engine:")
+      const existingConfigs = await getAvailableConfigs();
+      if (existingConfigs.length > 0) {
+        log.say(
+          `Found ${existingConfigs.length} existing configuration(s):`,
+          1,
         );
-        if (engineLine) {
-          const engine = engineLine.split(":")[1].trim();
-          await validateEngine(engine);
+        existingConfigs.forEach((config) => {
+          log.say(`- ${config}`, 2);
+        });
+      }
+
+      const fileExists = await configFileExists(configPath);
+      if (fileExists) {
+        log.warn(`Configuration already exists at ${configPath}`);
+
+        const shouldOverwrite = await promptForOverwrite(configPath);
+        if (!shouldOverwrite) {
+          log.say("Init command cancelled by user");
+          return;
         }
-      });
+
+        log.say("Proceeding with overwrite", 1);
+      }
+
+      tracker.step("Loading default configuration template");
+      const configTemplate = await readConfigTemplate();
+
+      tracker.step("Creating configuration file");
+      await createConfigFile(configPath, configTemplate);
+      log.say(`Config file created at ${configPath}`, 1);
+
+      await validateConfiguration(configPath);
+
+      const templateLines = configTemplate.split("\n");
+      const engineLine = templateLines.find((line) =>
+        line.startsWith("engine:")
+      );
+      if (engineLine) {
+        const engine = engineLine.split(":")[1].trim();
+        await validateEngine(engine);
+      }
+
+      tracker.finish();
+
+      log.section("Next Steps");
+      log.step("Review and customize the configuration file");
+      log.step("Configure your services and deployment targets");
+      log.step("Set up any required environment variables or secrets");
+      log.step("Run 'jiji server init' to prepare your servers");
+      log.step("Run 'jiji deploy' to start deploying your services");
 
       console.log();
-      log.success("Jiji configuration initialized successfully!");
-      log.info("Next steps:");
-      log.info("  1. Review and customize the configuration file");
-      log.info("  2. Configure your services and deployment targets");
-      log.info("  3. Set up any required environment variables or secrets");
-      log.info("  4. Run 'jiji server init' to prepare your servers");
-      log.info("  5. Run 'jiji deploy' to start deploying your services");
-
-      console.log();
-      log.info(
+      log.say(
         `Configuration file: ${
           buildConfigPath((options as unknown as GlobalOptions).environment)
         }`,
@@ -154,11 +147,12 @@ export const initCommand = new Command()
       );
 
       if (error instanceof ConfigurationError) {
-        log.warn(
+        log.say(
           "Configuration validation failed. Please check the template or try again.",
+          1,
         );
       } else {
-        log.warn("Please check the error above and try again");
+        log.say("Please check the error above and try again", 1);
       }
 
       Deno.exit(1);

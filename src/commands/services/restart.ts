@@ -26,11 +26,10 @@ export const restartCommand = new Command()
       if (!globalOptions.hosts && !globalOptions.services) {
         log.error(
           "You must specify either --hosts (-H) or --services (-S) to target specific services.",
-          "restart",
         );
-        log.info(
+        log.say(
           "This prevents accidentally restarting all services. Use --help for usage examples.",
-          "restart",
+          1,
         );
         Deno.exit(1);
       }
@@ -42,158 +41,155 @@ export const restartCommand = new Command()
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot restart services.",
-          "restart",
         );
         Deno.exit(1);
       }
 
-      await log.group("Service Restart", async () => {
-        log.info(
-          `Restarting services on ${context.targetHosts.length} server(s)`,
-          "restart",
-        );
+      const tracker = log.createStepTracker("Service Restart");
 
-        let servicesToRestart = Array.from(context.config.services.values());
+      log.say(
+        `Restarting services on ${context.targetHosts.length} server(s)`,
+        1,
+      );
 
-        if (context.matchingServices && context.matchingServices.length > 0) {
-          servicesToRestart = servicesToRestart.filter((
-            service: ServiceConfiguration,
-          ) => context.matchingServices!.includes(service.name));
+      let servicesToRestart = Array.from(context.config.services.values());
+
+      if (context.matchingServices && context.matchingServices.length > 0) {
+        servicesToRestart = servicesToRestart.filter((
+          service: ServiceConfiguration,
+        ) => context.matchingServices!.includes(service.name));
+      }
+
+      if (servicesToRestart.length === 0) {
+        log.error("No services found to restart.");
+        Deno.exit(1);
+      }
+
+      log.say(
+        `Services to restart: ${
+          servicesToRestart.map((s: ServiceConfiguration) => s.name).join(
+            ", ",
+          )
+        }`,
+        1,
+      );
+
+      // Create deployment service
+      const deploymentService = new ContainerDeploymentService(
+        context.config.builder.engine,
+        context.config,
+      );
+
+      // Restart each service
+      const allResults = [];
+      for (const service of servicesToRestart) {
+        tracker.step(`Restarting ${service.name} containers`);
+
+        const serviceHosts = service.servers
+          .map((server: { host: string }) => server.host)
+          .filter((host: string) => context.targetHosts.includes(host));
+
+        if (serviceHosts.length === 0) {
+          log.warn(
+            `No target hosts found for service ${service.name}`,
+          );
+          continue;
         }
 
-        if (servicesToRestart.length === 0) {
-          log.error("No services found to restart.", "restart");
-          Deno.exit(1);
-        }
-
-        log.info(
-          `Services to restart: ${
-            servicesToRestart.map((s: ServiceConfiguration) => s.name).join(
-              ", ",
-            )
-          }`,
-          "restart",
-        );
-
-        // Create deployment service
-        const deploymentService = new ContainerDeploymentService(
-          context.config.builder.engine,
-          context.config,
-        );
-
-        // Restart each service
-        const allResults = [];
-        for (const service of servicesToRestart) {
-          log.status(`Restarting ${service.name} containers...`, "restart");
-
-          const serviceHosts = service.servers
-            .map((server: { host: string }) => server.host)
-            .filter((host: string) => context.targetHosts.includes(host));
-
-          if (serviceHosts.length === 0) {
-            log.warn(
-              `No target hosts found for service ${service.name}`,
-              "restart",
-            );
+        // Stop existing containers first
+        for (const host of serviceHosts) {
+          const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
+          if (!ssh) {
+            log.warn(`SSH connection not found for host ${host}`);
             continue;
           }
 
-          // Stop existing containers first
-          for (const host of serviceHosts) {
-            const ssh = context.sshManagers.find((ssh) =>
-              ssh.getHost() === host
-            );
-            if (!ssh) {
-              log.warn(`SSH connection not found for host ${host}`, "restart");
-              continue;
-            }
+          const containerName = service.getContainerName();
+          tracker.remote(host, `Stopping ${containerName}`, { indent: 1 });
 
-            const containerName = service.getContainerName();
-            log.status(`Stopping ${containerName} on ${host}`, "restart");
-
-            // Stop the container
-            await executeBestEffort(
-              ssh,
-              `${context.config.builder.engine} stop ${containerName}`,
-              `stopping ${containerName}`,
-            );
-
-            // Remove the container
-            await executeBestEffort(
-              ssh,
-              `${context.config.builder.engine} rm -f ${containerName}`,
-              `removing ${containerName}`,
-            );
-
-            log.success(`Stopped ${containerName} on ${host}`, "restart");
-          }
-
-          // Deploy the service (which will start new containers)
-          const results = await deploymentService.deployServiceToServers(
-            service,
-            context.sshManagers,
-            context.targetHosts,
+          // Stop the container
+          await executeBestEffort(
+            ssh,
+            `${context.config.builder.engine} stop ${containerName}`,
+            `stopping ${containerName}`,
           );
 
-          allResults.push(...results);
+          // Remove the container
+          await executeBestEffort(
+            ssh,
+            `${context.config.builder.engine} rm -f ${containerName}`,
+            `removing ${containerName}`,
+          );
 
-          const successCount = results.filter((r) => r.success).length;
-          const totalCount = results.length;
-
-          if (successCount === totalCount) {
-            log.success(
-              `${service.name} restarted successfully on all ${totalCount} server(s)`,
-              "restart",
-            );
-          } else {
-            log.warn(
-              `${service.name} restarted on ${successCount}/${totalCount} server(s)`,
-              "restart",
-            );
-
-            // Log failed deployments
-            results
-              .filter((r) => !r.success)
-              .forEach((r) => {
-                log.error(`  ${r.host}: ${r.error}`, "restart");
-              });
-          }
+          tracker.remote(host, `Stopped ${containerName}`, { indent: 1 });
         }
 
-        // Summary
-        const totalSuccess = allResults.filter((r) => r.success).length;
-        const totalAttempted = allResults.length;
+        // Deploy the service (which will start new containers)
+        const results = await deploymentService.deployServiceToServers(
+          service,
+          context.sshManagers,
+          context.targetHosts,
+        );
 
-        log.info("Restart Summary:", "restart");
-        for (const result of allResults) {
-          if (result.success) {
-            log.success(
-              `  ${result.service} on ${result.host}: Successfully restarted`,
-              "restart",
-            );
-          } else {
-            log.error(
-              `  ${result.service} on ${result.host}: ${result.error}`,
-              "restart",
-            );
-          }
-        }
+        allResults.push(...results);
 
-        if (totalSuccess === totalAttempted) {
-          log.success(
-            `All services restarted successfully (${totalSuccess}/${totalAttempted})`,
-            "restart",
+        const successCount = results.filter((r) => r.success).length;
+        const totalCount = results.length;
+
+        if (successCount === totalCount) {
+          log.say(
+            `${service.name} restarted successfully on all ${totalCount} server(s)`,
+            1,
           );
         } else {
           log.warn(
-            `\nPartial success: ${totalSuccess}/${totalAttempted} services restarted`,
-            "restart",
+            `${service.name} restarted on ${successCount}/${totalCount} server(s)`,
           );
-          if (totalSuccess === 0) {
-            Deno.exit(1);
-          }
+
+          // Log failed deployments
+          results
+            .filter((r) => !r.success)
+            .forEach((r) => {
+              log.say(`${r.host}: ${r.error}`, 2);
+            });
         }
-      });
+      }
+
+      tracker.finish();
+
+      // Summary
+      const totalSuccess = allResults.filter((r) => r.success).length;
+      const totalAttempted = allResults.length;
+
+      console.log();
+      log.section("Restart Summary");
+      for (const result of allResults) {
+        if (result.success) {
+          log.say(
+            `${result.service} on ${result.host}: Successfully restarted`,
+            1,
+          );
+        } else {
+          log.say(
+            `${result.service} on ${result.host}: ${result.error}`,
+            1,
+          );
+        }
+      }
+
+      console.log();
+      if (totalSuccess === totalAttempted) {
+        log.success(
+          `All services restarted successfully (${totalSuccess}/${totalAttempted})`,
+        );
+      } else {
+        log.warn(
+          `Partial success: ${totalSuccess}/${totalAttempted} services restarted`,
+        );
+        if (totalSuccess === 0) {
+          Deno.exit(1);
+        }
+      }
 
       // Close SSH connections
       cleanupSSHConnections(context.sshManagers);
@@ -211,7 +207,6 @@ export const restartCommand = new Command()
           `Restart command failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
-          "restart",
         );
       }
       Deno.exit(1);

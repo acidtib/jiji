@@ -32,10 +32,10 @@ Deno.test("Logger basic functionality", () => {
   logger.error("test error message");
 
   assertEquals(capturedLogs.length, 4);
-  assertStringIncludes(capturedLogs[0], "[INFO ]");
+  // Info and success no longer show level indicators
   assertStringIncludes(capturedLogs[0], "test info message");
-  assertStringIncludes(capturedLogs[1], "[SUCCESS]");
   assertStringIncludes(capturedLogs[1], "test success message");
+  // Warn and error still show level indicators
   assertStringIncludes(capturedLogs[2], "[WARN ]");
   assertStringIncludes(capturedLogs[2], "test warning message");
   assertStringIncludes(capturedLogs[3], "[ERROR]");
@@ -58,7 +58,7 @@ Deno.test("Logger with prefix", () => {
 
   assertEquals(capturedLogs.length, 1);
   assertStringIncludes(capturedLogs[0], "test-server");
-  assertStringIncludes(capturedLogs[0], "[INFO ]");
+  // Info no longer shows level indicator
   assertStringIncludes(capturedLogs[0], "test message");
 
   restoreConsole();

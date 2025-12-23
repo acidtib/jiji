@@ -9,6 +9,7 @@
 export interface GlobalOptions {
   environment?: string;
   verbose?: boolean;
+  quiet?: boolean;
   version?: string;
   configFile?: string;
   hosts?: string;

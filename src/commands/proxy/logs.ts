@@ -116,9 +116,9 @@ async function followProxyLogs(
   },
 ): Promise<void> {
   const primaryHost = context.targetHosts[0];
-  log.info(
+  log.action(
     `Following logs from ${KAMAL_PROXY_CONTAINER_NAME} on ${primaryHost}...`,
-    "proxy-logs",
+    "magenta",
   );
 
   const ssh = context.sshManagers.find((ssh) => ssh.getHost() === primaryHost);
@@ -146,31 +146,24 @@ async function fetchProxyLogs(
     since?: string;
   },
 ): Promise<void> {
-  await log.group("Proxy Logs", async () => {
-    log.info(
-      `Fetching logs from ${KAMAL_PROXY_CONTAINER_NAME}...`,
-      "proxy-logs",
-    );
+  log.action(
+    `Fetching logs from ${KAMAL_PROXY_CONTAINER_NAME}...`,
+    "magenta",
+  );
 
-    // Fetch logs from each host
-    for (const host of context.targetHosts) {
-      const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
-      if (!ssh) {
-        log.warn(`SSH connection not found for host ${host}`, "proxy-logs");
-        continue;
-      }
-
-      log.info(
-        `Logs from ${KAMAL_PROXY_CONTAINER_NAME} on ${host}:`,
-        "proxy-logs",
-      );
-
-      await logsService.fetchContainerLogs(
-        ssh,
-        host,
-        KAMAL_PROXY_CONTAINER_NAME,
-        logOptions,
-      );
+  // Fetch logs from each host
+  for (const host of context.targetHosts) {
+    const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
+    if (!ssh) {
+      log.warn(`SSH connection not found for host ${host}`, "proxy-logs");
+      continue;
     }
-  });
+
+    await logsService.fetchContainerLogs(
+      ssh,
+      host,
+      KAMAL_PROXY_CONTAINER_NAME,
+      logOptions,
+    );
+  }
 }

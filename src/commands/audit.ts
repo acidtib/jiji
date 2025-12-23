@@ -61,15 +61,15 @@ export const auditCommand = new Command()
         return;
       }
 
-      log.info("Jiji Audit Trail", "audit");
+      const tracker = log.createStepTracker("Jiji Audit Trail");
 
       try {
         ctx = await setupCommandContext(globalOptions);
       } catch (_error) {
-        log.warn("No remote hosts configured.", "audit");
-        log.info(
+        log.warn("No remote hosts configured");
+        log.say(
           "Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
-          "audit",
+          1,
         );
         await showLocalAuditLog(options);
         return;
@@ -77,15 +77,15 @@ export const auditCommand = new Command()
 
       const { config, sshManagers, targetHosts } = ctx;
 
-      log.info(
+      log.say(
         `Configuration: ${colors.dim(config.configPath || "unknown")}`,
-        "audit",
+        1,
       );
-      log.info(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, "audit");
+      log.say(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, 1);
 
       const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
-      log.info("Fetching audit entries...", "audit");
+      tracker.step("Fetching audit entries");
 
       const serverLogs = await auditLogger.getRecentEntries(options.lines * 2);
 
@@ -135,19 +135,20 @@ async function showLocalAuditLog(options: {
       return;
     }
 
-    log.info("Local Audit Trail", "audit");
+    log.section("Local Audit Trail");
 
     for (const line of lines) {
       if (options.raw) {
-        log.info(line, "audit");
+        log.say(line);
       } else {
-        log.info(formatAuditEntry(line), "audit");
+        log.say(formatAuditEntry(line));
       }
     }
 
-    log.info(`${colors.dim(`${lines.length} local entries`)}`, "audit");
+    console.log();
+    log.say(`${colors.dim(`${lines.length} local entries`)}`);
   } catch {
-    log.info("No local audit file found.", "audit");
+    log.say("No local audit file found");
   }
 }
 
@@ -157,10 +158,9 @@ async function showLocalAuditLog(options: {
 async function followAuditLogs(
   _options: { hosts?: string[]; follow?: boolean },
 ) {
-  log.info(
-    colors.bold("Following Jiji Audit Trail (Press Ctrl+C to stop)\n"),
-    "audit",
-  );
+  log.section("Following Jiji Audit Trail");
+  log.say(colors.dim("Press Ctrl+C to stop"));
+  console.log();
 
   const seenEntries = new Set<string>();
 
@@ -177,7 +177,7 @@ async function followAuditLogs(
         for (const line of lines) {
           if (!seenEntries.has(line)) {
             seenEntries.add(line);
-            log.info(formatAuditEntry(line), "audit");
+            log.say(formatAuditEntry(line));
           }
         }
       } catch {
@@ -187,7 +187,7 @@ async function followAuditLogs(
       if (error instanceof Error && error.name === "Interrupted") {
         break;
       }
-      log.error(`Error following logs: ${error}`, "audit");
+      log.error(`Error following logs: ${error}`);
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
@@ -221,7 +221,7 @@ function outputJsonFormat(
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  log.info(
+  log.say(
     JSON.stringify(
       {
         total: allEntries.length,
@@ -230,7 +230,6 @@ function outputJsonFormat(
       null,
       2,
     ),
-    "audit",
   );
 }
 
@@ -257,33 +256,32 @@ function displayServerEntries(
     filteredEntries = filteredEntries.slice(-options.lines);
 
     if (filteredEntries.length > 0) {
-      log.info(`${colors.bold(colors.cyan(`Host: ${host}`))}`, "audit");
-      log.info(`${"-".repeat(60)}`, "audit");
+      log.section(`Host: ${host}`);
 
       for (const entry of filteredEntries) {
         if (options.raw) {
-          log.info(entry, "audit");
+          log.say(entry);
         } else {
-          log.info(formatAuditEntry(entry), "audit");
+          log.say(formatAuditEntry(entry));
         }
       }
 
-      log.info(
-        colors.dim(`\n${filteredEntries.length} entries from ${host}\n`),
-        "audit",
+      console.log();
+      log.say(
+        colors.dim(`${filteredEntries.length} entries from ${host}`),
       );
+      console.log();
       totalEntries += filteredEntries.length;
     }
   }
 
   if (totalEntries === 0) {
-    log.info("No matching audit entries found.", "audit");
+    log.say("No matching audit entries found");
   } else {
-    log.info(
+    log.say(
       colors.dim(
         `Total: ${totalEntries} entries from ${serverLogs.length} server(s)`,
       ),
-      "audit",
     );
   }
 }
@@ -328,34 +326,32 @@ function displayAggregatedEntries(
   filteredEntries = filteredEntries.slice(-options.lines);
 
   if (filteredEntries.length === 0) {
-    log.info("No matching audit entries found.", "audit");
+    log.say("No matching audit entries found");
     return;
   }
 
-  log.info(
-    colors.bold(
-      `Aggregated Audit Trail (${filteredEntries.length} entries)`,
-    ),
-    "audit",
-  );
-  log.info(
+  log.section(`Aggregated Audit Trail (${filteredEntries.length} entries)`);
+  log.say(
     colors.dim(
       `From ${serverLogs.length} server(s): ${
         serverLogs.map((s) => s.host).join(", ")
-      }\n`,
+      }`,
     ),
-    "audit",
+    1,
   );
+
+  console.log();
 
   for (const { entry } of filteredEntries) {
     if (options.raw) {
-      log.info(entry, "audit");
+      log.say(entry);
     } else {
-      log.info(formatAuditEntry(entry), "audit");
+      log.say(formatAuditEntry(entry));
     }
   }
 
-  log.info(colors.dim(`\nTotal: ${filteredEntries.length} entries`), "audit");
+  console.log();
+  log.say(colors.dim(`Total: ${filteredEntries.length} entries`));
 }
 
 /**

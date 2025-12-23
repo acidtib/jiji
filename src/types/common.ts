@@ -23,6 +23,7 @@ export interface LoggerOptions {
   maxPrefixLength?: number;
   colors?: boolean;
   minLevel?: LogLevel;
+  quiet?: boolean;
 }
 
 /**

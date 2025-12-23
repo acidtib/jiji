@@ -264,13 +264,8 @@ Deno.test("getAvailableConfigs - returns available configs", async () => {
   );
 
   try {
-    const originalCwd = Deno.cwd();
-    Deno.chdir(tempDir);
-
-    const configs = await getAvailableConfigs();
+    const configs = await getAvailableConfigs(tempDir);
     assertEquals(configs.length >= 3, true);
-
-    Deno.chdir(originalCwd);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }

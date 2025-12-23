@@ -42,63 +42,64 @@ export const pruneCommand = new Command()
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot prune images.",
-          "prune",
         );
         Deno.exit(1);
       }
 
-      await log.group("Image Pruning", async () => {
-        log.info(
-          `Pruning images on ${context.targetHosts.length} server(s)`,
-          "prune",
-        );
+      const tracker = log.createStepTracker("Image Pruning");
 
-        // Create image prune service
-        const pruneService = new ImagePruneService(
-          context.config.builder.engine,
-          context.config.project,
-        );
+      log.say(
+        `Pruning images on ${context.targetHosts.length} server(s)`,
+        1,
+      );
 
-        // Prune images on all connected hosts
-        log.status(
-          `Pruning images (retaining last ${
-            pruneOptions.retain ?? 3
-          } per service)...`,
-          "prune",
-        );
+      // Create image prune service
+      const pruneService = new ImagePruneService(
+        context.config.builder.engine,
+        context.config.project,
+      );
 
-        const results = await pruneService.pruneImagesOnHosts(
-          context.sshManagers,
-          {
-            retain: pruneOptions.retain,
-            removeDangling: pruneOptions.dangling,
-          },
-        );
+      // Prune images on all connected hosts
+      tracker.step(
+        `Pruning images (retaining last ${
+          pruneOptions.retain ?? 3
+        } per service)`,
+      );
 
-        // Display results
-        const successCount = results.filter((r) => r.success).length;
-        const totalRemoved = results.reduce(
-          (sum, r) => sum + r.imagesRemoved,
-          0,
-        );
+      const results = await pruneService.pruneImagesOnHosts(
+        context.sshManagers,
+        {
+          retain: pruneOptions.retain,
+          removeDangling: pruneOptions.dangling,
+        },
+      );
 
-        log.info("\nPrune Results:", "prune");
-        for (const result of results) {
-          if (result.success) {
-            log.success(
-              `  ${result.host}: ${result.imagesRemoved} image(s) removed`,
-              "prune",
-            );
-          } else {
-            log.error(`  ${result.host}: ${result.error}`, "prune");
-          }
+      // Display results
+      const successCount = results.filter((r) => r.success).length;
+      const totalRemoved = results.reduce(
+        (sum, r) => sum + r.imagesRemoved,
+        0,
+      );
+
+      tracker.finish();
+
+      console.log();
+      log.section("Prune Results");
+      for (const result of results) {
+        if (result.success) {
+          log.say(
+            `${result.host}: ${result.imagesRemoved} image(s) removed`,
+            1,
+          );
+        } else {
+          log.say(`${result.host}: ${result.error}`, 1);
         }
+      }
 
-        log.success(
-          `\nPruned ${totalRemoved} image(s) across ${successCount} server(s)`,
-          "prune",
-        );
-      });
+      console.log();
+      log.success(
+        `Pruned ${totalRemoved} image(s) across ${successCount} server(s)`,
+      );
 
       // Close SSH connections
       cleanupSSHConnections(context.sshManagers);
@@ -116,7 +117,6 @@ export const pruneCommand = new Command()
           `Prune command failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
-          "prune",
         );
       }
       Deno.exit(1);

@@ -187,22 +187,22 @@ export class DeploymentOrchestrator {
     servicesWithProxy: ServiceConfiguration[],
     targetHosts: string[],
   ): Promise<ProxyInstallResult[]> {
-    log.info(
-      `Found ${servicesWithProxy.length} service(s) with proxy configuration`,
-      "proxy",
-    );
-
     const proxyHosts = ProxyService.getHostsNeedingProxy(
       servicesWithProxy,
       targetHosts,
     );
 
     if (proxyHosts.size === 0) {
-      log.info("No hosts require proxy installation", "proxy");
       return [];
     }
 
-    return await this.proxyService.ensureProxyOnHosts(proxyHosts);
+    const tracker = log.createStepTracker("Installing Proxy");
+    tracker.step(`Installing kamal-proxy on ${proxyHosts.size} host(s)`);
+
+    const results = await this.proxyService.ensureProxyOnHosts(proxyHosts);
+
+    tracker.finish();
+    return results;
   }
 
   /**
@@ -213,7 +213,10 @@ export class DeploymentOrchestrator {
     targetHosts: string[],
     options: OrchestrationOptions,
   ): Promise<DeploymentResult[]> {
-    return await this.deploymentService.deployServices(
+    const tracker = log.createStepTracker("Container Deployment");
+    tracker.step(`Deploying ${services.length} service(s)`);
+
+    const results = await this.deploymentService.deployServices(
       services,
       this.sshManagers,
       targetHosts,
@@ -222,6 +225,9 @@ export class DeploymentOrchestrator {
         allSshManagers: options.allSshManagers,
       },
     );
+
+    tracker.finish();
+    return results;
   }
 
   /**
@@ -240,35 +246,36 @@ export class DeploymentOrchestrator {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    await log.group("Service Proxy Configuration & Health Checks", async () => {
-      // Configure proxy for each service
-      const proxyConfigResults = await this.proxyService
-        .configureProxyForServices(
-          servicesWithProxy,
-        );
-      configResults.push(...proxyConfigResults);
+    const tracker = log.createStepTracker("Configuring Proxy");
 
-      // Track proxy configuration failures
-      const failedConfigs = proxyConfigResults.filter((r) => !r.success);
-      if (failedConfigs.length > 0) {
-        errors.push(
-          `Proxy configuration failed for ${failedConfigs.length} service(s): ${
-            failedConfigs.map((f) => `${f.service}@${f.host} (${f.error})`)
-              .join(", ")
-          }`,
-        );
-      }
-
-      // Wait for health checks and cleanup old containers
-      await this.handleHealthChecksAndCleanup(
+    // Configure proxy for each service
+    const proxyConfigResults = await this.proxyService
+      .configureProxyForServices(
         servicesWithProxy,
-        deploymentResults,
-        deploymentId,
-        errors,
-        warnings,
       );
-    });
+    configResults.push(...proxyConfigResults);
 
+    // Track proxy configuration failures
+    const failedConfigs = proxyConfigResults.filter((r) => !r.success);
+    if (failedConfigs.length > 0) {
+      errors.push(
+        `Proxy configuration failed for ${failedConfigs.length} service(s): ${
+          failedConfigs.map((f) => `${f.service}@${f.host} (${f.error})`)
+            .join(", ")
+        }`,
+      );
+    }
+
+    // Wait for health checks and cleanup old containers
+    await this.handleHealthChecksAndCleanup(
+      servicesWithProxy,
+      deploymentResults,
+      deploymentId,
+      errors,
+      warnings,
+    );
+
+    tracker.finish();
     return { proxyConfigResults: configResults, errors, warnings };
   }
 
@@ -284,12 +291,12 @@ export class DeploymentOrchestrator {
   ): Promise<void> {
     for (const result of deploymentResults) {
       if (!result.success || !result.oldContainerName) {
-        continue; // Skip failed deployments or deployments without old containers
+        continue;
       }
 
       const service = servicesWithProxy.find((s) => s.name === result.service);
       if (!service || !service.proxy?.enabled) {
-        continue; // Skip services without proxy
+        continue;
       }
 
       const hostSsh = this.sshManagers.find((ssh) =>
@@ -328,11 +335,6 @@ export class DeploymentOrchestrator {
             result.oldContainerName,
             result.host,
             hostSsh,
-          );
-
-          log.success(
-            `Successfully cleaned up old container for ${service.name}@${result.host}`,
-            "deploy",
           );
         } else {
           // Health checks failed - rollback
@@ -394,9 +396,9 @@ export class DeploymentOrchestrator {
         }
       }
 
-      log.info(
+      log.say(
         `Rollback complete: ${service.name} on ${result.host} restored to previous version`,
-        "deploy",
+        1,
       );
 
       // Record successful rollback
@@ -462,34 +464,6 @@ export class DeploymentOrchestrator {
    * Log deployment results in a structured way
    */
   logDeploymentSummary(result: OrchestrationResult): void {
-    const summary = this.getDeploymentSummary(result);
-
-    if (result.success) {
-      log.success(
-        `Deployment completed successfully: ${summary.successfulDeployments}/${summary.totalServices} services deployed`,
-        "deploy",
-      );
-    } else {
-      log.error(
-        `Deployment completed with errors: ${summary.successfulDeployments}/${summary.totalServices} services deployed`,
-        "deploy",
-      );
-    }
-
-    if (summary.proxyInstallations > 0) {
-      log.info(
-        `Proxy installed on ${summary.proxyInstallations} host(s)`,
-        "deploy",
-      );
-    }
-
-    if (summary.proxyConfigurations > 0) {
-      log.info(
-        `Proxy configured for ${summary.proxyConfigurations} service(s)`,
-        "deploy",
-      );
-    }
-
     // Log errors
     for (const error of result.errors) {
       log.error(error, "deploy");
@@ -503,68 +477,54 @@ export class DeploymentOrchestrator {
     // Log detailed metrics summary if available
     if (result.deploymentId && result.metrics) {
       const metrics = result.metrics;
-      log.group(`Deployment Summary: ${metrics.deploymentId}`, () => {
-        log.info(`Project: ${metrics.projectName}`, "metrics");
-        if (metrics.version) {
-          log.info(`Version: ${metrics.version}`, "metrics");
-        }
-        log.info(`Started: ${metrics.startTime.toISOString()}`, "metrics");
-        if (metrics.endTime) {
-          log.info(`Finished: ${metrics.endTime.toISOString()}`, "metrics");
-        }
-        if (metrics.totalDurationMs) {
-          log.info(
-            `Duration: ${(metrics.totalDurationMs / 1000).toFixed(2)}s`,
-            "metrics",
-          );
-        }
 
-        log.info("Service Deployments", "metrics");
-        log.info(`  Total Services: ${metrics.totalServices}`, "metrics");
-        log.info(
-          `  Successful: ${metrics.successfulDeployments}`,
-          "metrics",
+      console.log();
+      log.section(`Deployment Summary: ${metrics.deploymentId}`);
+      log.say(`Project: ${metrics.projectName}`);
+      if (metrics.version) {
+        log.say(`Version: ${metrics.version}`);
+      }
+      log.say(`Started: ${metrics.startTime.toISOString()}`);
+      if (metrics.endTime) {
+        log.say(`Finished: ${metrics.endTime.toISOString()}`);
+      }
+      if (metrics.totalDurationMs) {
+        log.say(
+          `Duration: ${(metrics.totalDurationMs / 1000).toFixed(2)}s`,
         );
-        log.info(`  Failed: ${metrics.failedDeployments}`, "metrics");
-        log.info(
-          `  Rolled Back: ${metrics.rolledBackDeployments}`,
-          "metrics",
+      }
+
+      log.say("Service Deployments");
+      log.say(`  Total Services: ${metrics.totalServices}`, 1);
+      log.say(`  Successful: ${metrics.successfulDeployments}`, 1);
+      log.say(`  Failed: ${metrics.failedDeployments}`, 1);
+      log.say(`  Rolled Back: ${metrics.rolledBackDeployments}`, 1);
+
+      if (
+        metrics.proxyHostsConfigured > 0 ||
+        metrics.proxyServicesConfigured > 0
+      ) {
+        log.say("Proxy Configuration");
+        log.say(`  Hosts Configured: ${metrics.proxyHostsConfigured}`, 1);
+        log.say(
+          `  Services Configured: ${metrics.proxyServicesConfigured}`,
+          1,
         );
+        log.say(`  Install Failures: ${metrics.proxyInstallFailures}`, 1);
+        log.say(`  Config Failures: ${metrics.proxyConfigFailures}`, 1);
+      }
 
-        if (
-          metrics.proxyHostsConfigured > 0 ||
-          metrics.proxyServicesConfigured > 0
-        ) {
-          log.info("Proxy Configuration", "metrics");
-          log.info(
-            `  Hosts Configured: ${metrics.proxyHostsConfigured}`,
-            "metrics",
-          );
-          log.info(
-            `  Services Configured: ${metrics.proxyServicesConfigured}`,
-            "metrics",
-          );
-          log.info(
-            `  Install Failures: ${metrics.proxyInstallFailures}`,
-            "metrics",
-          );
-          log.info(
-            `  Config Failures: ${metrics.proxyConfigFailures}`,
-            "metrics",
-          );
+      if (metrics.deploymentSteps.length > 0) {
+        log.say("Step Timing");
+        for (const step of metrics.deploymentSteps) {
+          const status = step.success ? "OK" : "FAILED";
+          const duration = step.durationMs
+            ? `${(step.durationMs / 1000).toFixed(2)}s`
+            : "N/A";
+          log.say(`  ${step.step}: ${duration} [${status}]`, 1);
         }
-
-        if (metrics.deploymentSteps.length > 0) {
-          log.info("Step Timing", "metrics");
-          for (const step of metrics.deploymentSteps) {
-            const status = step.success ? "OK" : "FAILED";
-            const duration = step.durationMs
-              ? `${(step.durationMs / 1000).toFixed(2)}s`
-              : "N/A";
-            log.info(`  ${step.step}: ${duration} [${status}]`, "metrics");
-          }
-        }
-      });
+      }
+      console.log();
     }
   }
 }
