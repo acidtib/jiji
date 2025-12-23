@@ -35,7 +35,6 @@ export async function executeBestEffort(
       `Best-effort command failed (${context}): ${
         result.stderr || result.stdout
       }`,
-      "command",
     );
   }
 }
@@ -111,7 +110,7 @@ export async function setupCommandContext(
     globalOptions.configFile,
   );
   const configPath = config.configPath || "unknown";
-  log.success(`Configuration loaded from: ${configPath}`, "config");
+  log.say(`Configuration loaded from: ${configPath}`, 1);
 
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
@@ -126,19 +125,18 @@ export async function setupCommandContext(
     if (matchingServices.length === 0) {
       log.error(
         `No services found matching: ${requestedServices.join(", ")}`,
-        "filter",
       );
-      log.info(
+      log.say(
         `Available services: ${config.getServiceNames().join(", ")}`,
-        "filter",
+        1,
       );
       Deno.exit(1);
     }
 
     allHosts = config.getHostsFromServices(matchingServices);
 
-    log.info(`Targeting services: ${matchingServices.join(", ")}`, "filter");
-    log.info(`Service hosts: ${allHosts.join(", ")}`, "filter");
+    log.say(`Targeting services: ${matchingServices.join(", ")}`, 1);
+    log.say(`Service hosts: ${allHosts.join(", ")}`, 1);
   }
 
   if (globalOptions.hosts && !options.skipHostFiltering) {
@@ -151,54 +149,51 @@ export async function setupCommandContext(
     if (invalidHosts.length > 0) {
       log.warn(
         `Invalid hosts specified (not in config): ${invalidHosts.join(", ")}`,
-        "filter",
       );
     }
 
     if (validHosts.length === 0) {
-      log.error("No valid hosts specified", "filter");
+      log.error("No valid hosts specified");
       Deno.exit(1);
     }
 
     allHosts = validHosts;
-    log.info(`Targeting specific hosts: ${allHosts.join(", ")}`, "filter");
+    log.say(`Targeting specific hosts: ${allHosts.join(", ")}`, 1);
   }
 
   if (allHosts.length === 0) {
     log.error(
       `No remote hosts found in configuration at: ${configPath}`,
-      "config",
     );
-    log.error(
+    log.say(
       `Could not find any hosts. Please update your jiji config to include hosts for services.`,
-      "config",
+      1,
     );
     Deno.exit(1);
   }
 
-  log.info(
+  log.say(
     `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-    "ssh",
+    1,
   );
 
-  let sshResult: Awaited<ReturnType<typeof setupSSHConnections>>;
-
-  await log.group("SSH Connection Setup", async () => {
-    sshResult = await setupSSHConnections(
-      allHosts,
-      {
-        user: config.ssh.user,
-        port: config.ssh.port,
-        proxy: config.ssh.proxy,
-        proxy_command: config.ssh.proxyCommand,
-        keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-        keyData: config.ssh.keyData,
-        keysOnly: config.ssh.keysOnly,
-        dnsRetries: config.ssh.dnsRetries,
-      },
-      { allowPartialConnection: options.allowPartialConnection ?? true },
-    );
-  });
+  const sshTracker = log.createStepTracker("SSH Connection Setup");
+  const sshResult = await setupSSHConnections(
+    allHosts,
+    {
+      user: config.ssh.user,
+      port: config.ssh.port,
+      proxy: config.ssh.proxy,
+      proxy_command: config.ssh.proxyCommand,
+      keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
+      keyData: config.ssh.keyData,
+      keysOnly: config.ssh.keysOnly,
+      dnsRetries: config.ssh.dnsRetries,
+    },
+    { allowPartialConnection: options.allowPartialConnection ?? true },
+    sshTracker,
+  );
+  sshTracker.finish();
 
   return {
     config,
@@ -218,7 +213,7 @@ export function cleanupSSHConnections(sshManagers: SSHManager[]): void {
     try {
       ssh.dispose();
     } catch (error) {
-      log.debug(`Failed to dispose SSH connection: ${error}`, "ssh");
+      log.debug(`Failed to dispose SSH connection: ${error}`);
     }
   });
 }

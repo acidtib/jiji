@@ -12,12 +12,16 @@ import { servicesCommand } from "./commands/services/index.ts";
 import { proxyCommand } from "./commands/proxy/index.ts";
 import { registryCommand } from "./commands/registry/index.ts";
 import { networkCommand } from "./commands/network.ts";
-import { setGlobalLogLevel } from "./utils/logger.ts";
+import { setGlobalLogLevel, setGlobalQuietMode } from "./utils/logger.ts";
 
 const command = new Command()
   .name("jiji")
   .description("Jiji - Infrastructure management tool")
   .globalOption("-v, --verbose", "Detailed logging")
+  .globalOption(
+    "-q, --quiet",
+    "Minimal output (suppress host headers and extra messages)",
+  )
   .globalOption(
     "--version=<VERSION:string>",
     "Run commands against a specific app version",
@@ -65,4 +69,13 @@ const options = await command.parse(Deno.args);
 // Set global log level based on --verbose flag
 if (options.options.verbose) {
   setGlobalLogLevel("debug");
+}
+
+// Set global quiet mode based on --quiet flag
+if (options.options.quiet) {
+  setGlobalQuietMode(true);
+  // In quiet mode, only show errors and warnings
+  if (!options.options.verbose) {
+    setGlobalLogLevel("warn");
+  }
 }

@@ -54,11 +54,10 @@ export const logsCommand = new Command()
       if (!globalOptions.services && !logsOptions.containerId) {
         log.error(
           "You must specify --services (-S) to target specific services or --container-id for a specific container.",
-          "logs",
         );
-        log.info(
+        log.say(
           "Example: jiji services logs --services web,api",
-          "logs",
+          1,
         );
         Deno.exit(1);
       }
@@ -70,7 +69,6 @@ export const logsCommand = new Command()
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot fetch logs.",
-          "logs",
         );
         Deno.exit(1);
       }
@@ -123,7 +121,6 @@ export const logsCommand = new Command()
           `Logs command failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
-          "logs",
         );
       }
       Deno.exit(1);
@@ -145,7 +142,8 @@ async function followLogs(
   },
 ): Promise<void> {
   const primaryHost = context.targetHosts[0];
-  log.info(`Following logs on ${primaryHost}...`, "logs");
+  log.section("Following Logs");
+  log.say(`Host: ${primaryHost}`, 1);
 
   // If container ID is specified, use it directly
   if (logOptions.containerId) {
@@ -153,7 +151,7 @@ async function followLogs(
       ssh.getHost() === primaryHost
     );
     if (!ssh) {
-      log.error(`SSH connection not found for host ${primaryHost}`, "logs");
+      log.error(`SSH connection not found for host ${primaryHost}`);
       Deno.exit(1);
     }
 
@@ -175,7 +173,7 @@ async function followLogs(
   }
 
   if (servicesToShow.length === 0) {
-    log.error("No services found to show logs.", "logs");
+    log.error("No services found to show logs.");
     Deno.exit(1);
   }
 
@@ -184,12 +182,12 @@ async function followLogs(
   const ssh = context.sshManagers.find((ssh) => ssh.getHost() === primaryHost);
 
   if (!ssh) {
-    log.error(`SSH connection not found for host ${primaryHost}`, "logs");
+    log.error(`SSH connection not found for host ${primaryHost}`);
     Deno.exit(1);
   }
 
   const containerName = service.getContainerName();
-  log.info(`Following logs for ${containerName}...`, "logs");
+  log.say(`Following logs for ${containerName}`, 1);
 
   await logsService.followContainerLogs(
     ssh,
@@ -212,77 +210,74 @@ async function fetchLogs(
     containerId?: string;
   },
 ): Promise<void> {
-  await log.group("Service Logs", async () => {
-    // If container ID is specified, use it directly
-    if (logOptions.containerId) {
-      for (const host of context.targetHosts) {
-        const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
-        if (!ssh) {
-          log.warn(`SSH connection not found for host ${host}`, "logs");
-          continue;
-        }
-
-        log.info(`Logs from ${host}:`, "logs");
-        await logsService.fetchContainerLogs(
-          ssh,
-          host,
-          logOptions.containerId,
-          logOptions,
-        );
-      }
-      return;
-    }
-
-    // Get services to show logs for
-    let servicesToShow = Array.from(context.config.services.values());
-
-    if (context.matchingServices && context.matchingServices.length > 0) {
-      servicesToShow = servicesToShow.filter(
-        (service: ServiceConfiguration) =>
-          context.matchingServices!.includes(service.name),
-      );
-    }
-
-    if (servicesToShow.length === 0) {
-      log.error("No services found to show logs.", "logs");
-      Deno.exit(1);
-    }
-
-    log.info(
-      `Fetching logs for: ${
-        servicesToShow.map((s: ServiceConfiguration) => s.name).join(", ")
-      }`,
-      "logs",
-    );
-
-    // Fetch logs for each service on each host
-    for (const service of servicesToShow) {
-      const serviceHosts = service.servers
-        .map((server: { host: string }) => server.host)
-        .filter((host: string) => context.targetHosts.includes(host));
-
-      if (serviceHosts.length === 0) {
-        log.warn(`No target hosts found for service ${service.name}`, "logs");
+  // If container ID is specified, use it directly
+  if (logOptions.containerId) {
+    for (const host of context.targetHosts) {
+      const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
+      if (!ssh) {
+        log.warn(`SSH connection not found for host ${host}`);
         continue;
       }
 
-      for (const host of serviceHosts) {
-        const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
-        if (!ssh) {
-          log.warn(`SSH connection not found for host ${host}`, "logs");
-          continue;
-        }
-
-        const containerName = service.getContainerName();
-        log.info(`Logs from ${service.name} on ${host}:`, "logs");
-
-        await logsService.fetchContainerLogs(
-          ssh,
-          host,
-          containerName,
-          logOptions,
-        );
-      }
+      await logsService.fetchContainerLogs(
+        ssh,
+        host,
+        logOptions.containerId,
+        logOptions,
+      );
     }
-  });
+    return;
+  }
+
+  // Get services to show logs for
+  let servicesToShow = Array.from(context.config.services.values());
+
+  if (context.matchingServices && context.matchingServices.length > 0) {
+    servicesToShow = servicesToShow.filter(
+      (service: ServiceConfiguration) =>
+        context.matchingServices!.includes(service.name),
+    );
+  }
+
+  if (servicesToShow.length === 0) {
+    log.error("No services found to show logs.");
+    Deno.exit(1);
+  }
+
+  log.section("Service Logs");
+  log.say(
+    `Fetching logs for: ${
+      servicesToShow.map((s: ServiceConfiguration) => s.name).join(", ")
+    }`,
+    1,
+  );
+
+  // Fetch logs for each service on each host
+  for (const service of servicesToShow) {
+    const serviceHosts = service.servers
+      .map((server: { host: string }) => server.host)
+      .filter((host: string) => context.targetHosts.includes(host));
+
+    if (serviceHosts.length === 0) {
+      log.warn(`No target hosts found for service ${service.name}`);
+      continue;
+    }
+
+    for (const host of serviceHosts) {
+      const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
+      if (!ssh) {
+        log.warn(`SSH connection not found for host ${host}`);
+        continue;
+      }
+
+      const containerName = service.getContainerName();
+
+      await logsService.fetchContainerLogs(
+        ssh,
+        host,
+        containerName,
+        logOptions,
+      );
+    }
+  }
 }

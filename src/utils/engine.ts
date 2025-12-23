@@ -43,7 +43,6 @@ export class EngineInstaller {
    */
   async installPodman(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    log.info(`Installing Podman on ${host}...`, "engine");
 
     const commands = [
       "sudo apt update",
@@ -93,7 +92,6 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("podman --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        log.info(`Podman installed successfully: ${version}`, "engine");
         fullOutput += `\n$ podman --version\n${verifyResult.stdout}\n`;
       } else {
         hasError = true;
@@ -119,7 +117,6 @@ export class EngineInstaller {
    */
   async installDocker(): Promise<EngineInstallResult> {
     const host = this.ssh.getHost();
-    log.info(`Installing Docker on ${host}...`, "engine");
 
     const commands = [
       "sudo apt update",
@@ -154,7 +151,6 @@ export class EngineInstaller {
       const verifyResult = await this.ssh.executeCommand("docker --version");
       if (verifyResult.success) {
         version = verifyResult.stdout.trim();
-        log.info(`Docker installed successfully: ${version}`, "engine");
         fullOutput += `\n$ docker --version\n${verifyResult.stdout}\n`;
 
         // Note about group membership
@@ -224,12 +220,8 @@ export class EngineInstaller {
 export async function installEngineOnHosts(
   sshManagers: SSHManager[],
   engine: "podman" | "docker",
+  tracker?: ReturnType<typeof log.createStepTracker>,
 ): Promise<EngineInstallResult[]> {
-  log.info(
-    `Installing ${engine} on ${sshManagers.length} host(s)...`,
-    "engine",
-  );
-
   // Create host operations for error collection
   const hostOperations = sshManagers.map((ssh) => ({
     host: ssh.getHost(),
@@ -240,7 +232,7 @@ export async function installEngineOnHosts(
       try {
         if (!ssh.isConnected()) {
           await ssh.connect();
-          log.info(`Connected to ${host}`, "engine");
+          tracker?.remote(host, "Connected");
         }
 
         const result = await installer.installEngine(engine);
@@ -251,11 +243,11 @@ export async function installEngineOnHosts(
           : String(error);
         const troubleshootingTips = getSSHTroubleshootingTips(errorMessage);
 
-        log.error(`Connection failed for ${host}:`, "engine");
-        log.error(`   ${errorMessage}`, "engine");
-        log.warn(`Troubleshooting suggestions:`, "engine");
-        troubleshootingTips.forEach((tip) => log.warn(`   ${tip}`, "engine"));
-        log.info("", "engine");
+        tracker?.remote(host, `Connection failed: ${errorMessage}`);
+        if (troubleshootingTips.length > 0) {
+          log.warn("Troubleshooting suggestions:");
+          troubleshootingTips.forEach((tip) => log.say(tip, 1));
+        }
 
         // Return a failed result instead of throwing
         return {
@@ -287,31 +279,6 @@ export async function installEngineOnHosts(
       });
     }
   }
-
-  const successful = results.filter((r) => r.success);
-  const failed = results.filter((r) => !r.success);
-
-  if (successful.length > 0) {
-    log.success(`Successfully installed on:`, "engine");
-    for (const result of successful) {
-      log.success(
-        `  - ${result.host}${result.version ? ` (${result.version})` : ""}`,
-        "engine",
-      );
-    }
-  }
-
-  if (failed.length > 0) {
-    log.error(`Failed installations:`, "engine");
-    for (const result of failed) {
-      log.error(`  - ${result.host}: ${result.error}`, "engine");
-    }
-  }
-
-  log.info(
-    `${engine} installation summary: ${successful.length} succeeded, ${failed.length} failed (total: ${results.length})`,
-    "engine",
-  );
 
   return results;
 }

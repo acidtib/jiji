@@ -188,6 +188,80 @@ export class SSHManager {
   }
 
   /**
+   * Execute a command and stream output directly to stdout/stderr
+   * This is useful for commands with long-running output that should be displayed in real-time
+   */
+  executeWithStreaming(
+    command: string,
+    options: {
+      captureOutput?: boolean;
+      onStdout?: (data: string) => void;
+      onStderr?: (data: string) => void;
+    } = {},
+  ): Promise<CommandResult> {
+    if (!this.isConnected()) {
+      throw new Error("SSH connection not established. Call connect() first.");
+    }
+
+    return new Promise((resolve, reject) => {
+      // Ensure ssh2 client is available
+      this.ensureSsh2Client().then(() => {
+        this.ssh2Client!.exec(
+          command,
+          (err: Error | undefined, stream: ClientChannel) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+
+            let stdout = "";
+            let stderr = "";
+
+            stream.on("data", (data: Uint8Array) => {
+              const output = new TextDecoder().decode(data);
+              if (options.captureOutput) {
+                stdout += output;
+              }
+              if (options.onStdout) {
+                options.onStdout(output);
+              } else {
+                // Stream directly to stdout
+                Deno.stdout.writeSync(new TextEncoder().encode(output));
+              }
+            });
+
+            stream.stderr.on("data", (data: Uint8Array) => {
+              const output = new TextDecoder().decode(data);
+              if (options.captureOutput) {
+                stderr += output;
+              }
+              if (options.onStderr) {
+                options.onStderr(output);
+              } else {
+                // Stream directly to stderr
+                Deno.stderr.writeSync(new TextEncoder().encode(output));
+              }
+            });
+
+            stream.on("close", (code: number) => {
+              resolve({
+                stdout: options.captureOutput ? stdout : "",
+                stderr: options.captureOutput ? stderr : "",
+                success: code === 0,
+                code: code,
+              });
+            });
+
+            stream.on("error", (err: Error) => {
+              reject(err);
+            });
+          },
+        );
+      }).catch(reject);
+    });
+  }
+
+  /**
    * Execute multiple commands in sequence
    */
   async executeCommands(commands: string[]): Promise<CommandResult[]> {
@@ -912,12 +986,12 @@ export async function validateSSHSetup(): Promise<
  * Test connections to multiple hosts and return results
  * Uses DNS retry logic and connection pooling
  */
-export async function testConnections(
+async function testConnections(
   sshManagers: SSHManager[],
   maxConcurrent?: number,
+  tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  const log = new Logger({ prefix: "ssh" });
-  log.info("Testing connections to all hosts...");
+  tracker?.step("Testing connections to all hosts");
 
   // Import the pool dynamically to avoid circular dependencies
   const { SSHConnectionPool } = await import("./ssh_pool.ts");
@@ -927,15 +1001,13 @@ export async function testConnections(
     sshManagers.map((ssh) => async () => {
       try {
         await ssh.connectWithRetry(); // Use retry logic
-        log.success(`Connected to ${ssh.getHost()}`);
+        tracker?.remote(ssh.getHost(), "Connected");
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
           ? error.message
           : String(error);
-        log.error(
-          `Failed to connect to ${ssh.getHost()}: ${errorMessage}`,
-        );
+        tracker?.remote(ssh.getHost(), `Failed to connect: ${errorMessage}`);
         return {
           host: ssh.getHost(),
           connected: false,
@@ -1051,23 +1123,23 @@ export async function setupSSHConnections(
     skipValidation?: boolean;
     allowPartialConnection?: boolean;
   } = {},
+  tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{
   managers: SSHManager[];
   connectedHosts: string[];
   failedHosts: string[];
 }> {
-  const log = new Logger({ prefix: "ssh" });
-
   // Validate SSH setup unless explicitly skipped
   if (!options.skipValidation) {
-    log.debug("Validating SSH configuration");
+    const { log } = await import("./logger.ts");
+    tracker?.step("Validating SSH configuration");
     const sshValidation = await validateSSHSetup();
     if (!sshValidation.valid) {
       log.error(`SSH setup validation failed:`);
-      log.error(`   ${sshValidation.message}`);
+      log.say(`${sshValidation.message}`, 1);
       throw new Error(`SSH validation failed: ${sshValidation.message}`);
     }
-    log.success("SSH setup validation passed");
+    tracker?.step("SSH setup validation passed");
   }
 
   // Create SSH connection configuration
@@ -1089,36 +1161,35 @@ export async function setupSSHConnections(
   };
 
   // Create SSH managers and test connections
-  log.debug(`Testing connections to ${hosts.length} host(s)...`);
   const sshManagers = createSSHManagers(hosts, connectionConfig);
-  const connectionTests = await testConnections(sshManagers);
+  const connectionTests = await testConnections(
+    sshManagers,
+    undefined,
+    tracker,
+  );
 
   const { connectedManagers, connectedHosts, failedHosts } =
     filterConnectedHosts(sshManagers, connectionTests);
 
   // Handle connection results
   if (connectedHosts.length === 0) {
+    const { log } = await import("./logger.ts");
     log.error("No hosts are reachable. Cannot proceed.");
     throw new Error("No SSH connections could be established");
   }
 
   if (failedHosts.length > 0) {
+    const { log } = await import("./logger.ts");
     const message = `Some hosts are unreachable: ${failedHosts.join(", ")}`;
 
     if (options.allowPartialConnection) {
       log.warn(message);
-      log.warn(`Continuing with ${connectedHosts.length} connected host(s)`);
+      log.say(`Continuing with ${connectedHosts.length} connected host(s)`, 1);
     } else {
       log.error(message);
       throw new Error(message);
     }
   }
-
-  log.success(
-    `Connected to ${connectedHosts.length} host(s): ${
-      connectedHosts.join(", ")
-    }`,
-  );
 
   return {
     managers: connectedManagers,

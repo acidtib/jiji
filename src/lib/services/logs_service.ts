@@ -113,14 +113,14 @@ export class LogsService {
           result.stderr.includes("No such container") ||
           result.stderr.includes("No such object")
         ) {
-          log.warn(
-            `Container ${containerNameOrId} not found on ${host}`,
-            this.component,
-          );
+          log.hostOutput(host, `Container ${containerNameOrId} not found`, {
+            type: "Logs",
+          });
         } else {
-          log.error(
-            `Failed to fetch logs from ${containerNameOrId} on ${host}: ${result.stderr}`,
-            this.component,
+          log.hostOutput(
+            host,
+            `Failed to fetch logs: ${result.stderr}`,
+            { type: "Error" },
           );
         }
         return;
@@ -128,12 +128,10 @@ export class LogsService {
 
       const output = result.stdout.trim();
       if (output) {
-        console.log(output);
+        // Use host-grouped output pattern
+        log.hostOutput(host, output, { type: "Logs" });
       } else {
-        log.info(
-          `No logs found for ${containerNameOrId} on ${host}`,
-          this.component,
-        );
+        log.hostOutput(host, "No logs found", { type: "Logs" });
       }
     } catch (error) {
       log.error(
