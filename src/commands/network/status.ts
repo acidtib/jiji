@@ -171,7 +171,7 @@ export const statusCommand = new Command()
                       .join(
                         ", ",
                       );
-                    proxyInfo = ` → ${hostUrls}`;
+                    proxyInfo = ` -> ${hostUrls}`;
                   }
                   log.info(
                     `    - ${container.service}: ${container.ip} (${container.domain})${proxyInfo}`,

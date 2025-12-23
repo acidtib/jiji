@@ -608,7 +608,7 @@ export class ServerAuditLogger {
           `Failed to log audit entry to ${failures.length} server(s):`,
         );
         failures.forEach((f) =>
-          this.logger.warn(`   • ${f.host}: ${f.error || "Unknown error"}`)
+          this.logger.warn(`   - ${f.host}: ${f.error || "Unknown error"}`)
         );
       }
       return results.map((r) => ({ host: r.host, success: r.success }));

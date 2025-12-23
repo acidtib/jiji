@@ -141,9 +141,9 @@ export async function getDockerBridgeInterface(
 
   if (verifyResult.code !== 0) {
     // Fallback to docker0 for default bridge
-    log.warn(
+    log.say(
       `Could not find bridge ${bridgeName}, using docker0`,
-      "network",
+      2,
     );
     return "docker0";
   }
@@ -235,11 +235,6 @@ export async function setupIPTablesRules(
   } else {
     log.warn(`Could not persist iptables rules on ${host}`, "network");
   }
-
-  log.success(
-    `iptables forwarding rules configured on ${host}`,
-    "network",
-  );
 }
 
 /**
@@ -293,8 +288,6 @@ export async function setupServerRouting(
       dockerBridge,
       wireguardInterface,
     );
-
-    log.success(`Routing configured on ${host}`, "network");
   } catch (error) {
     throw new Error(`Failed to setup routing on ${host}: ${error}`);
   }

@@ -1,7 +1,5 @@
 import { Command } from "@cliffy/command";
-import { getEngineCommand } from "../../utils/config.ts";
 import { setupCommandContext } from "../../utils/command_helpers.ts";
-import { installEngineOnHosts } from "../../utils/engine.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log } from "../../utils/logger.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
@@ -15,19 +13,18 @@ export const initCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Initialization");
-      log.say("Starting server initialization process");
+      log.section("Server Initialization:");
 
-      // Set up command context (config, SSH, filtering)
+      // Load configuration and get hosts
       ctx = await setupCommandContext(globalOptions);
 
       const { config, sshManagers, targetHosts } = ctx;
-      const configPath = config.configPath || "unknown";
 
-      log.say(`Container engine: ${config.builder.engine}`);
-
-      // Check if the specified engine is available
-      const engineCommand = getEngineCommand(config);
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
 
       // Create audit logger for connected servers
       const auditLogger = createServerAuditLogger(
@@ -41,187 +38,60 @@ export const initCommand = new Command()
         config.builder.engine,
       );
 
-      // Log configuration loading to connected servers
-      await auditLogger.logConfigChange(configPath, "loaded");
+      // Engine installation section
+      log.section("Install Engine:");
 
-      // Install engine on hosts
-      const installTracker = log.createStepTracker(
-        `${engineCommand} Installation`,
-      );
+      const engine = config.builder.engine;
 
-      installTracker.step(
-        `Installing ${engineCommand} on ${targetHosts.length} host(s)...`,
-      );
+      for (const ssh of sshManagers) {
+        const { EngineInstaller } = await import("../../utils/engine.ts");
+        const installer = new EngineInstaller(ssh);
 
-      try {
-        const installResults = await installEngineOnHosts(
-          sshManagers,
-          config.builder.engine,
-          installTracker,
-        );
+        await log.hostBlock(ssh.getHost(), async () => {
+          // Check if installed
+          const installed = await installer.isEngineInstalled(engine);
+          if (!installed) {
+            log.say(`Installing ${engine} on ${ssh.getHost()}`, 2);
+            const result = await installer.installEngine(engine);
 
-        // Log engine installation results to each respective server
-        for (const result of installResults) {
-          if (result.success) {
-            installTracker.remote(
-              result.host,
-              result.message || "Installation successful",
-            );
+            if (!result.success) {
+              throw new Error(result.error || `Failed to install ${engine}`);
+            }
           } else {
-            installTracker.remote(
-              result.host,
-              `Failed: ${
-                result.error || result.message || "Installation failed"
-              }`,
+            const version = await installer.getEngineVersion(engine);
+            log.say(
+              `${engine} already installed${version ? ` (${version})` : ""}`,
+              2,
             );
           }
+        }, { indent: 1 });
 
-          // Also log to audit trail
-          const hostSsh = sshManagers.find((ssh) =>
-            ssh.getHost() === result.host
+        // Audit log
+        const hostSsh = sshManagers.find((s) => s.getHost() === ssh.getHost());
+        if (hostSsh) {
+          const auditLogger = createServerAuditLogger(hostSsh, config.project);
+          await auditLogger.logEngineInstall(
+            engine,
+            "success",
+            "Installation successful",
           );
-          if (hostSsh) {
-            const hostAuditLogger = createServerAuditLogger(
-              hostSsh,
-              config.project,
-            );
-            await hostAuditLogger.logEngineInstall(
-              config.builder.engine,
-              result.success ? "success" : "failed",
-              result.message ||
-                (result.success ? "Installation successful" : result.error),
-            );
-          }
         }
-
-        const failedInstalls = installResults.filter((r) => !r.success).length;
-
-        if (failedInstalls > 0) {
-          const msg =
-            `${engineCommand} installation failed on ${failedInstalls} host(s)`;
-          installTracker.finish(false);
-          throw new Error(msg);
-        }
-
-        installTracker.finish();
-      } catch (error) {
-        const errorMessage = error instanceof Error
-          ? error.message
-          : String(error);
-
-        // Log engine installation failure
-        for (const host of targetHosts) {
-          const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
-          if (hostSsh) {
-            const hostLogger = createServerAuditLogger(
-              hostSsh,
-              config.project,
-            );
-            await hostLogger.logEngineInstall(
-              config.builder.engine,
-              "failed",
-              errorMessage,
-            );
-          }
-        }
-
-        throw error;
       }
 
       // Network setup (if enabled)
       if (config.network.enabled) {
-        try {
-          const networkResults = await setupNetwork(config, sshManagers);
-
-          // Log network setup results
-          const successfulSetups = networkResults.filter((r) => r.success);
-          const failedSetups = networkResults.filter((r) => !r.success);
-
-          if (failedSetups.length > 0) {
-            for (const result of failedSetups) {
-              log.error(
-                `${result.host}: ${result.error || "Unknown error"}`,
-                "network",
-              );
-            }
-
-            // Throw error for critical network component failures
-            const criticalErrors = failedSetups.map((r) =>
-              `${r.host}: ${r.error || "Network setup failed"}`
-            ).join("; ");
-            throw new Error(
-              `Critical network setup failures: ${criticalErrors}`,
-            );
-          }
-
-          // Log network setup to audit trail
-          for (const result of networkResults) {
-            const hostSsh = sshManagers.find((ssh) =>
-              ssh.getHost() === result.host
-            );
-            if (hostSsh) {
-              const hostLogger = createServerAuditLogger(
-                hostSsh,
-                config.project,
-              );
-              await hostLogger.logCustomCommand(
-                "network_setup",
-                result.success ? "success" : "failed",
-                result.message || result.error,
-              );
-            }
-          }
-
-          if (successfulSetups.length > 0) {
-            log.say(
-              `Private network configured on ${successfulSetups.length} server(s)`,
-            );
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error
-            ? error.message
-            : String(error);
-
-          // Log network setup failure
-          for (const host of targetHosts) {
-            const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
-            if (hostSsh) {
-              const hostLogger = createServerAuditLogger(
-                hostSsh,
-                config.project,
-              );
-              await hostLogger.logCustomCommand(
-                "network_setup",
-                "failed",
-                errorMessage,
-              );
-            }
-          }
-
-          throw error;
-        }
+        await setupNetwork(config, sshManagers);
       }
 
       // Log successful initialization completion to connected servers
-      const auditResults = await auditLogger.logInitSuccess(
+      await auditLogger.logInitSuccess(
         targetHosts,
         config.builder.engine,
       );
 
-      // Report successful audit logging (should match connected hosts)
-      const successfulHosts = auditResults
-        .filter((result) => result.success)
-        .map((result) => result.host);
-
       console.log();
       log.say(
         `Initialization completed successfully on ${targetHosts.length} server(s)`,
-      );
-      log.say(
-        `Audit trail updated on ${successfulHosts.length} server(s): ${
-          successfulHosts.join(", ")
-        }`,
-        1,
       );
     } catch (error) {
       await handleCommandError(error, {
@@ -230,32 +100,6 @@ export const initCommand = new Command()
         sshManagers: ctx?.sshManagers,
         projectName: ctx?.config?.project,
         targetHosts: ctx?.targetHosts,
-        customAuditLogger: async (errorMessage) => {
-          if (ctx?.sshManagers && ctx?.config && ctx?.targetHosts) {
-            const auditLogger = createServerAuditLogger(
-              ctx.sshManagers,
-              ctx.config.project,
-            );
-            const failureResults = await auditLogger.logInitFailure(
-              errorMessage,
-              ctx.targetHosts,
-              ctx.config.builder.engine,
-            );
-
-            const successfulFailureLogs = failureResults
-              .filter((result) => result.success)
-              .map((result) => result.host);
-
-            if (successfulFailureLogs.length > 0) {
-              log.say(
-                `Failure logged to ${successfulFailureLogs.length} server(s): ${
-                  successfulFailureLogs.join(", ")
-                }`,
-                1,
-              );
-            }
-          }
-        },
       });
     } finally {
       if (ctx?.sshManagers) {

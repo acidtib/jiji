@@ -991,7 +991,7 @@ async function testConnections(
   maxConcurrent?: number,
   tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  tracker?.step("Testing connections to all hosts");
+  tracker?.step("Testing connections to all hosts", 1);
 
   // Import the pool dynamically to avoid circular dependencies
   const { SSHConnectionPool } = await import("./ssh_pool.ts");
@@ -1001,7 +1001,6 @@ async function testConnections(
     sshManagers.map((ssh) => async () => {
       try {
         await ssh.connectWithRetry(); // Use retry logic
-        tracker?.remote(ssh.getHost(), "Connected");
         return { host: ssh.getHost(), connected: true };
       } catch (error) {
         const errorMessage = error instanceof Error
@@ -1072,31 +1071,31 @@ export function getSSHTroubleshootingTips(error: string): string[] {
 
   if (error.includes("ECONNREFUSED") || error.includes("connect")) {
     tips.push("Connection refused - check:");
-    tips.push("   • Host IP address is correct");
-    tips.push("   • SSH service is running on target host");
-    tips.push("   • Port " + "22" + " is open and accessible");
-    tips.push("   • No firewall blocking the connection");
+    tips.push("   - Host IP address is correct");
+    tips.push("   - SSH service is running on target host");
+    tips.push("   - Port " + "22" + " is open and accessible");
+    tips.push("   - No firewall blocking the connection");
   }
 
   if (error.includes("auth") || error.includes("permission")) {
     tips.push("Authentication failed - try:");
-    tips.push("   • ssh-add -l (verify keys are loaded)");
-    tips.push("   • ssh-add ~/.ssh/id_rsa (add your key)");
-    tips.push("   • ssh -T user@host (test connection manually)");
+    tips.push("   - ssh-add -l (verify keys are loaded)");
+    tips.push("   - ssh-add ~/.ssh/id_rsa (add your key)");
+    tips.push("   - ssh -T user@host (test connection manually)");
   }
 
   if (error.includes("timeout") || error.includes("ETIMEDOUT")) {
     tips.push("Connection timeout - check:");
-    tips.push("   • Network connectivity to host");
-    tips.push("   • SSH port accessibility");
-    tips.push("   • Host is powered on and reachable");
+    tips.push("   - Network connectivity to host");
+    tips.push("   - SSH port accessibility");
+    tips.push("   - Host is powered on and reachable");
   }
 
   if (tips.length === 0) {
     tips.push("For general SSH issues:");
-    tips.push("   • Test connection: ssh -v user@host");
-    tips.push("   • Check SSH agent: ssh-add -l");
-    tips.push("   • Verify host accessibility: ping host");
+    tips.push("   - Test connection: ssh -v user@host");
+    tips.push("   - Check SSH agent: ssh-add -l");
+    tips.push("   - Verify host accessibility: ping host");
   }
 
   return tips;
@@ -1132,14 +1131,14 @@ export async function setupSSHConnections(
   // Validate SSH setup unless explicitly skipped
   if (!options.skipValidation) {
     const { log } = await import("./logger.ts");
-    tracker?.step("Validating SSH configuration");
+    tracker?.step("Validating SSH configuration", 1);
     const sshValidation = await validateSSHSetup();
     if (!sshValidation.valid) {
       log.error(`SSH setup validation failed:`);
-      log.say(`${sshValidation.message}`, 1);
+      log.say(`${sshValidation.message}`, 2);
       throw new Error(`SSH validation failed: ${sshValidation.message}`);
     }
-    tracker?.step("SSH setup validation passed");
+    tracker?.step("SSH setup validation passed", 1);
   }
 
   // Create SSH connection configuration

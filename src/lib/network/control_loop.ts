@@ -305,8 +305,6 @@ export async function createControlLoopService(
 ): Promise<void> {
   const host = ssh.getHost();
 
-  log.info(`Creating control loop service on ${host}`, "network");
-
   // Generate bash script
   const script = generateControlLoopScript(serverId, engine, interfaceName);
   const scriptPath = "/opt/jiji/bin/jiji-control-loop.sh";
@@ -362,8 +360,6 @@ WantedBy=multi-user.target
   // Enable and start service
   await ssh.executeCommand("systemctl enable jiji-control-loop.service");
   await ssh.executeCommand("systemctl restart jiji-control-loop.service");
-
-  log.success(`Control loop service created and started on ${host}`, "network");
 }
 
 /**

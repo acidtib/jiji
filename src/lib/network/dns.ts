@@ -20,7 +20,6 @@ const COREDNS_VERSION = "1.11.1";
  */
 export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
   const host = ssh.getHost();
-  log.info(`Installing CoreDNS on ${host}`, "dns");
 
   // Check if CoreDNS is already installed
   const checkResult = await ssh.executeCommand(
@@ -28,7 +27,6 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
   );
 
   if (checkResult.stdout.includes("exists")) {
-    log.success(`CoreDNS already installed on ${host}`, "dns");
     return true;
   }
 
@@ -53,11 +51,6 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
     const downloadUrl =
       `https://github.com/coredns/coredns/releases/download/v${COREDNS_VERSION}/coredns_${COREDNS_VERSION}_linux_${downloadArch}.tgz`;
 
-    log.info(
-      `Downloading CoreDNS ${COREDNS_VERSION} for ${downloadArch}...`,
-      "dns",
-    );
-
     const downloadResult = await ssh.executeCommand(
       `cd ${COREDNS_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o coredns.tgz`,
     );
@@ -78,7 +71,6 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
     // Make executable
     await ssh.executeCommand(`chmod +x ${COREDNS_INSTALL_DIR}/coredns`);
 
-    log.success(`CoreDNS installed successfully on ${host}`, "dns");
     return true;
   } catch (error) {
     log.error(`Failed to install CoreDNS on ${host}: ${error}`, "dns");
@@ -239,8 +231,6 @@ export async function writeCoreDNSConfig(
 
   // Make script executable
   await ssh.executeCommand(`chmod +x ${scriptPath}`);
-
-  log.success("CoreDNS configuration written", "dns");
 }
 
 /**
@@ -282,8 +272,6 @@ WantedBy=multi-user.target
 
   // Reload systemd
   await ssh.executeCommand("systemctl daemon-reload");
-
-  log.success("CoreDNS systemd service created", "dns");
 }
 
 /**
@@ -328,8 +316,6 @@ WantedBy=timers.target
 
   // Reload systemd
   await ssh.executeCommand("systemctl daemon-reload");
-
-  log.success("DNS hosts update timer created", "dns");
 }
 
 /**
@@ -353,8 +339,6 @@ export async function startCoreDNSService(ssh: SSHManager): Promise<void> {
 
   // Wait a moment for service to start
   await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  log.success("CoreDNS service started", "dns");
 }
 
 /**
@@ -489,11 +473,6 @@ export async function configureContainerDNS(
         "dns",
       );
     }
-
-    log.success(
-      `Docker daemon configured: DNS=${dnsServer}, search=${serviceDomain}`,
-      "dns",
-    );
   } else if (engine === "podman") {
     // Podman uses containers.conf
     const containersConf = `[network]
@@ -515,10 +494,5 @@ dns_options = ["ndots:1"]
       await ssh.executeCommand("podman restart kamal-proxy");
       log.success("kamal-proxy restarted with new DNS configuration", "dns");
     }
-
-    log.success(
-      `Podman configured: DNS=${dnsServer}, search=${serviceDomain}`,
-      "dns",
-    );
   }
 }

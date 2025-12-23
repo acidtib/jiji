@@ -11,15 +11,15 @@ Exchange: Curve25519
 
 ```
 Cluster CIDR: 10.210.0.0/16 (IPv4 - configurable)
-├── Server 0: 10.210.0.0/24
-│   ├── WireGuard IP: 10.210.0.1
-│   ├── Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
-│   └── Containers: 10.210.0.2 - 10.210.0.254
-├── Server 1: 10.210.1.0/24
-│   ├── WireGuard IP: 10.210.1.1
-│   ├── Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
-│   └── Containers: 10.210.1.2 - 10.210.1.254
-└── Server N: 10.210.N.0/24 (up to 255 servers with /16 cluster CIDR)
+|-- Server 0: 10.210.0.0/24
+|   |-- WireGuard IP: 10.210.0.1
+|   |-- Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
+|   +-- Containers: 10.210.0.2 - 10.210.0.254
+|-- Server 1: 10.210.1.0/24
+|   |-- WireGuard IP: 10.210.1.1
+|   |-- Management IP: fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx (IPv6, derived from pubkey)
+|   +-- Containers: 10.210.1.2 - 10.210.1.254
++-- Server N: 10.210.N.0/24 (up to 255 servers with /16 cluster CIDR)
 ```
 
 **Note**: The network uses IPv4 for WireGuard tunnels and container networking.
@@ -174,13 +174,13 @@ Example: `api.jiji`, `postgres.jiji`
 
 ```
 Container DNS query for "api.jiji"
-  ↓
+  ->
 Container daemon forwards to CoreDNS (10.210.0.1:53)
-  ↓
+  ->
 CoreDNS queries Corrosion for service "api"
-  ↓
+  ->
 Returns container IPs across cluster
-  ↓
+  ->
 Container connects to 10.210.1.15
 ```
 
@@ -310,7 +310,7 @@ balancing.
 
 Max servers: 256 (with /24 subnets in /16 cluster CIDR) Max containers per
 server: 253 (with /24 subnet, .1 reserved for WireGuard interface) Max total
-containers: ~64,768 (256 servers × 253 containers) WireGuard peers: Unlimited
+containers: ~64,768 (256 servers x 253 containers) WireGuard peers: Unlimited
 (mesh scales to hundreds)
 
 **CIDR Requirements**: Cluster CIDR must be /24 or larger (smaller prefix

@@ -332,9 +332,9 @@ checks:
 
 `registry_manager.ts` automatically detects registry namespaces:
 
-- **GHCR** (`ghcr.io`) → `username/project-name`
-- **Docker Hub** (`docker.io`) → `username`
-- **Local/other** → No namespace
+- **GHCR** (`ghcr.io`) -> `username/project-name`
+- **Docker Hub** (`docker.io`) -> `username`
+- **Local/other** -> No namespace
 
 ### Image Tagging Strategy
 

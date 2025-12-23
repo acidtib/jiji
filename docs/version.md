@@ -22,7 +22,7 @@ To update the version, you have two options:
 
 #### Auto-increment Patch Version
 
-To automatically increment the patch version (e.g., 0.1.6 → 0.1.7):
+To automatically increment the patch version (e.g., 0.1.6 -> 0.1.7):
 
 ```bash
 ./bin/version --bump

@@ -111,7 +111,6 @@ export async function setupCommandContext(
   );
   const configPath = config.configPath || "unknown";
   log.say(`Configuration loaded from: ${configPath}`, 1);
-
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
 
@@ -177,7 +176,7 @@ export async function setupCommandContext(
     1,
   );
 
-  const sshTracker = log.createStepTracker("SSH Connection Setup");
+  const sshTracker = log.createStepTracker("SSH Connection Setup:");
   const sshResult = await setupSSHConnections(
     allHosts,
     {

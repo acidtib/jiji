@@ -57,7 +57,6 @@ export async function discoverPublicIP(
     }
   }
 
-  log.warn(`Could not discover public IP for ${host}`, "network");
   return null;
 }
 
@@ -181,11 +180,6 @@ export async function discoverAllEndpoints(
       "network",
     );
   }
-
-  log.info(
-    `Discovered ${endpoints.length} endpoints: ${endpoints.join(", ")}`,
-    "network",
-  );
 
   return endpoints;
 }

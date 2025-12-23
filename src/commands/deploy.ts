@@ -52,7 +52,7 @@ async function displayDeploymentPlan(
 
   console.log();
   log.say("Deployment Plan");
-  log.say("═".repeat(50));
+  log.say("=".repeat(50));
   log.say(`Project: ${config.project}`);
   log.say(`Container Engine: ${config.builder.engine}`);
   log.say(`Registry: ${config.builder.registry.getRegistryUrl()}`);
@@ -64,7 +64,7 @@ async function displayDeploymentPlan(
   if (deployOptions.build && buildServices.length > 0) {
     log.say("Services to Build:");
     for (const service of buildServices) {
-      log.say(`  • ${service.name}`);
+      log.say(`  - ${service.name}`);
       if (typeof service.build === "string") {
         log.say(`    Context: ${service.build}`, 2);
       } else if (service.build) {
@@ -128,10 +128,10 @@ async function displayDeploymentPlan(
 
   if (options.length > 0) {
     log.say("\nOptions:");
-    options.forEach((option) => log.say(`  • ${option}`));
+    options.forEach((option) => log.say(`  - ${option}`));
   }
 
-  log.say("═".repeat(50));
+  log.say("=".repeat(50));
   console.log();
 
   if (deployOptions.yes) {
