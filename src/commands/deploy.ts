@@ -328,33 +328,31 @@ export const deployCommand = new Command()
 
         const maxRetain = Math.max(...allServices.map((s) => s.retain));
         log.say(
-          `Pruning old images (retaining last ${maxRetain} per service)`,
+          `- Pruning old images (retaining last ${maxRetain} per service)`,
           1,
         );
 
-        const pruneResults = await pruneService.pruneImagesOnHosts(
-          sshManagers,
-          {
-            retain: maxRetain,
-            removeDangling: true,
-          },
-        );
+        const pruneResults: Awaited<
+          ReturnType<typeof pruneService.pruneImages>
+        >[] = [];
+
+        for (const ssh of sshManagers) {
+          await log.hostBlock(ssh.getHost(), async () => {
+            const result = await pruneService.pruneImages(ssh, {
+              retain: maxRetain,
+              removeDangling: true,
+            });
+            pruneResults.push(result);
+          }, { indent: 1 });
+        }
 
         const totalRemoved = pruneResults.reduce(
           (sum, r) => sum + r.imagesRemoved,
           0,
         );
 
-        if (totalRemoved > 0) {
-          for (const result of pruneResults) {
-            if (result.imagesRemoved > 0) {
-              await log.hostBlock(result.host, async () => {
-                log.say(`Pruned ${result.imagesRemoved} image(s)`, 2);
-              }, { indent: 1 });
-            }
-          }
-        } else {
-          log.say("No old images to prune", 1);
+        if (totalRemoved === 0) {
+          log.say("- No old images were pruned", 1);
         }
       } else if (allServices.length === 0) {
         log.say("No services found to deploy");

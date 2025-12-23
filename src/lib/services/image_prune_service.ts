@@ -33,9 +33,9 @@ export class ImagePruneService {
     const removeDangling = options.removeDangling ?? true;
 
     try {
-      log.status(
-        `Pruning old images on ${host} (retaining last ${retain})`,
-        "prune",
+      log.say(
+        `├── Pruning old images (retaining last ${retain})`,
+        2,
       );
 
       let imagesRemoved = 0;
@@ -50,9 +50,9 @@ export class ImagePruneService {
         imagesRemoved += danglingResult.count;
       }
 
-      log.success(
-        `Pruned ${imagesRemoved} image(s) on ${host}`,
-        "prune",
+      log.say(
+        `└── Pruned ${imagesRemoved} image(s)`,
+        2,
       );
 
       return {
@@ -64,7 +64,7 @@ export class ImagePruneService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      log.error(`Failed to prune images on ${host}: ${errorMessage}`, "prune");
+      log.say(`└── Failed to prune images: ${errorMessage}`, 2);
 
       return {
         host,

@@ -335,7 +335,7 @@ export class DeploymentMetricsService {
       `- Deployment ${deploymentId} finished: ${
         success ? "SUCCESS" : "FAILURE"
       } (${metrics.totalDurationMs}ms)`,
-      0,
+      1,
     );
 
     return metrics;

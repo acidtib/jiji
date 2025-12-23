@@ -274,7 +274,7 @@ export class ProxyService {
     const results: ProxyConfigResult[] = [];
 
     for (const service of services) {
-      log.say(`- Configuring proxy for ${service.name}`, 0);
+      log.say(`- Configuring proxy for ${service.name}`, 1);
 
       for (const server of service.servers) {
         const host = server.host;

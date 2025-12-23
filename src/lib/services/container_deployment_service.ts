@@ -276,7 +276,7 @@ export class ContainerDeploymentService {
     const allResults: DeploymentResult[] = [];
 
     for (const service of services) {
-      log.say(`- Deploying ${service.name} containers`, 0);
+      log.say(`- Deploying ${service.name} containers`, 1);
       const results = await this.deployServiceToServers(
         service,
         sshManagers,
