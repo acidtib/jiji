@@ -1072,31 +1072,31 @@ export function getSSHTroubleshootingTips(error: string): string[] {
 
   if (error.includes("ECONNREFUSED") || error.includes("connect")) {
     tips.push("Connection refused - check:");
-    tips.push("   • Host IP address is correct");
-    tips.push("   • SSH service is running on target host");
-    tips.push("   • Port " + "22" + " is open and accessible");
-    tips.push("   • No firewall blocking the connection");
+    tips.push("   - Host IP address is correct");
+    tips.push("   - SSH service is running on target host");
+    tips.push("   - Port " + "22" + " is open and accessible");
+    tips.push("   - No firewall blocking the connection");
   }
 
   if (error.includes("auth") || error.includes("permission")) {
     tips.push("Authentication failed - try:");
-    tips.push("   • ssh-add -l (verify keys are loaded)");
-    tips.push("   • ssh-add ~/.ssh/id_rsa (add your key)");
-    tips.push("   • ssh -T user@host (test connection manually)");
+    tips.push("   - ssh-add -l (verify keys are loaded)");
+    tips.push("   - ssh-add ~/.ssh/id_rsa (add your key)");
+    tips.push("   - ssh -T user@host (test connection manually)");
   }
 
   if (error.includes("timeout") || error.includes("ETIMEDOUT")) {
     tips.push("Connection timeout - check:");
-    tips.push("   • Network connectivity to host");
-    tips.push("   • SSH port accessibility");
-    tips.push("   • Host is powered on and reachable");
+    tips.push("   - Network connectivity to host");
+    tips.push("   - SSH port accessibility");
+    tips.push("   - Host is powered on and reachable");
   }
 
   if (tips.length === 0) {
     tips.push("For general SSH issues:");
-    tips.push("   • Test connection: ssh -v user@host");
-    tips.push("   • Check SSH agent: ssh-add -l");
-    tips.push("   • Verify host accessibility: ping host");
+    tips.push("   - Test connection: ssh -v user@host");
+    tips.push("   - Check SSH agent: ssh-add -l");
+    tips.push("   - Verify host accessibility: ping host");
   }
 
   return tips;

@@ -447,7 +447,7 @@ export class Logger {
     if (this.quietMode) return;
 
     const indentation = "  ".repeat(indent);
-    const bullet = this.useColors ? colors.cyan("•") : "•";
+    const bullet = this.useColors ? colors.cyan("-") : "-";
     console.log(`${indentation}${bullet} ${message}`);
   }
 

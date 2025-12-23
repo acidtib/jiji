@@ -111,7 +111,6 @@ export async function setupCommandContext(
   );
   const configPath = config.configPath || "unknown";
   log.say(`Configuration loaded from: ${configPath}`, 1);
-
   let allHosts = config.getAllServerHosts();
   let matchingServices: string[] | undefined;
 
