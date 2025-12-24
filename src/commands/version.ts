@@ -5,5 +5,6 @@ import { log } from "../utils/logger.ts";
 export const versionCommand = new Command()
   .description("Show jiji version")
   .action(() => {
-    log.say(VERSION);
+    log.section("Jiji Version:");
+    log.say(`- ${VERSION}`, 1);
   });

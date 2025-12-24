@@ -444,9 +444,9 @@ export const teardownCommand = new Command()
         `Server teardown completed successfully on ${targetHosts.length} host(s)`,
       );
 
-      console.log();
-      log.say(
-        `Teardown completed successfully on ${targetHosts.length} server(s)`,
+      log.success(
+        `\nTeardown completed successfully on ${targetHosts.length} server(s)`,
+        0,
       );
     } catch (error) {
       await handleCommandError(error, {

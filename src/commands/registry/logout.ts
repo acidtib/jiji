@@ -9,41 +9,41 @@ export const logoutCommand = new Command()
   .option("-L, --skip-local", "Skip local logout")
   .option("-R, --skip-remote", "Skip remote logout")
   .action(async (options) => {
-    log.info("Logging out of registry...", "registry:logout");
-
     try {
+      log.section("Registry Logout:");
+
       // Load configuration to get registry settings
       const { config } = await loadConfig();
       const registryConfig = config.builder.registry;
       const registry = registryConfig.getRegistryUrl();
 
-      log.debug(`Registry: ${registry}`, "registry:logout");
-      log.debug(`Registry type: ${registryConfig.type}`, "registry:logout");
+      log.say(`- Registry: ${registry}`, 1);
+      log.say(`- Registry type: ${registryConfig.type}`, 1);
 
       // Initialize authenticator with container engine
       const engine = config.builder?.engine || "docker";
       const authenticator = new RegistryAuthenticator(engine);
 
+      log.section("Logging Out:");
+
       // Only perform operations that aren't skipped
       if (!options.skipLocal) {
+        log.say("- Performing local logout", 1);
         await authenticator.logout(registry);
-        log.info("Local logout successful", "registry:logout");
+        log.say("- Local logout successful", 1);
       } else {
-        log.debug("Skipped local logout", "registry:logout");
+        log.say("- Skipped local logout", 1);
       }
 
       if (!options.skipRemote) {
+        log.say("- Performing remote logout", 1);
         // For container registries, local and remote logout are the same operation
-        log.debug(
-          "Remote registry logout handled by container engine",
-          "registry:logout",
-        );
-        log.info("Remote logout successful", "registry:logout");
+        log.say("- Remote logout successful", 1);
       } else {
-        log.debug("Skipped remote logout", "registry:logout");
+        log.say("- Skipped remote logout", 1);
       }
 
-      log.info("Registry logout completed successfully", "registry:logout");
+      log.success("\nRegistry logout completed successfully", 0);
     } catch (error) {
       handleRegistryError(error, "logout");
     }

@@ -114,8 +114,8 @@ export const initCommand = new Command()
       if (config.network.enabled) {
         log.say(`- Private network: Enabled`, 1);
       }
-      console.log();
-      log.say(`Initialization completed successfully`);
+
+      log.success("\nInitialization completed successfully", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Initialization",

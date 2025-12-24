@@ -250,11 +250,9 @@ export const deployCommand = new Command()
       const { sshManagers, targetHosts } = ctx;
 
       // Show connection status for each host
-      if (!deployOptions.build) {
-        console.log(""); // Empty line
-        for (const ssh of sshManagers) {
-          log.remote(ssh.getHost(), ": Connected", { indent: 1 });
-        }
+      console.log(""); // Empty line
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
       if (config.builder.registry.isLocal()) {

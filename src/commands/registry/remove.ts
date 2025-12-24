@@ -11,43 +11,43 @@ export const removeCommand = new Command()
   .option("-L, --skip-local", "Skip local removal")
   .option("-R, --skip-remote", "Skip remote removal")
   .action(async (options) => {
-    log.info("Removing registry...", "registry:remove");
-
     try {
+      log.section("Registry Removal:");
+
       // Load configuration to get registry settings
       const { config } = await loadConfig();
       const registryConfig = config.builder.registry;
       const registry = registryConfig.getRegistryUrl();
 
-      log.debug(`Registry: ${registry}`, "registry:remove");
-      log.debug(`Registry type: ${registryConfig.type}`, "registry:remove");
+      log.say(`- Registry: ${registry}`, 1);
+      log.say(`- Registry type: ${registryConfig.type}`, 1);
 
       // Initialize registry service
       const registryService = new RegistryService();
       await registryService.initialize();
 
+      log.section("Removing Registry:");
+
       // Perform local removal unless skip-local is specified
       if (!options.skipLocal) {
+        log.say("- Performing local removal", 1);
         await registryService.removeRegistry(registry);
-        log.info("Local registry removed", "registry:remove");
+        log.say("- Local registry removed", 1);
       } else {
-        log.debug("Skipped local registry removal", "registry:remove");
+        log.say("- Skipped local registry removal", 1);
       }
 
       // Perform remote logout unless skip-remote is specified
       if (!options.skipRemote) {
+        log.say("- Performing remote logout", 1);
         // For container registries, this is handled by the removeRegistry method
         // which includes logout functionality
-        log.debug(
-          "Remote registry logout handled by removal",
-          "registry:remove",
-        );
-        log.info("Remote registry logout completed", "registry:remove");
+        log.say("- Remote registry logout completed", 1);
       } else {
-        log.debug("Skipped remote registry logout", "registry:remove");
+        log.say("- Skipped remote registry logout", 1);
       }
 
-      log.info("Registry removal completed successfully", "registry:remove");
+      log.success("\nRegistry removal completed successfully", 0);
     } catch (error) {
       handleRegistryError(error, "remove");
     }

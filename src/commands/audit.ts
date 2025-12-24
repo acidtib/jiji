@@ -61,12 +61,12 @@ export const auditCommand = new Command()
         return;
       }
 
-      const tracker = log.createStepTracker("Jiji Audit Trail");
+      log.section("Audit Trail:");
 
       try {
         ctx = await setupCommandContext(globalOptions);
       } catch (_error) {
-        log.warn("No remote hosts configured");
+        log.warn("\nNo remote hosts configured");
         log.say(
           "Add hosts to your services in .jiji/deploy.yml to view remote audit trails.",
           1,
@@ -78,14 +78,20 @@ export const auditCommand = new Command()
       const { config, sshManagers, targetHosts } = ctx;
 
       log.say(
-        `Configuration: ${colors.dim(config.configPath || "unknown")}`,
+        `Configuration loaded from: ${config.configPath || "unknown"}`,
         1,
       );
-      log.say(`Hosts: ${colors.cyan(targetHosts.join(", "))}`, 1);
+      log.say(`Hosts: ${targetHosts.join(", ")}`, 1);
+
+      console.log("");
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
 
       const auditLogger = createServerAuditLogger(sshManagers, config.project);
 
-      tracker.step("Fetching audit entries");
+      log.section("Fetching Entries:");
+      log.say(`- Retrieving up to ${options.lines * 2} recent entries`, 1);
 
       const serverLogs = await auditLogger.getRecentEntries(options.lines * 2);
 

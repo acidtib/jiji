@@ -10,6 +10,7 @@ import {
 import { handleCommandError } from "../../utils/error_handler.ts";
 import { log } from "../../utils/logger.ts";
 import { LogsService } from "../../lib/services/logs_service.ts";
+import { Configuration } from "../../lib/configuration.ts";
 
 import type { GlobalOptions, LogsOptions } from "../../types.ts";
 import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
@@ -62,7 +63,24 @@ export const logsCommand = new Command()
         Deno.exit(1);
       }
 
-      // Setup command context
+      log.section("Service Logs:");
+
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      // Setup command context (this will show SSH Connection Setup section)
       ctx = await setupCommandContext(globalOptions);
       const context = ctx;
 
@@ -71,6 +89,12 @@ export const logsCommand = new Command()
           "No servers are reachable. Cannot fetch logs.",
         );
         Deno.exit(1);
+      }
+
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of context.sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
       // Create logs service
@@ -142,8 +166,8 @@ async function followLogs(
   },
 ): Promise<void> {
   const primaryHost = context.targetHosts[0];
-  log.section("Following Logs");
-  log.say(`Host: ${primaryHost}`, 1);
+  log.section("Following Logs:");
+  log.say(`- Host: ${primaryHost}`, 1);
 
   // If container ID is specified, use it directly
   if (logOptions.containerId) {
@@ -187,7 +211,7 @@ async function followLogs(
   }
 
   const containerName = service.getContainerName();
-  log.say(`Following logs for ${containerName}`, 1);
+  log.say(`- Following logs for ${containerName}`, 1);
 
   await logsService.followContainerLogs(
     ssh,
@@ -244,9 +268,9 @@ async function fetchLogs(
     Deno.exit(1);
   }
 
-  log.section("Service Logs");
+  log.section("Fetching Logs:");
   log.say(
-    `Fetching logs for: ${
+    `- Services: ${
       servicesToShow.map((s: ServiceConfiguration) => s.name).join(", ")
     }`,
     1,

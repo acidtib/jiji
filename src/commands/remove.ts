@@ -128,7 +128,10 @@ export const removeCommand = new Command()
                 `removing container ${containerName}`,
               );
               const containerPrefix = isLastItem ? "└──" : "├──";
-              log.say(`${containerPrefix} Removed container ${containerName}`, 2);
+              log.say(
+                `${containerPrefix} Removed container ${containerName}`,
+                2,
+              );
 
               // Remove named volumes
               for (let i = 0; i < namedVolumes.length; i++) {
@@ -166,13 +169,17 @@ export const removeCommand = new Command()
             await hostSsh.executeCommand(`rm -rf ${projectDir}`);
             log.say(`${isLastHost ? "└──" : "├──"} Removed ${projectDir}`, 2);
           } catch (error) {
-            log.say(`${isLastHost ? "└──" : "├──"} Failed to remove ${projectDir}: ${error}`, 2);
+            log.say(
+              `${
+                isLastHost ? "└──" : "├──"
+              } Failed to remove ${projectDir}: ${error}`,
+              2,
+            );
           }
         }, { indent: 1 });
       }
 
-      console.log();
-      log.say("Removal completed successfully");
+      log.success("\nRemoval completed successfully", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Removal",

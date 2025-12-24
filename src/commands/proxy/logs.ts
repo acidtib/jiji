@@ -38,6 +38,24 @@ export const logsCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
+      log.section("Proxy Logs:");
+
+      const { Configuration } = await import("../../lib/configuration.ts");
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
       // Setup command context
       ctx = await setupCommandContext(globalOptions);
       const context = ctx;
@@ -45,9 +63,14 @@ export const logsCommand = new Command()
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot fetch proxy logs.",
-          "proxy-logs",
         );
         Deno.exit(1);
+      }
+
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of context.sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
       // Create logs service
@@ -96,7 +119,6 @@ export const logsCommand = new Command()
           `Proxy logs command failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
-          "proxy-logs",
         );
       }
       Deno.exit(1);
@@ -116,14 +138,14 @@ async function followProxyLogs(
   },
 ): Promise<void> {
   const primaryHost = context.targetHosts[0];
-  log.action(
-    `Following logs from ${KAMAL_PROXY_CONTAINER_NAME} on ${primaryHost}...`,
-    "magenta",
-  );
+
+  log.section("Following Logs:");
+  log.say(`- Host: ${primaryHost}`, 1);
+  log.say(`- Container: ${KAMAL_PROXY_CONTAINER_NAME}`, 1);
 
   const ssh = context.sshManagers.find((ssh) => ssh.getHost() === primaryHost);
   if (!ssh) {
-    log.error(`SSH connection not found for host ${primaryHost}`, "proxy-logs");
+    log.error(`SSH connection not found for host ${primaryHost}`);
     Deno.exit(1);
   }
 
@@ -146,16 +168,14 @@ async function fetchProxyLogs(
     since?: string;
   },
 ): Promise<void> {
-  log.action(
-    `Fetching logs from ${KAMAL_PROXY_CONTAINER_NAME}...`,
-    "magenta",
-  );
+  log.section("Fetching Logs:");
+  log.say(`- Container: ${KAMAL_PROXY_CONTAINER_NAME}`, 1);
 
   // Fetch logs from each host
   for (const host of context.targetHosts) {
     const ssh = context.sshManagers.find((ssh) => ssh.getHost() === host);
     if (!ssh) {
-      log.warn(`SSH connection not found for host ${host}`, "proxy-logs");
+      log.warn(`SSH connection not found for host ${host}`);
       continue;
     }
 

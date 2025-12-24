@@ -21,12 +21,11 @@ export const buildCommand = new Command()
     let registryManager: RegistryManager | undefined;
 
     try {
-      const tracker = log.createStepTracker("Service Build");
+      log.section("Service Build:");
 
       const buildOptions = options as unknown as BuildOptions;
       const globalOptions = options as unknown as GlobalOptions;
 
-      tracker.step("Loading configuration");
       config = await Configuration.load(
         globalOptions.environment,
         globalOptions.configFile,
@@ -54,27 +53,86 @@ export const buildCommand = new Command()
         );
       }
 
-      log.section("Image Building");
-      log.say(
-        `Building ${servicesToBuild.length} service(s): ${
-          servicesToBuild.map((s) => s.name).join(", ")
-        }`,
-      );
+      log.section("Build Plan:");
+      log.say(`Project: ${config.project}`, 1);
+      log.say(`Container Engine: ${config.builder.engine}`, 1);
+      log.say(`Registry: ${config.builder.registry.getRegistryUrl()}`, 1);
+
+      if (globalOptions.version) {
+        log.say(`Version: ${globalOptions.version}`, 1);
+      }
+
+      console.log();
+      log.say("Services to Build:", 1);
+      for (const service of servicesToBuild) {
+        log.say(`${service.name}`, 2);
+
+        if (typeof service.build === "string") {
+          log.say(`Context: ${service.build}`, 3);
+        } else if (service.build) {
+          log.say(`Context: ${service.build.context}`, 3);
+          if (service.build.dockerfile) {
+            log.say(`Dockerfile: ${service.build.dockerfile}`, 3);
+          }
+          if (service.build.target) {
+            log.say(`Target: ${service.build.target}`, 3);
+          }
+        }
+
+        if (service.servers.length > 0) {
+          log.say(
+            `Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+            3,
+          );
+        }
+      }
+
+      const optionsList: string[] = [];
+      if (buildOptions.noCache) optionsList.push("No cache");
+      if (!buildOptions.push) optionsList.push("Skip push");
+      if (globalOptions.hosts) {
+        optionsList.push(`Target hosts: ${globalOptions.hosts}`);
+      }
+
+      if (optionsList.length > 0) {
+        console.log();
+        log.say("Options:", 1);
+        optionsList.forEach((option) => log.say(`${option}`, 2));
+      }
 
       const versionTag = await VersionManager.determineVersionTag({
         customVersion: globalOptions.version,
         useGitSha: true,
         shortSha: true,
       });
-      log.say(`Version tag: ${versionTag}`, 1);
+      log.say(`\nVersion tag: ${versionTag}`, 1);
 
       const registry = config.builder.registry;
 
       if (buildOptions.push && registry.isLocal()) {
-        tracker.step("Setting up local registry");
+        log.section("Setting Up Local Registry:");
+
         registryManager = new RegistryManager(engine, registry.port);
-        await registryManager.setupForBuild();
+
+        if (await registryManager.isRunning()) {
+          log.say("- Local registry already running", 1);
+          log.say("- Using existing registry", 1);
+        } else {
+          log.say("- Starting local registry", 1);
+          await registryManager.start((message, type) => {
+            if (type === "info") {
+              log.say(`  ${message}`, 2);
+            } else if (type === "success") {
+              log.say(`  ${message}`, 2);
+            } else {
+              log.say(`  ${message}`, 2);
+            }
+          });
+          log.say("- Local registry setup complete", 1);
+        }
       }
+
+      log.section("Building Service Images:");
 
       const buildService = new BuildService({
         engine,
@@ -85,18 +143,16 @@ export const buildCommand = new Command()
         cacheEnabled: config.builder.cache,
       });
 
-      tracker.step(`Building ${servicesToBuild.length} service(s)`);
       await buildService.buildServices(servicesToBuild, versionTag);
 
       if (buildOptions.push) {
-        log.say(`Registry: ${registry.getRegistryUrl()}`, 1);
+        log.section("Pushing to Registry:");
+        log.say(`- Registry: ${registry.getRegistryUrl()}`, 1);
       }
 
-      tracker.finish();
-
-      console.log();
       log.success(
-        `Successfully built ${servicesToBuild.length} service(s)`,
+        `\nSuccessfully built ${servicesToBuild.length} service(s)`,
+        0,
       );
     } catch (error) {
       console.log();

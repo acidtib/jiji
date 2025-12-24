@@ -11,6 +11,7 @@ import {
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
 import { log } from "../../utils/logger.ts";
+import { Configuration } from "../../lib/configuration.ts";
 
 import type { GlobalOptions } from "../../types.ts";
 import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
@@ -34,7 +35,24 @@ export const restartCommand = new Command()
         Deno.exit(1);
       }
 
-      // Setup command context (config + SSH connections)
+      log.section("Service Restart:");
+
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      // Setup command context (config + SSH connections - this will show SSH Connection Setup section)
       ctx = await setupCommandContext(globalOptions);
       const context = ctx; // Create non-undefined reference for closure
 
@@ -45,12 +63,11 @@ export const restartCommand = new Command()
         Deno.exit(1);
       }
 
-      const tracker = log.createStepTracker("Service Restart");
-
-      log.say(
-        `Restarting services on ${context.targetHosts.length} server(s)`,
-        1,
-      );
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of context.sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
 
       let servicesToRestart = Array.from(context.config.services.values());
 
@@ -65,8 +82,9 @@ export const restartCommand = new Command()
         Deno.exit(1);
       }
 
+      log.section("Restarting Services:");
       log.say(
-        `Services to restart: ${
+        `- Services: ${
           servicesToRestart.map((s: ServiceConfiguration) => s.name).join(
             ", ",
           )
@@ -83,7 +101,7 @@ export const restartCommand = new Command()
       // Restart each service
       const allResults = [];
       for (const service of servicesToRestart) {
-        tracker.step(`Restarting ${service.name} containers`);
+        log.say(`- Restarting ${service.name} containers`, 1);
 
         const serviceHosts = service.servers
           .map((server: { host: string }) => server.host)
@@ -104,24 +122,26 @@ export const restartCommand = new Command()
             continue;
           }
 
-          const containerName = service.getContainerName();
-          tracker.remote(host, `Stopping ${containerName}`, { indent: 1 });
+          await log.hostBlock(host, async () => {
+            const containerName = service.getContainerName();
+            log.say(`├── Stopping ${containerName}`, 2);
 
-          // Stop the container
-          await executeBestEffort(
-            ssh,
-            `${context.config.builder.engine} stop ${containerName}`,
-            `stopping ${containerName}`,
-          );
+            // Stop the container
+            await executeBestEffort(
+              ssh,
+              `${context.config.builder.engine} stop ${containerName}`,
+              `stopping ${containerName}`,
+            );
 
-          // Remove the container
-          await executeBestEffort(
-            ssh,
-            `${context.config.builder.engine} rm -f ${containerName}`,
-            `removing ${containerName}`,
-          );
+            // Remove the container
+            await executeBestEffort(
+              ssh,
+              `${context.config.builder.engine} rm -f ${containerName}`,
+              `removing ${containerName}`,
+            );
 
-          tracker.remote(host, `Stopped ${containerName}`, { indent: 1 });
+            log.say(`└── Stopped ${containerName}`, 2);
+          }, { indent: 1 });
         }
 
         // Deploy the service (which will start new containers)
@@ -138,53 +158,50 @@ export const restartCommand = new Command()
 
         if (successCount === totalCount) {
           log.say(
-            `${service.name} restarted successfully on all ${totalCount} server(s)`,
+            `- ${service.name} restarted successfully on all ${totalCount} server(s)`,
             1,
           );
         } else {
           log.warn(
-            `${service.name} restarted on ${successCount}/${totalCount} server(s)`,
+            `- ${service.name} restarted on ${successCount}/${totalCount} server(s)`,
           );
 
           // Log failed deployments
           results
             .filter((r) => !r.success)
             .forEach((r) => {
-              log.say(`${r.host}: ${r.error}`, 2);
+              log.say(`  ${r.host}: ${r.error}`, 2);
             });
         }
       }
-
-      tracker.finish();
 
       // Summary
       const totalSuccess = allResults.filter((r) => r.success).length;
       const totalAttempted = allResults.length;
 
-      console.log();
-      log.section("Restart Summary");
+      log.section("Restart Summary:");
       for (const result of allResults) {
         if (result.success) {
           log.say(
-            `${result.service} on ${result.host}: Successfully restarted`,
+            `- ${result.service} on ${result.host}: Successfully restarted`,
             1,
           );
         } else {
           log.say(
-            `${result.service} on ${result.host}: ${result.error}`,
+            `- ${result.service} on ${result.host}: ${result.error}`,
             1,
           );
         }
       }
 
-      console.log();
       if (totalSuccess === totalAttempted) {
         log.success(
-          `All services restarted successfully (${totalSuccess}/${totalAttempted})`,
+          `\nAll services restarted successfully (${totalSuccess}/${totalAttempted})`,
+          0,
         );
       } else {
         log.warn(
-          `Partial success: ${totalSuccess}/${totalAttempted} services restarted`,
+          `\nPartial success: ${totalSuccess}/${totalAttempted} services restarted`,
         );
         if (totalSuccess === 0) {
           Deno.exit(1);

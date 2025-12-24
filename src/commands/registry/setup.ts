@@ -12,9 +12,9 @@ export const setupCommand = new Command()
   .option("-L, --skip-local", "Skip local setup")
   .option("-R, --skip-remote", "Skip remote setup")
   .action(async (options) => {
-    log.info("Setting up registry...", "registry:setup");
-
     try {
+      log.section("Registry Setup:");
+
       // Load configuration to get registry settings
       const { config } = await loadConfig();
       const registryConfig = config.builder.registry;
@@ -22,15 +22,18 @@ export const setupCommand = new Command()
       // Use registry from config
       const registry = registryConfig.getRegistryUrl();
 
-      log.debug(`Registry: ${registry}`, "registry:setup");
-      log.debug(`Registry type: ${registryConfig.type}`, "registry:setup");
+      log.say(`- Registry: ${registry}`, 1);
+      log.say(`- Registry type: ${registryConfig.type}`, 1);
 
       // Initialize registry service
       const registryService = new RegistryService();
       await registryService.initialize();
 
+      log.section("Setting Up Registry:");
+
       // Setup local registry unless skip-local is specified
       if (!options.skipLocal) {
+        log.say("- Performing local setup", 1);
         if (registryConfig.type === "local") {
           // Setup local registry
           const setupOptions = {
@@ -51,13 +54,14 @@ export const setupCommand = new Command()
 
           await registryService.authenticate(registry, credentials);
         }
-        log.info("Local registry setup completed", "registry:setup");
+        log.say("- Local registry setup completed", 1);
       } else {
-        log.debug("Skipped local registry setup", "registry:setup");
+        log.say("- Skipped local registry setup", 1);
       }
 
       // Setup remote registry unless skip-remote is specified
       if (!options.skipRemote) {
+        log.say("- Performing remote setup", 1);
         if (registryConfig.type === "remote") {
           // Setup remote registry
           let credentials: RegistryCredentials | undefined;
@@ -76,17 +80,14 @@ export const setupCommand = new Command()
           await registryService.setupRegistry(registry, setupOptions);
         } else {
           // Local registry doesn't need remote setup
-          log.debug(
-            "Registry is local, no remote setup needed",
-            "registry:setup",
-          );
+          log.say("  Registry is local, no remote setup needed", 2);
         }
-        log.info("Remote registry setup completed", "registry:setup");
+        log.say("- Remote registry setup completed", 1);
       } else {
-        log.debug("Skipped remote registry setup", "registry:setup");
+        log.say("- Skipped remote registry setup", 1);
       }
 
-      log.info("Registry setup completed successfully", "registry:setup");
+      log.success("\nRegistry setup completed successfully", 0);
     } catch (error) {
       handleRegistryError(error, "setup");
     }

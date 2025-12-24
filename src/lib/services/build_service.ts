@@ -64,32 +64,55 @@ export class BuildService {
         )
         : service.getImageName(undefined, "latest");
 
-      this.logBuildInfo(service, imageName);
-      await this.executeBuild(service, imageName, latestImageName);
+      log.say(`├── Building ${service.name} on ${this.options.engine}`, 2);
+      log.say(`├── ├── Image: ${imageName}`, 2);
+      log.say(`├── └── Latest tag: ${latestImageName}`, 2);
 
-      log.success(`Built image: ${imageName}`, "build");
-      log.success(`Tagged as: ${latestImageName}`, "build");
+      this.logBuildInfo(service, imageName);
+
+      await this.executeBuild(service, imageName, latestImageName);
 
       if (this.options.push && this.imagePushService) {
         await this.ensureAuthenticated();
 
-        await log.group("Pushing to Registry", async () => {
-          const versionedResult = await this.imagePushService!.pushImage(
-            imageName,
-          );
-          if (!versionedResult.success) {
-            throw versionedResult.error ||
-              new Error(`Push failed for: ${imageName}`);
-          }
+        log.say(`├── Pushing to registry`, 2);
 
-          const latestResult = await this.imagePushService!.pushImage(
-            latestImageName,
-          );
-          if (!latestResult.success) {
-            throw latestResult.error ||
-              new Error(`Push failed for: ${latestImageName}`);
+        // Push versioned image
+        log.say(`├── ├── Pushing: ${imageName}`, 2);
+        const versionedResult = await this.imagePushService!.pushImage(
+          imageName,
+          (message, type) => {
+            if (type === 'info' || type === 'success') {
+              log.say(`├── ├── ${message}`, 2);
+            } else {
+              log.say(`├── ├── ${message}`, 2);
+            }
           }
-        });
+        );
+        if (!versionedResult.success) {
+          throw versionedResult.error ||
+            new Error(`Push failed for: ${imageName}`);
+        }
+
+        // Push latest image
+        log.say(`├── └── Pushing: ${latestImageName}`, 2);
+        const latestResult = await this.imagePushService!.pushImage(
+          latestImageName,
+          (message, type) => {
+            if (type === 'info' || type === 'success') {
+              log.say(`├── └── ${message}`, 2);
+            } else {
+              log.say(`├── └── ${message}`, 2);
+            }
+          }
+        );
+        if (!latestResult.success) {
+          throw latestResult.error ||
+            new Error(`Push failed for: ${latestImageName}`);
+        }
+        log.say(`└── ${service.name} built and pushed successfully`, 2);
+      } else {
+        log.say(`└── ${service.name} built successfully`, 2);
       }
 
       return {
@@ -99,6 +122,7 @@ export class BuildService {
         latestImageName,
       };
     } catch (error) {
+      log.say(`└── Build failed: ${error instanceof Error ? error.message : String(error)}`, 2);
       return {
         serviceName: service.name,
         success: false,
@@ -122,7 +146,7 @@ export class BuildService {
     const results: BuildResult[] = [];
 
     for (const service of services) {
-      await log.group(`Building: ${service.name}`, async () => {
+      await log.hostBlock(service.name, async () => {
         const result = await this.buildService(service, versionTag);
         results.push(result);
 
@@ -130,7 +154,7 @@ export class BuildService {
           throw result.error ||
             new Error(`Build failed for service: ${service.name}`);
         }
-      });
+      }, { indent: 1 });
     }
 
     return results;
@@ -222,6 +246,9 @@ export class BuildService {
       latestImageName,
     );
 
+    log.say(`├── Building image`, 2);
+    log.say(`├── ├── Building with command: ${this.options.engine} ${buildCmdArgs.join(" ")}`, 2);
+
     const buildCmd = new Deno.Command(this.options.engine, {
       args: buildCmdArgs,
       stdout: this.options.globalOptions.verbose ? "inherit" : "piped",
@@ -232,12 +259,14 @@ export class BuildService {
 
     if (buildResult.code !== 0) {
       const stderr = new TextDecoder().decode(buildResult.stderr);
-      log.error(`Failed to build ${service.name}`, "build");
+      log.say(`├── ├── Build failed for ${service.name}`, 2);
       if (!this.options.globalOptions.verbose) {
-        log.error(stderr, "build");
+        log.say(`├── ├── Error: ${stderr}`, 2);
       }
       throw new Error(`Build failed for service: ${service.name}`);
     }
+
+    log.say(`├── ├── Build completed successfully`, 2);
   }
 
   /**
@@ -262,14 +291,13 @@ export class BuildService {
     const requiredArchs = service.getRequiredArchitectures();
     const serversByArch = service.getServersByArchitecture();
 
-    log.info(`Building image: ${imageName}`, "build");
-    log.info(`Context: ${context}`, "build");
-    log.info(`Dockerfile: ${dockerfile}`, "build");
-    log.info(`Architecture(s): ${requiredArchs.join(", ")}`, "build");
+    log.say(`├── ├── Context: ${context}`, 2);
+    log.say(`├── ├── Dockerfile: ${dockerfile}`, 2);
+    log.say(`├── ├── Architecture(s): ${requiredArchs.join(", ")}`, 2);
 
     // Log server distribution by architecture
     for (const [arch, servers] of serversByArch.entries()) {
-      log.info(`${arch}: ${servers.join(", ")}`, "build");
+      log.say(`├── ├── ${arch}: ${servers.join(", ")}`, 2);
     }
   }
 }

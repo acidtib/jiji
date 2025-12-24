@@ -56,28 +56,45 @@ export class RegistryManager {
   /**
    * Start the local registry container
    */
-  async start(): Promise<void> {
+  async start(logCallback?: (message: string, type: 'info' | 'success' | 'error') => void): Promise<void> {
     // Check if already running
     if (await this.isRunning()) {
-      log.info(
-        `Local registry already running on port ${this.port}`,
-        "registry",
-      );
+      if (logCallback) {
+        logCallback(`Local registry already running on port ${this.port}`, 'info');
+      } else {
+        log.info(
+          `Local registry already running on port ${this.port}`,
+          "registry",
+        );
+      }
       return;
     }
 
     // Check if container exists but is stopped
     const exists = await this.containerExists();
     if (exists) {
-      log.info("Starting existing registry container", "registry");
+      if (logCallback) {
+        logCallback("Starting existing registry container", 'info');
+      } else {
+        log.info("Starting existing registry container", "registry");
+      }
       await this.startExistingContainer();
       return;
     }
 
     // Create and start new container
-    log.info(`Starting local registry on port ${this.port}`, "registry");
+    if (logCallback) {
+      logCallback(`Starting local registry on port ${this.port}`, 'info');
+    } else {
+      log.info(`Starting local registry on port ${this.port}`, "registry");
+    }
     await this.createContainer();
-    log.success(`Local registry started on localhost:${this.port}`, "registry");
+
+    if (logCallback) {
+      logCallback(`Local registry started on localhost:${this.port}`, 'success');
+    } else {
+      log.success(`Local registry started on localhost:${this.port}`, "registry");
+    }
   }
 
   /**
@@ -294,15 +311,26 @@ export class RegistryManager {
    * Starts local registry if needed and returns registry URL
    * @returns Registry URL for image tagging
    */
-  async setupForBuild(): Promise<string> {
+  async setupForBuild(logCallback?: (message: string, type: 'info' | 'success' | 'error') => void): Promise<string> {
     if (!await this.isRunning()) {
-      log.info("Starting local registry", "registry");
-      await this.start();
+      if (logCallback) {
+        logCallback("Starting local registry", 'info');
+      } else {
+        log.info("Starting local registry", "registry");
+      }
+      await this.start(logCallback);
     } else {
-      log.info(
-        `Local registry already running on port ${this.port}`,
-        "registry",
-      );
+      if (logCallback) {
+        logCallback(
+          `Local registry already running on port ${this.port}`,
+          'info',
+        );
+      } else {
+        log.info(
+          `Local registry already running on port ${this.port}`,
+          "registry",
+        );
+      }
     }
 
     return this.getRegistryUrl();

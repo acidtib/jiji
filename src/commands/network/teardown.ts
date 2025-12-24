@@ -18,8 +18,7 @@ import {
 } from "../../lib/network/wireguard.ts";
 import { stopCorrosionService } from "../../lib/network/corrosion.ts";
 import { stopCoreDNSService } from "../../lib/network/dns.ts";
-import { log, Logger } from "../../utils/logger.ts";
-import { DEFAULT_MAX_PREFIX_LENGTH } from "../../constants.ts";
+import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const teardownCommand = new Command()
@@ -29,60 +28,81 @@ export const teardownCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      await log.group("Network Teardown", async () => {
-        ctx = await setupCommandContext(globalOptions);
-        const { sshManagers, targetHosts } = ctx;
+      log.section("Network Teardown:");
 
-        let topology = null;
-        for (const ssh of sshManagers) {
-          try {
-            topology = await loadTopology(ssh);
-            if (topology) break;
-          } catch {
-            continue;
-          }
+      const { Configuration } = await import("../../lib/configuration.ts");
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      ctx = await setupCommandContext(globalOptions);
+      const { sshManagers, targetHosts } = ctx;
+
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
+
+      let topology = null;
+      for (const ssh of sshManagers) {
+        try {
+          topology = await loadTopology(ssh);
+          if (topology) break;
+        } catch {
+          continue;
+        }
+      }
+
+      if (!topology) {
+        console.log();
+        log.say("- No network cluster found", 1);
+        log.say("- Nothing to tear down", 1);
+        return;
+      }
+
+      log.section("Tearing Down Network:");
+      log.say(
+        `- This will tear down the private network on all servers`,
+        1,
+      );
+      log.say(`- Servers: ${topology.servers.length}`, 1);
+
+      // Tear down services on each server
+      for (const server of topology.servers) {
+        const ssh = sshManagers.find((s) => s.getHost() === server.hostname);
+
+        if (!ssh) {
+          log.say(`- ${server.hostname}: SSH connection failed, skipping`, 1);
+          continue;
         }
 
-        if (!topology) {
-          log.info("No network cluster found in Corrosion", "network");
-          log.info("Nothing to tear down", "network");
-          return;
-        }
-
-        log.warn(
-          "This will tear down the private network on all servers",
-          "network",
-        );
-        log.info(`Servers: ${topology.servers.length}`, "network");
-
-        const serverLoggers = Logger.forServers(targetHosts, {
-          maxPrefixLength: DEFAULT_MAX_PREFIX_LENGTH,
-        });
-
-        // Tear down services on each server
-        for (const server of topology.servers) {
-          const ssh = sshManagers.find((s) => s.getHost() === server.hostname);
-          const serverLogger = serverLoggers.get(server.hostname)!;
-
-          if (!ssh) {
-            serverLogger.warn("SSH connection failed, skipping");
-            continue;
-          }
-
+        await log.hostBlock(server.hostname, async () => {
           try {
-            serverLogger.info("Stopping DNS service...");
+            log.say("├── Stopping DNS service", 2);
             await stopCoreDNSService(ssh);
 
             if (topology.discovery === "corrosion") {
-              serverLogger.info("Stopping Corrosion service...");
+              log.say("├── Stopping Corrosion service", 2);
               await stopCorrosionService(ssh);
             }
 
-            serverLogger.info("Stopping WireGuard interface...");
+            log.say("├── Stopping WireGuard interface", 2);
             await bringDownWireGuardInterface(ssh);
             await disableWireGuardService(ssh);
 
-            serverLogger.info("Removing configuration files...");
+            log.say("├── Removing configuration files", 2);
 
             await ssh.executeCommand("rm -f /etc/wireguard/jiji0.conf");
             await ssh.executeCommand("rm -rf /opt/jiji/corrosion");
@@ -106,17 +126,17 @@ export const teardownCommand = new Command()
 
             await ssh.executeCommand("systemctl daemon-reload");
 
-            serverLogger.success("Network teardown complete");
+            log.say("└── Network teardown complete", 2);
           } catch (error) {
-            serverLogger.error(`Teardown failed: ${error}`);
+            log.say(`└── Teardown failed: ${error}`, 2);
           }
-        }
+        }, { indent: 1 });
+      }
 
-        log.success(
-          "Network teardown complete - all cluster state removed from Corrosion",
-          "network",
-        );
-      });
+      log.success(
+        "\nNetwork teardown complete - all cluster state removed",
+        0,
+      );
     } catch (error) {
       await handleCommandError(error, {
         operation: "Network teardown",

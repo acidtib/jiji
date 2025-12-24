@@ -10,8 +10,9 @@ import {
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
 import { log } from "../../utils/logger.ts";
+import { Configuration } from "../../lib/configuration.ts";
 
-import type { GlobalOptions } from "../../types.ts";
+import type { GlobalOptions, PruneResult } from "../../types.ts";
 
 interface PruneOptions extends GlobalOptions {
   retain?: number;
@@ -35,7 +36,24 @@ export const pruneCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      // Setup command context (config + SSH connections)
+      log.section("Service Image Pruning:");
+
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      // Setup command context (config + SSH connections - this will show SSH Connection Setup section)
       ctx = await setupCommandContext(globalOptions);
       const context = ctx; // Create non-undefined reference for closure
 
@@ -46,12 +64,11 @@ export const pruneCommand = new Command()
         Deno.exit(1);
       }
 
-      const tracker = log.createStepTracker("Image Pruning");
-
-      log.say(
-        `Pruning images on ${context.targetHosts.length} server(s)`,
-        1,
-      );
+      // Show connection status for each host
+      console.log(""); // Empty line
+      for (const ssh of context.sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
 
       // Create image prune service
       const pruneService = new ImagePruneService(
@@ -60,19 +77,24 @@ export const pruneCommand = new Command()
       );
 
       // Prune images on all connected hosts
-      tracker.step(
-        `Pruning images (retaining last ${
-          pruneOptions.retain ?? 3
-        } per service)`,
+      const retainCount = pruneOptions.retain ?? 3;
+      log.section("Pruning Images:");
+      log.say(
+        `- Pruning images (retaining last ${retainCount} per service)`,
+        1,
       );
 
-      const results = await pruneService.pruneImagesOnHosts(
-        context.sshManagers,
-        {
-          retain: pruneOptions.retain,
-          removeDangling: pruneOptions.dangling,
-        },
-      );
+      const results: PruneResult[] = [];
+      for (const ssh of context.sshManagers) {
+        const host = ssh.getHost();
+        await log.hostBlock(host, async () => {
+          const result = await pruneService.pruneImages(ssh, {
+            retain: pruneOptions.retain,
+            removeDangling: pruneOptions.dangling,
+          });
+          results.push(result);
+        }, { indent: 1 });
+      }
 
       // Display results
       const successCount = results.filter((r) => r.success).length;
@@ -81,24 +103,25 @@ export const pruneCommand = new Command()
         0,
       );
 
-      tracker.finish();
+      if (totalRemoved === 0) {
+        log.say("- No old images were pruned", 1);
+      }
 
-      console.log();
-      log.section("Prune Results");
+      log.section("Pruning Results:");
       for (const result of results) {
         if (result.success) {
           log.say(
-            `${result.host}: ${result.imagesRemoved} image(s) removed`,
+            `- ${result.host}: ${result.imagesRemoved} image(s) removed`,
             1,
           );
         } else {
-          log.say(`${result.host}: ${result.error}`, 1);
+          log.say(`- ${result.host}: ${result.error}`, 1);
         }
       }
 
-      console.log();
       log.success(
-        `Pruned ${totalRemoved} image(s) across ${successCount} server(s)`,
+        `\nPruned ${totalRemoved} image(s) across ${successCount} server(s)`,
+        0,
       );
 
       // Close SSH connections
