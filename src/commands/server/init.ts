@@ -3,6 +3,7 @@ import { setupCommandContext } from "../../utils/command_helpers.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log } from "../../utils/logger.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
+import { Configuration } from "../../lib/configuration.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { setupNetwork } from "../../lib/network/setup.ts";
 
@@ -15,10 +16,25 @@ export const initCommand = new Command()
     try {
       log.section("Server Initialization:");
 
-      // Load configuration and get hosts
-      ctx = await setupCommandContext(globalOptions);
+      // Load configuration first (before SSH setup)
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
 
-      const { config, sshManagers, targetHosts } = ctx;
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      // Now setup SSH connections
+      ctx = await setupCommandContext(globalOptions);
+      const { sshManagers, targetHosts } = ctx;
 
       // Show connection status for each host
       console.log(""); // Empty line
@@ -39,7 +55,7 @@ export const initCommand = new Command()
       );
 
       // Engine installation section
-      log.section("Install Engine:");
+      log.section("Installing Container Engine:");
 
       const engine = config.builder.engine;
 
@@ -51,16 +67,19 @@ export const initCommand = new Command()
           // Check if installed
           const installed = await installer.isEngineInstalled(engine);
           if (!installed) {
-            log.say(`Installing ${engine} on ${ssh.getHost()}`, 2);
+            log.say(`├── Installing ${engine}`, 2);
             const result = await installer.installEngine(engine);
 
             if (!result.success) {
               throw new Error(result.error || `Failed to install ${engine}`);
             }
+            log.say(`└── ${engine} installed successfully`, 2);
           } else {
             const version = await installer.getEngineVersion(engine);
             log.say(
-              `${engine} already installed${version ? ` (${version})` : ""}`,
+              `└── ${engine} already installed${
+                version ? ` (${version})` : ""
+              }`,
               2,
             );
           }
@@ -89,10 +108,14 @@ export const initCommand = new Command()
         config.builder.engine,
       );
 
+      log.section("Initialization Summary:");
+      log.say(`- Servers initialized: ${targetHosts.length}`, 1);
+      log.say(`- Container engine: ${config.builder.engine}`, 1);
+      if (config.network.enabled) {
+        log.say(`- Private network: Enabled`, 1);
+      }
       console.log();
-      log.say(
-        `Initialization completed successfully on ${targetHosts.length} server(s)`,
-      );
+      log.say(`Initialization completed successfully`);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Initialization",

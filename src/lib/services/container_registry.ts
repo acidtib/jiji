@@ -213,8 +213,8 @@ export async function unregisterContainerFromNetwork(
     }
 
     log.say(
-      `Unregistered container ${containerId} from network`,
-      3,
+      `├── Unregistered container ${containerId} from network`,
+      2,
     );
     return true;
   } catch (error) {
