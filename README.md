@@ -26,8 +26,8 @@ management
 
 **Configuration Management**: Create and manage infrastructure configurations
 
-**Server-Side Audit Trail**: Logging of all operations directly on
-target servers
+**Server-Side Audit Trail**: Logging of all operations directly on target
+servers
 
 **Registry Management**: Manage container registries (local and remote) with
 automatic namespace detection for GHCR and Docker Hub
@@ -137,8 +137,8 @@ The deploy command displays a deployment plan before proceeding, showing which
 services will be deployed, build configurations, and target hosts. Use `--yes`
 to skip the confirmation prompt.
 
-**Zero-Downtime Deployments**: Jiji employs a deployment strategy
-to ensure no service interruption:
+**Zero-Downtime Deployments**: Jiji employs a deployment strategy to ensure no
+service interruption:
 
 1. New containers are deployed alongside existing ones
 2. Health checks verify the new containers are ready (via proxy health endpoint
@@ -507,13 +507,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    hosts: 
+    hosts:
       - server1.example.com
-    ports: 
+    ports:
       "3000:3000"
     proxy:
       enabled: true
-      hosts: 
+      hosts:
         myapp.example.com
       ssl: true
       health_check:
@@ -756,11 +756,12 @@ services:
 
 ### Complete Configuration Reference
 
-For a configuration example with all available options and
-detailed explanations, see:
+For a configuration example with all available options and detailed
+explanations, see:
 
 - [src/jiji.yml](src/jiji.yml) - Authoritative reference configuration
-- [docs/configuration-reference.md](docs/configuration-reference.md) - Configuration guide
+- [docs/configuration-reference.md](docs/configuration-reference.md) -
+  Configuration guide
 
 ## Troubleshooting
 
