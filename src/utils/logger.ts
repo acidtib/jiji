@@ -565,6 +565,24 @@ export function treePrefix(isLast: boolean): string {
 }
 
 /**
+ * Get the appropriate tree prefix for an item in an array
+ * @param index Current item index
+ * @param totalItems Total number of items in the array
+ * @returns Tree prefix string ("├──" or "└──")
+ *
+ * @example
+ * ```typescript
+ * items.forEach((item, i) => {
+ *   const prefix = getTreePrefix(i, items.length);
+ *   log.say(`${prefix} ${item}`, 2);
+ * });
+ * ```
+ */
+export function getTreePrefix(index: number, totalItems: number): string {
+  return index === totalItems - 1 ? "└──" : "├──";
+}
+
+/**
  * TreeLogger class for managing hierarchical tree-like output
  * Automatically handles prefix selection based on item position
  */

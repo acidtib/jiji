@@ -211,6 +211,31 @@ export function cleanupSSHConnections(sshManagers: SSHManager[]): void {
 }
 
 /**
+ * Find an SSH manager by host name
+ *
+ * This helper consolidates the common pattern of searching for an SSH manager
+ * by hostname across the codebase (found in 15+ locations).
+ *
+ * @param sshManagers Array of SSH managers
+ * @param host Host name to search for
+ * @returns SSH manager for the host, or undefined if not found
+ *
+ * @example
+ * ```typescript
+ * const ssh = findSSHManagerByHost(sshManagers, "server1.example.com");
+ * if (ssh) {
+ *   await ssh.execute("docker ps");
+ * }
+ * ```
+ */
+export function findSSHManagerByHost(
+  sshManagers: SSHManager[],
+  host: string,
+): SSHManager | undefined {
+  return sshManagers.find((ssh) => ssh.getHost() === host);
+}
+
+/**
  * Display standardized command header with configuration details and connection status
  *
  * This consolidates the common pattern used across commands for showing:
@@ -313,99 +338,4 @@ export function resolveTargetHosts(
   }
 
   return { allHosts, matchingServices };
-}
-
-/**
- * Command handler function type
- */
-export type CommandHandler<T = void> = (
-  ctx: CommandContext,
-) => Promise<T>;
-
-/**
- * Wrapper for command execution with automatic context setup and cleanup
- *
- * This function provides a complete command execution pattern:
- * 1. Sets up command context (config, SSH, filtering)
- * 2. Executes the command handler
- * 3. Handles errors with audit logging
- * 4. Cleans up SSH connections
- *
- * @param globalOptions Global command options
- * @param operation Operation name (e.g., "Initialization", "Deployment")
- * @param component Component identifier for logging
- * @param handler Command handler function
- * @param contextOptions Options for context setup
- *
- * @example
- * ```typescript
- * export const myCommand = new Command()
- *   .description("My command")
- *   .action(async (options) => {
- *     await withCommandContext(
- *       options as unknown as GlobalOptions,
- *       "My Operation",
- *       "my-op",
- *       async (ctx) => {
- *         // Command logic here
- *         // Access ctx.config, ctx.sshManagers, ctx.targetHosts
- *       }
- *     );
- *   });
- * ```
- */
-export async function withCommandContext<T = void>(
-  globalOptions: GlobalOptions,
-  operation: string,
-  component: string,
-  handler: CommandHandler<T>,
-  contextOptions: CommandContextOptions = {},
-): Promise<T> {
-  let ctx: CommandContext | undefined;
-
-  try {
-    log.info(`Starting ${operation.toLowerCase()} process`, component);
-
-    // Set up command context
-    ctx = await setupCommandContext(globalOptions, contextOptions);
-
-    // Execute the handler
-    const result = await handler(ctx);
-
-    log.success(`${operation} completed successfully`, component);
-    return result;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log.error(`${operation} failed:`, component);
-    log.error(errorMessage, component);
-
-    // Log to audit trail if context was set up
-    if (ctx?.sshManagers && ctx?.config && ctx?.targetHosts) {
-      try {
-        const { handleCommandError } = await import("./error_handler.ts");
-        await handleCommandError(error, {
-          operation,
-          component,
-          sshManagers: ctx.sshManagers,
-          projectName: ctx.config.project,
-          targetHosts: ctx.targetHosts,
-        });
-      } catch (auditError) {
-        log.debug(
-          `Failed to log to audit trail: ${auditError}`,
-          component,
-        );
-      }
-    }
-
-    // TypeScript doesn't understand that Deno.exit never returns
-    Deno.exit(1);
-    // This line is unreachable but satisfies TypeScript
-    throw new Error("Process exited");
-  } finally {
-    // Always clean up SSH connections
-    if (ctx?.sshManagers) {
-      cleanupSSHConnections(ctx.sshManagers);
-    }
-  }
 }

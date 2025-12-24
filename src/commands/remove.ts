@@ -3,10 +3,11 @@ import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
   executeBestEffort,
+  findSSHManagerByHost,
   setupCommandContext,
 } from "../utils/command_helpers.ts";
 import { handleCommandError } from "../utils/error_handler.ts";
-import { log } from "../utils/logger.ts";
+import { getTreePrefix, log } from "../utils/logger.ts";
 import { ProxyCommands } from "../utils/proxy.ts";
 import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
 import type { GlobalOptions } from "../types.ts";
@@ -82,7 +83,7 @@ export const removeCommand = new Command()
             continue;
           }
 
-          const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
+          const hostSsh = findSSHManagerByHost(sshManagers, host);
           if (!hostSsh) continue;
 
           await log.hostBlock(host, async () => {
@@ -136,8 +137,7 @@ export const removeCommand = new Command()
               // Remove named volumes
               for (let i = 0; i < namedVolumes.length; i++) {
                 const volumeName = namedVolumes[i];
-                const isLast = i === namedVolumes.length - 1;
-                const prefix = isLast ? "└──" : "├──";
+                const prefix = getTreePrefix(i, namedVolumes.length);
 
                 await executeBestEffort(
                   hostSsh,
@@ -160,19 +160,17 @@ export const removeCommand = new Command()
 
       for (let i = 0; i < targetHosts.length; i++) {
         const host = targetHosts[i];
-        const isLastHost = i === targetHosts.length - 1;
-        const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
+        const hostSsh = findSSHManagerByHost(sshManagers, host);
         if (!hostSsh) continue;
 
+        const prefix = getTreePrefix(i, targetHosts.length);
         await log.hostBlock(host, async () => {
           try {
             await hostSsh.executeCommand(`rm -rf ${projectDir}`);
-            log.say(`${isLastHost ? "└──" : "├──"} Removed ${projectDir}`, 2);
+            log.say(`${prefix} Removed ${projectDir}`, 2);
           } catch (error) {
             log.say(
-              `${
-                isLastHost ? "└──" : "├──"
-              } Failed to remove ${projectDir}: ${error}`,
+              `${prefix} Failed to remove ${projectDir}: ${error}`,
               2,
             );
           }

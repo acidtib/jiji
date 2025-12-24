@@ -1,11 +1,13 @@
 import { Command } from "@cliffy/command";
 import {
+  cleanupSSHConnections,
   displayCommandHeader,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log } from "../../utils/logger.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
+import { EngineInstaller } from "../../utils/engine.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { setupNetwork } from "../../lib/network/setup.ts";
 
@@ -41,7 +43,6 @@ export const initCommand = new Command()
       const engine = config.builder.engine;
 
       for (const ssh of sshManagers) {
-        const { EngineInstaller } = await import("../../utils/engine.ts");
         const installer = new EngineInstaller(ssh);
 
         await log.hostBlock(ssh.getHost(), async () => {
@@ -107,9 +108,6 @@ export const initCommand = new Command()
       });
     } finally {
       if (ctx?.sshManagers) {
-        const { cleanupSSHConnections } = await import(
-          "../../utils/command_helpers.ts"
-        );
         cleanupSSHConnections(ctx.sshManagers);
       }
     }

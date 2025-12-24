@@ -561,7 +561,7 @@ export class ContainerDeploymentService {
    */
   async cleanupOldContainer(
     oldContainerName: string,
-    host: string,
+    _host: string,
     ssh: SSHManager,
   ): Promise<void> {
     log.say(

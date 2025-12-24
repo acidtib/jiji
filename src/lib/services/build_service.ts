@@ -286,7 +286,7 @@ export class BuildService {
    */
   private logBuildInfo(
     service: ServiceConfiguration,
-    imageName: string,
+    _imageName: string,
   ): void {
     const buildConfig = typeof service.build === "string"
       ? {

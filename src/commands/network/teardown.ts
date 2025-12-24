@@ -8,6 +8,7 @@
 import { Command } from "@cliffy/command";
 import {
   cleanupSSHConnections,
+  displayCommandHeader,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
@@ -28,32 +29,12 @@ export const teardownCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Network Teardown:");
-
-      const { Configuration } = await import("../../lib/configuration.ts");
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
-      const { sshManagers, targetHosts } = ctx;
+      const { config, sshManagers } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
-      }
+      // Display standardized command header
+      displayCommandHeader("Network Teardown:", config, sshManagers);
 
       let topology = null;
       for (const ssh of sshManagers) {

@@ -402,8 +402,8 @@ export function registerContainerHostname(
  * @param projectName - Project name
  */
 export function unregisterContainerHostname(
-  serviceName: string,
-  projectName?: string,
+  _serviceName: string,
+  _projectName?: string,
 ): void {
   // CoreDNS entries are automatically removed when containers are
   // unregistered from Corrosion database

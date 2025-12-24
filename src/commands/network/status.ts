@@ -77,7 +77,7 @@ export const statusCommand = new Command()
         if (!ssh) {
           await log.hostBlock(
             `${server.hostname} (${server.id})`,
-            async () => {
+            () => {
               log.say(`└── Status: OFFLINE (SSH connection failed)`, 2);
             },
             { indent: 1 },

@@ -1,7 +1,10 @@
 import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import { Configuration } from "../lib/configuration.ts";
-import { setupCommandContext } from "../utils/command_helpers.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../utils/command_helpers.ts";
 import { handleCommandError } from "../utils/error_handler.ts";
 import { log } from "../utils/logger.ts";
 import { PortForwardManager } from "../utils/port_forward.ts";
@@ -380,9 +383,6 @@ export const deployCommand = new Command()
       }
 
       if (ctx?.sshManagers) {
-        const { cleanupSSHConnections } = await import(
-          "../utils/command_helpers.ts"
-        );
         cleanupSSHConnections(ctx.sshManagers);
       }
     }

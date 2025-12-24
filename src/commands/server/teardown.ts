@@ -28,7 +28,7 @@ import {
 import { stopCorrosionService } from "../../lib/network/corrosion.ts";
 import { stopCoreDNSService } from "../../lib/network/dns.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
-import type { ServiceConfiguration } from "../../lib/configuration.ts";
+import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const teardownCommand = new Command()

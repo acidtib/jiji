@@ -281,7 +281,7 @@ export class ProxyService {
         const hostSsh = this.sshManagers.find((ssh) => ssh.getHost() === host);
 
         if (!hostSsh) {
-          await log.hostBlock(host, async () => {
+          await log.hostBlock(host, () => {
             log.say(`└── Skipping ${service.name} on unreachable host`, 2);
             results.push({
               service: service.name,
@@ -318,7 +318,7 @@ export class ProxyService {
    */
   async waitForServiceHealthy(
     service: ServiceConfiguration,
-    host: string,
+    _host: string,
     ssh: SSHManager,
     timeoutMs: number = 30000,
   ): Promise<boolean> {
