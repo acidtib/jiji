@@ -21,6 +21,7 @@ import { isCoreDNSRunning } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
+import { Configuration } from "../../lib/configuration.ts";
 
 export const statusCommand = new Command()
   .description("Show network status")
@@ -31,9 +32,25 @@ export const statusCommand = new Command()
     try {
       log.section("Network Status:");
 
-      // Load configuration and setup context
+      // Load configuration first (before SSH setup)
+      const config = await Configuration.load(
+        globalOptions.environment,
+        globalOptions.configFile,
+      );
+
+      const configPath = config.configPath || "unknown";
+      const allHosts = config.getAllServerHosts();
+
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
+      log.say(
+        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+        1,
+      );
+
+      // Now setup SSH connections
       ctx = await setupCommandContext(globalOptions);
-      const { config, sshManagers } = ctx;
+      const { sshManagers } = ctx;
 
       // Show connection status for each host
       console.log(""); // Empty line
@@ -66,11 +83,11 @@ export const statusCommand = new Command()
       log.section("Cluster Information:");
 
       const stats = getTopologyStats(topology);
-      log.say(`Cluster CIDR: ${topology.clusterCidr}`, 1);
-      log.say(`Service Domain: ${topology.serviceDomain}`, 1);
-      log.say(`Discovery: ${topology.discovery}`, 1);
-      log.say(`Server Count: ${stats.serverCount}`, 1);
-      log.say(`Cluster Age: ${stats.clusterAge}`, 1);
+      log.say(`- CIDR: ${topology.clusterCidr}`, 1);
+      log.say(`- Service domain: ${topology.serviceDomain}`, 1);
+      log.say(`- Discovery: ${topology.discovery}`, 1);
+      log.say(`- Servers: ${stats.serverCount}`, 1);
+      log.say(`- Age: ${stats.clusterAge}`, 1);
 
       // Display server status
       log.section("Server Status:");
@@ -82,7 +99,7 @@ export const statusCommand = new Command()
           await log.hostBlock(
             `${server.hostname} (${server.id})`,
             async () => {
-              log.say("Status: OFFLINE (SSH connection failed)", 2);
+              log.say(`└── Status: OFFLINE (SSH connection failed)`, 2);
             },
             { indent: 1 },
           );
@@ -92,44 +109,39 @@ export const statusCommand = new Command()
         await log.hostBlock(
           server.hostname,
           async () => {
-            log.say(`Server ID: ${server.id}`, 2);
-            log.say(`Subnet: ${server.subnet}`, 2);
-            log.say(`WireGuard IP: ${server.wireguardIp}`, 2);
-            log.say(`Management IP: ${server.managementIp}`, 2);
+            log.say(`├── ID: ${server.id}`, 2);
+            log.say(`├── Subnet: ${server.subnet}`, 2);
+            log.say(`├── WireGuard IP: ${server.wireguardIp}`, 2);
+            log.say(`├── Management IP: ${server.managementIp}`, 2);
 
             // Check WireGuard status
             const wgStatus = await getWireGuardStatus(ssh);
             if (wgStatus.up) {
               log.say(
-                `WireGuard: UP (${wgStatus.peers} peers connected)`,
+                `├── WireGuard: UP (${wgStatus.peers} peers)`,
                 2,
               );
             } else if (wgStatus.exists) {
               log.say(
-                "WireGuard: DOWN (interface exists but not active)",
+                `├── WireGuard: DOWN (not active)`,
                 2,
               );
             } else {
-              log.say("WireGuard: NOT CONFIGURED", 2);
+              log.say(`├── WireGuard: NOT CONFIGURED`, 2);
             }
 
             // Check Corrosion status
             if (topology.discovery === "corrosion") {
               const corrRunning = await isCorrosionRunning(ssh);
-              if (corrRunning) {
-                log.say("Corrosion: RUNNING", 2);
-              } else {
-                log.say("Corrosion: NOT RUNNING", 2);
-              }
+              log.say(
+                `├── Corrosion: ${corrRunning ? "RUNNING" : "NOT RUNNING"}`,
+                2,
+              );
             }
 
             // Check DNS status
             const dnsRunning = await isCoreDNSRunning(ssh);
-            if (dnsRunning) {
-              log.say("DNS: RUNNING", 2);
-            } else {
-              log.say("DNS: NOT RUNNING", 2);
-            }
+            log.say(`├── DNS: ${dnsRunning ? "RUNNING" : "NOT RUNNING"}`, 2);
 
             // Query containers on this server (if Corrosion is running)
             if (topology.discovery === "corrosion") {
@@ -184,8 +196,12 @@ export const statusCommand = new Command()
                 }
 
                 if (containers.length > 0) {
-                  log.say("Containers:", 2);
-                  for (const container of containers) {
+                  log.say(`└── Containers:`, 2);
+                  for (let i = 0; i < containers.length; i++) {
+                    const container = containers[i];
+                    const isLast = i === containers.length - 1;
+                    const prefix = isLast ? "└──" : "├──";
+
                     let proxyInfo = "";
                     if (proxyDetails && proxyDetails.has(container.service)) {
                       const details = proxyDetails.get(container.service)!;
@@ -199,15 +215,15 @@ export const statusCommand = new Command()
                       proxyInfo = ` -> ${hostUrls}`;
                     }
                     log.say(
-                      `${container.service}: ${container.ip} (${container.domain})${proxyInfo}`,
-                      3,
+                      `    ${prefix} ${container.service}: ${container.ip} (${container.domain})${proxyInfo}`,
+                      2,
                     );
                   }
                 } else {
-                  log.say("Containers: none", 2);
+                  log.say(`└── Containers: none`, 2);
                 }
               } catch (error) {
-                log.say(`Containers: failed to query (${error})`, 2);
+                log.say(`└── Containers: failed to query (${error})`, 2);
               }
             }
           },
@@ -215,8 +231,7 @@ export const statusCommand = new Command()
         );
       }
 
-      console.log();
-      log.say("Network status check complete");
+      log.success("\nNetwork status check complete", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Network status",
