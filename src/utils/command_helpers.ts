@@ -211,6 +211,57 @@ export function cleanupSSHConnections(sshManagers: SSHManager[]): void {
 }
 
 /**
+ * Display standardized command header with configuration details and connection status
+ *
+ * This consolidates the common pattern used across commands for showing:
+ * - Section title
+ * - Configuration file path
+ * - Container engine
+ * - Remote hosts found
+ * - SSH connection status
+ *
+ * @param title Section title to display
+ * @param config Loaded configuration
+ * @param sshManagers SSH managers for connected hosts
+ * @param options Additional display options
+ *
+ * @example
+ * ```typescript
+ * const ctx = await setupCommandContext(globalOptions);
+ * displayCommandHeader("Deployment:", ctx.config, ctx.sshManagers);
+ * ```
+ */
+export function displayCommandHeader(
+  title: string,
+  config: Configuration,
+  sshManagers: SSHManager[],
+  options: {
+    showServices?: string[];
+  } = {},
+): void {
+  log.section(title);
+
+  const configPath = config.configPath || "unknown";
+  const allHosts = config.getAllServerHosts();
+
+  log.say(`Configuration loaded from: ${configPath}`, 1);
+  log.say(`Container engine: ${config.builder.engine}`, 1);
+  log.say(
+    `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
+    1,
+  );
+
+  if (options.showServices && options.showServices.length > 0) {
+    log.say(`Targeting services: ${options.showServices.join(", ")}`, 1);
+  }
+
+  console.log("");
+  for (const ssh of sshManagers) {
+    log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+  }
+}
+
+/**
  * Resolve target hosts from configuration and global options
  * This is a lightweight version of setupCommandContext that doesn't establish SSH connections
  *

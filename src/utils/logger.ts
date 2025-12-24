@@ -551,6 +551,61 @@ export class Logger {
   }
 }
 
+/**
+ * Tree prefix utilities for hierarchical output
+ */
+
+/**
+ * Get the appropriate tree prefix character based on position
+ * @param isLast Whether this is the last item in a list
+ * @returns Tree prefix string ("├──" or "└──")
+ */
+export function treePrefix(isLast: boolean): string {
+  return isLast ? "└──" : "├──";
+}
+
+/**
+ * TreeLogger class for managing hierarchical tree-like output
+ * Automatically handles prefix selection based on item position
+ */
+export class TreeLogger {
+  private items: string[] = [];
+
+  /**
+   * Add an item to the tree
+   */
+  add(message: string): void {
+    this.items.push(message);
+  }
+
+  /**
+   * Print all items with appropriate tree prefixes and clear the list
+   * @param indent Indentation level (default: 2)
+   */
+  print(indent: number = 2): void {
+    this.items.forEach((item, index) => {
+      const isLast = index === this.items.length - 1;
+      const prefix = treePrefix(isLast);
+      log.say(`${prefix} ${item}`, indent);
+    });
+    this.items = [];
+  }
+
+  /**
+   * Get the number of items currently in the tree
+   */
+  get length(): number {
+    return this.items.length;
+  }
+
+  /**
+   * Clear all items without printing
+   */
+  clear(): void {
+    this.items = [];
+  }
+}
+
 // Default logger instance
 export const logger = new Logger();
 

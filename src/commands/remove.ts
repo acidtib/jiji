@@ -57,12 +57,12 @@ export const removeCommand = new Command()
         }
       }
 
-      // Set up command context
+      // Set up command context (establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
       const { config: ctxConfig, sshManagers, targetHosts } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
+      // Display SSH connection status
+      console.log("");
       for (const ssh of sshManagers) {
         log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }

@@ -5,6 +5,7 @@
 import { Command } from "@cliffy/command";
 import {
   cleanupSSHConnections,
+  displayCommandHeader,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
@@ -38,39 +39,19 @@ export const logsCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Proxy Logs:");
-
-      const { Configuration } = await import("../../lib/configuration.ts");
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
-      // Setup command context
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
       const context = ctx;
+      const { config } = context;
+
+      // Display standardized command header
+      displayCommandHeader("Proxy Logs:", config, context.sshManagers);
 
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot fetch proxy logs.",
         );
         Deno.exit(1);
-      }
-
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of context.sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
       // Create logs service

@@ -65,8 +65,8 @@ export class BuildService {
         : service.getImageName(undefined, "latest");
 
       log.say(`├── Building ${service.name} on ${this.options.engine}`, 2);
-      log.say(`├── ├── Image: ${imageName}`, 2);
-      log.say(`├── └── Latest tag: ${latestImageName}`, 2);
+      log.say(`    Image: ${imageName}`, 3);
+      log.say(`    Latest tag: ${latestImageName}`, 3);
 
       this.logBuildInfo(service, imageName);
 
@@ -78,16 +78,16 @@ export class BuildService {
         log.say(`├── Pushing to registry`, 2);
 
         // Push versioned image
-        log.say(`├── ├── Pushing: ${imageName}`, 2);
+        log.say(`    Pushing: ${imageName}`, 3);
         const versionedResult = await this.imagePushService!.pushImage(
           imageName,
           (message, type) => {
-            if (type === 'info' || type === 'success') {
-              log.say(`├── ├── ${message}`, 2);
+            if (type === "info" || type === "success") {
+              log.say(`    ${message}`, 3);
             } else {
-              log.say(`├── ├── ${message}`, 2);
+              log.say(`    ${message}`, 3);
             }
-          }
+          },
         );
         if (!versionedResult.success) {
           throw versionedResult.error ||
@@ -95,16 +95,16 @@ export class BuildService {
         }
 
         // Push latest image
-        log.say(`├── └── Pushing: ${latestImageName}`, 2);
+        log.say(`    Pushing: ${latestImageName}`, 3);
         const latestResult = await this.imagePushService!.pushImage(
           latestImageName,
           (message, type) => {
-            if (type === 'info' || type === 'success') {
-              log.say(`├── └── ${message}`, 2);
+            if (type === "info" || type === "success") {
+              log.say(`    ${message}`, 3);
             } else {
-              log.say(`├── └── ${message}`, 2);
+              log.say(`    ${message}`, 3);
             }
-          }
+          },
         );
         if (!latestResult.success) {
           throw latestResult.error ||
@@ -122,7 +122,12 @@ export class BuildService {
         latestImageName,
       };
     } catch (error) {
-      log.say(`└── Build failed: ${error instanceof Error ? error.message : String(error)}`, 2);
+      log.say(
+        `└── Build failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        2,
+      );
       return {
         serviceName: service.name,
         success: false,
@@ -247,7 +252,12 @@ export class BuildService {
     );
 
     log.say(`├── Building image`, 2);
-    log.say(`├── ├── Building with command: ${this.options.engine} ${buildCmdArgs.join(" ")}`, 2);
+    log.say(
+      `    Building with command: ${this.options.engine} ${
+        buildCmdArgs.join(" ")
+      }`,
+      3,
+    );
 
     const buildCmd = new Deno.Command(this.options.engine, {
       args: buildCmdArgs,

@@ -1,9 +1,11 @@
 import { Command } from "@cliffy/command";
-import { setupCommandContext } from "../../utils/command_helpers.ts";
+import {
+  displayCommandHeader,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log } from "../../utils/logger.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
-import { Configuration } from "../../lib/configuration.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { setupNetwork } from "../../lib/network/setup.ts";
 
@@ -14,33 +16,12 @@ export const initCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Initialization:");
-
-      // Load configuration first (before SSH setup)
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
-      // Now setup SSH connections
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
-      const { sshManagers, targetHosts } = ctx;
+      const { config, sshManagers, targetHosts } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
-      }
+      // Display standardized command header
+      displayCommandHeader("Server Initialization:", config, sshManagers);
 
       // Create audit logger for connected servers
       const auditLogger = createServerAuditLogger(

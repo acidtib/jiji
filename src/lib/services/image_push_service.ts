@@ -14,7 +14,10 @@ export class ImagePushService {
    * @param logCallback Optional callback for structured logging
    * @returns Push result
    */
-  async pushImage(imageName: string, logCallback?: (message: string, type: 'info' | 'success' | 'error') => void): Promise<PushResult> {
+  async pushImage(
+    imageName: string,
+    logCallback?: (message: string, type: "info" | "success" | "error") => void,
+  ): Promise<PushResult> {
     try {
       await this.executePush(imageName, logCallback);
       return { imageName, success: true };
@@ -67,9 +70,12 @@ export class ImagePushService {
    * @param imageName Image name to push
    * @param logCallback Optional callback for structured logging
    */
-  private async executePush(imageName: string, logCallback?: (message: string, type: 'info' | 'success' | 'error') => void): Promise<void> {
+  private async executePush(
+    imageName: string,
+    logCallback?: (message: string, type: "info" | "success" | "error") => void,
+  ): Promise<void> {
     if (logCallback) {
-      logCallback(`Pushing ${imageName}`, 'info');
+      logCallback(`Pushing ${imageName}`, "info");
     } else {
       log.info(`Pushing ${imageName}`, "registry");
     }
@@ -87,9 +93,9 @@ export class ImagePushService {
     if (pushResult.code !== 0) {
       const stderr = new TextDecoder().decode(pushResult.stderr);
       if (logCallback) {
-        logCallback(`Failed to push ${imageName}`, 'error');
+        logCallback(`Failed to push ${imageName}`, "error");
         if (!this.options.globalOptions.verbose) {
-          logCallback(stderr, 'error');
+          logCallback(stderr, "error");
         }
       } else {
         log.error(`Failed to push ${imageName}`, "registry");
@@ -101,7 +107,7 @@ export class ImagePushService {
     }
 
     if (logCallback) {
-      logCallback(`Pushed: ${imageName}`, 'success');
+      logCallback(`Pushed: ${imageName}`, "success");
     } else {
       log.success(`Pushed: ${imageName}`, "registry");
     }

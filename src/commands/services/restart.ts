@@ -6,12 +6,12 @@ import { Command } from "@cliffy/command";
 import { ContainerDeploymentService } from "../../lib/services/container_deployment_service.ts";
 import {
   cleanupSSHConnections,
+  displayCommandHeader,
   executeBestEffort,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
 import { log } from "../../utils/logger.ts";
-import { Configuration } from "../../lib/configuration.ts";
 
 import type { GlobalOptions } from "../../types.ts";
 import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
@@ -35,38 +35,24 @@ export const restartCommand = new Command()
         Deno.exit(1);
       }
 
-      log.section("Service Restart:");
-
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
-      // Setup command context (config + SSH connections - this will show SSH Connection Setup section)
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
       const context = ctx; // Create non-undefined reference for closure
+      const { config } = context;
+
+      // Display standardized command header
+      displayCommandHeader(
+        "Service Restart:",
+        config,
+        context.sshManagers,
+        { showServices: context.matchingServices },
+      );
 
       if (context.targetHosts.length === 0) {
         log.error(
           "No servers are reachable. Cannot restart services.",
         );
         Deno.exit(1);
-      }
-
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of context.sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
       let servicesToRestart = Array.from(context.config.services.values());

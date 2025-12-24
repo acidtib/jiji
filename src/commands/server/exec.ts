@@ -39,33 +39,17 @@ export const execCommand = new Command()
 
     try {
       log.section("Remote Command Execution:");
-      log.say(`- Command: ${command}`, 1);
+      log.say(`Command: ${command}`, 1);
+      console.log("");
 
-      const { Configuration } = await import("../../lib/configuration.ts");
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`- Configuration loaded from: ${configPath}`, 1);
-      log.say(`- Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `- Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
-      // Set up command context
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions, {
         allowPartialConnection: options.continueOnError,
       });
 
-      const { sshManagers, targetHosts } = ctx;
+      const { config, sshManagers, targetHosts } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
+      // Display connection status
       for (const ssh of sshManagers) {
         log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }

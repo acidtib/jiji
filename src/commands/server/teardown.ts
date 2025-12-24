@@ -12,6 +12,7 @@ import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
+  displayCommandHeader,
   executeBestEffort,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
@@ -27,10 +28,7 @@ import {
 import { stopCorrosionService } from "../../lib/network/corrosion.ts";
 import { stopCoreDNSService } from "../../lib/network/dns.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
-import {
-  Configuration,
-  ServiceConfiguration,
-} from "../../lib/configuration.ts";
+import type { ServiceConfiguration } from "../../lib/configuration.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const teardownCommand = new Command()
@@ -41,33 +39,12 @@ export const teardownCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Teardown:");
-
-      // Load configuration first (before SSH setup)
-      const config = await Configuration.load(
-        globalOptions.environment,
-        globalOptions.configFile,
-      );
-
-      const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
-
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Container engine: ${config.builder.engine}`, 1);
-      log.say(
-        `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
-        1,
-      );
-
-      // Now setup SSH connections
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
-      const { sshManagers, targetHosts } = ctx;
+      const { config, sshManagers, targetHosts } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
-      }
+      // Display standardized command header
+      displayCommandHeader("Server Teardown:", config, sshManagers);
 
       // Get confirmation unless --confirmed flag is passed
       const confirmed = options.confirmed as boolean;
