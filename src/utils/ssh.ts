@@ -989,9 +989,9 @@ export async function validateSSHSetup(): Promise<
 async function testConnections(
   sshManagers: SSHManager[],
   maxConcurrent?: number,
-  tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{ host: string; connected: boolean; error?: string }[]> {
-  tracker?.step("Testing connections to all hosts", 1);
+  const { log } = await import("./logger.ts");
+  log.say("└── Testing connections to all hosts", 1);
 
   // Import the pool dynamically to avoid circular dependencies
   const { SSHConnectionPool } = await import("./ssh_pool.ts");
@@ -1006,7 +1006,7 @@ async function testConnections(
         const errorMessage = error instanceof Error
           ? error.message
           : String(error);
-        tracker?.remote(ssh.getHost(), `Failed to connect: ${errorMessage}`);
+        log.say(`${ssh.getHost()}: Failed to connect: ${errorMessage}`, 1);
         return {
           host: ssh.getHost(),
           connected: false,
@@ -1122,7 +1122,6 @@ export async function setupSSHConnections(
     skipValidation?: boolean;
     allowPartialConnection?: boolean;
   } = {},
-  tracker?: ReturnType<typeof import("./logger.ts").log.createStepTracker>,
 ): Promise<{
   managers: SSHManager[];
   connectedHosts: string[];
@@ -1131,14 +1130,13 @@ export async function setupSSHConnections(
   // Validate SSH setup unless explicitly skipped
   if (!options.skipValidation) {
     const { log } = await import("./logger.ts");
-    tracker?.step("Validating SSH configuration", 1);
+    log.say("├── Validating SSH configuration", 1);
     const sshValidation = await validateSSHSetup();
     if (!sshValidation.valid) {
-      log.error(`SSH setup validation failed:`);
-      log.say(`${sshValidation.message}`, 2);
+      log.error(`├── SSH setup validation failed:`, 1);
+      log.say(`└── ${sshValidation.message}`, 2);
       throw new Error(`SSH validation failed: ${sshValidation.message}`);
     }
-    tracker?.step("SSH setup validation passed", 1);
   }
 
   // Create SSH connection configuration
@@ -1164,7 +1162,6 @@ export async function setupSSHConnections(
   const connectionTests = await testConnections(
     sshManagers,
     undefined,
-    tracker,
   );
 
   const { connectedManagers, connectedHosts, failedHosts } =

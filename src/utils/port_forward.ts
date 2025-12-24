@@ -52,9 +52,9 @@ export class PortForwarder {
       );
     }
 
-    log.info(
-      `Starting reverse port forward: remote ${this.remoteHost}:${this.remotePort} -> local localhost:${this.localPort}`,
-      "port-forward",
+    log.say(
+      `├── Starting reverse port forward: remote ${this.remoteHost}:${this.remotePort} -> local localhost:${this.localPort}`,
+      2,
     );
 
     try {
@@ -102,9 +102,9 @@ export class PortForwarder {
       );
 
       this.forwarding = true;
-      log.success(
-        `Reverse port forwarding established: remote can access local registry via localhost:${this.remotePort}`,
-        "port-forward",
+      log.say(
+        `├── Reverse port forwarding established: remote can access local registry via localhost:${this.remotePort}`,
+        2,
       );
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -184,7 +184,7 @@ export class PortForwarder {
       return;
     }
 
-    log.info("Stopping port forwarding", "port-forward");
+    log.debug("Stopping port forwarding", "port-forward");
 
     try {
       // Close all active connections
@@ -219,7 +219,7 @@ export class PortForwarder {
       }
 
       this.forwarding = false;
-      log.success("Port forwarding stopped", "port-forward");
+      log.debug("Port forwarding stopped", "port-forward");
     } catch (error) {
       log.warn(
         `Error stopping port forward: ${

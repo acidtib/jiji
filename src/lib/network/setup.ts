@@ -114,18 +114,18 @@ export async function setupNetwork(
     log.section("Private Network Setup:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), () => {
-        log.say(`Discovery: ${config.network.discovery}`, 2);
-        log.say(`Cluster CIDR: ${config.network.clusterCidr}`, 2);
-        log.say(`Internal domain: ${config.network.serviceDomain}`, 2);
+        log.say(`├── Discovery: ${config.network.discovery}`, 2);
+        log.say(`├── Cluster CIDR: ${config.network.clusterCidr}`, 2);
+        log.say(`├── Internal domain: ${config.network.serviceDomain}`, 2);
 
         if (isNewNetwork) {
           log.say(
-            "No existing cluster found - creating new network cluster",
+            "└── No existing cluster found - creating new network cluster",
             2,
           );
         } else {
-          log.say("Found existing network cluster in Corrosion", 2);
-          log.say(`Existing servers: ${existingServersCount}`, 2);
+          log.say("├── Found existing network cluster in Corrosion", 2);
+          log.say(`└── Existing servers: ${existingServersCount}`, 2);
         }
       }, { indent: 1 });
     }
@@ -134,25 +134,28 @@ export async function setupNetwork(
     const allocator = new SubnetAllocator(config.network.clusterCidr);
 
     // 2. Install Dependencies
-    log.section("Install Dependencies:");
+    log.section("Installing Network Dependencies:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
         try {
           // Install WireGuard
-          log.say("WireGuard", 2);
+          log.say("├── Installing WireGuard", 2);
           const wgInstalled = await installWireGuard(ssh);
           if (!wgInstalled) throw new Error("Failed to install WireGuard");
 
           // Install Corrosion
           if (config.network.discovery === "corrosion") {
-            log.say("Corrosion", 2);
+            log.say("├── Installing Corrosion", 2);
             const corrInstalled = await installCorrosion(ssh);
             if (!corrInstalled) throw new Error("Failed to install Corrosion");
           }
 
           // Install CoreDNS
-          log.say("CoreDNS", 2);
+          const prefix = config.network.discovery === "corrosion"
+            ? "└──"
+            : "└──";
+          log.say(`${prefix} Installing CoreDNS`, 2);
           const dnsInstalled = await installCoreDNS(ssh);
           if (!dnsInstalled) throw new Error("Failed to install CoreDNS");
         } catch (error) {
@@ -167,7 +170,7 @@ export async function setupNetwork(
     const newServerHosts: Set<string> = new Set();
 
     // 3. Generate Keys & Allocate IPs
-    log.section("Generate Keys & Allocate IPs:");
+    log.section("Generating Keys & Allocating IPs:");
 
     const networkServers: NetworkServer[] = [];
     // We need to loop serially to allocate IPs correctly (sequential indices)
@@ -188,13 +191,13 @@ export async function setupNetwork(
 
             const endpoints = await discoverAllEndpoints(ssh, WIREGUARD_PORT);
             log.say(
-              `Discovered ${endpoints.length} endpoints: ${
+              `├── Discovered ${endpoints.length} endpoint(s): ${
                 endpoints.join(", ")
               }`,
               2,
             );
 
-            log.say(`Server ${host} already in topology, reusing`, 2);
+            log.say(`├── Server already in topology, reusing configuration`, 2);
 
             // Update keypair check...
             const { privateKey, publicKey } = await generateWireGuardKeypair(
@@ -211,7 +214,7 @@ export async function setupNetwork(
 
             const endpoints = await discoverAllEndpoints(ssh, WIREGUARD_PORT);
             log.say(
-              `Discovered ${endpoints.length} endpoints: ${
+              `├── Discovered ${endpoints.length} endpoint(s): ${
                 endpoints.join(", ")
               }`,
               2,
@@ -237,7 +240,7 @@ export async function setupNetwork(
               privateKey;
 
             log.say(
-              `Allocated ${subnet} with WireGuard IP ${wireguardIp} to ${host}`,
+              `├── Allocated subnet ${subnet} with WireGuard IP ${wireguardIp}`,
               2,
             );
           }
@@ -246,7 +249,7 @@ export async function setupNetwork(
 
           // If we are adding, we count +1.
           const currentTotal = topology!.servers.length + newServerCount; // rough estimate if we didn't add yet
-          log.say(`Network topology has ${currentTotal} servers`, 2);
+          log.say(`└── Network topology has ${currentTotal} server(s)`, 2);
         } catch (error) {
           results.push({ host, success: false, error: String(error) });
           throw error;
@@ -260,7 +263,7 @@ export async function setupNetwork(
     }
 
     // 4. Configure WireGuard Mesh
-    log.section("Configure WireGuard Mesh:");
+    log.section("Configuring WireGuard Mesh:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -304,14 +307,17 @@ export async function setupNetwork(
             peers,
           });
 
-          log.say(`WireGuard config written to /etc/wireguard/jiji0.conf`, 2);
+          log.say(
+            `├── WireGuard config written to /etc/wireguard/jiji0.conf`,
+            2,
+          );
 
           const isExistingServer = existingServerHosts.has(host);
           const isNewServer = newServerHosts.has(host);
 
           if (isExistingServer && newServerHosts.size > 0) {
             log.say(
-              `Restarting WireGuard interface to connect to ${newServerHosts.size} new server(s)...`,
+              `├── Restarting WireGuard to connect to ${newServerHosts.size} new server(s)`,
               2,
             );
             await restartWireGuardInterface(ssh);
@@ -324,9 +330,12 @@ export async function setupNetwork(
             await bringUpWireGuardInterface(ssh);
           }
 
-          log.say(`WireGuard interface jiji0 is up on ${host}`, 2); // Matching user output syntax roughly
+          log.say(`├── WireGuard interface jiji0 is up`, 2);
           await enableWireGuardService(ssh);
-          log.say(`WireGuard mesh configured with ${peers.length} peers`, 2);
+          log.say(
+            `└── WireGuard mesh configured with ${peers.length} peer(s)`,
+            2,
+          );
         } catch (error) {
           results.push({ host, success: false, error: String(error) });
           throw error;
@@ -336,7 +345,7 @@ export async function setupNetwork(
 
     // 5. Configure Corrosion
     if (config.network.discovery === "corrosion") {
-      log.section("Configure Corrosion:");
+      log.section("Configuring Corrosion:");
       for (const ssh of sshManagers) {
         await log.hostBlock(ssh.getHost(), async () => {
           const host = ssh.getHost();
@@ -364,7 +373,7 @@ export async function setupNetwork(
             await createCorrosionService(ssh);
             await startCorrosionService(ssh);
 
-            log.say("Waiting for Corrosion cluster to form...", 2);
+            log.say("├── Waiting for Corrosion cluster to form...", 2);
             await new Promise((resolve) => setTimeout(resolve, 5000));
 
             if (isNewNetwork && ssh === sshManagers[0]) {
@@ -376,9 +385,9 @@ export async function setupNetwork(
               );
             }
 
-            log.say("Waiting for Corrosion database sync...", 2);
+            log.say("├── Waiting for Corrosion database sync...", 2);
             await waitForCorrosionSync(ssh, topology!.servers.length);
-            log.say("Corrosion database synchronized", 2);
+            log.say("├── Corrosion database synchronized", 2);
 
             await registerServer(ssh, {
               id: server.id,
@@ -390,7 +399,7 @@ export async function setupNetwork(
               endpoints: server.endpoints,
               lastSeen: Date.now(),
             });
-            log.say("Server registered in Corrosion", 2);
+            log.say("└── Server registered in Corrosion", 2);
           } catch (error) {
             results.push({ host, success: false, error: String(error) });
             throw error;
@@ -400,7 +409,7 @@ export async function setupNetwork(
     }
 
     // 6. Configure Container Networks
-    log.section("Configure Container Networks:");
+    log.section("Configuring Container Networks:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -425,12 +434,12 @@ export async function setupNetwork(
             const existingSubnet = inspectResult.stdout.trim();
             if (existingSubnet === containerSubnet) {
               log.say(
-                `${engine} network '${networkName}' already exists with correct configuration`,
+                `└── ${engine} network '${networkName}' already exists with correct configuration`,
                 2,
               );
             } else {
               log.say(
-                `${engine} network '${networkName}' exists with incorrect subnet`,
+                `└── ${engine} network '${networkName}' exists with incorrect subnet`,
                 2,
               );
               // logic to recreate or warn... original code warned.
@@ -444,7 +453,7 @@ export async function setupNetwork(
             if (networkResult.code !== 0) throw new Error(networkResult.stderr);
 
             log.say(
-              `${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}`,
+              `└── ${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}`,
               2,
             );
           }
@@ -456,7 +465,7 @@ export async function setupNetwork(
     }
 
     // 7. Configure Routing
-    log.section("Configure Routing:");
+    log.section("Configuring Routing:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -493,7 +502,10 @@ export async function setupNetwork(
             "jiji0",
           );
 
-          log.say(`Routing configured for ${peers.length} peer subnets`, 2);
+          log.say(
+            `└── Routing configured for ${peers.length} peer subnet(s)`,
+            2,
+          );
         } catch (error) {
           results.push({ host, success: false, error: String(error) });
           throw error;
@@ -502,7 +514,7 @@ export async function setupNetwork(
     }
 
     // 8. Configure DNS
-    log.section("Configure DNS:");
+    log.section("Configuring DNS:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -519,7 +531,7 @@ export async function setupNetwork(
           await createCoreDNSService(ssh, `${server.wireguardIp}:53`);
           await createHostsUpdateTimer(ssh, 30);
           await startCoreDNSService(ssh);
-          log.say("CoreDNS service started", 2);
+          log.say("├── CoreDNS service started", 2);
 
           await configureContainerDNS(
             ssh,
@@ -528,9 +540,9 @@ export async function setupNetwork(
             config.builder.engine,
           );
           log.say(
-            `${config.builder.engine} configured: DNS=${server.wireguardIp}, search=${config.network.serviceDomain}`,
+            `└── ${config.builder.engine} configured: DNS=${server.wireguardIp}, search=${config.network.serviceDomain}`,
             2,
-          ); // User output match
+          );
         } catch (error) {
           results.push({ host, success: false, error: String(error) });
           throw error;
@@ -539,7 +551,7 @@ export async function setupNetwork(
     }
 
     // 9. Setup Network Control Loop
-    log.section("Setup Network Control Loop:");
+    log.section("Setting Up Network Control Loop:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -553,10 +565,13 @@ export async function setupNetwork(
             config.builder.engine,
             "jiji0",
           );
-          log.say("Network control loop configured", 2);
-          log.say("Network state stored in Corrosion distributed database", 2);
+          log.say("├── Network control loop configured", 2);
+          log.say(
+            "└── Network state stored in Corrosion distributed database",
+            2,
+          );
         } catch (_error) {
-          log.say("Continuing without control loop", 2);
+          log.say("└── Continuing without control loop", 2);
         }
       }, { indent: 1 });
     }

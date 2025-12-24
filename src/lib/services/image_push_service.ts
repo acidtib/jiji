@@ -11,11 +11,15 @@ export class ImagePushService {
   /**
    * Push a single image to the registry
    * @param imageName Full image name with tag
+   * @param logCallback Optional callback for structured logging
    * @returns Push result
    */
-  async pushImage(imageName: string): Promise<PushResult> {
+  async pushImage(
+    imageName: string,
+    logCallback?: (message: string, type: "info" | "success" | "error") => void,
+  ): Promise<PushResult> {
     try {
-      await this.executePush(imageName);
+      await this.executePush(imageName, logCallback);
       return { imageName, success: true };
     } catch (error) {
       return {
@@ -64,9 +68,17 @@ export class ImagePushService {
   /**
    * Execute push command
    * @param imageName Image name to push
+   * @param logCallback Optional callback for structured logging
    */
-  private async executePush(imageName: string): Promise<void> {
-    log.info(`Pushing ${imageName}`, "registry");
+  private async executePush(
+    imageName: string,
+    logCallback?: (message: string, type: "info" | "success" | "error") => void,
+  ): Promise<void> {
+    if (logCallback) {
+      logCallback(`Pushing ${imageName}`, "info");
+    } else {
+      log.info(`Pushing ${imageName}`, "registry");
+    }
 
     const pushArgs = this.buildPushArgs(imageName);
 
@@ -80,13 +92,24 @@ export class ImagePushService {
 
     if (pushResult.code !== 0) {
       const stderr = new TextDecoder().decode(pushResult.stderr);
-      log.error(`Failed to push ${imageName}`, "registry");
-      if (!this.options.globalOptions.verbose) {
-        log.error(stderr, "registry");
+      if (logCallback) {
+        logCallback(`Failed to push ${imageName}`, "error");
+        if (!this.options.globalOptions.verbose) {
+          logCallback(stderr, "error");
+        }
+      } else {
+        log.error(`Failed to push ${imageName}`, "registry");
+        if (!this.options.globalOptions.verbose) {
+          log.error(stderr, "registry");
+        }
       }
       throw new Error(`Push failed for: ${imageName}`);
     }
 
-    log.success(`Pushed: ${imageName}`, "registry");
+    if (logCallback) {
+      logCallback(`Pushed: ${imageName}`, "success");
+    } else {
+      log.success(`Pushed: ${imageName}`, "registry");
+    }
   }
 }

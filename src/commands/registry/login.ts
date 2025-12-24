@@ -10,15 +10,15 @@ export const loginCommand = new Command()
   .option("-L, --skip-local", "Skip local login")
   .option("-R, --skip-remote", "Skip remote login")
   .action(async (options) => {
-    log.info("Logging in to registry...", "registry:login");
-
     try {
+      log.section("Registry Login:");
+
       const { config } = await loadConfig();
       const registryConfig = config.builder.registry;
       const registry = registryConfig.getRegistryUrl();
 
-      log.debug(`Registry: ${registry}`, "registry:login");
-      log.debug(`Registry type: ${registryConfig.type}`, "registry:login");
+      log.say(`- Registry: ${registry}`, 1);
+      log.say(`- Registry type: ${registryConfig.type}`, 1);
 
       const registryService = new RegistryService();
       await registryService.initialize();
@@ -31,22 +31,25 @@ export const loginCommand = new Command()
         };
       }
 
+      log.section("Authenticating:");
+
       if (!options.skipLocal) {
+        log.say("- Performing local login", 1);
         await registryService.authenticate(registry, credentials);
-        log.info("Local login successful", "registry:login");
+        log.say("- Local login successful", 1);
       } else {
-        log.debug("Skipped local login", "registry:login");
+        log.say("- Skipped local login", 1);
       }
 
       if (!options.skipRemote) {
+        log.say("- Performing remote login", 1);
         // For container registries, local and remote login are the same operation
-        log.debug("Remote login handled by container engine", "registry:login");
-        log.info("Remote login successful", "registry:login");
+        log.say("- Remote login successful", 1);
       } else {
-        log.debug("Skipped remote login", "registry:login");
+        log.say("- Skipped remote login", 1);
       }
 
-      log.info("Registry login completed successfully", "registry:login");
+      log.success("\nRegistry login completed successfully", 0);
     } catch (error) {
       handleRegistryError(error, "login");
     }

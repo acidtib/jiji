@@ -38,247 +38,237 @@ export const execCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      await log.group("Remote Command Execution", async () => {
-        log.action(`Executing command: ${command}`, "magenta");
+      log.section("Remote Command Execution:");
+      log.say(`Command: ${command}`, 1);
+      console.log("");
 
-        // Set up command context
-        ctx = await setupCommandContext(globalOptions, {
-          allowPartialConnection: options.continueOnError,
-        });
+      // Setup command context (load config and establish SSH connections)
+      ctx = await setupCommandContext(globalOptions, {
+        allowPartialConnection: options.continueOnError,
+      });
 
-        const { config, sshManagers, targetHosts } = ctx;
+      const { config, sshManagers, targetHosts } = ctx;
 
-        // Create audit logger
-        const auditLogger = createServerAuditLogger(
-          sshManagers,
-          config.project,
+      // Display connection status
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
+
+      // Create audit logger
+      const auditLogger = createServerAuditLogger(
+        sshManagers,
+        config.project,
+      );
+
+      log.section("Execution Options:");
+      log.say(`- Interactive mode: ${options.interactive}`, 1);
+      log.say(
+        `- Execution mode: ${options.parallel ? "parallel" : "sequential"}`,
+        1,
+      );
+      log.say(`- Timeout: ${options.timeout} seconds`, 1);
+      log.say(`- Continue on error: ${options.continueOnError}`, 1);
+
+      // Handle interactive mode
+      if (options.interactive) {
+        if (sshManagers.length > 1) {
+          log.error(
+            "Interactive mode only supports single host execution",
+          );
+          log.say(
+            `Found ${sshManagers.length} hosts. Please specify a single host for interactive mode.`,
+            1,
+          );
+          return;
+        }
+
+        log.section("Starting Interactive Session:");
+        log.say(`- Host: ${sshManagers[0].getHost()}`, 1);
+        const ssh = sshManagers[0];
+
+        try {
+          await ssh.startInteractiveSession(command);
+          Deno.exit(0);
+        } catch (error) {
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          log.error(`Interactive session failed: ${errorMessage}`);
+          Deno.exit(1);
+        }
+      }
+
+      // Create server loggers for individual host reporting
+      const serverLoggers = Logger.forServers(targetHosts, {
+        maxPrefixLength: DEFAULT_MAX_PREFIX_LENGTH,
+      });
+
+      // Execute the command on all hosts
+      const executionResults = [];
+
+      log.section("Executing Command:");
+
+      if (options.parallel) {
+        log.say("- Running in parallel mode", 1);
+
+        // Create host operations
+        const hostOperations = sshManagers.map((ssh) => ({
+          host: ssh.getHost(),
+          operation: async () => {
+            return await executeCommandWithTimeout(
+              ssh,
+              command,
+              options.timeout,
+              serverLoggers,
+            );
+          },
+        }));
+
+        // Execute with error collection
+        const aggregatedResults = await executeHostOperations(
+          hostOperations,
         );
 
-        log.info(`Interactive mode: ${options.interactive}`, "exec");
-        log.info(
-          `Execution mode: ${options.parallel ? "parallel" : "sequential"}`,
-          "exec",
-        );
-        log.info(`Timeout: ${options.timeout} seconds`, "exec");
-        log.info(`Continue on error: ${options.continueOnError}`, "exec");
+        // Combine successful results with failed operations
+        const results = [...aggregatedResults.results];
 
-        // Handle interactive mode
-        if (options.interactive) {
-          if (sshManagers.length > 1) {
-            log.error(
-              "Interactive mode only supports single host execution",
-              "exec",
-            );
-            log.info(
-              `Found ${sshManagers.length} hosts. Please specify a single host for interactive mode.`,
-              "exec",
-            );
-            return;
+        // Convert failed operations to execution result format
+        for (const { host, error } of aggregatedResults.hostErrors) {
+          const hostLogger = serverLoggers.get(host);
+          if (hostLogger) {
+            hostLogger.error(`Command execution failed: ${error.message}`);
           }
 
-          log.action("Starting interactive session...", "cyan");
-          const ssh = sshManagers[0];
+          results.push({
+            host,
+            success: false,
+            code: -1,
+            stdout: "",
+            stderr: error.message,
+          });
+        }
+
+        executionResults.push(...results);
+      } else {
+        log.say("- Running in sequential mode", 1);
+
+        // Execute sequentially
+        for (const ssh of sshManagers) {
+          const host = ssh.getHost();
 
           try {
-            await ssh.startInteractiveSession(command);
-            Deno.exit(0);
+            const result = await executeCommandWithTimeout(
+              ssh,
+              command,
+              options.timeout,
+              serverLoggers,
+            );
+
+            executionResults.push({
+              host,
+              result,
+              success: result.success,
+            });
+
+            // Stop on first failure if continue-on-error is false
+            if (!result.success && !options.continueOnError) {
+              log.error(
+                `Command failed on ${host}, stopping execution`,
+                "exec",
+              );
+              break;
+            }
           } catch (error) {
             const errorMessage = error instanceof Error
               ? error.message
               : String(error);
-            log.error(`Interactive session failed: ${errorMessage}`, "exec");
-            Deno.exit(1);
-          }
-        }
 
-        // Create server loggers for individual host reporting
-        const serverLoggers = Logger.forServers(targetHosts, {
-          maxPrefixLength: DEFAULT_MAX_PREFIX_LENGTH,
-        });
-
-        // Execute the command on all hosts
-        const executionResults = [];
-
-        if (options.parallel) {
-          log.action("Executing command in parallel...", "cyan");
-
-          // Create host operations
-          const hostOperations = sshManagers.map((ssh) => ({
-            host: ssh.getHost(),
-            operation: async () => {
-              return await executeCommandWithTimeout(
-                ssh,
-                command,
-                options.timeout,
-                serverLoggers,
-              );
-            },
-          }));
-
-          // Execute with error collection
-          const aggregatedResults = await executeHostOperations(
-            hostOperations,
-          );
-
-          // Combine successful results with failed operations
-          const results = [...aggregatedResults.results];
-
-          // Convert failed operations to execution result format
-          for (const { host, error } of aggregatedResults.hostErrors) {
             const hostLogger = serverLoggers.get(host);
             if (hostLogger) {
-              hostLogger.error(`Command execution failed: ${error.message}`);
+              hostLogger.error(`Command failed: ${errorMessage}`);
             }
 
-            results.push({
+            executionResults.push({
               host,
-              success: false,
-              code: -1,
-              stdout: "",
-              stderr: error.message,
-            });
-          }
-
-          executionResults.push(...results);
-
-          // Log summary
-          if (aggregatedResults.errorCount > 0) {
-            log.warn(
-              `Parallel execution completed with ${aggregatedResults.errorCount} failures out of ${results.length} hosts`,
-              "exec",
-            );
-          } else {
-            log.success(
-              `Parallel execution completed successfully on all ${results.length} hosts`,
-              "exec",
-            );
-          }
-        } else {
-          log.action("Executing command sequentially...", "cyan");
-
-          // Execute sequentially
-          for (const ssh of sshManagers) {
-            const host = ssh.getHost();
-
-            try {
-              const result = await executeCommandWithTimeout(
-                ssh,
-                command,
-                options.timeout,
-                serverLoggers,
-              );
-
-              executionResults.push({
-                host,
-                result,
-                success: result.success,
-              });
-
-              // Stop on first failure if continue-on-error is false
-              if (!result.success && !options.continueOnError) {
-                log.error(
-                  `Command failed on ${host}, stopping execution`,
-                  "exec",
-                );
-                break;
-              }
-            } catch (error) {
-              const errorMessage = error instanceof Error
-                ? error.message
-                : String(error);
-
-              const hostLogger = serverLoggers.get(host);
-              if (hostLogger) {
-                hostLogger.error(`Command failed: ${errorMessage}`);
-              }
-
-              executionResults.push({
-                host,
-                result: {
-                  stdout: "",
-                  stderr: errorMessage,
-                  success: false,
-                  code: null,
-                },
+              result: {
+                stdout: "",
+                stderr: errorMessage,
                 success: false,
-                error: errorMessage,
-              });
+                code: null,
+              },
+              success: false,
+              error: errorMessage,
+            });
 
-              // Stop on first failure if continue-on-error is false
-              if (!options.continueOnError) {
-                log.error(
-                  `Command failed on ${host}, stopping execution`,
-                  "exec",
-                );
-                break;
-              }
+            // Stop on first failure if continue-on-error is false
+            if (!options.continueOnError) {
+              log.error(
+                `Command failed on ${host}, stopping execution`,
+                "exec",
+              );
+              break;
             }
           }
         }
+      }
 
-        // Summary
-        const successful = executionResults.filter((r) => r.success);
-        const failed = executionResults.filter((r) => !r.success);
+      // Summary
+      const successful = executionResults.filter((r) => r.success);
+      const failed = executionResults.filter((r) => !r.success);
 
-        log.info("Execution Summary:", "exec");
-        log.success(
-          `Successful: ${successful.length} host(s) - ${
-            successful.map((r) => r.host).join(", ")
+      log.section("Execution Summary:");
+      log.say(
+        `- Successful: ${successful.length} host(s)${
+          successful.length > 0
+            ? ` - ${successful.map((r) => r.host).join(", ")}`
+            : ""
+        }`,
+        1,
+      );
+
+      if (failed.length > 0) {
+        log.say(
+          `- Failed: ${failed.length} host(s) - ${
+            failed.map((r) => r.host).join(", ")
           }`,
-          "exec",
+          1,
+        );
+      }
+
+      // Overall success/failure
+      if (failed.length > 0 && !options.continueOnError) {
+        // Log failures to audit before exiting
+        await auditLogger.logCustomCommand(
+          command,
+          "failed",
+          `Command execution failed on ${failed.length} host(s): ${
+            failed.map((r) => r.host).join(", ")
+          }`,
         );
 
-        if (failed.length > 0) {
-          log.error(
-            `Failed: ${failed.length} host(s) - ${
-              failed.map((r) => r.host).join(", ")
-            }`,
-            "exec",
-          );
-        }
-
-        // Overall success/failure
-        if (failed.length > 0 && !options.continueOnError) {
-          log.error("Command execution failed on some hosts", "exec");
-
-          // Log failures to audit before exiting
-          await auditLogger.logCustomCommand(
-            command,
-            "failed",
-            `Command execution failed on ${failed.length} host(s): ${
-              failed.map((r) => r.host).join(", ")
-            }`,
-          );
-
-          Deno.exit(1);
-        } else if (failed.length === 0) {
-          log.success("Command executed successfully on all hosts", "exec");
-        } else {
-          log.warn(
-            `Command completed with some failures (${failed.length}/${executionResults.length} hosts failed)`,
-            "exec",
-          );
-        }
-
+        log.error("\nCommand execution failed on some hosts");
+        Deno.exit(1);
+      } else if (failed.length === 0) {
         // Log completion to audit
         await auditLogger.logCustomCommand(
           command,
-          failed.length === 0 ? "success" : "failed",
-          failed.length === 0
-            ? `Command executed successfully on all ${successful.length} host(s)`
-            : `Command completed with ${failed.length} failure(s) out of ${executionResults.length} host(s)`,
+          "success",
+          `Command executed successfully on all ${successful.length} host(s)`,
         );
 
-        log.info(
-          `Audit trail updated on ${targetHosts.length} server(s): ${
-            targetHosts.join(", ")
-          }`,
-          "audit",
+        log.success("\nRemote command execution completed!", 0);
+      } else {
+        // Log completion to audit
+        await auditLogger.logCustomCommand(
+          command,
+          "failed",
+          `Command completed with ${failed.length} failure(s) out of ${executionResults.length} host(s)`,
         );
 
-        console.log();
-        log.success("Remote command execution completed!");
-      });
+        log.warn(
+          `\nCommand completed with some failures (${failed.length}/${executionResults.length} hosts failed)`,
+        );
+      }
     } catch (error) {
       await handleCommandError(error, {
         operation: "Command execution",

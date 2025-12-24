@@ -3,10 +3,11 @@ import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
   executeBestEffort,
+  findSSHManagerByHost,
   setupCommandContext,
 } from "../utils/command_helpers.ts";
 import { handleCommandError } from "../utils/error_handler.ts";
-import { log } from "../utils/logger.ts";
+import { getTreePrefix, log } from "../utils/logger.ts";
 import { ProxyCommands } from "../utils/proxy.ts";
 import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
 import type { GlobalOptions } from "../types.ts";
@@ -19,29 +20,19 @@ export const removeCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      const tracker = log.createStepTracker("Service Removal");
+      log.section("Service Removal:");
 
       // Load configuration first (before confirmation)
-      tracker.step("Loading configuration");
       const { Configuration } = await import("../lib/configuration.ts");
       const config = await Configuration.load(
         globalOptions.environment,
         globalOptions.configFile,
       );
       const configPath = config.configPath || "unknown";
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Project: ${config.project}`, 1);
-
-      // Collect all unique hosts
       const allHosts = config.getAllServerHosts();
 
-      if (allHosts.length === 0) {
-        log.error(
-          `No remote hosts found in configuration at: ${configPath}`,
-        );
-        Deno.exit(1);
-      }
-
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
       log.say(
         `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
         1,
@@ -67,151 +58,126 @@ export const removeCommand = new Command()
         }
       }
 
-      log.section("Service Cleanup");
-
-      // Set up command context
+      // Set up command context (establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
       const { config: ctxConfig, sshManagers, targetHosts } = ctx;
+
+      // Display SSH connection status
+      console.log("");
+      for (const ssh of sshManagers) {
+        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
+      }
 
       // Get all services
       const services = Array.from(ctxConfig.services.values());
 
       // Remove containers and proxy configuration for each service
-      const serviceTracker = log.createStepTracker("Removing Services");
+      log.section("Removing Services:");
 
       for (const service of services) {
-        serviceTracker.step(`Removing service: ${service.name}`);
+        log.say(`- Removing ${service.name}`, 1);
 
         for (const server of service.servers) {
           const host = server.host;
           if (!targetHosts.includes(host)) {
-            log.warn(
-              `Skipping ${service.name} on unreachable host: ${host}`,
-            );
             continue;
           }
 
-          const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
+          const hostSsh = findSSHManagerByHost(sshManagers, host);
           if (!hostSsh) continue;
 
-          try {
-            const containerName = service.getContainerName();
+          await log.hostBlock(host, async () => {
+            try {
+              const containerName = service.getContainerName();
+              const namedVolumes = service.getNamedVolumes();
+              const hasNamedVolumes = namedVolumes.length > 0;
+              const isLastItem = !hasNamedVolumes; // If no named volumes, this is the last item
 
-            // Remove service from proxy if proxy is configured
-            if (service.proxy?.enabled) {
-              serviceTracker.remote(
-                host,
-                `Removing ${service.name} from proxy`,
-              );
-              const proxyCmd = new ProxyCommands(
-                ctxConfig.builder.engine,
-                hostSsh,
-              );
-              await proxyCmd.remove(service.name);
-              serviceTracker.remote(host, `Removed ${service.name} from proxy`);
-            }
-
-            // Unregister from network (if enabled)
-            if (ctxConfig.network.enabled) {
-              try {
-                serviceTracker.remote(
-                  host,
-                  `Unregistering ${service.name} from network`,
-                  { indent: 1 },
-                );
-                await unregisterContainerFromNetwork(
-                  hostSsh,
-                  containerName,
-                  service.name,
-                  ctxConfig.project,
-                );
-              } catch (error) {
-                log.warn(
-                  `Failed to unregister from network: ${error}`,
-                );
+              // Remove service from proxy if proxy is configured
+              if (service.proxy?.enabled) {
+                try {
+                  const proxyCmd = new ProxyCommands(
+                    ctxConfig.builder.engine,
+                    hostSsh,
+                  );
+                  await proxyCmd.remove(service.name);
+                  log.say(`├── Removed ${service.name} from proxy`, 2);
+                } catch (_error) {
+                  // Best effort removal
+                }
               }
-            }
 
-            // Stop and remove the container
-            serviceTracker.remote(host, `Removing container ${containerName}`, {
-              indent: 1,
-            });
-            await executeBestEffort(
-              hostSsh,
-              `${ctxConfig.builder.engine} rm -f ${containerName}`,
-              `removing container ${containerName}`,
-            );
-            serviceTracker.remote(host, `Removed container ${containerName}`, {
-              indent: 1,
-            });
+              // Unregister from network (if enabled)
+              if (ctxConfig.network.enabled) {
+                try {
+                  await unregisterContainerFromNetwork(
+                    hostSsh,
+                    containerName,
+                    service.name,
+                    ctxConfig.project,
+                  );
+                  log.say(`├── Unregistered ${service.name} from network`, 2);
+                } catch (_error) {
+                  // Best effort removal
+                }
+              }
 
-            const namedVolumes = service.getNamedVolumes();
-            if (namedVolumes.length > 0) {
-              serviceTracker.remote(
-                host,
-                `Removing ${namedVolumes.length} named volume(s)`,
-                { indent: 1 },
+              // Stop and remove the container
+              await executeBestEffort(
+                hostSsh,
+                `${ctxConfig.builder.engine} rm -f ${containerName}`,
+                `removing container ${containerName}`,
+              );
+              const containerPrefix = isLastItem ? "└──" : "├──";
+              log.say(
+                `${containerPrefix} Removed container ${containerName}`,
+                2,
               );
 
-              for (const volumeName of namedVolumes) {
+              // Remove named volumes
+              for (let i = 0; i < namedVolumes.length; i++) {
+                const volumeName = namedVolumes[i];
+                const prefix = getTreePrefix(i, namedVolumes.length);
+
                 await executeBestEffort(
                   hostSsh,
                   `${ctxConfig.builder.engine} volume rm ${volumeName}`,
                   `removing volume ${volumeName}`,
                 );
-                serviceTracker.remote(host, `Removed volume ${volumeName}`, {
-                  indent: 2,
-                });
+                log.say(`${prefix} Removed volume ${volumeName}`, 2);
               }
+            } catch (error) {
+              log.say(`└── Failed to remove ${service.name}: ${error}`, 2);
             }
-          } catch (error) {
-            log.error(
-              `Failed to remove ${service.name} on ${host}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
+          }, { indent: 1 });
         }
       }
-
-      serviceTracker.finish();
 
       // Remove .jiji/project directory from all hosts
-      const dirTracker = log.createStepTracker("Removing Project Directory");
-      const projectDir = `.jiji/${ctxConfig.project}`;
-      dirTracker.step(`Removing ${projectDir} from all hosts`);
+      log.section("Removing Project Directory:");
 
-      for (const host of targetHosts) {
-        const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
+      const projectDir = `.jiji/${ctxConfig.project}`;
+
+      for (let i = 0; i < targetHosts.length; i++) {
+        const host = targetHosts[i];
+        const hostSsh = findSSHManagerByHost(sshManagers, host);
         if (!hostSsh) continue;
 
-        try {
-          dirTracker.remote(host, `Removing ${projectDir}`);
-          const rmResult = await hostSsh.executeCommand(
-            `rm -rf ${projectDir}`,
-          );
-
-          if (rmResult.success) {
-            dirTracker.remote(host, `Removed ${projectDir}`);
-          } else {
-            log.warn(
-              `Failed to remove ${projectDir} on ${host}: ${rmResult.stderr}`,
+        const prefix = getTreePrefix(i, targetHosts.length);
+        await log.hostBlock(host, async () => {
+          try {
+            await hostSsh.executeCommand(`rm -rf ${projectDir}`);
+            log.say(`${prefix} Removed ${projectDir}`, 2);
+          } catch (error) {
+            log.say(
+              `${prefix} Failed to remove ${projectDir}: ${error}`,
+              2,
             );
           }
-        } catch (error) {
-          log.error(
-            `Error removing ${projectDir} on ${host}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
+        }, { indent: 1 });
       }
 
-      dirTracker.finish();
-      tracker.finish();
-
-      console.log();
-      log.success("Removal process completed");
+      log.success("\nRemoval completed successfully", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Removal",

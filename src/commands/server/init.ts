@@ -1,8 +1,13 @@
 import { Command } from "@cliffy/command";
-import { setupCommandContext } from "../../utils/command_helpers.ts";
+import {
+  cleanupSSHConnections,
+  displayCommandHeader,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { log } from "../../utils/logger.ts";
 import { handleCommandError } from "../../utils/error_handler.ts";
+import { EngineInstaller } from "../../utils/engine.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { setupNetwork } from "../../lib/network/setup.ts";
 
@@ -13,18 +18,12 @@ export const initCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Initialization:");
-
-      // Load configuration and get hosts
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
-
       const { config, sshManagers, targetHosts } = ctx;
 
-      // Show connection status for each host
-      console.log(""); // Empty line
-      for (const ssh of sshManagers) {
-        log.remote(ssh.getHost(), ": Connected", { indent: 1 });
-      }
+      // Display standardized command header
+      displayCommandHeader("Server Initialization:", config, sshManagers);
 
       // Create audit logger for connected servers
       const auditLogger = createServerAuditLogger(
@@ -39,28 +38,30 @@ export const initCommand = new Command()
       );
 
       // Engine installation section
-      log.section("Install Engine:");
+      log.section("Installing Container Engine:");
 
       const engine = config.builder.engine;
 
       for (const ssh of sshManagers) {
-        const { EngineInstaller } = await import("../../utils/engine.ts");
         const installer = new EngineInstaller(ssh);
 
         await log.hostBlock(ssh.getHost(), async () => {
           // Check if installed
           const installed = await installer.isEngineInstalled(engine);
           if (!installed) {
-            log.say(`Installing ${engine} on ${ssh.getHost()}`, 2);
+            log.say(`├── Installing ${engine}`, 2);
             const result = await installer.installEngine(engine);
 
             if (!result.success) {
               throw new Error(result.error || `Failed to install ${engine}`);
             }
+            log.say(`└── ${engine} installed successfully`, 2);
           } else {
             const version = await installer.getEngineVersion(engine);
             log.say(
-              `${engine} already installed${version ? ` (${version})` : ""}`,
+              `└── ${engine} already installed${
+                version ? ` (${version})` : ""
+              }`,
               2,
             );
           }
@@ -89,10 +90,14 @@ export const initCommand = new Command()
         config.builder.engine,
       );
 
-      console.log();
-      log.say(
-        `Initialization completed successfully on ${targetHosts.length} server(s)`,
-      );
+      log.section("Initialization Summary:");
+      log.say(`- Servers initialized: ${targetHosts.length}`, 1);
+      log.say(`- Container engine: ${config.builder.engine}`, 1);
+      if (config.network.enabled) {
+        log.say(`- Private network: Enabled`, 1);
+      }
+
+      log.success("\nInitialization completed successfully", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Initialization",
@@ -103,9 +108,6 @@ export const initCommand = new Command()
       });
     } finally {
       if (ctx?.sshManagers) {
-        const { cleanupSSHConnections } = await import(
-          "../../utils/command_helpers.ts"
-        );
         cleanupSSHConnections(ctx.sshManagers);
       }
     }

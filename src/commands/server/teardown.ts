@@ -12,6 +12,7 @@ import { Command } from "@cliffy/command";
 import { Confirm } from "@cliffy/prompt";
 import {
   cleanupSSHConnections,
+  displayCommandHeader,
   executeBestEffort,
   setupCommandContext,
 } from "../../utils/command_helpers.ts";
@@ -27,6 +28,7 @@ import {
 import { stopCorrosionService } from "../../lib/network/corrosion.ts";
 import { stopCoreDNSService } from "../../lib/network/dns.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
+import type { ServiceConfiguration } from "../../lib/configuration/service.ts";
 import type { GlobalOptions } from "../../types.ts";
 
 export const teardownCommand = new Command()
@@ -37,11 +39,12 @@ export const teardownCommand = new Command()
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
 
     try {
-      log.section("Server Teardown:");
-
-      // Set up command context
+      // Setup command context (load config and establish SSH connections)
       ctx = await setupCommandContext(globalOptions);
       const { config, sshManagers, targetHosts } = ctx;
+
+      // Display standardized command header
+      displayCommandHeader("Server Teardown:", config, sshManagers);
 
       // Get confirmation unless --confirmed flag is passed
       const confirmed = options.confirmed as boolean;
@@ -99,10 +102,12 @@ export const teardownCommand = new Command()
       // Remove all services and containers
       log.section("Removing Services:");
 
-      const services = Array.from(config.services.values());
+      const services: ServiceConfiguration[] = Array.from(
+        config.services.values(),
+      );
 
       for (const service of services) {
-        log.say(`Service: ${service.name}`, 1);
+        log.say(`- Removing ${service.name}`, 1);
 
         for (const server of service.servers) {
           const host = server.host;
@@ -116,6 +121,8 @@ export const teardownCommand = new Command()
           await log.hostBlock(host, async () => {
             try {
               const containerName = service.getContainerName();
+              const namedVolumes = service.getNamedVolumes();
+              const isLastItem = namedVolumes.length === 0;
 
               // Remove service from proxy if proxy is configured
               if (service.proxy?.enabled) {
@@ -125,7 +132,7 @@ export const teardownCommand = new Command()
                     hostSsh,
                   );
                   await proxyCmd.remove(service.name);
-                  log.say(`Removed ${service.name} from proxy`, 3);
+                  log.say(`├── Removed ${service.name} from proxy`, 2);
                 } catch (_error) {
                   // Best effort
                 }
@@ -140,6 +147,10 @@ export const teardownCommand = new Command()
                     service.name,
                     config.project,
                   );
+                  log.say(
+                    `├── Unregistered ${containerName} from network`,
+                    2,
+                  );
                 } catch (_error) {
                   // Best effort
                 }
@@ -151,22 +162,29 @@ export const teardownCommand = new Command()
                 `${config.builder.engine} rm -f ${containerName}`,
                 `removing container ${containerName}`,
               );
-              log.say(`Removed container ${containerName}`, 3);
+              const containerPrefix = isLastItem ? "└──" : "├──";
+              log.say(
+                `${containerPrefix} Removed container ${containerName}`,
+                2,
+              );
 
               // Remove named volumes
-              const namedVolumes = service.getNamedVolumes();
-              for (const volumeName of namedVolumes) {
+              for (let i = 0; i < namedVolumes.length; i++) {
+                const volumeName = namedVolumes[i];
+                const isLast = i === namedVolumes.length - 1;
+                const prefix = isLast ? "└──" : "├──";
+
                 await executeBestEffort(
                   hostSsh,
                   `${config.builder.engine} volume rm ${volumeName}`,
                   `removing volume ${volumeName}`,
                 );
-                log.say(`Removed volume ${volumeName}`, 3);
+                log.say(`${prefix} Removed volume ${volumeName}`, 2);
               }
             } catch (error) {
-              log.say(`Failed to remove ${service.name}: ${error}`, 3);
+              log.say(`└── Failed to remove ${service.name}: ${error}`, 2);
             }
-          }, { indent: 2 });
+          }, { indent: 1 });
         }
       }
 
@@ -179,49 +197,49 @@ export const teardownCommand = new Command()
 
         await log.hostBlock(host, async () => {
           try {
-            log.say("Stopping all containers", 2);
+            log.say("├── Stopping all containers", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} stop $(${config.builder.engine} ps -aq)`,
               "stopping containers",
             );
 
-            log.say("Removing all containers", 2);
+            log.say("├── Removing all containers", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} rm -f $(${config.builder.engine} ps -aq)`,
               "removing containers",
             );
 
-            log.say("Removing all images", 2);
+            log.say("├── Removing all images", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} rmi -f $(${config.builder.engine} images -aq)`,
               "removing images",
             );
 
-            log.say("Removing all volumes", 2);
+            log.say("├── Removing all volumes", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} volume rm $(${config.builder.engine} volume ls -q)`,
               "removing volumes",
             );
 
-            log.say("Removing all networks", 2);
+            log.say("├── Removing all networks", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} network prune -f`,
               "pruning networks",
             );
 
-            log.say("Running system prune", 2);
+            log.say("└── Running system prune", 2);
             await executeBestEffort(
               hostSsh,
               `${config.builder.engine} system prune -a -f --volumes`,
               "system prune",
             );
           } catch (error) {
-            log.say(`System purge failed: ${error}`, 2);
+            log.say(`└── System purge failed: ${error}`, 2);
           }
         }, { indent: 1 });
       }
@@ -238,12 +256,14 @@ export const teardownCommand = new Command()
             const engine = config.builder.engine;
 
             if (engine === "docker") {
-              log.say("Removing Docker packages", 2);
+              log.say("├── Stopping Docker service", 2);
               await executeBestEffort(
                 hostSsh,
                 "systemctl stop docker.socket docker.service",
                 "stopping Docker service",
               );
+
+              log.say("├── Removing Docker packages", 2);
               await executeBestEffort(
                 hostSsh,
                 "apt-get remove -y docker.io docker-compose",
@@ -255,7 +275,7 @@ export const teardownCommand = new Command()
                 "autoremove packages",
               );
 
-              log.say("Removing Docker files", 2);
+              log.say("├── Removing Docker files", 2);
               await executeBestEffort(
                 hostSsh,
                 "rm -rf /var/lib/docker",
@@ -267,7 +287,7 @@ export const teardownCommand = new Command()
                 "removing Docker config",
               );
             } else if (engine === "podman") {
-              log.say("Removing Podman packages", 2);
+              log.say("├── Removing Podman packages", 2);
               await executeBestEffort(
                 hostSsh,
                 "apt-get remove -y podman",
@@ -279,7 +299,7 @@ export const teardownCommand = new Command()
                 "autoremove packages",
               );
 
-              log.say("Removing Podman files", 2);
+              log.say("├── Removing Podman files", 2);
               await executeBestEffort(
                 hostSsh,
                 "rm -rf /var/lib/containers",
@@ -292,9 +312,9 @@ export const teardownCommand = new Command()
               );
             }
 
-            log.say(`${engine} removed`, 2);
+            log.say(`└── ${engine} removed`, 2);
           } catch (error) {
-            log.say(`Engine removal failed: ${error}`, 2);
+            log.say(`└── Engine removal failed: ${error}`, 2);
           }
         }, { indent: 1 });
       }
@@ -315,13 +335,12 @@ export const teardownCommand = new Command()
         }
 
         if (!topology) {
-          log.say("No network cluster found, skipping", 1);
+          log.say("- No network cluster found, skipping", 1);
         } else {
           log.say(
-            `Tearing down network on ${topology.servers.length} server(s)`,
+            `- Tearing down network on ${topology.servers.length} server(s)`,
             1,
           );
-          console.log();
 
           for (const server of topology.servers) {
             const ssh = sshManagers.find((s) =>
@@ -334,19 +353,19 @@ export const teardownCommand = new Command()
 
             await log.hostBlock(server.hostname, async () => {
               try {
-                log.say("Stopping DNS service", 2);
+                log.say("├── Stopping DNS service", 2);
                 await stopCoreDNSService(ssh);
 
                 if (topology.discovery === "corrosion") {
-                  log.say("Stopping Corrosion service", 2);
+                  log.say("├── Stopping Corrosion service", 2);
                   await stopCorrosionService(ssh);
                 }
 
-                log.say("Stopping WireGuard interface", 2);
+                log.say("├── Stopping WireGuard interface", 2);
                 await bringDownWireGuardInterface(ssh);
                 await disableWireGuardService(ssh);
 
-                log.say("Removing network configuration files", 2);
+                log.say("├── Removing network configuration files", 2);
                 await ssh.executeCommand("rm -f /etc/wireguard/jiji0.conf");
                 await ssh.executeCommand("rm -rf /opt/jiji/corrosion");
                 await ssh.executeCommand("rm -rf /opt/jiji/dns");
@@ -367,9 +386,9 @@ export const teardownCommand = new Command()
                 );
                 await ssh.executeCommand("systemctl daemon-reload");
 
-                log.say("Network teardown complete", 2);
+                log.say("└── Network teardown complete", 2);
               } catch (error) {
-                log.say(`Network teardown failed: ${error}`, 2);
+                log.say(`└── Network teardown failed: ${error}`, 2);
               }
             }, { indent: 1 });
           }
@@ -388,9 +407,9 @@ export const teardownCommand = new Command()
         await log.hostBlock(host, async () => {
           try {
             await hostSsh.executeCommand(`rm -rf ${projectDir}`);
-            log.say(`Removed ${projectDir}`, 2);
+            log.say(`└── Removed ${projectDir}`, 2);
           } catch (error) {
-            log.say(`Failed to remove ${projectDir}: ${error}`, 2);
+            log.say(`└── Failed to remove ${projectDir}: ${error}`, 2);
           }
         }, { indent: 1 });
       }
@@ -402,9 +421,9 @@ export const teardownCommand = new Command()
         `Server teardown completed successfully on ${targetHosts.length} host(s)`,
       );
 
-      console.log();
-      log.say(
-        `Teardown completed successfully on ${targetHosts.length} server(s)`,
+      log.success(
+        `\nTeardown completed successfully on ${targetHosts.length} server(s)`,
+        0,
       );
     } catch (error) {
       await handleCommandError(error, {

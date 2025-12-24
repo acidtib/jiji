@@ -75,7 +75,7 @@ export class ContainerDeploymentService {
         )
         : service.getImageName(undefined, version);
 
-      log.status(`Deploying ${service.name} on ${host}`, "deploy");
+      log.say(`├── Deploying ${service.name} on ${host}`, 2);
 
       // Upload files
       await this.uploadFiles(service, ssh, host);
@@ -102,14 +102,14 @@ export class ContainerDeploymentService {
 
       if (oldContainerExists) {
         renamedContainerName = `${containerName}_old_${Date.now()}`;
-        log.status(
-          `Renaming existing container ${containerName} to ${renamedContainerName}`,
-          "deploy",
+        log.say(
+          `├── Renaming existing container ${containerName} to ${renamedContainerName}`,
+          2,
         );
         await this.renameContainer(containerName, renamedContainerName, ssh);
-        log.debug(
-          `Old container kept running: ${renamedContainerName}`,
-          "deploy",
+        log.say(
+          `├── Old container kept running: ${renamedContainerName}`,
+          2,
         );
       }
 
@@ -144,9 +144,9 @@ export class ContainerDeploymentService {
         // For now, just return success with the container IP
         // The old container cleanup will happen after proxy health checks pass
 
-        log.success(
-          `${service.name} deployed successfully on ${host}`,
-          "deploy",
+        log.say(
+          `└── ${service.name} deployed successfully on ${host}`,
+          2,
         );
 
         return {
@@ -163,21 +163,21 @@ export class ContainerDeploymentService {
         if (newContainerStarted) {
           log.warn(
             `Deployment failed, removing new container and keeping old one running`,
-            "deploy",
+            2,
           );
           await this.removeContainer(containerName, ssh);
         }
 
         // Restore old container name if we renamed it
         if (renamedContainerName) {
-          log.status(
+          log.say(
             `Restoring old container: ${renamedContainerName}`,
-            "deploy",
+            2,
           );
           await this.renameContainer(renamedContainerName, containerName, ssh);
-          log.info(
+          log.say(
             `Rollback complete: old container ${containerName} still serving traffic`,
-            "deploy",
+            2,
           );
         }
 
@@ -189,7 +189,7 @@ export class ContainerDeploymentService {
         : String(error);
       log.error(
         `Failed to deploy ${service.name} on ${host}: ${errorMessage}`,
-        "deploy",
+        2,
       );
 
       return {
@@ -222,9 +222,9 @@ export class ContainerDeploymentService {
       const host = server.host;
 
       if (!connectedHosts.includes(host)) {
-        log.warn(
+        log.say(
           `Skipping ${service.name} on unreachable host: ${host}`,
-          "deploy",
+          2,
         );
         results.push({
           service: service.name,
@@ -246,11 +246,13 @@ export class ContainerDeploymentService {
         continue;
       }
 
-      const result = await this.deployService(service, host, hostSsh, {
-        ...options,
-        allSshManagers: sshManagers,
-      });
-      results.push(result);
+      await log.hostBlock(host, async () => {
+        const result = await this.deployService(service, host, hostSsh, {
+          ...options,
+          allSshManagers: sshManagers,
+        });
+        results.push(result);
+      }, { indent: 1 });
     }
 
     return results;
@@ -274,7 +276,7 @@ export class ContainerDeploymentService {
     const allResults: DeploymentResult[] = [];
 
     for (const service of services) {
-      log.status(`Deploying ${service.name} containers`, "deploy");
+      log.say(`- Deploying ${service.name} containers`, 1);
       const results = await this.deployServiceToServers(
         service,
         sshManagers,
@@ -299,19 +301,19 @@ export class ContainerDeploymentService {
       return;
     }
 
-    log.status(
-      `Uploading ${service.files.length} file(s) for ${service.name} on ${host}`,
-      "deploy",
+    log.say(
+      `├── Uploading ${service.files.length} file(s) for ${service.name} on ${host}`,
+      2,
     );
 
     try {
       await prepareMountFiles(ssh, service.files, this.config.project);
-      log.success(`Files uploaded for ${service.name} on ${host}`, "deploy");
+      log.say(`├── Files uploaded for ${service.name} on ${host}`, 2);
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      log.error(`Failed to upload files: ${errorMessage}`, "deploy");
+      log.error(`Failed to upload files: ${errorMessage}`, 2);
       throw error;
     }
   }
@@ -328,9 +330,9 @@ export class ContainerDeploymentService {
       return;
     }
 
-    log.status(
-      `Creating ${service.directories.length} director(ies) for ${service.name} on ${host}`,
-      "deploy",
+    log.say(
+      `├── Creating ${service.directories.length} director(ies) for ${service.name} on ${host}`,
+      2,
     );
 
     try {
@@ -339,15 +341,15 @@ export class ContainerDeploymentService {
         service.directories,
         this.config.project,
       );
-      log.success(
-        `Directories created for ${service.name} on ${host}`,
-        "deploy",
+      log.say(
+        `├── Directories created for ${service.name} on ${host}`,
+        2,
       );
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      log.error(`Failed to create directories: ${errorMessage}`, "deploy");
+      log.error(`Failed to create directories: ${errorMessage}`, 2);
       throw error;
     }
   }
@@ -379,7 +381,7 @@ export class ContainerDeploymentService {
     pullCommand += ` ${fullImageName}`;
 
     // Pull image
-    log.status(`Pulling image ${fullImageName} on ${host}`, "deploy");
+    log.say(`├── Pulling image ${fullImageName} on ${host}`, 2);
     const pullResult = await ssh.executeCommand(pullCommand);
 
     if (!pullResult.success) {
@@ -404,15 +406,15 @@ export class ContainerDeploymentService {
         this.config.project,
       );
       if (cleanedCount > 0) {
-        log.debug(
+        log.say(
           `Cleaned up ${cleanedCount} stale containers for ${service.name}`,
-          "network",
+          2,
         );
       }
     } catch (error) {
       log.warn(
         `Service cleanup failed: ${error} (deployment will continue)`,
-        "network",
+        2,
       );
     }
   }
@@ -463,7 +465,7 @@ export class ContainerDeploymentService {
 
     const runCommand = builder.build();
 
-    log.status(`Starting container ${containerName} on ${host}`, "deploy");
+    log.say(`├── Starting container ${containerName} on ${host}`, 2);
     const runResult = await ssh.executeCommand(runCommand);
 
     if (!runResult.success) {
@@ -559,15 +561,15 @@ export class ContainerDeploymentService {
    */
   async cleanupOldContainer(
     oldContainerName: string,
-    host: string,
+    _host: string,
     ssh: SSHManager,
   ): Promise<void> {
-    log.status(
-      `Cleaning up old container: ${oldContainerName} on ${host}`,
-      "deploy",
+    log.say(
+      `├── Cleaning up old container: ${oldContainerName}`,
+      2,
     );
     await this.removeContainer(oldContainerName, ssh);
-    log.success(`Old container removed: ${oldContainerName}`, "deploy");
+    log.say(`└── Old container removed: ${oldContainerName}`, 2);
   }
 
   /**
@@ -586,18 +588,18 @@ export class ContainerDeploymentService {
       if (!topology) {
         log.warn(
           `Network cluster not initialized - skipping network registration`,
-          "network",
+          2,
         );
         return undefined;
       }
 
       const server = getServerByHostname(topology, host);
       if (!server) {
-        log.warn(`Server ${host} not found in network topology`, "network");
+        log.warn(`Server ${host} not found in network topology`, 2);
         return undefined;
       }
 
-      log.status(`Registering ${service.name} in network...`, "network");
+      log.say(`├── Registering ${service.name} in network...`, 2);
 
       // First register locally (this gets IP and sets up DNS)
       const registered = await registerContainerInNetwork(
@@ -612,7 +614,7 @@ export class ContainerDeploymentService {
       if (!registered) {
         log.warn(
           `Failed to register ${service.name} in network (service will still run)`,
-          "network",
+          2,
         );
         return undefined;
       }
@@ -635,9 +637,9 @@ export class ContainerDeploymentService {
           containerIp,
           Date.now(),
         );
-        log.debug(
-          `Registered ${service.name} cluster-wide for DNS resolution`,
-          "network",
+        log.say(
+          `├── Registered ${service.name} cluster-wide for DNS resolution`,
+          2,
         );
       }
 
@@ -645,7 +647,7 @@ export class ContainerDeploymentService {
     } catch (error) {
       log.warn(
         `Network registration failed: ${error} (service will still run)`,
-        "network",
+        2,
       );
       return undefined;
     }

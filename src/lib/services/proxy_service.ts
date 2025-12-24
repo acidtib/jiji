@@ -32,13 +32,6 @@ export class ProxyService {
   async ensureProxyOnHosts(
     hosts: Set<string>,
   ): Promise<ProxyInstallResult[]> {
-    log.info(
-      `Installing kamal-proxy on ${hosts.size} host(s): ${
-        Array.from(hosts).join(", ")
-      }`,
-      "proxy",
-    );
-
     const results: ProxyInstallResult[] = [];
 
     for (const host of hosts) {
@@ -52,101 +45,101 @@ export class ProxyService {
         continue;
       }
 
-      try {
-        const proxyCmd = new ProxyCommands(this.engine, hostSsh);
+      await log.hostBlock(host, async () => {
+        try {
+          const proxyCmd = new ProxyCommands(this.engine, hostSsh);
 
-        // Ensure network exists
-        await proxyCmd.ensureNetwork();
+          // Ensure network exists
+          await proxyCmd.ensureNetwork();
 
-        // Check if proxy is already running
-        const isRunning = await proxyCmd.isRunning();
+          // Check if proxy is already running
+          const isRunning = await proxyCmd.isRunning();
 
-        if (isRunning) {
-          const version = await proxyCmd.getVersion();
-          log.info(
-            `kamal-proxy already running on ${host} (version: ${
-              version || "unknown"
-            })`,
-            "proxy",
-          );
-          results.push({
-            host,
-            success: true,
-            message: "Already running",
-            version: version || undefined,
-          });
-        } else {
-          // Get DNS server from network topology
-          let dnsServer: string | undefined;
-          if (this.config.network.enabled) {
-            dnsServer = await getDnsServerForHost(
-              hostSsh,
+          if (isRunning) {
+            const version = await proxyCmd.getVersion();
+            log.say(
+              `└── kamal-proxy already running on ${host} (version: ${
+                version || "unknown"
+              })`,
+              2,
+            );
+            results.push({
               host,
-              this.config.network.enabled,
+              success: true,
+              message: "Already running",
+              version: version || undefined,
+            });
+          } else {
+            // Get DNS server from network topology
+            let dnsServer: string | undefined;
+            if (this.config.network.enabled) {
+              dnsServer = await getDnsServerForHost(
+                hostSsh,
+                host,
+                this.config.network.enabled,
+              );
+            }
+
+            // Boot the proxy
+            log.say(`Booting kamal-proxy on ${host}...`, 2);
+            await proxyCmd.boot({ dnsServer });
+
+            const version = await proxyCmd.getVersion();
+            log.say(
+              `kamal-proxy started on ${host} (version: ${
+                version || "unknown"
+              })`,
+              2,
+            );
+            results.push({
+              host,
+              success: true,
+              message: "Started",
+              version: version || undefined,
+            });
+
+            // Log to audit
+            const hostLogger = createServerAuditLogger(
+              hostSsh,
+              this.config.project,
+            );
+            await hostLogger.logProxyEvent(
+              "boot",
+              "success",
+              `kamal-proxy ${version || "unknown"} started`,
             );
           }
-
-          // Boot the proxy
-          log.status(`Booting kamal-proxy on ${host}...`, "proxy");
-          await proxyCmd.boot({ dnsServer });
-
-          const version = await proxyCmd.getVersion();
-          log.success(
-            `kamal-proxy started on ${host} (version: ${version || "unknown"})`,
-            "proxy",
+        } catch (error) {
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          log.error(
+            `Failed to install proxy on ${host}: ${errorMessage}`,
+            2,
           );
           results.push({
             host,
-            success: true,
-            message: "Started",
-            version: version || undefined,
+            success: false,
+            error: errorMessage,
           });
 
-          // Log to audit
+          // Log failure to audit
           const hostLogger = createServerAuditLogger(
             hostSsh,
             this.config.project,
           );
-          await hostLogger.logProxyEvent(
-            "boot",
-            "success",
-            `kamal-proxy ${version || "unknown"} started`,
-          );
+          await hostLogger.logProxyEvent("boot", "failed", errorMessage);
         }
-      } catch (error) {
-        const errorMessage = error instanceof Error
-          ? error.message
-          : String(error);
-        log.error(
-          `Failed to install proxy on ${host}: ${errorMessage}`,
-          "proxy",
-        );
-        results.push({
-          host,
-          success: false,
-          error: errorMessage,
-        });
-
-        // Log failure to audit
-        const hostLogger = createServerAuditLogger(
-          hostSsh,
-          this.config.project,
-        );
-        await hostLogger.logProxyEvent("boot", "failed", errorMessage);
-      }
+      }, { indent: 1 });
     }
 
     // Summary
-    const successCount = results.filter((r) => r.success).length;
     const failCount = results.filter((r) => !r.success).length;
 
-    if (successCount > 0) {
-      log.success(`kamal-proxy ready on ${successCount} host(s)`, "proxy");
-    }
     if (failCount > 0) {
       log.error(
         `kamal-proxy installation failed on ${failCount} host(s)`,
-        "proxy",
+        1,
       );
     }
 
@@ -177,6 +170,8 @@ export class ProxyService {
     }
 
     try {
+      log.say(`├── Configuring ${service.name} on proxy at ${host}`, 2);
+
       const proxyCmd = new ProxyCommands(this.engine, ssh);
       const containerName = service.getContainerName();
       const appPort = extractAppPort(service.ports);
@@ -193,7 +188,7 @@ export class ProxyService {
           );
         }
       } catch (error) {
-        log.warn(
+        log.debug(
           `Could not get container IP for ${service.name}, will use DNS name: ${error}`,
           "proxy",
         );
@@ -209,9 +204,9 @@ export class ProxyService {
       );
 
       const hostsStr = proxyConfig.host || proxyConfig.hosts.join(", ");
-      log.success(
-        `${service.name} configured on proxy at ${host} (${hostsStr}, port ${appPort})`,
-        "proxy",
+      log.say(
+        `└── ${service.name} configured (${hostsStr}, port ${appPort})`,
+        2,
       );
 
       // Log to audit
@@ -279,28 +274,33 @@ export class ProxyService {
     const results: ProxyConfigResult[] = [];
 
     for (const service of services) {
-      log.status(`Configuring proxy for service: ${service.name}`, "proxy");
+      log.say(`- Configuring proxy for ${service.name}`, 1);
 
       for (const server of service.servers) {
         const host = server.host;
         const hostSsh = this.sshManagers.find((ssh) => ssh.getHost() === host);
 
         if (!hostSsh) {
-          log.warn(
-            `Skipping ${service.name} on unreachable host: ${host}`,
-            "proxy",
-          );
-          results.push({
-            service: service.name,
-            host,
-            success: false,
-            error: "SSH connection not found",
-          });
+          await log.hostBlock(host, () => {
+            log.say(`└── Skipping ${service.name} on unreachable host`, 2);
+            results.push({
+              service: service.name,
+              host,
+              success: false,
+              error: "SSH connection not found",
+            });
+          }, { indent: 1 });
           continue;
         }
 
-        const result = await this.configureServiceProxy(service, host, hostSsh);
-        results.push(result);
+        await log.hostBlock(host, async () => {
+          const result = await this.configureServiceProxy(
+            service,
+            host,
+            hostSsh,
+          );
+          results.push(result);
+        }, { indent: 1 });
       }
     }
 
@@ -318,7 +318,7 @@ export class ProxyService {
    */
   async waitForServiceHealthy(
     service: ServiceConfiguration,
-    host: string,
+    _host: string,
     ssh: SSHManager,
     timeoutMs: number = 30000,
   ): Promise<boolean> {
@@ -339,9 +339,9 @@ export class ProxyService {
       }
     }
 
-    log.status(
-      `Waiting for ${service.name} to pass health checks (timeout: ${timeoutMs}ms)...`,
-      "proxy",
+    log.say(
+      `├── Waiting for ${service.name} to pass health checks (timeout: ${timeoutMs}ms)...`,
+      2,
     );
 
     const startTime = Date.now();
@@ -362,18 +362,18 @@ export class ProxyService {
           // Check if service is in a healthy state
           // kamal-proxy uses "deployed" or "running" state for healthy services
           if (details.state === "deployed" || details.state === "running") {
-            log.success(
-              `${service.name} passed health checks on ${host}`,
-              "proxy",
+            log.say(
+              `├── ${service.name} passed health checks`,
+              2,
             );
             return true;
           }
 
           // If state is "error" or "unhealthy", fail immediately
           if (details.state === "error" || details.state === "unhealthy") {
-            log.error(
-              `${service.name} health check failed with state: ${details.state}`,
-              "proxy",
+            log.say(
+              `├── ${service.name} health check failed with state: ${details.state}`,
+              2,
             );
             return false;
           }
@@ -388,9 +388,9 @@ export class ProxyService {
       await new Promise((resolve) => setTimeout(resolve, checkInterval));
     }
 
-    log.error(
-      `${service.name} did not become healthy within ${timeoutMs}ms`,
-      "proxy",
+    log.say(
+      `├── ${service.name} did not become healthy within ${timeoutMs}ms`,
+      2,
     );
     return false;
   }
