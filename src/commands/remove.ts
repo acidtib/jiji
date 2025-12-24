@@ -28,19 +28,10 @@ export const removeCommand = new Command()
         globalOptions.configFile,
       );
       const configPath = config.configPath || "unknown";
-      log.say(`Configuration loaded from: ${configPath}`, 1);
-      log.say(`Project: ${config.project}`, 1);
-
-      // Collect all unique hosts
       const allHosts = config.getAllServerHosts();
 
-      if (allHosts.length === 0) {
-        log.error(
-          `No remote hosts found in configuration at: ${configPath}`,
-        );
-        Deno.exit(1);
-      }
-
+      log.say(`Configuration loaded from: ${configPath}`, 1);
+      log.say(`Container engine: ${config.builder.engine}`, 1);
       log.say(
         `Found ${allHosts.length} remote host(s): ${allHosts.join(", ")}`,
         1,
@@ -83,14 +74,11 @@ export const removeCommand = new Command()
       log.section("Removing Services:");
 
       for (const service of services) {
-        log.say(`Service: ${service.name}`, 1);
+        log.say(`- Removing ${service.name}`, 1);
 
         for (const server of service.servers) {
           const host = server.host;
           if (!targetHosts.includes(host)) {
-            log.warn(
-              `Skipping ${service.name} on unreachable host: ${host}`,
-            );
             continue;
           }
 
@@ -100,6 +88,9 @@ export const removeCommand = new Command()
           await log.hostBlock(host, async () => {
             try {
               const containerName = service.getContainerName();
+              const namedVolumes = service.getNamedVolumes();
+              const hasNamedVolumes = namedVolumes.length > 0;
+              const isLastItem = !hasNamedVolumes; // If no named volumes, this is the last item
 
               // Remove service from proxy if proxy is configured
               if (service.proxy?.enabled) {
@@ -109,12 +100,9 @@ export const removeCommand = new Command()
                     hostSsh,
                   );
                   await proxyCmd.remove(service.name);
-                  log.say(`Removed ${service.name} from proxy`, 3);
-                } catch (error) {
-                  log.say(
-                    `Failed to remove from proxy: ${error}`,
-                    3,
-                  );
+                  log.say(`├── Removed ${service.name} from proxy`, 2);
+                } catch (_error) {
+                  // Best effort removal
                 }
               }
 
@@ -127,12 +115,9 @@ export const removeCommand = new Command()
                     service.name,
                     ctxConfig.project,
                   );
-                  log.say(`Unregistered ${service.name} from network`, 3);
-                } catch (error) {
-                  log.say(
-                    `Failed to unregister from network: ${error}`,
-                    3,
-                  );
+                  log.say(`├── Unregistered ${service.name} from network`, 2);
+                } catch (_error) {
+                  // Best effort removal
                 }
               }
 
@@ -142,31 +127,26 @@ export const removeCommand = new Command()
                 `${ctxConfig.builder.engine} rm -f ${containerName}`,
                 `removing container ${containerName}`,
               );
-              log.say(`Removed container ${containerName}`, 3);
+              const containerPrefix = isLastItem ? "└──" : "├──";
+              log.say(`${containerPrefix} Removed container ${containerName}`, 2);
 
               // Remove named volumes
-              const namedVolumes = service.getNamedVolumes();
-              if (namedVolumes.length > 0) {
-                log.say(`Removing ${namedVolumes.length} named volume(s)`, 3);
+              for (let i = 0; i < namedVolumes.length; i++) {
+                const volumeName = namedVolumes[i];
+                const isLast = i === namedVolumes.length - 1;
+                const prefix = isLast ? "└──" : "├──";
 
-                for (const volumeName of namedVolumes) {
-                  await executeBestEffort(
-                    hostSsh,
-                    `${ctxConfig.builder.engine} volume rm ${volumeName}`,
-                    `removing volume ${volumeName}`,
-                  );
-                  log.say(`Removed volume ${volumeName}`, 4);
-                }
+                await executeBestEffort(
+                  hostSsh,
+                  `${ctxConfig.builder.engine} volume rm ${volumeName}`,
+                  `removing volume ${volumeName}`,
+                );
+                log.say(`${prefix} Removed volume ${volumeName}`, 2);
               }
             } catch (error) {
-              log.say(
-                `Failed to remove ${service.name}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-                3,
-              );
+              log.say(`└── Failed to remove ${service.name}: ${error}`, 2);
             }
-          }, { indent: 2 });
+          }, { indent: 1 });
         }
       }
 
@@ -175,37 +155,24 @@ export const removeCommand = new Command()
 
       const projectDir = `.jiji/${ctxConfig.project}`;
 
-      for (const host of targetHosts) {
+      for (let i = 0; i < targetHosts.length; i++) {
+        const host = targetHosts[i];
+        const isLastHost = i === targetHosts.length - 1;
         const hostSsh = sshManagers.find((ssh) => ssh.getHost() === host);
         if (!hostSsh) continue;
 
         await log.hostBlock(host, async () => {
           try {
-            const rmResult = await hostSsh.executeCommand(
-              `rm -rf ${projectDir}`,
-            );
-
-            if (rmResult.success) {
-              log.say(`Removed ${projectDir}`, 2);
-            } else {
-              log.say(
-                `Failed to remove ${projectDir}: ${rmResult.stderr}`,
-                2,
-              );
-            }
+            await hostSsh.executeCommand(`rm -rf ${projectDir}`);
+            log.say(`${isLastHost ? "└──" : "├──"} Removed ${projectDir}`, 2);
           } catch (error) {
-            log.say(
-              `Error removing ${projectDir}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-              2,
-            );
+            log.say(`${isLastHost ? "└──" : "├──"} Failed to remove ${projectDir}: ${error}`, 2);
           }
         }, { indent: 1 });
       }
 
       console.log();
-      log.say("Removal process completed");
+      log.say("Removal completed successfully");
     } catch (error) {
       await handleCommandError(error, {
         operation: "Removal",
