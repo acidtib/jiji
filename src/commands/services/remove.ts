@@ -5,15 +5,15 @@ import {
   executeBestEffort,
   findSSHManagerByHost,
   setupCommandContext,
-} from "../utils/command_helpers.ts";
-import { handleCommandError } from "../utils/error_handler.ts";
-import { getTreePrefix, log } from "../utils/logger.ts";
-import { ProxyCommands } from "../utils/proxy.ts";
-import { unregisterContainerFromNetwork } from "../lib/services/container_registry.ts";
-import type { GlobalOptions } from "../types.ts";
+} from "../../utils/command_helpers.ts";
+import { handleCommandError } from "../../utils/error_handler.ts";
+import { getTreePrefix, log } from "../../utils/logger.ts";
+import { ProxyCommands } from "../../utils/proxy.ts";
+import { unregisterContainerFromNetwork } from "../../lib/services/container_registry.ts";
+import type { GlobalOptions } from "../../types.ts";
 
 export const removeCommand = new Command()
-  .description("Remove services and .jiji/project_dir from servers")
+  .description("Remove services from servers")
   .option("-y, --confirmed", "Skip confirmation prompt", { default: false })
   .action(async (options) => {
     const globalOptions = options as unknown as GlobalOptions;
@@ -23,13 +23,38 @@ export const removeCommand = new Command()
       log.section("Service Removal:");
 
       // Load configuration first (before confirmation)
-      const { Configuration } = await import("../lib/configuration.ts");
+      const { Configuration } = await import("../../lib/configuration.ts");
       const config = await Configuration.load(
         globalOptions.environment,
         globalOptions.configFile,
       );
       const configPath = config.configPath || "unknown";
-      const allHosts = config.getAllServerHosts();
+
+      // We need to resolve what we are removing BEFORE confirmation
+      let allHosts = config.getAllServerHosts();
+      let servicesToRemove: string[] = [];
+      let isPartialRemoval = false;
+
+      if (globalOptions.services) {
+        const requestedServices = globalOptions.services.split(",").map((s) =>
+          s.trim()
+        );
+        const matchingServices = config.getMatchingServiceNames(
+          requestedServices,
+        );
+
+        if (matchingServices.length === 0) {
+          log.error(
+            `No services found matching: ${requestedServices.join(", ")}`,
+          );
+          Deno.exit(1);
+        }
+        servicesToRemove = matchingServices;
+        allHosts = config.getHostsFromServices(matchingServices);
+        isPartialRemoval = true;
+      } else {
+        servicesToRemove = config.getServiceNames();
+      }
 
       log.say(`Configuration loaded from: ${configPath}`, 1);
       log.say(`Container engine: ${config.builder.engine}`, 1);
@@ -38,13 +63,29 @@ export const removeCommand = new Command()
         1,
       );
 
+      if (isPartialRemoval) {
+        log.say(
+          `Targeting specific services: ${servicesToRemove.join(", ")}`,
+          1,
+        );
+      } else {
+        log.say(`Targeting ALL services`, 1);
+      }
+
       // Get confirmation unless --confirmed flag is passed
       const confirmed = options.confirmed as boolean;
       if (!confirmed) {
         console.log();
-        log.warn(
-          `This will remove all services and .jiji/${config.project} from ${allHosts.length} server(s)`,
-        );
+        if (isPartialRemoval) {
+          log.warn(
+            `This will remove ${servicesToRemove.length} service(s) from ${allHosts.length} server(s).`,
+          );
+          log.warn(`Services: ${servicesToRemove.join(", ")}`);
+        } else {
+          log.warn(
+            `This will remove ALL services and .jiji/${config.project} from ${allHosts.length} server(s)`,
+          );
+        }
         console.log();
 
         const confirm = await Confirm.prompt({
@@ -59,6 +100,8 @@ export const removeCommand = new Command()
       }
 
       // Set up command context (establish SSH connections)
+      // setupCommandContext handles service filtering internally if options.skipServiceFiltering is NOT set (default)
+      // We passed globalOptions which might have 'services'.
       ctx = await setupCommandContext(globalOptions);
       const { config: ctxConfig, sshManagers, targetHosts } = ctx;
 
@@ -68,13 +111,16 @@ export const removeCommand = new Command()
         log.remote(ssh.getHost(), ": Connected", { indent: 1 });
       }
 
-      // Get all services
-      const services = Array.from(ctxConfig.services.values());
+      // Filter services based on context match
+      // If we are doing partial removal, ctx.matchingServices should be populated by setupCommandContext
+      const finalServices = ctx.matchingServices
+        ? ctx.matchingServices.map((name) => ctxConfig.services.get(name)!)
+        : Array.from(ctxConfig.services.values());
 
       // Remove containers and proxy configuration for each service
       log.section("Removing Services:");
 
-      for (const service of services) {
+      for (const service of finalServices) {
         log.say(`- Removing ${service.name}`, 1);
 
         for (const server of service.servers) {
@@ -153,28 +199,35 @@ export const removeCommand = new Command()
         }
       }
 
-      // Remove .jiji/project directory from all hosts
-      log.section("Removing Project Directory:");
+      // Remove .jiji/project directory from all hosts ONLY if it is a FULL removal
+      // We check if globalOptions.services was present to determine this state
+      if (!isPartialRemoval) {
+        log.section("Removing Project Directory:");
 
-      const projectDir = `.jiji/${ctxConfig.project}`;
+        const projectDir = `.jiji/${ctxConfig.project}`;
 
-      for (let i = 0; i < targetHosts.length; i++) {
-        const host = targetHosts[i];
-        const hostSsh = findSSHManagerByHost(sshManagers, host);
-        if (!hostSsh) continue;
+        for (let i = 0; i < targetHosts.length; i++) {
+          const host = targetHosts[i];
+          const hostSsh = findSSHManagerByHost(sshManagers, host);
+          if (!hostSsh) continue;
 
-        const prefix = getTreePrefix(i, targetHosts.length);
-        await log.hostBlock(host, async () => {
-          try {
-            await hostSsh.executeCommand(`rm -rf ${projectDir}`);
-            log.say(`${prefix} Removed ${projectDir}`, 2);
-          } catch (error) {
-            log.say(
-              `${prefix} Failed to remove ${projectDir}: ${error}`,
-              2,
-            );
-          }
-        }, { indent: 1 });
+          const prefix = getTreePrefix(i, targetHosts.length);
+          await log.hostBlock(host, async () => {
+            try {
+              await hostSsh.executeCommand(`rm -rf ${projectDir}`);
+              log.say(`${prefix} Removed ${projectDir}`, 2);
+            } catch (error) {
+              log.say(
+                `${prefix} Failed to remove ${projectDir}: ${error}`,
+                2,
+              );
+            }
+          }, { indent: 1 });
+        }
+      } else {
+        log.info(
+          "Skipping project directory removal (partial service removal)",
+        );
       }
 
       log.success("\nRemoval completed successfully", 0);
