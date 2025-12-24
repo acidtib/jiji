@@ -7,7 +7,6 @@ import { lockCommand } from "./commands/lock.ts";
 import { versionCommand } from "./commands/version.ts";
 import { deployCommand } from "./commands/deploy.ts";
 import { buildCommand } from "./commands/build.ts";
-import { removeCommand } from "./commands/remove.ts";
 import { servicesCommand } from "./commands/services/index.ts";
 import { proxyCommand } from "./commands/proxy/index.ts";
 import { registryCommand } from "./commands/registry/index.ts";
@@ -52,7 +51,6 @@ const command = new Command()
   .command("init", initCommand)
   .command("build", buildCommand)
   .command("deploy", deployCommand)
-  .command("remove", removeCommand)
   .command("services", servicesCommand)
   .command("proxy", proxyCommand)
   .command("server", serverCommand)
