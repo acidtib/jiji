@@ -184,7 +184,7 @@ export class PortForwarder {
       return;
     }
 
-    log.info("Stopping port forwarding", "port-forward");
+    log.debug("Stopping port forwarding", "port-forward");
 
     try {
       // Close all active connections
@@ -219,7 +219,7 @@ export class PortForwarder {
       }
 
       this.forwarding = false;
-      log.success("Port forwarding stopped", "port-forward");
+      log.debug("Port forwarding stopped", "port-forward");
     } catch (error) {
       log.warn(
         `Error stopping port forward: ${

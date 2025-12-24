@@ -478,53 +478,53 @@ export class DeploymentOrchestrator {
     if (result.deploymentId && result.metrics) {
       const metrics = result.metrics;
 
-      console.log();
-      log.section(`Deployment Summary: ${metrics.deploymentId}`);
-      log.say(`Project: ${metrics.projectName}`);
+      log.section("Deployment Summary:");
+
+      const duration = metrics.totalDurationMs
+        ? `${(metrics.totalDurationMs / 1000).toFixed(2)}s`
+        : "N/A";
+
+      log.say(`- Project: ${metrics.projectName}`, 1);
       if (metrics.version) {
-        log.say(`Version: ${metrics.version}`);
+        log.say(`- Version: ${metrics.version}`, 1);
       }
-      log.say(`Started: ${metrics.startTime.toISOString()}`);
-      if (metrics.endTime) {
-        log.say(`Finished: ${metrics.endTime.toISOString()}`);
+      log.say(`- Duration: ${duration}`, 1);
+
+      // Show deployments: "2 successful" or "1 successful, 1 failed"
+      const deploymentParts = [];
+      if (metrics.successfulDeployments > 0) {
+        deploymentParts.push(`${metrics.successfulDeployments} successful`);
       }
-      if (metrics.totalDurationMs) {
-        log.say(
-          `Duration: ${(metrics.totalDurationMs / 1000).toFixed(2)}s`,
-        );
+      if (metrics.failedDeployments > 0) {
+        deploymentParts.push(`${metrics.failedDeployments} failed`);
+      }
+      if (metrics.rolledBackDeployments > 0) {
+        deploymentParts.push(`${metrics.rolledBackDeployments} rolled back`);
       }
 
-      log.say("Service Deployments");
-      log.say(`  Total Services: ${metrics.totalServices}`, 1);
-      log.say(`  Successful: ${metrics.successfulDeployments}`, 1);
-      log.say(`  Failed: ${metrics.failedDeployments}`, 1);
-      log.say(`  Rolled Back: ${metrics.rolledBackDeployments}`, 1);
+      const deploymentSummary = deploymentParts.length > 0
+        ? deploymentParts.join(", ")
+        : "0 deployments";
+
+      log.say(`- Deployments: ${deploymentSummary}`, 1);
 
       if (
         metrics.proxyHostsConfigured > 0 ||
         metrics.proxyServicesConfigured > 0
       ) {
-        log.say("Proxy Configuration");
-        log.say(`  Hosts Configured: ${metrics.proxyHostsConfigured}`, 1);
         log.say(
-          `  Services Configured: ${metrics.proxyServicesConfigured}`,
+          `- Proxy: ${metrics.proxyServicesConfigured} services on ${metrics.proxyHostsConfigured} hosts`,
           1,
         );
-        log.say(`  Install Failures: ${metrics.proxyInstallFailures}`, 1);
-        log.say(`  Config Failures: ${metrics.proxyConfigFailures}`, 1);
-      }
 
-      if (metrics.deploymentSteps.length > 0) {
-        log.say("Step Timing");
-        for (const step of metrics.deploymentSteps) {
-          const status = step.success ? "OK" : "FAILED";
-          const duration = step.durationMs
-            ? `${(step.durationMs / 1000).toFixed(2)}s`
-            : "N/A";
-          log.say(`  ${step.step}: ${duration} [${status}]`, 1);
+        if (
+          metrics.proxyInstallFailures > 0 || metrics.proxyConfigFailures > 0
+        ) {
+          const failures = metrics.proxyInstallFailures +
+            metrics.proxyConfigFailures;
+          log.say(`  └── ${failures} failure(s)`, 1);
         }
       }
-      console.log();
     }
   }
 }

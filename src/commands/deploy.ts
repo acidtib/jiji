@@ -358,8 +358,7 @@ export const deployCommand = new Command()
         log.say("No services found to deploy");
       }
 
-      console.log();
-      log.say("Deployment process completed");
+      log.say("\nDeployment completed successfully", 0);
     } catch (error) {
       await handleCommandError(error, {
         operation: "Deployment",
