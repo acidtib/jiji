@@ -121,30 +121,17 @@ export type {
 
 export type {
   AuthenticationResult,
-  LocalRegistryContainer,
-  RegistryBackupInfo,
   RegistryCommandOptions,
   RegistryConfig,
   RegistryCredentials,
-  RegistryEnvironment,
   RegistryEvent,
   RegistryEventType,
-  RegistryHealthCheck,
-  RegistryImageInfo,
   RegistryInfo,
-  RegistryListOptions,
-  RegistryMetrics,
-  RegistryMigrationOptions,
   RegistryOperation,
   RegistryOperationResult,
-  RegistrySearchResult,
-  RegistryServiceConfig,
   RegistrySetupOptions,
   RegistryStatus,
   RegistryType,
-  RegistryUrlComponents,
-  RegistryValidationResult,
-  RegistryValidationRules,
 } from "./types/registry.ts";
 
 // ============================================================================

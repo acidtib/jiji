@@ -1,12 +1,10 @@
 import { log } from "../utils/logger.ts";
 import { loadConfig } from "../utils/config.ts";
 import { RegistryManager } from "../utils/registry_manager.ts";
-import {
-  type RegistryConfig,
-  RegistryConfigManager,
-} from "../utils/registry_config.ts";
 import { RegistryAuthenticator } from "./registry_authenticator.ts";
+import type { SSHManager } from "../utils/ssh.ts";
 import type { ContainerEngine } from "./configuration/builder.ts";
+import type { RegistryConfiguration } from "./configuration/registry.ts";
 import {
   createRegistryError,
   getErrorMessage,
@@ -23,16 +21,17 @@ import type {
 
 /**
  * Main registry service that encapsulates all registry operations
+ * Now stateless and driven by jiji.yml configuration
  */
 export class RegistryService {
-  private configManager: RegistryConfigManager;
   private authenticator: RegistryAuthenticator;
   private registryManager?: RegistryManager;
   private engine: ContainerEngine;
+  private registryConfig?: RegistryConfiguration;
 
   constructor(engine?: ContainerEngine) {
-    this.configManager = new RegistryConfigManager();
-    // Initialize engine from config or use provided one
+    // Initialize engine from provided one or default to docker
+    // It will be updated in initialize() when config is loaded
     this.engine = engine || "docker";
     this.authenticator = new RegistryAuthenticator(this.engine);
   }
@@ -45,6 +44,7 @@ export class RegistryService {
       const { config } = await loadConfig();
       this.engine = config.builder?.engine || "docker";
       this.authenticator = new RegistryAuthenticator(this.engine);
+      this.registryConfig = config.builder?.registry;
 
       log.debug(
         `Initialized RegistryService with engine: ${this.engine}`,
@@ -87,27 +87,12 @@ export class RegistryService {
   }
 
   /**
-   * Remove a registry
+   * Remove a registry (Stop local container or logout remote)
    */
   async removeRegistry(url: string): Promise<RegistryOperationResult> {
     log.info(`Removing registry: ${url}`, "registry:service");
 
     try {
-      const registryConfig = await this.configManager.getRegistry(url);
-
-      if (!registryConfig) {
-        log.warn(
-          `Registry not found in configuration: ${url}`,
-          "registry:service",
-        );
-        return {
-          success: true,
-          registry: url,
-          operation: "remove",
-          message: "Registry not configured",
-        };
-      }
-
       // Logout from registry
       try {
         await this.authenticator.logout(url);
@@ -119,20 +104,22 @@ export class RegistryService {
       }
 
       // Remove local registry container if it's a local registry
-      if (registryConfig.type === "local") {
-        await this.removeLocalRegistry(url, registryConfig);
+      const registryType = this.detectRegistryType(url);
+      if (registryType === "local") {
+        await this.removeLocalRegistry(url, undefined);
       }
 
-      // Remove from configuration
-      await this.configManager.removeRegistry(url);
-
-      log.info(`Successfully removed registry: ${url}`, "registry:service");
+      // We no longer remove from configuration/persistence file
+      log.info(
+        `Successfully removed/logged out registry: ${url}`,
+        "registry:service",
+      );
 
       return {
         success: true,
         registry: url,
         operation: "remove",
-        message: "Registry removed successfully",
+        message: "Registry removed/logged out successfully",
       };
     } catch (error) {
       throw createRegistryError(
@@ -156,22 +143,7 @@ export class RegistryService {
 
     try {
       const result = await this.authenticator.login(url, credentials);
-
-      // Update configuration with successful authentication
-      if (result.success) {
-        const registryType = this.detectRegistryType(url);
-        const registryConfig: RegistryConfig = {
-          url,
-          type: registryType,
-          username: credentials?.username,
-          port: registryType === "local" ? this.extractPort(url) : undefined,
-          isDefault: !(await this.configManager.getDefaultRegistry()),
-          lastLogin: new Date().toISOString(),
-        };
-
-        await this.configManager.addRegistry(registryConfig);
-      }
-
+      // We no longer save configuration state
       return result;
     } catch (error) {
       throw createRegistryError(
@@ -185,25 +157,158 @@ export class RegistryService {
   }
 
   /**
+   * Logout from a registry
+   */
+  async logout(url: string): Promise<AuthenticationResult> {
+    log.info(`Logging out from registry: ${url}`, "registry:service");
+
+    try {
+      await this.authenticator.logout(url);
+      return {
+        success: true,
+        registry: url,
+        message: "Successfully logged out",
+        authenticated: false,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      throw createRegistryError(
+        `Logout failed: ${getErrorMessage(error)}`,
+        RegistryErrorCodes.AUTH_FAILED,
+        url,
+        "logout",
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  /**
+   * Authenticate to a registry on remote servers via SSH
+   */
+  async authenticateOnRemoteServers(
+    url: string,
+    credentials: RegistryCredentials | undefined,
+    sshManagers: SSHManager[],
+  ): Promise<{ success: boolean; errors: string[] }> {
+    log.info(
+      `Authenticating to registry on ${sshManagers.length} remote server(s)`,
+      "registry:service",
+    );
+
+    const errors: string[] = [];
+
+    for (const ssh of sshManagers) {
+      try {
+        const host = ssh.getHost();
+        log.debug(`Authenticating to ${url} on ${host}`, "registry:service");
+
+        // Build the login command
+        let loginCommand = `${this.engine} login ${url}`;
+        if (credentials) {
+          loginCommand +=
+            ` --username ${credentials.username} --password-stdin`;
+        }
+
+        // Execute the login command on the remote server
+        if (credentials) {
+          // Pass password via stdin
+          const result = await ssh.execute(
+            `echo "${credentials.password}" | ${loginCommand}`,
+            { timeout: 30000 },
+          );
+          if (result.code !== 0) {
+            errors.push(`${host}: ${result.stderr || "Login failed"}`);
+          }
+        } else {
+          const result = await ssh.execute(loginCommand, { timeout: 30000 });
+          if (result.code !== 0) {
+            errors.push(`${host}: ${result.stderr || "Login failed"}`);
+          }
+        }
+
+        log.debug(`Successfully authenticated on ${host}`, "registry:service");
+      } catch (error) {
+        const host = ssh.getHost();
+        errors.push(`${host}: ${getErrorMessage(error)}`);
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      errors,
+    };
+  }
+
+  /**
+   * Logout from a registry on remote servers via SSH
+   */
+  async logoutFromRemoteServers(
+    url: string,
+    sshManagers: SSHManager[],
+  ): Promise<{ success: boolean; errors: string[] }> {
+    log.info(
+      `Logging out from registry on ${sshManagers.length} remote server(s)`,
+      "registry:service",
+    );
+
+    const errors: string[] = [];
+
+    for (const ssh of sshManagers) {
+      try {
+        const host = ssh.getHost();
+        log.debug(`Logging out from ${url} on ${host}`, "registry:service");
+
+        const logoutCommand = `${this.engine} logout ${url}`;
+        const result = await ssh.execute(logoutCommand, { timeout: 30000 });
+
+        if (result.code !== 0) {
+          errors.push(`${host}: ${result.stderr || "Logout failed"}`);
+        }
+
+        log.debug(`Successfully logged out from ${host}`, "registry:service");
+      } catch (error) {
+        const host = ssh.getHost();
+        errors.push(`${host}: ${getErrorMessage(error)}`);
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      errors,
+    };
+  }
+
+  /**
    * Get registry information
    */
   async getRegistryInfo(url: string): Promise<RegistryInfo | null> {
     try {
-      const config = await this.configManager.getRegistry(url);
-
-      if (!config) {
+      if (!this.registryConfig) {
         return null;
       }
 
-      const status = await this.getRegistryStatus(url, config);
+      // Check if the requested URL matches our configured registry
+      const configuredUrl = this.registryConfig.getRegistryUrl();
+      if (configuredUrl !== url) {
+        // If we want to support checking status of registries not in config (e.g. older ones),
+        // we could try to detect type from URL, but general policy is we only know about configured one.
+        // However, existing semantics might expect us to check status if possible.
+        // For now, let's stick to only returning info for the configured registry to be consistent.
+        // Or strictly strictly only support the single configured registry.
+        return null;
+      }
+
+      const status = await this.getRegistryStatus(
+        url,
+        this.registryConfig.type,
+      );
 
       return {
-        url: config.url,
-        type: config.type,
-        port: config.port,
-        username: config.username,
-        isDefault: config.isDefault || false,
-        lastLogin: config.lastLogin,
+        url: this.registryConfig.getRegistryUrl(),
+        type: this.registryConfig.type,
+        port: this.registryConfig.port,
+        username: this.registryConfig.username,
+        isDefault: true, // The configured registry is always default effectively
         status,
       };
     } catch (error) {
@@ -216,31 +321,31 @@ export class RegistryService {
   }
 
   /**
-   * List all configured registries
+   * Get the currently configured registry from jiji.yml
    */
-  async listRegistries(): Promise<RegistryInfo[]> {
+  async getConfiguredRegistry(): Promise<RegistryInfo | null> {
     try {
-      const configs = await this.configManager.loadConfigs();
-      const registries: RegistryInfo[] = [];
-
-      for (const config of configs) {
-        const status = await this.getRegistryStatus(config.url, config);
-
-        registries.push({
-          url: config.url,
-          type: config.type,
-          port: config.port,
-          username: config.username,
-          isDefault: config.isDefault || false,
-          lastLogin: config.lastLogin,
-          status,
-        });
+      if (!this.registryConfig) {
+        return null;
       }
 
-      return registries;
+      const url = this.registryConfig.getRegistryUrl();
+      const status = await this.getRegistryStatus(
+        url,
+        this.registryConfig.type,
+      );
+
+      return {
+        url: url,
+        type: this.registryConfig.type,
+        port: this.registryConfig.port,
+        username: this.registryConfig.username,
+        isDefault: true,
+        status,
+      };
     } catch (error) {
       throw createRegistryError(
-        `Failed to list registries: ${getErrorMessage(error)}`,
+        `Failed to get configured registry: ${getErrorMessage(error)}`,
         RegistryErrorCodes.OPERATION_FAILED,
         undefined,
         "list",
@@ -250,50 +355,13 @@ export class RegistryService {
   }
 
   /**
-   * Set a registry as the default
-   */
-  async setDefaultRegistry(url: string): Promise<RegistryOperationResult> {
-    try {
-      await this.configManager.setDefaultRegistry(url);
-
-      log.info(`Set default registry: ${url}`, "registry:service");
-
-      return {
-        success: true,
-        registry: url,
-        operation: "set-default",
-        message: "Default registry set successfully",
-      };
-    } catch (error) {
-      throw createRegistryError(
-        `Failed to set default registry: ${getErrorMessage(error)}`,
-        RegistryErrorCodes.OPERATION_FAILED,
-        url,
-        "set-default",
-        error instanceof Error ? error : undefined,
-      );
-    }
-  }
-
-  /**
    * Get the default registry
    */
   async getDefaultRegistry(): Promise<RegistryInfo | null> {
-    try {
-      const config = await this.configManager.getDefaultRegistry();
-
-      if (!config) {
-        return null;
-      }
-
-      return await this.getRegistryInfo(config.url);
-    } catch (error) {
-      log.error(
-        `Failed to get default registry: ${getErrorMessage(error)}`,
-        "registry:service",
-      );
+    if (!this.registryConfig) {
       return null;
     }
+    return await this.getRegistryInfo(this.registryConfig.getRegistryUrl());
   }
 
   /**
@@ -316,18 +384,6 @@ export class RegistryService {
 
       // Start the local registry
       await this.registryManager.start();
-
-      // Save configuration
-      const registryConfig: RegistryConfig = {
-        url,
-        type: "local",
-        port,
-        isDefault: options.isDefault ??
-          !(await this.configManager.getDefaultRegistry()),
-        lastLogin: new Date().toISOString(),
-      };
-
-      await this.configManager.addRegistry(registryConfig);
 
       log.info(
         `Local registry setup completed on port ${port}`,
@@ -365,18 +421,6 @@ export class RegistryService {
         await this.authenticator.login(url, options.credentials);
       }
 
-      // Save configuration
-      const registryConfig: RegistryConfig = {
-        url,
-        type: "remote",
-        username: options.credentials?.username,
-        isDefault: options.isDefault ??
-          !(await this.configManager.getDefaultRegistry()),
-        lastLogin: new Date().toISOString(),
-      };
-
-      await this.configManager.addRegistry(registryConfig);
-
       log.info(`Remote registry setup completed: ${url}`, "registry:service");
 
       return {
@@ -401,9 +445,10 @@ export class RegistryService {
    */
   private async removeLocalRegistry(
     url: string,
-    config: RegistryConfig,
+    // config removed as arg since we deduce from URL or manager
+    _config?: unknown,
   ): Promise<void> {
-    const port = config.port || 6767;
+    const port = this.extractPort(url) || 6767;
 
     if (
       !this.registryManager ||
@@ -421,11 +466,11 @@ export class RegistryService {
    */
   private async getRegistryStatus(
     url: string,
-    config: RegistryConfig,
+    type: "local" | "remote",
   ): Promise<RegistryStatus> {
     try {
-      if (config.type === "local") {
-        const port = config.port || 6767;
+      if (type === "local") {
+        const port = this.extractPort(url) || 6767;
 
         if (
           !this.registryManager ||

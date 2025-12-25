@@ -1,21 +1,30 @@
 import { Command } from "@cliffy/command";
 import { log } from "../../utils/logger.ts";
-import { loadConfig } from "../../utils/config.ts";
 import { RegistryService } from "../../lib/registry_service.ts";
 import { handleRegistryError } from "../../utils/error_handling.ts";
+import {
+  cleanupSSHConnections,
+  setupCommandContext,
+} from "../../utils/command_helpers.ts";
+import type { GlobalOptions } from "../../types.ts";
 
 export const removeCommand = new Command()
   .description(
-    "Remove local registry or log out of remote registry locally and remotely",
+    "Remove local registry container and/or logout from registry on remote servers",
   )
-  .option("-L, --skip-local", "Skip local removal")
-  .option("-R, --skip-remote", "Skip remote removal")
+  .option("-L, --skip-local", "Skip local registry removal/logout")
+  .option("-R, --skip-remote", "Skip remote logout on servers")
   .action(async (options) => {
+    const globalOptions = options as unknown as GlobalOptions;
+    let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
+
     try {
       log.section("Registry Removal:");
 
-      // Load configuration to get registry settings
-      const { config } = await loadConfig();
+      // Setup command context to get config and SSH connections
+      ctx = await setupCommandContext(globalOptions);
+      const { config, sshManagers } = ctx;
+
       const registryConfig = config.builder.registry;
       const registry = registryConfig.getRegistryUrl();
 
@@ -28,27 +37,52 @@ export const removeCommand = new Command()
 
       log.section("Removing Registry:");
 
-      // Perform local removal unless skip-local is specified
+      // Local removal
       if (!options.skipLocal) {
-        log.say("- Performing local removal", 1);
+        log.say("- Performing local registry removal", 1);
         await registryService.removeRegistry(registry);
-        log.say("- Local registry removed", 1);
+
+        if (registryConfig.type === "local") {
+          log.say("- Local registry container stopped and removed", 1);
+        } else {
+          log.say("- Logged out from remote registry locally", 1);
+        }
       } else {
         log.say("- Skipped local registry removal", 1);
       }
 
-      // Perform remote logout unless skip-remote is specified
+      // Remote logout
       if (!options.skipRemote) {
-        log.say("- Performing remote logout", 1);
-        // For container registries, this is handled by the removeRegistry method
-        // which includes logout functionality
-        log.say("- Remote registry logout completed", 1);
+        log.say(
+          `- Performing remote logout on ${sshManagers.length} server(s)`,
+          1,
+        );
+        const result = await registryService.logoutFromRemoteServers(
+          registry,
+          sshManagers,
+        );
+
+        if (result.success) {
+          log.say("- Remote logout successful on all servers", 1);
+        } else {
+          log.warn("- Remote logout failed on some servers:", "registry");
+          for (const error of result.errors) {
+            log.say(`  • ${error}`, 2);
+          }
+          throw new Error(
+            `Remote logout failed on ${result.errors.length} server(s)`,
+          );
+        }
       } else {
-        log.say("- Skipped remote registry logout", 1);
+        log.say("- Skipped remote logout", 1);
       }
 
       log.success("\nRegistry removal completed successfully", 0);
     } catch (error) {
       handleRegistryError(error, "remove");
+    } finally {
+      if (ctx) {
+        await cleanupSSHConnections(ctx.sshManagers);
+      }
     }
   });
