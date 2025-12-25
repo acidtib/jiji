@@ -97,6 +97,11 @@ export async function discoverPrivateIPs(
         continue;
       }
 
+      // Skip non private IPs (e.g., public IPs configured on interfaces)
+      if (!isPrivateIP(ip)) {
+        continue;
+      }
+
       // Get interface name for this IP
       const ifaceResult = await ssh.executeCommand(
         `ip addr show | grep -B 2 "${ip}" | head -n 1 | awk '{print $2}' | sed 's/:$//'`,
