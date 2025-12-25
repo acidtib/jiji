@@ -18,12 +18,12 @@ const VALID_CONFIG_DATA = {
   services: {
     web: {
       image: "nginx:latest",
-      hosts: ["web1.example.com"],
+      servers: [{ host: "web1.example.com" }],
       ports: ["80:80"],
     },
     api: {
       image: "node:18",
-      hosts: ["api.example.com"],
+      servers: [{ host: "api.example.com" }],
       ports: ["3000:3000"],
       build: {
         dockerfile: "Dockerfile",
@@ -48,12 +48,12 @@ const _INVALID_CONFIG_DATA = {
   services: {
     web: {
       // Missing required image/build
-      hosts: [],
+      servers: [],
       ports: "invalid_ports",
     },
     api: {
       image: 123, // Invalid type
-      hosts: "invalid_hosts",
+      servers: "invalid_hosts", // This tests invalid type for servers property
       volumes: [],
     },
   },
@@ -65,7 +65,7 @@ const MINIMAL_VALID_CONFIG = {
   services: {
     simple: {
       image: "hello-world",
-      hosts: ["example.com"],
+      servers: [{ host: "example.com" }],
     },
   },
 };
@@ -417,13 +417,13 @@ Deno.test("ValidatorPresets - createServiceValidator works", () => {
 
   const validService = {
     image: "nginx:latest",
-    hosts: ["example.com"],
+    servers: [{ host: "example.com" }],
     ports: ["80:80"],
   };
 
   const invalidService = {
     // Missing image/build
-    hosts: [],
+    servers: [],
     ports: ["80:80"],
   };
 
@@ -465,7 +465,7 @@ Deno.test("ConfigurationValidator - validation context", () => {
   assertEquals(prodResult.errors[0].code, "DEBUG_IN_PROD");
 });
 
-Deno.test("ConfigurationValidator - comprehensive validation with complex config", () => {
+Deno.test("ConfigurationValidator - validation with complex config", () => {
   const validator = ValidatorPresets.createJijiValidator();
 
   const result = validator.validate(VALID_CONFIG_DATA);

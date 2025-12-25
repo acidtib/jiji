@@ -503,7 +503,7 @@ export class Configuration extends BaseConfiguration {
       services: {
         web: {
           image: "nginx:latest",
-          hosts: ["localhost"],
+          servers: [{ host: "localhost" }],
           ports: ["80:80"],
         },
       },
@@ -533,7 +533,7 @@ export class Configuration extends BaseConfiguration {
   }
 }
 
-// Re-export commonly used types and classes
+// Re export commonly used types and classes
 export { ConfigurationError } from "./configuration/base.ts";
 export { SSHConfiguration } from "./configuration/ssh.ts";
 export {

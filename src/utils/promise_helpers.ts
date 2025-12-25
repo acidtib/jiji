@@ -5,11 +5,11 @@ import type { AggregatedResults } from "../types.ts";
  * Enhanced promise utilities for better error handling in multi-host operations
  *
  * These utilities provide patterns that wait for all operations to complete
- * and collect comprehensive error information instead of failing fast.
+ * and collect error information instead of failing fast.
  */
 
 /**
- * Execute operations with comprehensive error collection
+ * Execute operations with error collection
  *
  * Unlike Promise.all() which fails fast, this waits for all operations
  * to complete and returns both successful results and errors.

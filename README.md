@@ -7,7 +7,7 @@
 > **WIP**: Under heavy development, not production ready.
 
 Deploy containerized apps across servers with simplicity, speed, and
-portability. No infrastructure vendor lock-in required.
+portability. No infrastructure vendor lock in required.
 
 ## Features
 
@@ -17,7 +17,7 @@ multiple servers
 **Server Initialization**: Initialize servers with curl and Podman or Docker
 
 **Private Networking**: WireGuard mesh VPN with automatic service discovery via
-DNS for secure container-to-container communication across the cluster
+DNS for secure container to container communication across the cluster
 
 **Deployment Locks**: Prevent concurrent deployments with distributed lock
 management
@@ -26,18 +26,18 @@ management
 
 **Configuration Management**: Create and manage infrastructure configurations
 
-**Server-Side Audit Trail**: Logging of all operations directly on target
+**Server Side Audit Trail**: Logging of all operations directly on target
 servers
 
 **Registry Management**: Manage container registries (local and remote) with
 automatic namespace detection for GHCR and Docker Hub
 
-**Proxy Integration**: Built-in support for kamal-proxy for routing traffic to
+**Proxy Integration**: Built in support for kamal-proxy for routing traffic to
 services
 
 **Mount Management**: Support for file, directory, and volume mounts
 
-**CLI Interface**: Easy-to-use command-line interface built with Cliffy
+**CLI Interface**: Easy to use command line interface built with Cliffy
 
 ## Installation
 
@@ -137,7 +137,7 @@ The deploy command displays a deployment plan before proceeding, showing which
 services will be deployed, build configurations, and target hosts. Use `--yes`
 to skip the confirmation prompt.
 
-**Zero-Downtime Deployments**: Jiji employs a deployment strategy to ensure no
+**Zero Downtime Deployments**: Jiji employs a deployment strategy to ensure no
 service interruption:
 
 1. New containers are deployed alongside existing ones
@@ -273,15 +273,15 @@ jiji registry logout
 jiji registry remove
 ```
 
-**Auto-Detection Support**: Jiji automatically detects namespace requirements
+**Auto Detection Support**: Jiji automatically detects namespace requirements
 for supported registries:
 
-- **GHCR** (`ghcr.io`): Auto-namespace as `username/project-name`
-- **Docker Hub** (`docker.io`): Auto-namespace as `username`
+- **GHCR** (`ghcr.io`): Auto namespace as `username/project-name`
+- **Docker Hub** (`docker.io`): Auto namespace as `username`
 - **Local registries**: No namespace required
 
-See [Registry Auto-Detection](docs/registry-auto-detection.md) for detailed
-configuration examples.
+See [Registry Reference](docs/registry-reference.md) for detailed configuration
+examples.
 
 ### Server Management
 
@@ -334,7 +334,7 @@ undone.
 
 ### Network Management
 
-Manage private networking infrastructure for secure container-to-container
+Manage private networking infrastructure for secure container to container
 communication:
 
 ```bash
@@ -350,10 +350,10 @@ The private network feature provides:
 - **WireGuard mesh VPN** for encrypted communication between servers
 - **Automatic service discovery via DNS** - containers can connect using service
   names (e.g., `api.jiji`, `postgres.jiji`)
-- **Container-to-container networking** across multiple hosts with automatic DNS
+- **Container to container networking** across multiple hosts with automatic DNS
   resolution
-- **Zero-trust security** with encryption by default
-- **Daemon-level DNS configuration** for seamless service discovery across all
+- **Zero trust security** with encryption by default
+- **Daemon level DNS configuration** for seamless service discovery across all
   containers
 
 See [Network Reference](docs/network-reference.md) for detailed configuration
@@ -380,7 +380,7 @@ jiji lock show
 Deployment locks prevent race conditions when multiple users or CI/CD pipelines
 attempt to deploy simultaneously.
 
-### Server-Side Audit Trail
+### Server Side Audit Trail
 
 View operations history and audit logs from your servers:
 
@@ -453,22 +453,11 @@ Get help for any command:
 
 ```bash
 jiji --help
-jiji version
 jiji server --help
-jiji server init --help
-jiji server exec --help
-jiji deploy --help
-jiji build --help
-jiji remove --help
 jiji services --help
 jiji services restart --help
 jiji services prune --help
 jiji services logs --help
-jiji proxy --help
-jiji proxy logs --help
-jiji registry --help
-jiji network --help
-jiji lock --help
 ```
 
 ## Deployment Workflow
@@ -507,10 +496,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    hosts:
-      - server1.example.com
+    servers:
+      - host: server1.example.com
     ports:
-      "3000:3000"
+      - "3000:3000"
     proxy:
       enabled: true
       hosts:
@@ -545,7 +534,7 @@ jiji deploy
 # Review the deployment plan, then confirm
 # Jiji will:
 # - Install kamal-proxy on servers (if services use proxy)
-# - Deploy containers with zero-downtime rollout
+# - Deploy containers with zero downtime rollout
 # - Configure proxy routing with health checks
 # - Clean up old containers after successful deployment
 ```
@@ -553,7 +542,7 @@ jiji deploy
 3. **Monitor the deployment**
 
 ```bash
-# Follow logs in real-time
+# Follow logs in real time
 jiji services logs --services "web" --follow
 
 # Check deployment status
@@ -691,9 +680,6 @@ builder:
 
   # Container engine selection
   engine: docker # or "podman"
-
-  # BuildKit options for advanced builds
-  buildkit: true
 ```
 
 ### Environment Variables
@@ -702,10 +688,17 @@ Jiji automatically converts non string types (numbers, booleans) to strings for
 container compatibility:
 
 ```yaml
+# Shared environment variables applied to all services
 environment:
-  API_URL: https://api.example.com
-  DEBUG: true # Automatically converted to "true"
-  PORT: 3000 # Automatically converted to "3000"
+  # Clear text environment variables
+  clear:
+    API_URL: https://api.example.com
+    DEBUG: true
+    PORT: 3000
+  # Secrets loaded from host environment variables
+  secrets:
+    - API_KEY
+    - DATABASE_PASSWORD
 ```
 
 Service level environment variables can also use this auto conversion feature.
@@ -726,19 +719,27 @@ services:
     # Or use pre-built image
     # image: nginx:latest
 
-    hosts: [server1.example.com, server2.example.com]
-    ports: ["3000:80"]
+    servers:
+      - host: server1.example.com
+      - host: server2.example.com
+    ports:
+      - "3000:80"
 
     volumes:
       - "/data/web/logs:/var/log/nginx"
+      - "web-cache:/tmp/cache"
 
     environment:
-      - ENV=production
-      - API_KEY=${API_KEY} # Environment variable substitution
+      clear:
+        ENV: production
+      secrets:
+        - API_KEY # Environment variable substitution from host
 
     proxy:
       enabled: true
-      hosts: [myapp.example.com, www.myapp.example.com] # Multiple hosts
+      hosts:
+        - myapp.example.com
+        - www.myapp.example.com # Multiple hosts
       ssl: true
       health_check:
         path: "/health"
@@ -746,12 +747,15 @@ services:
         timeout: "5s"
         deploy_timeout: "60s"
 
+    # Files: Upload from local repo to host .jiji/{project}/files/ before mounting
+    # String format: local:remote[:options] where options can be ro, z, or Z
     files:
-      - source: "./config/nginx.conf"
-        destination: "/etc/nginx/nginx.conf"
+      - "nginx.conf:/etc/nginx/nginx.conf:ro"
 
+    # Directories: Created on host .jiji/{project}/directories/ before mounting
+    # String format: local:remote[:options] where options can be ro, z, or Z
     directories:
-      - "/app/uploads"
+      - "html:/usr/share/nginx/html:ro"
 ```
 
 ### Complete Configuration Reference
@@ -799,7 +803,7 @@ jiji registry login
 Common registry errors:
 
 - **403 Forbidden**: Check username and ensure it matches the registry namespace
-- **401 Unauthorized**: Re-run `jiji registry login` with correct credentials
+- **401 Unauthorized**: Re run `jiji registry login` with correct credentials
 - **Push failed**: Verify you have push permissions to the repository
 
 #### Container Won't Start
@@ -920,7 +924,7 @@ Update version across the codebase:
 # Update to specific version
 ./bin/version 1.2.3
 
-# Auto-increment version (patch)
+# Auto increment version (patch)
 ./bin/version
 ```
 

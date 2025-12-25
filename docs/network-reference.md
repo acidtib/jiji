@@ -163,6 +163,223 @@ ufw allow 51820/udp
 ufw allow 8787/tcp
 ```
 
+## Routing Configuration
+
+### IP Forwarding
+
+Jiji automatically enables IP forwarding on all servers for container to
+container communication across machines:
+
+```bash
+# System-level IP forwarding
+sysctl -w net.ipv4.ip_forward=1
+
+# Persistent across reboots (/etc/sysctl.conf)
+net.ipv4.ip_forward = 1
+```
+
+### Peer Routes
+
+Routes to peer subnets are automatically configured via WireGuard interface:
+
+```bash
+# Example routes (automatically created)
+ip route add 10.210.1.0/24 dev jiji0  # Route to server 1
+ip route add 10.210.2.0/24 dev jiji0  # Route to server 2
+ip route add 10.210.3.0/24 dev jiji0  # Route to server 3
+
+# View all peer routes
+ip route show | grep jiji0
+```
+
+### Container Bridge Routing
+
+Jiji configures routing between the container bridge (docker0/cni0) and
+WireGuard:
+
+```bash
+# Traffic flow: Container -> Bridge -> WireGuard -> Peer WireGuard -> Peer Bridge -> Peer Container
+
+# Docker bridge interface detection (automatic)
+# Jiji queries: docker network inspect bridge -f '{{.Options.com.docker.network.bridge.name}}'
+
+# Podman bridge interface (automatic)
+# Typically: cni-podman0 or similar
+```
+
+### Verification
+
+```bash
+# Verify IP forwarding is enabled
+sysctl net.ipv4.ip_forward
+
+# Verify peer routes exist
+ip route show | grep jiji0
+
+# Verify iptables rules for forwarding
+sudo iptables -L FORWARD -n -v | grep jiji0
+
+# Test routing from container to peer container
+docker exec <container> traceroute 10.210.1.10
+```
+
+## IP Discovery
+
+### Endpoint Discovery
+
+Jiji automatically discovers both public and private IP addresses for WireGuard
+endpoints to enable NAT traversal:
+
+#### Public IP Discovery
+
+```bash
+# Jiji queries multiple services for redundancy:
+# - https://api.ipify.org
+# - https://ifconfig.me/ip
+# - https://icanhazip.com
+
+# Manual public IP check
+curl -s https://api.ipify.org
+```
+
+#### Private IP Discovery
+
+```bash
+# Jiji scans network interfaces for private IPs
+# Supports all private ranges:
+# - 10.0.0.0/8
+# - 172.16.0.0/12
+# - 192.168.0.0/16
+
+# Manual private IP check
+ip addr show | grep "inet "
+```
+
+#### Endpoint List
+
+WireGuard endpoint configuration includes all discovered addresses for
+redundancy:
+
+```conf
+# Example WireGuard peer configuration
+[Peer]
+PublicKey = <peer-public-key>
+AllowedIPs = 10.210.1.0/24
+Endpoint = 203.0.113.10:51820     # Public IP (preferred)
+# Fallback to private IP if on same network
+```
+
+### NAT Traversal
+
+The IP discovery system enables:
+
+- **Direct connection** when servers are on same network (uses private IPs)
+- **NAT traversal** when servers are behind different NATs (uses public IPs)
+- **Automatic failover** between endpoints if one becomes unreachable
+
+## IPv6 Management Addresses
+
+### Deterministic Address Derivation
+
+Each server gets a unique IPv6 management address derived from its WireGuard
+public key:
+
+```bash
+# IPv6 derivation process:
+# 1. Take WireGuard public key (32 bytes)
+# 2. Hash with SHA-256
+# 3. Take first 16 bytes
+# 4. Format as IPv6 with fdcc::/16 ULA prefix
+
+# Example:
+# Public Key: abc123...
+# Management IP: fdcc:1234:5678:9abc:def0:1234:5678:9abc
+```
+
+### ULA Prefix (fdcc::/16)
+
+Jiji uses the `fdcc::/16` Unique Local Address prefix for management
+communication:
+
+- **Purpose**: Corrosion gossip protocol communication only
+- **Scope**: Internal cluster management, not for container traffic
+- **Deterministic**: Same public key always generates same IPv6 address
+- **Collision resistant**: SHA-256 hashing ensures uniqueness
+
+### Verification
+
+```bash
+# View derived management IP
+cat .jiji/network.json | jq -r '.topology.servers[].managementIp'
+
+# Verify Corrosion is listening on management IP
+sudo ss -tlnp | grep 8787
+
+# Test Corrosion connectivity (should not work over IPv4)
+curl http://10.210.0.1:8787/metrics  # Won't work - Corrosion uses IPv6 only
+curl http://[fdcc:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]:8787/metrics  # Works
+```
+
+## Container Registry Integration
+
+### Automatic Service Discovery Registration
+
+Containers are automatically registered in the network service discovery system:
+
+```bash
+# After container deployment, Jiji:
+# 1. Gets container ID from deployment
+# 2. Extracts container IP address
+# 3. Registers in Corrosion database
+# 4. Updates DNS records
+
+# View registered containers
+# (Corrosion stores key-value pairs: service-name -> [container-IPs])
+```
+
+### DNS Resolution Flow
+
+```
+Container deployed as "api" service
+  ->
+ContainerRegistry.registerContainerInNetwork()
+  ->
+Corrosion stores: "api" -> ["10.210.0.10", "10.210.1.15", "10.210.2.20"]
+  ->
+CoreDNS queries Corrosion for "api.jiji"
+  ->
+Returns all registered container IPs
+  ->
+Client-side load balancing across all instances
+```
+
+### Health Monitoring
+
+Container health status is tracked in the service registry:
+
+```typescript
+// Health updates automatically sent
+ContainerRegistry.updateContainerHealth(
+  serviceName,
+  containerId,
+  "healthy" | "unhealthy" | "starting",
+);
+```
+
+### Cleanup
+
+Stale container references are automatically cleaned up:
+
+```bash
+# When containers are removed:
+# 1. Deregister from network service discovery
+# 2. Remove DNS entries
+# 3. Clean up stale references in Corrosion
+
+# Manual cleanup (if needed)
+ContainerRegistry.cleanupServiceContainers(serviceName)
+```
+
 ## DNS Resolution
 
 ### Service Names
@@ -197,7 +414,7 @@ WireGuard overhead: ~0.1-0.5ms Typical ping times: 1-10ms (LAN), 20-100ms (WAN)
 
 ### Throughput
 
-WireGuard: Near line-rate (10Gbps+) Container networking: Limited by Docker
+WireGuard: Near line rate (10Gbps+) Container networking: Limited by Docker
 bridge (~5-9Gbps)
 
 ### Resource Usage
@@ -209,7 +426,7 @@ WireGuard: Minimal (~1-2% CPU) Corrosion: ~50MB RAM, <1% CPU CoreDNS: ~20MB RAM,
 
 ### Encryption
 
-All inter-machine traffic encrypted via WireGuard No plaintext container traffic
+All inter machine traffic encrypted via WireGuard No plaintext container traffic
 on network
 
 ### Key Management
@@ -231,8 +448,8 @@ Expose via proxy/load balancer only
 | DNS not resolving             | Check CoreDNS: `systemctl status jiji-coredns`                |
 | Service names not resolving   | Check daemon DNS config: `cat /etc/docker/daemon.json`        |
 | Endpoint rotation not working | Check peer monitor logs                                       |
-| Slow cross-machine traffic    | Check WireGuard MTU settings                                  |
-| Container wrong subnet        | Recreate network: `docker network rm jiji` then re-initialize |
+| Slow cross machine traffic    | Check WireGuard MTU settings                                  |
+| Container wrong subnet        | Recreate network: `docker network rm jiji` then re initialize |
 
 ## Environment Variables
 
@@ -244,51 +461,59 @@ export JIJI_CLUSTER_CIDR="10.220.0.0/16"
 
 # Disable networking
 export JIJI_NETWORK_ENABLED="false"
-
-# Use static discovery instead of Corrosion
-export JIJI_NETWORK_DISCOVERY="static"
 ```
 
 ## Example Deployments
 
-### Simple Multi-Server App
+### Simple Multi Server App
 
 ```yaml
-# docker-compose.yml
+# .jiji/deploy.yml
+project: myapp
+
+ssh:
+  user: deploy
+
+builder:
+  local: true
+  engine: docker
+
 services:
   api:
     image: myapp/api:latest
-    networks:
-      - jiji
-    deploy:
-      replicas: 3
+    servers:
+      - host: server1.example.com
+      - host: server2.example.com
+    environment:
+      clear:
+        DATABASE_URL: postgres://postgres:password@postgres.jiji:5432/myapp
+    proxy:
+      enabled: true
+      hosts:
+        - api.example.com
 
   postgres:
     image: postgres:15
-    networks:
-      - jiji
+    servers:
+      - host: server1.example.com
     volumes:
-      - pgdata:/var/lib/postgresql/data
-
-networks:
-  jiji:
-    external: true
-
-volumes:
-  pgdata:
+      - "pgdata:/var/lib/postgresql/data"
+    environment:
+      secrets:
+        - POSTGRES_PASSWORD
 ```
 
 Deploy:
 
 ```bash
-jiji deploy -f docker-compose.yml
+jiji deploy
 ```
 
 Access from any container:
 
 ```bash
-# API containers can connect to postgres
-psql -h postgres.jiji -U myuser
+# API containers can connect to postgres using service discovery
+psql -h postgres.jiji -U postgres
 ```
 
 ### Service with Load Balancing
@@ -297,14 +522,14 @@ psql -h postgres.jiji -U myuser
 services:
   web:
     image: nginx:latest
-    networks:
-      - jiji
-    deploy:
-      replicas: 5 # Distributed across servers
+    servers:
+      - host: server1.example.com
+      - host: server2.example.com
+      - host: server3.example.com
 ```
 
-DNS automatically returns all 5 IPs for `web.jiji`, providing client-side load
-balancing.
+DNS automatically returns all IPs for `web.jiji` across all servers, providing
+client side load balancing.
 
 ## Network Limits
 

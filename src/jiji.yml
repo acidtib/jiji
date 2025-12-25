@@ -231,18 +231,11 @@ ssh:
 #   # Cluster CIDR for container networking
 #   # Each server gets a /24 subnet (254 usable IPs per server)
 #   # Default: 10.210.0.0/16 (supports 256 servers)
-#   clusterCidr: "10.210.0.0/16"
+#   cluster_cidr: "10.210.0.0/16"
 #
-#   # Service discovery configuration
-#   # Note: Service domain is 'jiji' - containers reach each other via <service>.jiji
-#   discovery:
-#     # Corrosion gossip protocol port (server-to-server sync)
-#     # Default: 8787
-#     gossipPort: 8787
-#
-#     # Corrosion API port for queries
-#     # Default: 8788
-#     apiPort: 8788
+#   # Note: Service domain is always 'jiji' - containers reach each other via <service>.jiji
+#   # Note: Service discovery method is always 'corrosion' (distributed CRDT-based)
+#   # Note: Corrosion gossip port (8787) and API port (8080) are not configurable
 #
 # Network Configuration Examples:
 # ==============================
@@ -250,26 +243,16 @@ ssh:
 # Example 1: Basic Setup (Recommended)
 # network:
 #   enabled: true
-#   clusterCidr: "10.210.0.0/16"
-#   discovery:
-#     gossipPort: 8787
-#     apiPort: 8788
+#   cluster_cidr: "10.210.0.0/16"
 #
 # Example 2: Custom CIDR for Existing Network
 # network:
 #   enabled: true
-#   clusterCidr: "172.20.0.0/16"    # Avoid conflicts with existing networks
-#   discovery:
-#     gossipPort: 8787
-#     apiPort: 8788
+#   cluster_cidr: "172.20.0.0/16"    # Avoid conflicts with existing networks
 #
-# Example 3: Custom Ports
+# Example 3: Disable Networking
 # network:
-#   enabled: true
-#   clusterCidr: "10.210.0.0/16"
-#   discovery:
-#     gossipPort: 9000               # Custom gossip port
-#     apiPort: 9001                  # Custom API port
+#   enabled: false
 #
 # How It Works:
 # ============

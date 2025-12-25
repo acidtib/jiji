@@ -33,7 +33,7 @@ export async function loadTopology(
       return null;
     }
 
-    const discovery = discoveryStr as "static" | "corrosion";
+    const discovery = "corrosion"; // Always corrosion
 
     // Query all servers
     const serverRegs = await queryAllServers(ssh);
@@ -70,18 +70,16 @@ export async function loadTopology(
  *
  * @param clusterCidr - Cluster CIDR (e.g., "10.210.0.0/16")
  * @param serviceDomain - Service domain (e.g., "jiji")
- * @param discovery - Discovery method
  * @returns Empty network topology
  */
 export function createTopology(
   clusterCidr: string,
   serviceDomain: string,
-  discovery: "static" | "corrosion" = "corrosion",
 ): NetworkTopology {
   return {
     clusterCidr,
     serviceDomain,
-    discovery,
+    discovery: "corrosion", // Always corrosion
     servers: [],
     createdAt: new Date().toISOString(),
   };
@@ -220,9 +218,11 @@ export function validateTopology(topology: NetworkTopology): void {
     throw new Error(`Invalid service domain: ${topology.serviceDomain}`);
   }
 
-  // Check discovery method
-  if (topology.discovery !== "static" && topology.discovery !== "corrosion") {
-    throw new Error(`Invalid discovery method: ${topology.discovery}`);
+  // Check discovery method (always "corrosion")
+  if (topology.discovery !== "corrosion") {
+    throw new Error(
+      `Invalid discovery method: ${topology.discovery} (must be "corrosion")`,
+    );
   }
 
   // Validate each server

@@ -1,8 +1,7 @@
 # Logs Reference
 
-Jiji provides comprehensive logging capabilities for both services and the
-kamal-proxy reverse proxy. This guide covers all available logging features and
-common use cases.
+Jiji provides logging capabilities for both services and the kamal-proxy reverse
+proxy. This guide covers all available logging features and common use cases.
 
 ## Overview
 
@@ -36,7 +35,7 @@ jiji services logs --services "web*"
 
 #### `--services` (or `-S`)
 
-Target specific services. Supports comma-separated values and wildcards.
+Target specific services. Supports comma separated values and wildcards.
 
 ```bash
 # Single service
@@ -89,7 +88,7 @@ jiji services logs --services web --grep "ERROR"
 # Filter for specific request IDs
 jiji services logs --services api --grep "request_id=abc123"
 
-# Case-insensitive search
+# Case insensitive search
 jiji services logs --services web --grep "warning" --grep-options "-i"
 ```
 
@@ -98,7 +97,7 @@ jiji services logs --services web --grep "warning" --grep-options "-i"
 Additional options to pass to grep.
 
 ```bash
-# Case-insensitive search
+# Case insensitive search
 jiji services logs --services web --grep "error" --grep-options "-i"
 
 # Invert match (show lines NOT matching pattern)
@@ -136,7 +135,7 @@ Useful for debugging containers that aren't part of your managed services.
 
 #### `--hosts` (or `-H`)
 
-Target specific hosts. Supports comma-separated values and wildcards.
+Target specific hosts. Supports comma separated values and wildcards.
 
 ```bash
 # Specific host
@@ -147,6 +146,46 @@ jiji services logs --services web --hosts "server1.example.com,server2.example.c
 
 # Wildcard pattern
 jiji services logs --services web --hosts "server*.example.com"
+```
+
+#### `--quiet` (or `-q`)
+
+Enable quiet mode for minimal output. Suppresses host headers and reduces
+verbosity.
+
+```bash
+# Quiet mode - only show log content
+jiji services logs --services web --quiet
+
+# Combine with grep for clean output
+jiji services logs --services api --grep "ERROR" --quiet
+
+# Useful for piping to other commands
+jiji services logs --services web --quiet | grep -i "warning" | wc -l
+```
+
+**What quiet mode does:**
+
+- Suppresses host headers (e.g., `[server1.example.com]`)
+- Sets log level to "warn" (hides info/debug messages)
+- Provides clean log output suitable for parsing
+- Ideal for scripting and automation
+
+**Example comparison:**
+
+Without quiet mode:
+
+```
+[server1.example.com]
+2024-01-15 10:30:00 INFO Starting server...
+2024-01-15 10:30:01 ERROR Connection failed
+```
+
+With quiet mode:
+
+```
+2024-01-15 10:30:00 INFO Starting server...
+2024-01-15 10:30:01 ERROR Connection failed
 ```
 
 ### Common Use Cases
@@ -189,6 +228,24 @@ jiji services logs --services web
 
 # View logs from specific server
 jiji services logs --services web --hosts "server1.example.com"
+```
+
+#### Scripting and Automation
+
+Use quiet mode for clean output suitable for parsing:
+
+```bash
+# Count errors in the last hour
+jiji services logs --services web --since "1h" --grep "ERROR" --quiet | wc -l
+
+# Extract specific fields
+jiji services logs --services api --quiet | awk '{print $4}'
+
+# Monitor for specific patterns
+jiji services logs --services web --follow --grep "FATAL" --quiet
+
+# Save logs to file without headers
+jiji services logs --services web --quiet > logs.txt
 ```
 
 ## Proxy Logs
@@ -369,11 +426,11 @@ jiji services logs --services web --grep "ERROR"
 # 3. Check proxy routing
 jiji proxy logs --grep "web"
 
-# 4. Follow logs in real-time
+# 4. Follow logs in real time
 jiji services logs --services web --follow
 ```
 
-### Multi-Service Debugging
+### Multi Service Debugging
 
 ```bash
 # Check all api services for errors
@@ -393,10 +450,3 @@ jiji services logs --services "web,api,worker" --grep "CRITICAL\|FATAL" --grep-o
 # Track specific feature usage
 jiji services logs --services api --grep "feature_flag=new_checkout" --since "1h"
 ```
-
-## See Also
-
-- [Main README](../README.md) - General Jiji usage
-- [Network Reference](network-reference.md) - Private networking and service
-  discovery
-- [Configuration Reference](../src/jiji.yml) - Service configuration options
