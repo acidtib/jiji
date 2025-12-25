@@ -101,54 +101,66 @@ export async function removePeerRoutes(
 /**
  * Get Docker bridge interface name
  *
+ * Dynamically discovers the bridge interface by querying the network's
+ * gateway IP and finding which interface has that IP assigned. This works
+ * for both Docker and Podman regardless of network backend (CNI/Netavark).
+ *
  * @param ssh - SSH connection to the server
  * @param networkName - Docker network name
  * @param engine - Container engine (docker or podman)
- * @returns Bridge interface name (e.g., "br-abc123" or "docker0")
+ * @returns Bridge interface name (e.g., "br-abc123", "podman1", or "docker0")
  */
 export async function getDockerBridgeInterface(
   ssh: SSHManager,
   networkName: string,
   engine: "docker" | "podman",
 ): Promise<string> {
-  // Get network ID
+  const host = ssh.getHost();
+
+  // Get network gateway IP (this is the IP assigned to the bridge interface)
   const inspectCmd =
-    `${engine} network inspect ${networkName} --format '{{.Id}}'`;
+    `${engine} network inspect ${networkName} --format '{{range .Subnets}}{{.Gateway}}{{end}}'`;
   const inspectResult = await ssh.executeCommand(inspectCmd);
 
   if (inspectResult.code !== 0) {
     throw new Error(
-      `Failed to inspect Docker network ${networkName}: ${inspectResult.stderr}`,
+      `Failed to inspect network ${networkName} on ${host}: ${inspectResult.stderr}`,
     );
   }
 
-  const networkId = inspectResult.stdout.trim();
+  const gatewayIp = inspectResult.stdout.trim();
 
-  if (!networkId) {
-    throw new Error(`Could not determine network ID for ${networkName}`);
+  if (!gatewayIp) {
+    throw new Error(
+      `Could not determine gateway IP for network ${networkName} on ${host}`,
+    );
   }
 
-  // For Docker, bridge name is typically br-<first 12 chars of ID>
-  // For Podman, it might be different
-  const bridgeName = engine === "docker"
-    ? `br-${networkId.substring(0, 12)}`
-    : `cni-podman${networkId.substring(0, 8)}`;
-
-  // Verify the bridge exists
-  const verifyResult = await ssh.executeCommand(
-    `ip link show ${bridgeName} 2>/dev/null`,
+  log.debug(
+    `Network ${networkName} has gateway IP ${gatewayIp}`,
+    "network",
   );
 
-  if (verifyResult.code !== 0) {
-    // Fallback to docker0 for default bridge
-    log.say(
-      `Could not find bridge ${bridgeName}, using docker0`,
-      2,
+  // Find which interface has this gateway IP assigned
+  const findBridgeCmd =
+    `ip addr show | grep -B 2 "inet ${gatewayIp}" | head -n 1 | awk '{print $2}' | sed 's/:$//'`;
+  const bridgeResult = await ssh.executeCommand(findBridgeCmd);
+
+  if (bridgeResult.code === 0 && bridgeResult.stdout.trim()) {
+    const bridgeName = bridgeResult.stdout.trim();
+    log.debug(
+      `Found bridge interface ${bridgeName} for network ${networkName}`,
+      "network",
     );
-    return "docker0";
+    return bridgeName;
   }
 
-  return bridgeName;
+  // Fallback to docker0 if we can't find the bridge
+  log.warn(
+    `Could not find bridge interface for network ${networkName} on ${host}, using docker0`,
+    "network",
+  );
+  return "docker0";
 }
 
 /**
