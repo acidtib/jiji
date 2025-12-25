@@ -212,15 +212,14 @@ export class RegistryService {
         // Execute the login command on the remote server
         if (credentials) {
           // Pass password via stdin
-          const result = await ssh.execute(
+          const result = await ssh.executeCommand(
             `echo "${credentials.password}" | ${loginCommand}`,
-            { timeout: 30000 },
           );
           if (result.code !== 0) {
             errors.push(`${host}: ${result.stderr || "Login failed"}`);
           }
         } else {
-          const result = await ssh.execute(loginCommand, { timeout: 30000 });
+          const result = await ssh.executeCommand(loginCommand);
           if (result.code !== 0) {
             errors.push(`${host}: ${result.stderr || "Login failed"}`);
           }
@@ -259,7 +258,7 @@ export class RegistryService {
         log.debug(`Logging out from ${url} on ${host}`, "registry:service");
 
         const logoutCommand = `${this.engine} logout ${url}`;
-        const result = await ssh.execute(logoutCommand, { timeout: 30000 });
+        const result = await ssh.executeCommand(logoutCommand);
 
         if (result.code !== 0) {
           errors.push(`${host}: ${result.stderr || "Logout failed"}`);
