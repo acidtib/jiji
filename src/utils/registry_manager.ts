@@ -2,9 +2,9 @@ import { log } from "./logger.ts";
 import type { ContainerEngine } from "../lib/configuration/builder.ts";
 
 /**
- * Registry status information
+ * Local registry container status information
  */
-export interface RegistryStatus {
+export interface RegistryContainerStatus {
   running: boolean;
   containerId?: string;
   port: number;
@@ -137,7 +137,7 @@ export class RegistryManager {
   /**
    * Get the status of the local registry
    */
-  async getStatus(): Promise<RegistryStatus> {
+  async getStatus(): Promise<RegistryContainerStatus> {
     const running = await this.isRunning();
 
     if (!running) {

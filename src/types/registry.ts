@@ -1,5 +1,3 @@
-import type { ContainerEngine } from "../lib/configuration/builder.ts";
-
 /**
  * Registry type - local (localhost) or remote (external server)
  */
@@ -18,7 +16,6 @@ export type RegistryOperation =
   | "setup-remote"
   | "list"
   | "use"
-  | "set-default"
   | "status"
   | "authenticate";
 
@@ -56,7 +53,7 @@ export interface RegistryStatus {
 }
 
 /**
- * Comprehensive registry information
+ * Registry information
  */
 export interface RegistryInfo {
   url: string;
@@ -105,16 +102,6 @@ export interface AuthenticationResult {
 }
 
 /**
- * Registry service configuration
- */
-export interface RegistryServiceConfig {
-  engine: ContainerEngine;
-  configPath?: string;
-  defaultPort?: number;
-  timeout?: number;
-}
-
-/**
  * Registry command options
  */
 export interface RegistryCommandOptions {
@@ -127,115 +114,6 @@ export interface RegistryCommandOptions {
   skipAuth?: boolean;
   force?: boolean;
   verbose?: boolean;
-}
-
-/**
- * Registry list options
- */
-export interface RegistryListOptions {
-  type?: RegistryType;
-  showStatus?: boolean;
-  format?: "table" | "json" | "yaml";
-}
-
-/**
- * Registry validation result
- */
-export interface RegistryValidationResult {
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-}
-
-/**
- * Registry URL components
- */
-export interface RegistryUrlComponents {
-  hostname: string;
-  port?: number;
-  protocol?: string;
-  path?: string;
-}
-
-/**
- * Local registry container information
- */
-export interface LocalRegistryContainer {
-  containerId: string;
-  name: string;
-  port: number;
-  status: "running" | "stopped" | "error";
-  image: string;
-  created: string;
-}
-
-/**
- * Registry health check result
- */
-export interface RegistryHealthCheck {
-  healthy: boolean;
-  registry: string;
-  responseTime?: number;
-  error?: string;
-  timestamp: string;
-}
-
-/**
- * Registry metrics
- */
-export interface RegistryMetrics {
-  registry: string;
-  type: RegistryType;
-  totalImages?: number;
-  storageUsed?: string;
-  uptime?: string;
-  lastActivity?: string;
-}
-
-/**
- * Registry search result
- */
-export interface RegistrySearchResult {
-  name: string;
-  description?: string;
-  tags: string[];
-  lastUpdated?: string;
-  size?: string;
-}
-
-/**
- * Registry image information
- */
-export interface RegistryImageInfo {
-  name: string;
-  tag: string;
-  digest?: string;
-  size?: string;
-  created?: string;
-  registry: string;
-}
-
-/**
- * Registry backup information
- */
-export interface RegistryBackupInfo {
-  registry: string;
-  backupPath: string;
-  timestamp: string;
-  size?: string;
-  compressed?: boolean;
-}
-
-/**
- * Registry migration options
- */
-export interface RegistryMigrationOptions {
-  sourceRegistry: string;
-  targetRegistry: string;
-  includeImages?: boolean;
-  includeConfig?: boolean;
-  dryRun?: boolean;
-  force?: boolean;
 }
 
 /**
@@ -260,26 +138,4 @@ export interface RegistryEvent {
   timestamp: string;
   data?: Record<string, unknown>;
   error?: string;
-}
-
-/**
- * Registry configuration validation rules
- */
-export interface RegistryValidationRules {
-  requireUsername?: boolean;
-  requirePassword?: boolean;
-  allowedPorts?: number[];
-  allowedHostnames?: string[];
-  maxRegistries?: number;
-}
-
-/**
- * Registry environment variables
- */
-export interface RegistryEnvironment {
-  REGISTRY_USERNAME?: string;
-  REGISTRY_PASSWORD?: string;
-  REGISTRY_URL?: string;
-  REGISTRY_PORT?: string;
-  REGISTRY_TYPE?: RegistryType;
 }
