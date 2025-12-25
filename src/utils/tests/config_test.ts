@@ -50,7 +50,7 @@ ssh:
 services:
   web:
     # Missing required fields
-    hosts: []
+    servers: []
 `;
 
 // Helper function to create temporary config files

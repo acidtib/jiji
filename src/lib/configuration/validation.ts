@@ -604,8 +604,8 @@ export class ValidatorPresets {
       }),
     );
 
-    // Hosts validation
-    validator.addRules("hosts", [
+    // Servers validation
+    validator.addRules("servers", [
       ValidationRules.required(),
       ValidationRules.array(),
     ]);

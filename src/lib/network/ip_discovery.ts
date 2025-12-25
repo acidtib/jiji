@@ -146,7 +146,7 @@ export async function discoverPrivateIPs(
  * Discover all endpoints (public and private) for a server
  *
  * Combines public IP discovery and private IP discovery to create
- * a comprehensive list of endpoints that other servers can try when
+ * a list of endpoints that other servers can try when
  * establishing WireGuard connections.
  *
  * @param ssh - SSH connection to the server

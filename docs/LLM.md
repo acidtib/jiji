@@ -1,24 +1,33 @@
 # LLM.md
 
-This file provides guidance to LLM's when working with code in this repository.
+This file provides guidance to LLMs when working with code in this repository.
 
-## Project Overview
+## Quick Start Commands
 
-Jiji is an infrastructure management tool for deploying containerized
-applications across multiple servers. It provides service deployment, private
-networking with WireGuard/DNS, registry management, and deployment orchestration
-with zero-downtime rollouts.
-
-**Tech Stack**: Deno 2.5+, TypeScript, Cliffy CLI framework, SSH2/node-ssh for
-remote execution
-
-## Development Commands
+### Development
 
 ```bash
-# Run locally during development
+# Run the CLI directly (requires all permissions)
 deno task run
 
-# Build compiled binary
+# Run tests (parallel execution)
+deno task test
+
+# Run specific test file
+deno test --allow-all tests/deploy_plan_test.ts
+
+# Format and lint
+deno task fmt
+deno task lint
+
+# Run all checks (format, lint, tests)
+deno task check
+```
+
+### Building
+
+```bash
+# Build compiled binary (outputs to build/jiji)
 deno task build
 
 # Build and install to /usr/local/bin/jiji
@@ -27,360 +36,332 @@ deno task install
 # Development build/install (outputs jiji_dev)
 deno task dev:build
 deno task dev:install
-
-# Testing and code quality
-deno task test           # Run all tests
-deno task fmt            # Format code
-deno task lint           # Lint code
-deno task check          # Run fmt check, lint, and tests
-
-# Run specific test file
-deno test --allow-all tests/deploy_plan_test.ts
-
-# Bump version across codebase and docs
-./bin/version <new-version>
 ```
 
-## Architecture
+### Version Management
 
-### Configuration System (`src/lib/configuration/`)
+```bash
+# Show current version
+./bin/version
 
-The configuration system uses a class-based hierarchy for type-safe YAML config
-parsing:
-
-- **`Configuration`** - Main entry point orchestrating all config aspects
-  (project, services, SSH, network, builder, environment)
-- **`ServiceConfiguration`** - Individual service config (image/build, hosts,
-  ports, volumes, proxy, env vars)
-- **`SSHConfiguration`** - SSH connection settings with support for proxies,
-  keys, and .ssh/config parsing
-- **`NetworkConfiguration`** - WireGuard mesh networking and DNS service
-  discovery settings
-- **`BuilderConfiguration`** - Local or remote build configuration
-- **`EnvironmentConfiguration`** - Shared environment variables across services
-
-All configs extend `BaseConfiguration` which provides validation helpers. The
-system uses lazy loading and caching for performance.
-
-### Service Deployment (`src/lib/services/`)
-
-**Deployment flow** (orchestrated by `DeploymentOrchestrator`):
-
-1. **Proxy Installation** - Install kamal-proxy on hosts if services use proxy
-2. **Container Deployment** - Zero-downtime rollout with health checks
-3. **Proxy Configuration** - Route traffic to new containers
-4. **Old Container Cleanup** - Remove previous versions after successful
-   deployment
-
-Key services:
-
-- **`DeploymentOrchestrator`** - Main deployment workflow coordinator
-- **`ContainerDeploymentService`** - Zero-downtime container rollout (keeps old
-  running until new is healthy)
-- **`ProxyService`** - kamal-proxy installation and configuration
-- **`BuildService`** - Image building (local or remote)
-- **`ImagePushService`** - Push images to registries
-- **`ImagePruneService`** - Clean up old images (keeps last N versions)
-- **`RegistryAuthService`** - Registry authentication management
-- **`LogsService`** - Container log fetching and following (supports grep,
-  since, follow modes)
-
-### Private Networking (`src/lib/network/`)
-
-Creates WireGuard mesh VPN with automatic DNS-based service discovery:
-
-- **`setup.ts`** - Main orchestrator for network initialization
-- **`wireguard.ts`** - WireGuard interface management, key generation, config
-  writing
-- **`corrosion.ts`** - Distributed key-value store for cluster state (built on
-  CRDT)
-- **`dns.ts`** - CoreDNS setup for service discovery (containers resolve
-  `service.jiji`)
-- **`topology.ts`** - Network topology management (server discovery, peer
-  relationships)
-- **`subnet_allocator.ts`** - IPv4 subnet allocation (/24 subnets) for WireGuard
-  interfaces
-- **`peer_monitor.ts`** - Monitor peer connectivity and update configurations
-- **`control_loop.ts`** - Continuous reconciliation of network state
-
-Network flow:
-
-1. Each server gets unique WireGuard keys and IPv4 subnet (/24 from cluster
-   CIDR)
-2. Corrosion syncs cluster metadata across servers
-3. CoreDNS provides DNS resolution for service names
-4. Control loop maintains peer connections and updates configs
-
-### SSH Management (`src/utils/`)
-
-- **`ssh.ts`** - Main `SSHManager` class for remote command execution
-- **`ssh_pool.ts`** - Connection pooling with LRU eviction
-- **`ssh_proxy.ts`** - ProxyJump and ProxyCommand support
-- **`ssh_config_parser.ts`** - Parse ~/.ssh/config for connection settings
-
-SSH connections support:
-
-- SSH agent authentication
-- Private key files
-- ProxyJump/ProxyCommand
-- Connection reuse via pooling
-- Parallel execution across multiple hosts
-- Interactive sessions for following logs or running bash
-
-### Command Structure (`src/commands/`)
-
-Commands are organized by domain:
-
-- **`init.ts`** - Initialize `.jiji/deploy.yml` configuration stub
-- **`build.ts`** - Build container images
-- **`deploy.ts`** - Deploy services (with deployment plan confirmation)
-- **`remove.ts`** - Remove services and cleanup
-- **`services/`** - Service management (restart, prune, logs)
-- **`proxy/`** - Proxy log management
-- **`server/`** - Server operations (init, exec, teardown)
-- **`registry/`** - Registry management (setup, login, logout, remove)
-- **`network.ts`** - Network operations (status, teardown)
-- **`audit.ts`** - View audit logs from servers
-- **`lock.ts`** - Deployment lock management
-- **`version.ts`** - Show application version
-
-### Utilities (`src/utils/`)
-
-- **`logger.ts`** - Structured logging with log levels
-- **`config.ts`** - Config file loading with environment support
-- **`error_handling.ts`** - Custom error types and error handling
-- **`audit.ts`** - Server-side audit trail logging
-- **`lock.ts`** - Distributed deployment locking
-- **`git.ts`** - Git SHA extraction for image tagging
-- **`version_manager.ts`** - Image version tracking and management
-- **`mount_manager.ts`** - Volume/file/directory mount handling
-- **`registry_manager.ts`** - Registry URL parsing and namespace detection
-  (auto-detects GHCR, Docker Hub)
-- **`service_filter.ts`** - Wildcard filtering for hosts/services
-- **`engine.ts`** - Container engine abstraction (Docker/Podman)
-- **`command_helpers.ts`** - Common command setup utilities (context setup, SSH
-  cleanup)
-- **`error_handler.ts`** - Centralized error handling for commands
-
-## Configuration
-
-Main config file: `.jiji/deploy.yml` (or `jiji.<environment>.yml` with
-`--environment` flag)
-
-The reference configuration with all options is in `src/jiji.yml` - this is the
-authoritative source for config structure.
-
-### Global Options
-
-All commands support:
-
-- `--verbose` - Debug logging
-- `--version` - Specify app version (overrides git SHA)
-- `--config-file` - Custom config path
-- `--environment` - Environment name for config
-- `--hosts` - Filter hosts (supports wildcards with `*`)
-- `--services` - Filter services (supports wildcards with `*`)
-
-## Code Patterns
-
-### Configuration Access
-
-```typescript
-// Load configuration
-const config = await loadConfig(configFile, environment);
-
-// Access typed properties
-const projectName = config.project;
-const services = config.services; // Map<string, ServiceConfiguration>
-const ssh = config.ssh;
-const network = config.network;
-
-// Iterate services
-for (const [name, service] of config.services) {
-  const hosts = service.hosts;
-  const image = service.image;
-}
+# Update to specific version (updates src/version.ts and deno.json)
+./bin/version 1.2.3
 ```
 
-### SSH Execution
+## High-Level Architecture
 
-```typescript
-// Create SSH manager
-const ssh = new SSHManager(config.ssh.toConnectionConfig(host), host);
+### Core Design Patterns
 
-// Execute command
-const result = await ssh.execute("docker ps", { timeout: 30000 });
+**Command-Driven Architecture**: The CLI uses Cliffy for command routing. Each
+command in `src/commands/` follows this flow:
 
-// Execute with best-effort (doesn't throw)
-await ssh.executeBestEffort("systemctl restart service");
-
-// Interactive session (for logs following or bash)
-await ssh.startInteractiveSession("docker logs -f container_name");
-
-// Cleanup
-await ssh.dispose();
+```
+Command → Load Configuration → Setup SSH Connections → Execute Services → Cleanup
 ```
 
-### Command Context Setup
+**Lazy Configuration**: All configuration classes extend `BaseConfiguration`
+with lazy-loaded, cached properties. Validation happens at access time, not
+construction. This prevents errors for unused config sections but means errors
+surface later in execution.
 
-```typescript
-// Use helper to setup common command context
-const ctx = await setupCommandContext(globalOptions);
+**Service Orchestration**: Multiple specialized service classes coordinate
+operations:
 
-// Context includes:
-// - config: Configuration
-// - targetHosts: string[]
-// - matchingServices: string[]
-// - sshManagers: SSHManager[]
+- `DeploymentOrchestrator` - High-level deployment coordination
+- `BuildService` - Image building and pushing
+- `ContainerDeploymentService` - Zero-downtime container deployment
+- `ProxyService` - kamal-proxy management
+- `ImagePruneService` - Post-deployment cleanup
 
-// Always cleanup SSH connections
-cleanupSSHConnections(ctx.sshManagers);
+### Zero-Downtime Deployment Strategy
+
+Critical to understand: Jiji keeps old containers running until new ones pass
+health checks:
+
+1. Rename old container (e.g., `web` → `web_old`) - keeps it running
+2. Deploy new container with original name
+3. Wait for health checks (proxy endpoint or container readiness)
+4. Update proxy routing to new container
+5. Stop and remove old container
+6. Cleanup old images (keep N versions based on `retain` setting)
+
+**Important**: If health checks fail, the old container continues serving
+traffic.
+
+### Distributed Networking Architecture
+
+Three components work together for private networking:
+
+**WireGuard**: Encrypted mesh VPN between servers
+
+- Per-server subnet allocation from cluster CIDR (e.g., 10.210.0.0/16)
+- Each server gets /24 subnet (254 IPs)
+- IPv6 CRDT identifiers for unique peer identification
+
+**Corrosion**: Distributed CRDT-based SQLite database
+
+- No central coordinator - eventual consistency
+- Service registry for container tracking
+- Gossip protocol on port 8787, API on port 8080
+- Replicated across all servers
+
+**CoreDNS**: DNS-based service discovery
+
+- Resolves `<service>.jiji` to container IPs
+- Queries Corrosion for service locations
+- Daemon-level DNS configuration (containers auto-configured)
+
+### SSH Connection Management
+
+**SSH Connection Pool** (`utils/ssh_pool.ts`):
+
+- Uses custom Semaphore for concurrency limiting (default: 30 concurrent)
+- Prevents server overload during parallel operations
+- Pattern: `executeConcurrent()` acquires permit before SSH operation
+- DNS retry logic for transient failures
+
+**Dual SSH Implementation**:
+
+- `node-ssh`: Primary library for command execution
+- `ssh2`: Used for interactive sessions (`server exec` with `--interactive`)
+
+### Configuration System
+
+Configuration is hierarchical and environment-aware:
+
+```
+Configuration (main)
+├── SSHConfiguration
+├── BuilderConfiguration
+│   └── RegistryConfiguration
+├── NetworkConfiguration
+├── EnvironmentConfiguration (shared across services)
+└── Map<ServiceConfiguration>
+    ├── BuildConfiguration
+    ├── ProxyConfiguration
+    │   └── HealthCheckConfiguration
+    └── EnvironmentConfiguration (service-specific)
 ```
 
-### Service Deployment
+**Config Loading**: Searches upward from cwd for:
 
-```typescript
-// Orchestrate deployment
-const orchestrator = new DeploymentOrchestrator(config);
-const result = await orchestrator.orchestrate(
-  servicesToDeploy,
-  { version: "v1.2.3" },
-);
+- `.jiji/deploy.yml` (default)
+- `jiji.<environment>.yml` (with `--environment` flag)
 
-// Check results
-if (result.success) {
-  console.log(result.metrics);
-}
+**Important**: Config properties are immutable after creation. Use
+`ConfigurationLoader.load()` to reload.
+
+## Code Organization
+
+### Entry Points
+
+**`src/main.ts`**: CLI entry point using Cliffy
+
+- Defines all top-level commands
+- Global options: `--verbose`, `--quiet`, `--version`, `--config-file`,
+  `--environment`, `--hosts`, `--services`
+- Commands delegate to handlers in `src/commands/`
+
+**`src/commands/`**: Command handlers
+
+- Each command has a handler that loads config and executes operations
+- Complex commands have subfolders (e.g., `services/` contains `prune.ts`,
+  `restart.ts`, `logs.ts`)
+- Common logic extracted to `command_helpers.ts`
+
+### Critical Modules
+
+**`src/lib/configuration/`**: Configuration parsing and validation
+
+- `configuration.ts` - Main configuration class
+- `service.ts` - Service-level configuration
+- `validation.ts` - Schema validation
+- Tests in `tests/` subdirectory
+
+**`src/lib/services/`**: Business logic services
+
+- `deployment_orchestrator.ts` - Orchestrates full deployment flow
+- `build_service.ts` - Container image building
+- `container_deployment_service.ts` - Container lifecycle management
+- `proxy_service.ts` - kamal-proxy operations
+- `image_prune_service.ts` - Image cleanup
+
+**`src/lib/network/`**: Private networking components
+
+- `setup.ts` - WireGuard, Corrosion, CoreDNS installation
+- `topology.ts` - Network topology management
+- `ip_discovery.ts` - Public IP detection for WireGuard
+
+**`src/utils/`**: Cross-cutting utilities
+
+- `ssh.ts` - SSH connection management
+- `ssh_pool.ts` - Connection pooling with semaphore
+- `logger.ts` - Global logging with levels
+- `error_handler.ts` - Centralized error handling
+- `audit.ts` - Server-side audit trail
+- `mount_manager.ts` - File/directory mount handling
+
+### Testing Structure
+
+**Unit tests**: `src/lib/**/*_test.ts`
+
+- Configuration validation and parsing
+- Service-level logic
+
+**Integration tests**: `tests/*_test.ts`
+
+- `zero_downtime_deployment_test.ts` - Full deployment orchestration
+- `deploy_plan_test.ts` - Deployment planning
+- `proxy_service_test.ts` - Proxy configuration
+- `service_filtering_test.ts` - Host/service filtering
+
+**Mock pattern**: `tests/mocks_test.ts` provides mock SSH managers and
+configurations for testing without real SSH connections.
+
+## Important Patterns and Gotchas
+
+### Service/Host Filtering with Wildcards
+
+Global flags `--services` and `--hosts` support wildcard matching with `*`:
+
+```bash
+jiji deploy --services "web-*,api-*"
+jiji server exec "docker ps" --hosts "server*.example.com"
 ```
 
-### Logs Service
+Filtering logic centralized in `command_helpers.ts` - affects which hosts
+connect and which services operate on.
 
-```typescript
-// Create logs service
-const logsService = new LogsService(config.builder.engine, "logs");
+### Best-Effort Cleanup Pattern
 
-// Fetch logs
-await logsService.fetchContainerLogs(ssh, host, containerName, {
-  lines: 100,
-  grep: "ERROR",
-  since: "30m",
-});
+`executeBestEffort()` in SSH utilities: Command failures logged but don't block
+execution. Used for cleanup operations (removing old containers, stopping
+services) to prevent partial failures from blocking completion.
 
-// Follow logs (uses interactive SSH session)
-await logsService.followContainerLogs(ssh, containerName, {
-  lines: 100,
-  grep: "ERROR",
-});
+**Critical**: Never use for operations that must succeed (image pulls, container
+creation).
+
+### Environment Variable Type Conversion
+
+Non-string types (numbers, booleans) in environment config automatically
+converted to strings for container compatibility:
+
+```yaml
+environment:
+  clear:
+    PORT: 3000 # → "3000"
+    DEBUG: true # → "true"
 ```
 
-### Error Handling
+### Deployment Locks
 
-Use custom error types from `utils/error_handling.ts`:
+Distributed lock management prevents concurrent deployments:
 
-- `ConfigurationError` - Config validation errors
-- `RegistryError` - Registry operation failures
-- `SSHError` - SSH connection/execution errors
-- `DeploymentError` - Deployment failures
-
-Use centralized error handler from `utils/error_handler.ts`:
-
-```typescript
-try {
-  // Command logic
-} catch (error) {
-  await handleCommandError(error, {
-    operation: "Service Logs",
-    component: "logs",
-    sshManagers: ctx.sshManagers,
-    projectName: ctx.config.project,
-    targetHosts: ctx.targetHosts,
-  });
-  Deno.exit(1);
-}
-```
-
-## Testing
-
-Tests use Deno's built-in test framework. Located in:
-
-- `tests/` - Integration and end-to-end tests
-- `src/lib/configuration/tests/` - Configuration system tests
-- `src/utils/tests/` - Utility function tests
-
-Test patterns:
-
-- Use `Deno.test()` with descriptive names
-- Mock SSH connections for deployment tests (see `tests/mocks.ts`)
-- Test configuration validation separately from loading
-- Integration tests verify full workflows
-
-## Important Implementation Details
-
-### Zero-Downtime Deployments
-
-The deployment system keeps old containers running until new ones pass health
-checks:
-
-1. Deploy new container with version tag
-2. Wait for health check to pass (via proxy health endpoint or container
-   readiness)
-3. Configure proxy to route to new container
-4. Stop and remove old container
-5. Clean up old images (keeping last N versions)
+- Stored in `.jiji/locks/` on primary server
+- Acquired before deployment, released after
+- Check with `jiji lock status`
 
 ### Registry Auto-Detection
 
-`registry_manager.ts` automatically detects registry namespaces:
+Automatic namespace detection for supported registries:
 
-- **GHCR** (`ghcr.io`) -> `username/project-name`
-- **Docker Hub** (`docker.io`) -> `username`
-- **Local/other** -> No namespace
+- **GHCR** (`ghcr.io`): `username/project-name`
+- **Docker Hub** (`docker.io`): `username`
+- **Local registries**: No namespace required
 
-### Image Tagging Strategy
+### Image Retention
 
-Images are tagged with:
+After each deployment, old images are automatically pruned:
 
-1. Git SHA (default) - `registry/project/service:abc1234`
-2. Custom version (via `--version`) - `registry/project/service:v1.2.3`
+- Keep N recent versions (default: 3, configurable per-service with `retain`)
+- Sorted by creation time
+- Running containers never removed
+- Dangling (untagged) images also cleaned
 
-The `version_manager.ts` tracks deployed versions per service/host for rollback
-and pruning.
+## Key Files for Reference
 
-### Private Network Architecture
+**`src/jiji.yml`**: Authoritative configuration reference with all available
+options and detailed comments
 
-The private network uses IPv4 addressing (10.210.0.0/16 by default) for
-WireGuard tunnels, with IPv6 management addresses (fdcc::/16) for Corrosion
-gossip protocol. Each server:
+**`docs/architecture.md`**: Detailed system architecture diagrams and component
+explanations
 
-1. Generates unique WireGuard keypair
-2. Gets allocated /24 IPv4 subnet from allocator (e.g., 10.210.0.0/24,
-   10.210.1.0/24)
-3. Derives deterministic IPv6 management address from public key for Corrosion
-4. Registers in Corrosion distributed store
-5. Establishes WireGuard peers to all other servers
-6. Runs CoreDNS for service.jiji DNS resolution
-7. Container engine configured to use CoreDNS as resolver
+**`docs/configuration-reference.md`**: Configuration guide with examples
 
-The control loop continuously reconciles network state by monitoring Corrosion
-for topology changes.
+**`docs/network-reference.md`**: Private networking setup and troubleshooting
 
-### Environment Variable Handling
+**`docs/deployment-guide.md`**: Advanced deployment patterns, CI/CD integration,
+rollback procedures
 
-Environment variables from non-string types (numbers, booleans) are
-automatically converted to strings during deployment. This is handled in the
-service configuration layer to ensure container compatibility.
+## Development Notes
 
-### Logs Architecture
+### Required Permissions
 
-The logs system supports both fetching and following container logs:
+The CLI requires extensive permissions due to SSH, networking, and filesystem
+operations:
 
-- **Fetch mode**: Retrieves logs from all matching services across all target
-  hosts
-- **Follow mode**: Uses interactive SSH sessions to stream logs from primary
-  host only
-- **Options**: Supports `--since`, `--lines`, `--grep`, `--grep-options`,
-  `--follow`
-- **Container ID**: Can fetch logs from any container using `--container-id`
-  (not just managed services)
-- **Command building**: `LogsService.buildLogsCommand()` constructs
-  Docker/Podman logs commands with proper flags
+```bash
+--allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys
+```
+
+Or use `--allow-all` for development (as in `deno task run`).
+
+### Adding New Commands
+
+1. Create handler in `src/commands/` (or subfolder for subcommands)
+2. Register in `src/main.ts` using Cliffy's `.command()` API
+3. Follow existing patterns for config loading and SSH setup
+4. Use `command_helpers.ts` utilities for common operations
+5. Add tests in `tests/` directory
+
+### Modifying Configuration Schema
+
+1. Update types in `src/types/`
+2. Update configuration classes in `src/lib/configuration/`
+3. Add validation in `src/lib/configuration/validation.ts`
+4. Update reference config in `src/jiji.yml`
+5. Add tests in `src/lib/configuration/tests/`
+
+### Working with SSH Operations
+
+Always use the SSH pool for concurrent operations:
+
+```typescript
+await sshManager.executeConcurrent(
+  hosts,
+  async (ssh, host) => {
+    // Your SSH command here
+  },
+);
+```
+
+For sequential operations on single host:
+
+```typescript
+const ssh = await sshManager.getConnection(host);
+const result = await ssh.exec(command);
+```
+
+### Logging Best Practices
+
+Use appropriate log levels:
+
+- `logger.debug()` - Verbose diagnostic info (only shown with `--verbose`)
+- `logger.info()` - Normal operation progress
+- `logger.warn()` - Non-fatal issues
+- `logger.error()` - Errors that don't stop execution
+- `logger.success()` - Successful completion
+
+### Error Handling
+
+Use `handleCommandError()` from `error_handler.ts` at command boundaries:
+
+```typescript
+try {
+  // command logic
+} catch (error) {
+  handleCommandError(error);
+}
+```
+
+This ensures consistent error formatting and audit logging.

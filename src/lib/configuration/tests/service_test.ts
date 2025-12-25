@@ -241,7 +241,7 @@ Deno.test("ServiceConfiguration - validation fails with both image and build", (
   const service = new ServiceConfiguration("invalid", {
     image: "nginx:latest",
     build: "./app",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
   }, "myproject");
 
   assertThrows(
@@ -280,7 +280,7 @@ Deno.test("ServiceConfiguration - validation fails with empty servers", () => {
 Deno.test("ServiceConfiguration - validation fails with invalid image type", () => {
   const service = new ServiceConfiguration("web", {
     image: 123,
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
   }, "myproject");
 
   assertThrows(
@@ -319,7 +319,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid server", () => {
 Deno.test("ServiceConfiguration - validation fails with invalid ports type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     ports: "not-an-array",
   }, "myproject");
 
@@ -333,7 +333,6 @@ Deno.test("ServiceConfiguration - validation fails with invalid ports type", () 
 Deno.test("ServiceConfiguration - validation succeeds with container port only", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["8000"], // Container port only format
   }, "myproject");
@@ -345,7 +344,6 @@ Deno.test("ServiceConfiguration - validation succeeds with container port only",
 Deno.test("ServiceConfiguration - validation succeeds with host:container port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["8080:8000"], // host_port:container_port format
   }, "myproject");
@@ -357,7 +355,6 @@ Deno.test("ServiceConfiguration - validation succeeds with host:container port f
 Deno.test("ServiceConfiguration - validation succeeds with full port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["192.168.1.1:8080:8000/tcp"], // Full format with IP and protocol
   }, "myproject");
@@ -369,7 +366,6 @@ Deno.test("ServiceConfiguration - validation succeeds with full port format", ()
 Deno.test("ServiceConfiguration - validation fails with invalid port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["invalid:port"], // Invalid format
   }, "myproject");
@@ -384,7 +380,6 @@ Deno.test("ServiceConfiguration - validation fails with invalid port format", ()
 Deno.test("ServiceConfiguration - validation fails with out of range port", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["99999"], // Port out of range
   }, "myproject");
@@ -399,7 +394,6 @@ Deno.test("ServiceConfiguration - validation fails with out of range port", () =
 Deno.test("ServiceConfiguration - validation fails with invalid IP in port mapping", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
     servers: [{ host: "web1.example.com", arch: "amd64" }],
     ports: ["999.999.999.999:8080:8000"], // Invalid IP
   }, "myproject");
@@ -414,7 +408,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid IP in port mappi
 Deno.test("ServiceConfiguration - validation fails with invalid volumes type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     volumes: "not-an-array",
   }, "myproject");
 
@@ -460,7 +454,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid environment vari
 Deno.test("ServiceConfiguration - validation fails with invalid command type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     command: 123,
   }, "myproject");
 
@@ -475,7 +469,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid command type", (
 
 Deno.test("ServiceConfiguration - validation fails with invalid build type", () => {
   const service = new ServiceConfiguration("web", {
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     build: 123,
   }, "myproject");
 
@@ -488,7 +482,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid build type", () 
 
 Deno.test("ServiceConfiguration - validation fails with build missing context", () => {
   const service = new ServiceConfiguration("web", {
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     build: {
       dockerfile: "Dockerfile",
     },
@@ -589,7 +583,7 @@ Deno.test("ServiceConfiguration - lazy loading of properties", () => {
 Deno.test("ServiceConfiguration - command as string", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     command: "nginx -g 'daemon off;'",
   };
 
@@ -600,7 +594,7 @@ Deno.test("ServiceConfiguration - command as string", () => {
 Deno.test("ServiceConfiguration - command as array", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     command: ["nginx", "-g", "daemon off;"],
   };
 

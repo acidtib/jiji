@@ -7,7 +7,6 @@ import type { NetworkDiscovery } from "../../types/network.ts";
 export class NetworkConfiguration extends BaseConfiguration {
   private _enabled?: boolean;
   private _clusterCidr?: string;
-  private _discovery?: NetworkDiscovery;
 
   /**
    * Whether private networking is enabled
@@ -50,19 +49,10 @@ export class NetworkConfiguration extends BaseConfiguration {
 
   /**
    * Network discovery method
-   * Defaults to 'corrosion'
+   * Always returns 'corrosion' (only supported method)
    */
   get discovery(): NetworkDiscovery {
-    if (!this._discovery) {
-      const discovery = this.get<string>("discovery", "corrosion");
-      if (discovery !== "static" && discovery !== "corrosion") {
-        throw new ConfigurationError(
-          `Invalid network.discovery value: ${discovery}. Must be 'static' or 'corrosion'`,
-        );
-      }
-      this._discovery = discovery as NetworkDiscovery;
-    }
-    return this._discovery;
+    return "corrosion";
   }
 
   /**
@@ -102,7 +92,6 @@ export class NetworkConfiguration extends BaseConfiguration {
     this.enabled;
     this.clusterCidr;
     this.serviceDomain;
-    this.discovery;
 
     if (!/^[a-z0-9-]+$/.test(this.serviceDomain)) {
       throw new ConfigurationError(
@@ -135,10 +124,7 @@ export class NetworkConfiguration extends BaseConfiguration {
     }
 
     result.service_domain = this.serviceDomain;
-
-    if (this._discovery !== undefined) {
-      result.discovery = this.discovery;
-    }
+    result.discovery = this.discovery; // Always "corrosion"
 
     return result;
   }

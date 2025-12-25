@@ -6,7 +6,7 @@ import { ConfigurationError } from "../base.ts";
 Deno.test("ServiceConfiguration - files as string array", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: [
       "nginx.conf:/etc/nginx/nginx.conf:ro",
       "config.yml:/app/config.yml",
@@ -23,7 +23,7 @@ Deno.test("ServiceConfiguration - files as string array", () => {
 Deno.test("ServiceConfiguration - files as hash array", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: [
       {
         local: "nginx.conf",
@@ -55,7 +55,7 @@ Deno.test("ServiceConfiguration - files as hash array", () => {
 Deno.test("ServiceConfiguration - directories as string array", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     directories: [
       "html:/usr/share/nginx/html:ro",
       "uploads:/var/uploads:z",
@@ -72,7 +72,7 @@ Deno.test("ServiceConfiguration - directories as string array", () => {
 Deno.test("ServiceConfiguration - directories as hash array", () => {
   const serviceData = {
     image: "mysql:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     directories: [
       {
         local: "mysql-data",
@@ -104,7 +104,7 @@ Deno.test("ServiceConfiguration - directories as hash array", () => {
 Deno.test("ServiceConfiguration - validation fails with invalid file format", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: ["invalid"], // Missing colon separator
   };
 
@@ -120,7 +120,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid file format", ()
 Deno.test("ServiceConfiguration - validation fails with invalid directory format", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     directories: ["dir:path:invalid:too:many:colons"],
   };
 
@@ -136,7 +136,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid directory format
 Deno.test("ServiceConfiguration - validation fails with invalid file hash format", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: [
       {
         local: "config.yml",
@@ -157,7 +157,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid file hash format
 Deno.test("ServiceConfiguration - validation fails with invalid mode format", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: [
       {
         local: "config.yml",
@@ -179,7 +179,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid mode format", ()
 Deno.test("ServiceConfiguration - validation fails with invalid owner format", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     directories: [
       {
         local: "data",
@@ -201,7 +201,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid owner format", (
 Deno.test("ServiceConfiguration - toObject includes files and directories", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
     files: ["nginx.conf:/etc/nginx/nginx.conf:ro"],
     directories: ["html:/usr/share/nginx/html"],
   };
@@ -216,7 +216,7 @@ Deno.test("ServiceConfiguration - toObject includes files and directories", () =
 Deno.test("ServiceConfiguration - toObject excludes empty files and directories", () => {
   const serviceData = {
     image: "nginx:latest",
-    hosts: ["localhost"],
+    servers: [{ host: "localhost" }],
   };
 
   const service = new ServiceConfiguration("web", serviceData, "myproject");

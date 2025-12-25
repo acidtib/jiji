@@ -4,8 +4,9 @@
 
 /**
  * Network discovery method
+ * Only "corrosion" is supported (distributed CRDT-based service discovery)
  */
-export type NetworkDiscovery = "static" | "corrosion";
+export type NetworkDiscovery = "corrosion";
 
 /**
  * Network server information stored in network.json

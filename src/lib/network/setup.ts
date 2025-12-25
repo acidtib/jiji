@@ -107,7 +107,6 @@ export async function setupNetwork(
       topology = createTopology(
         config.network.clusterCidr,
         config.network.serviceDomain,
-        config.network.discovery,
       );
     }
 
