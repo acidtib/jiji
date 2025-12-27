@@ -6,7 +6,7 @@ import type { ContainerEngine } from "../configuration/builder.ts";
 import type { Configuration } from "../configuration.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
-import { extractAppPort, ProxyCommands } from "../../utils/proxy.ts";
+import { ProxyCommands } from "../../utils/proxy.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { getDnsServerForHost } from "../../utils/network_helpers.ts";
 import { getContainerIp } from "./container_registry.ts";
@@ -22,6 +22,32 @@ export class ProxyService {
     private config: Configuration,
     private sshManagers: SSHManager[],
   ) {}
+
+  /**
+   * Fetch and log container logs for debugging
+   */
+  private async fetchAndLogContainerLogs(
+    ssh: SSHManager,
+    containerName: string,
+  ): Promise<void> {
+    log.info(
+      `Fetching logs from ${containerName} to diagnose the issue...`,
+      "proxy",
+    );
+
+    const logsCmd = `${this.engine} logs --tail 50 ${containerName} 2>&1`;
+    const logsResult = await ssh.executeCommand(logsCmd);
+
+    if (logsResult.success && logsResult.stdout.trim()) {
+      log.error(`Container logs for ${containerName}:`, "proxy");
+      const logLines = logsResult.stdout.trim().split("\n");
+      for (const line of logLines) {
+        log.error(`  ${line}`, "proxy");
+      }
+    } else {
+      log.warn(`No logs available for ${containerName}`, "proxy");
+    }
+  }
 
   /**
    * Ensure kamal-proxy is installed and running on specified hosts
@@ -170,13 +196,10 @@ export class ProxyService {
     }
 
     try {
-      log.say(`├── Configuring ${service.name} on proxy at ${host}`, 2);
-
       const proxyCmd = new ProxyCommands(this.engine, ssh);
       const containerName = service.getContainerName();
-      const appPort = extractAppPort(service.ports);
 
-      // Get container IP to avoid DNS caching issues
+      // Get container IP once for all targets
       let containerIp: string | undefined;
       try {
         const ip = await getContainerIp(ssh, containerName, this.engine);
@@ -194,35 +217,91 @@ export class ProxyService {
         );
       }
 
-      await proxyCmd.deploy(
-        service.name,
-        containerName,
-        proxyConfig,
-        appPort,
-        this.config.project,
-        containerIp,
-      );
+      // Deploy each target
+      const targets = proxyConfig.targets;
+      const targetResults: string[] = [];
+      const failedTargets: Array<{ port: number; error: string }> = [];
 
-      const hostsStr = proxyConfig.host || proxyConfig.hosts.join(", ");
-      log.say(
-        `└── ${service.name} configured (${hostsStr}, port ${appPort})`,
-        2,
-      );
+      for (const target of targets) {
+        const appPort = target.app_port;
+        const targetServiceName =
+          `${this.config.project}-${service.name}-${appPort}`;
+
+        log.say(
+          `├── Configuring ${targetServiceName} on proxy at ${host}`,
+          2,
+        );
+
+        try {
+          await proxyCmd.deployTarget(
+            targetServiceName,
+            containerName,
+            target,
+            appPort,
+            this.config.project,
+            containerIp,
+          );
+
+          const hostsStr = target.host ||
+            (target.hosts || []).join(", ");
+          targetResults.push(`${hostsStr}:${appPort}`);
+
+          log.say(
+            `└── ${targetServiceName} configured (${hostsStr}, port ${appPort})`,
+            2,
+          );
+        } catch (error) {
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          failedTargets.push({
+            port: appPort,
+            error: errorMessage,
+          });
+          log.error(
+            `Failed to configure ${targetServiceName}: ${errorMessage}`,
+            "proxy",
+          );
+
+          // Fetch container logs to help diagnose the issue
+          await this.fetchAndLogContainerLogs(ssh, containerName);
+        }
+      }
 
       // Log to audit
       const hostLogger = createServerAuditLogger(ssh, this.config.project);
-      await hostLogger.logProxyEvent(
-        "deploy",
-        "success",
-        `${service.name} -> ${hostsStr}:${appPort} (SSL: ${proxyConfig.ssl})`,
-      );
 
-      return {
-        service: service.name,
-        host,
-        success: true,
-        message: `Configured at ${hostsStr}:${appPort}`,
-      };
+      if (failedTargets.length === 0) {
+        await hostLogger.logProxyEvent(
+          "deploy",
+          "success",
+          `${service.name} -> ${targetResults.join(", ")}`,
+        );
+
+        return {
+          service: service.name,
+          host,
+          success: true,
+          message: `Configured: ${targetResults.join(", ")}`,
+        };
+      } else {
+        const errorMsg =
+          `Failed to deploy ${failedTargets.length} target(s): ` +
+          failedTargets.map((f) => `port ${f.port} (${f.error})`).join(", ");
+
+        await hostLogger.logProxyEvent(
+          "deploy",
+          "failed",
+          errorMsg,
+        );
+
+        return {
+          service: service.name,
+          host,
+          success: false,
+          error: errorMsg,
+        };
+      }
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
@@ -234,24 +313,7 @@ export class ProxyService {
 
       // Fetch and display service container logs to help diagnose the issue
       const containerName = service.getContainerName();
-      log.info(
-        `Fetching logs from ${containerName} to diagnose the issue...`,
-        "proxy",
-      );
-
-      const logsCmd = `${this.engine} logs --tail 50 ${containerName} 2>&1`;
-      const logsResult = await ssh.executeCommand(logsCmd);
-
-      if (logsResult.success && logsResult.stdout.trim()) {
-        log.error(`Container logs for ${containerName}:`, "proxy");
-        // Split logs into lines and display each with error level
-        const logLines = logsResult.stdout.trim().split("\n");
-        for (const line of logLines) {
-          log.error(`  ${line}`, "proxy");
-        }
-      } else {
-        log.warn(`No logs available for ${containerName}`, "proxy");
-      }
+      await this.fetchAndLogContainerLogs(ssh, containerName);
 
       return {
         service: service.name,
@@ -327,23 +389,54 @@ export class ProxyService {
       return true; // No proxy, nothing to wait for
     }
 
-    // Use deploy_timeout from healthcheck config if available
-    const configuredTimeout = proxyConfig.healthcheck?.deploy_timeout;
-    if (configuredTimeout) {
-      // Parse timeout string (e.g., "30s", "1m") to milliseconds
-      const match = configuredTimeout.match(/^(\d+)(s|m)$/);
-      if (match) {
-        const value = parseInt(match[1], 10);
-        const unit = match[2];
-        timeoutMs = unit === "s" ? value * 1000 : value * 60 * 1000;
+    const targets = proxyConfig.targets;
+
+    // Wait for each target sequentially
+    for (const target of targets) {
+      const appPort = target.app_port;
+      const targetServiceName =
+        `${this.config.project}-${service.name}-${appPort}`;
+
+      // Use target-specific timeout if configured
+      let targetTimeout = timeoutMs;
+      const configuredTimeout = target.healthcheck?.deploy_timeout;
+      if (configuredTimeout) {
+        targetTimeout = this.parseTimeout(configuredTimeout);
       }
+
+      log.say(
+        `├── Waiting for ${targetServiceName} to pass health checks (timeout: ${targetTimeout}ms)...`,
+        2,
+      );
+
+      const healthy = await this.waitForTargetHealthy(
+        targetServiceName,
+        ssh,
+        targetTimeout,
+      );
+
+      if (!healthy) {
+        log.say(
+          `├── ${targetServiceName} did not become healthy within ${targetTimeout}ms`,
+          2,
+        );
+        return false;
+      }
+
+      log.say(`├── ${targetServiceName} passed health checks`, 2);
     }
 
-    log.say(
-      `├── Waiting for ${service.name} to pass health checks (timeout: ${timeoutMs}ms)...`,
-      2,
-    );
+    return true;
+  }
 
+  /**
+   * Wait for a specific target to become healthy
+   */
+  private async waitForTargetHealthy(
+    serviceName: string,
+    ssh: SSHManager,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const startTime = Date.now();
     const proxyCmd = new ProxyCommands(this.engine, ssh);
     const checkInterval = 2000; // Check every 2 seconds
@@ -351,28 +444,24 @@ export class ProxyService {
     while (Date.now() - startTime < timeoutMs) {
       try {
         const serviceDetails = await proxyCmd.getServiceDetails();
-        const details = serviceDetails.get(service.name);
+        const details = serviceDetails.get(serviceName);
 
         if (details) {
           log.debug(
-            `${service.name} state: ${details.state}, target: ${details.target}`,
+            `${serviceName} state: ${details.state}, target: ${details.target}`,
             "proxy",
           );
 
           // Check if service is in a healthy state
           // kamal-proxy uses "deployed" or "running" state for healthy services
           if (details.state === "deployed" || details.state === "running") {
-            log.say(
-              `├── ${service.name} passed health checks`,
-              2,
-            );
             return true;
           }
 
           // If state is "error" or "unhealthy", fail immediately
           if (details.state === "error" || details.state === "unhealthy") {
             log.say(
-              `├── ${service.name} health check failed with state: ${details.state}`,
+              `├── ${serviceName} health check failed with state: ${details.state}`,
               2,
             );
             return false;
@@ -388,11 +477,20 @@ export class ProxyService {
       await new Promise((resolve) => setTimeout(resolve, checkInterval));
     }
 
-    log.say(
-      `├── ${service.name} did not become healthy within ${timeoutMs}ms`,
-      2,
-    );
     return false;
+  }
+
+  /**
+   * Parse timeout string to milliseconds
+   */
+  private parseTimeout(timeoutStr: string): number {
+    const match = timeoutStr.match(/^(\d+)(s|m)$/);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      const unit = match[2];
+      return unit === "s" ? value * 1000 : value * 60 * 1000;
+    }
+    return 30000; // Default 30s
   }
 
   /**

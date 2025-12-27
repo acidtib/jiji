@@ -22,6 +22,7 @@ const TEST_CONFIG_DATA = {
       servers: [{ host: "192.168.1.10" }, { host: "192.168.1.11" }],
       ports: ["80:80", "443:443"],
       proxy: {
+        app_port: 80,
         host: "example.com",
         ssl: true,
       },
@@ -150,8 +151,8 @@ Deno.test("Configuration - proxy configuration for deployment plan", () => {
 
   const webService = services.find((s) => s.name === "web");
   assertEquals(webService?.proxy?.enabled, true);
-  assertEquals(webService?.proxy?.hosts, ["example.com"]);
-  assertEquals(webService?.proxy?.ssl, true);
+  assertEquals(webService?.proxy?.targets[0].host, "example.com");
+  assertEquals(webService?.proxy?.targets[0].ssl, true);
 
   const apiService = services.find((s) => s.name === "api");
   assertEquals(apiService?.proxy?.enabled || false, false);

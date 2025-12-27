@@ -159,7 +159,7 @@ const TEST_CONFIG_DATA = {
       servers: [{ host: "192.168.1.10" }],
       ports: ["3000:80"],
       proxy: {
-        enabled: true,
+        app_port: 80,
         host: "example.com",
         ssl: true,
         healthcheck: {
@@ -175,7 +175,7 @@ const TEST_CONFIG_DATA = {
       servers: [{ host: "192.168.1.11" }],
       ports: ["4000:4000"],
       proxy: {
-        enabled: true,
+        app_port: 4000,
         hosts: ["api.example.com"],
         ssl: false,
       },

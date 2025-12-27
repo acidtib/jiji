@@ -1,4 +1,4 @@
-import type { ProxyConfiguration } from "../lib/configuration/proxy.ts";
+import type { ProxyTarget } from "../lib/configuration/proxy.ts";
 import type { SSHManager } from "./ssh.ts";
 import { log } from "./logger.ts";
 import { executeBestEffort } from "./command_helpers.ts";
@@ -33,32 +33,39 @@ export interface KamalProxyDeployOptions {
 }
 
 /**
- * Converts ProxyConfiguration to KamalProxyDeployOptions
+ * Builds KamalProxyDeployOptions from a ProxyTarget
  */
-export function buildKamalProxyOptions(
+export function buildKamalProxyOptionsFromTarget(
   serviceName: string,
-  _containerName: string,
+  target: ProxyTarget,
   appPort: number,
-  config: ProxyConfiguration,
   projectName: string,
   containerIp?: string,
 ): KamalProxyDeployOptions {
   // Use container IP directly if available to avoid DNS caching issues
   // Otherwise fall back to DNS name
-  const target = containerIp
+  // Extract base service name (remove port suffix if present for DNS lookup)
+  const parts = serviceName.split("-");
+  const lastPart = parts[parts.length - 1];
+  const baseServiceName = /^\d+$/.test(lastPart)
+    ? parts.slice(0, -1).join("-")
+    : serviceName;
+  const targetAddr = containerIp
     ? `${containerIp}:${appPort}`
-    : `${projectName}-${serviceName}.jiji:${appPort}`;
+    : `${projectName}-${baseServiceName}.jiji:${appPort}`;
+
+  const hosts = target.hosts || (target.host ? [target.host] : undefined);
 
   return {
     serviceName,
-    target,
-    hosts: config.hosts.length > 0 ? config.hosts : undefined,
-    pathPrefix: config.pathPrefix,
-    tls: config.ssl,
-    healthCheckPath: config.healthcheck?.path,
-    healthCheckInterval: config.healthcheck?.interval,
-    healthCheckTimeout: config.healthcheck?.timeout,
-    deployTimeout: config.healthcheck?.deploy_timeout,
+    target: targetAddr,
+    hosts,
+    pathPrefix: target.path_prefix,
+    tls: target.ssl,
+    healthCheckPath: target.healthcheck?.path,
+    healthCheckInterval: target.healthcheck?.interval,
+    healthCheckTimeout: target.healthcheck?.timeout,
+    deployTimeout: target.healthcheck?.deploy_timeout,
   };
 }
 
@@ -79,6 +86,7 @@ export function buildDeployCommandArgs(
 
   if (options.pathPrefix) args.push(`--path-prefix=${options.pathPrefix}`);
   if (options.tls) args.push("--tls");
+
   if (options.healthCheckPath) {
     args.push(`--health-check-path=${options.healthCheckPath}`);
   }
@@ -88,9 +96,12 @@ export function buildDeployCommandArgs(
   if (options.healthCheckTimeout) {
     args.push(`--health-check-timeout=${options.healthCheckTimeout}`);
   }
+
   if (options.deployTimeout) {
     args.push(`--deploy-timeout=${options.deployTimeout}`);
   }
+
+  log.say(`Generated Kamal Proxy args: ${JSON.stringify(args)}`, 0);
 
   return args;
 }
@@ -298,19 +309,21 @@ export class ProxyCommands {
     }
   }
 
-  async deploy(
-    service: string,
-    containerName: string,
-    config: ProxyConfiguration,
+  /**
+   * Deploy a specific proxy target
+   */
+  async deployTarget(
+    serviceName: string,
+    _containerName: string,
+    target: ProxyTarget,
     appPort: number,
     projectName: string,
     containerIp?: string,
   ): Promise<void> {
-    const options = buildKamalProxyOptions(
-      service,
-      containerName,
+    const options = buildKamalProxyOptionsFromTarget(
+      serviceName,
+      target,
       appPort,
-      config,
       projectName,
       containerIp,
     );
@@ -319,17 +332,17 @@ export class ProxyCommands {
     const argsStr = args.join(" ");
 
     log.debug(
-      `Deploying ${service} to proxy with target: ${options.target}`,
+      `Deploying ${serviceName} to proxy with target: ${options.target}`,
       "proxy",
     );
 
     const command =
-      `${this.engine} exec ${this.containerName} kamal-proxy deploy ${service} ${argsStr}`;
+      `${this.engine} exec ${this.containerName} kamal-proxy deploy ${serviceName} ${argsStr}`;
 
     const result = await this.ssh.executeCommand(command);
     if (!result.success) {
       throw new Error(
-        `Failed to deploy service ${service} to proxy: ${
+        `Failed to deploy service ${serviceName} to proxy: ${
           result.stderr || result.stdout
         }`,
       );
@@ -435,38 +448,4 @@ export class ProxyCommands {
     const result = await this.ssh.executeCommand(command);
     return result.stdout;
   }
-}
-
-export function extractAppPort(ports: string[]): number {
-  if (ports.length === 0) {
-    return 3000; // Default app port
-  }
-
-  const firstPort = ports[0];
-
-  // Remove protocol suffix if present
-  const portWithoutProtocol = firstPort.replace(/(\/tcp|\/udp)$/, "");
-  const parts = portWithoutProtocol.split(":");
-
-  let containerPortStr: string;
-
-  if (parts.length === 1) {
-    // Format: "8000" (container port only)
-    containerPortStr = parts[0];
-  } else if (parts.length === 2) {
-    // Format: "8080:8000" (host_port:container_port)
-    containerPortStr = parts[1];
-  } else if (parts.length === 3) {
-    // Format: "192.168.1.1:8080:8000" (host_ip:host_port:container_port)
-    containerPortStr = parts[2];
-  } else {
-    throw new Error(`Invalid port mapping format: ${firstPort}`);
-  }
-
-  const port = parseInt(containerPortStr, 10);
-  if (isNaN(port)) {
-    throw new Error(`Invalid port mapping: ${firstPort}`);
-  }
-
-  return port;
 }

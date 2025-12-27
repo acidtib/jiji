@@ -397,15 +397,17 @@ services:
         NGINX_WORKER_PROCESSES: auto
         NGINX_WORKER_CONNECTIONS: "1024"
     # Optional: Proxy configuration for automatic SSL and routing
+    # Single Target Proxy Configuration
     # proxy:
+    #   app_port: 80                           # Required: container port to proxy
     #   ssl: false
     #   host: web.myproject.example.com
-    #   path_prefix: /api                    # Optional: Path-based routing
+    #   path_prefix: /api                      # Optional: Path-based routing
     #   healthcheck:
-    #     path: /health
+    #     path: /health              # HTTP health check endpoint
     #     interval: 10s
 
-  # Example: API service using custom build
+  # Example: API service using custom build with single-target proxy
   # api-backend:
   #   build:
   #     context: ./api                    # Build context (relative to project root)
@@ -433,17 +435,19 @@ services:
   #   command: ["node", "dist/server.js"]
   #   volumes:
   #     - "/app/logs:/var/log/app"
-  #   # Host-based routing (separate subdomain)
+  #   # Single Target Proxy - Host-based routing (separate subdomain)
   #   proxy:
+  #     app_port: 3000                    # Required: container port
   #     ssl: true
   #     host: api.myproject.example.com
   #     healthcheck:
-  #       path: /api/health
+  #       path: /api/health               # HTTP health check endpoint
   #       interval: 15s
   #       timeout: 10s
   #       deploy_timeout: 60s
   #   # Or path-based routing (same domain, different path)
   #   # proxy:
+  #   #   app_port: 3000
   #   #   ssl: true
   #   #   host: myproject.example.com
   #   #   path_prefix: /api
@@ -454,6 +458,7 @@ services:
   #   #     deploy_timeout: 60s
   #   # Or combined routing (specific host + path prefix)
   #   # proxy:
+  #   #   app_port: 3000
   #   #   ssl: true
   #   #   host: app.myproject.example.com
   #   #   path_prefix: /v2
@@ -462,6 +467,44 @@ services:
   #   #     interval: 15s
   #   #     timeout: 10s
   #   #     deploy_timeout: 60s
+
+  # Example: Multi-Target Proxy for services with multiple ports
+  # Useful for services like Garage that expose multiple APIs
+  # garage:
+  #   image: dxflrs/garage:v2.1.0
+  #   servers:
+  #     - host: 192.168.1.104
+  #       arch: amd64
+  #   ports:
+  #     - "127.0.0.1:3900:3900"           # S3 API
+  #     - "127.0.0.1:3903:3903"           # Admin API
+  #   volumes:
+  #     - "garage_meta:/var/lib/garage/meta"
+  #     - "garage_data:/var/lib/garage/data"
+  #   files:
+  #     - "garage.toml:/etc/garage.toml"
+  #   # Multi-Target Proxy Configuration
+  #   proxy:
+  #     targets:
+  #       - app_port: 3900                # S3 API endpoint
+  #         host: s3.garage.example.com
+  #         ssl: false
+  #         healthcheck:
+  #           path: /health               # HTTP health check endpoint
+  #           interval: 30s
+  #           deploy_timeout: 60s
+  #       - app_port: 3903                # Admin API endpoint
+  #         host: admin.garage.example.com
+  #         ssl: true
+  #         healthcheck:
+  #           path: /health               # HTTP health check endpoint
+  #           interval: 30s
+  #           deploy_timeout: 60s
+  #   # Note: Each target is deployed as {project}-{service}-{app_port} in kamal-proxy
+  #   # Example: myproject-garage-3900, myproject-garage-3903
+  #   # Health check option:
+  #   #   - path: HTTP endpoint to check (e.g., "/health", "/up")
+  #   #         Used for both initial deployment checks and ongoing monitoring by kamal-proxy
 
   # Admin service with path-based routing
   # admin-panel:
