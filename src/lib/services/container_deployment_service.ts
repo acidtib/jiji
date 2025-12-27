@@ -30,6 +30,7 @@ import {
   JIJI_NETWORK_NAME,
 } from "../../constants.ts";
 import type { DeploymentOptions, DeploymentResult } from "../../types.ts";
+import { normalizeImageName } from "../../utils/image.ts";
 
 /**
  * Service for deploying containers to remote servers
@@ -64,14 +65,16 @@ export class ContainerDeploymentService {
   ): Promise<DeploymentResult> {
     try {
       const containerName = service.getContainerName();
-      const version = options.version || "latest";
+      // Only use version from options if explicitly provided
+      // This preserves version tags specified in the image name (e.g., "dxflrs/garage:v2.1.0")
+      const version = options.version;
 
       // Determine image name with optional version and registry
       const imageName = service.requiresBuild()
         ? this.config.builder.registry.getFullImageName(
           service.project,
           service.name,
-          version,
+          version || "latest", // Built images default to latest if no version specified
         )
         : service.getImageName(undefined, version);
 
@@ -96,6 +99,10 @@ export class ContainerDeploymentService {
         await this.cleanupOldContainers(service, ssh);
       }
 
+      // Clean up any leftover _old_* containers from previous failed deployments
+      // This prevents UNIQUE constraint errors when renaming containers
+      await this.cleanupOldRenamedContainers(containerName, ssh);
+
       // Check if old container exists and rename it to keep it running during deployment
       const oldContainerExists = await this.containerExists(containerName, ssh);
       let renamedContainerName: string | undefined;
@@ -114,7 +121,6 @@ export class ContainerDeploymentService {
       }
 
       // Start new container (old one still running if it existed)
-      let newContainerStarted = false;
       try {
         await this.startContainer(
           service,
@@ -123,7 +129,6 @@ export class ContainerDeploymentService {
           ssh,
           host,
         );
-        newContainerStarted = true;
 
         // Wait for container to be running
         await this.waitForContainerRunning(containerName, ssh);
@@ -160,13 +165,12 @@ export class ContainerDeploymentService {
         };
       } catch (error) {
         // Deployment failed - rollback by removing new container and keeping old one
-        if (newContainerStarted) {
-          log.warn(
-            `Deployment failed, removing new container and keeping old one running`,
-            2,
-          );
-          await this.removeContainer(containerName, ssh);
-        }
+        log.warn(
+          `Deployment failed, removing new container if it exists and keeping old one running`,
+          2,
+        );
+        // Always try to remove the new container name to clean up failed starts
+        await this.removeContainer(containerName, ssh);
 
         // Restore old container name if we renamed it
         if (renamedContainerName) {
@@ -362,10 +366,9 @@ export class ContainerDeploymentService {
     ssh: SSHManager,
     host: string,
   ): Promise<string> {
-    // For Podman, ensure image has full registry path
-    const fullImageName = imageName.includes("/")
-      ? imageName
-      : `docker.io/library/${imageName}`;
+    // Normalize image name to include registry if not already present
+    // This is critical for Podman which requires fully qualified image names
+    const fullImageName = normalizeImageName(imageName);
 
     // Build pull command with TLS verification disabled for local registries
     let pullCommand = `${this.engine} pull`;
@@ -415,6 +418,40 @@ export class ContainerDeploymentService {
       log.warn(
         `Service cleanup failed: ${error} (deployment will continue)`,
         2,
+      );
+    }
+  }
+
+  /**
+   * Clean up any leftover _old_* containers from previous failed deployments
+   * This prevents UNIQUE constraint errors in Podman when trying to rename containers
+   */
+  private async cleanupOldRenamedContainers(
+    containerName: string,
+    ssh: SSHManager,
+  ): Promise<void> {
+    try {
+      // Find all containers matching the pattern {containerName}_old_*
+      const listCmd =
+        `${this.engine} ps -a --filter "name=^${containerName}_old_" --format "{{.Names}}"`;
+      const result = await ssh.executeCommand(listCmd);
+
+      if (result.success && result.stdout.trim()) {
+        const oldContainers = result.stdout.trim().split("\n");
+
+        for (const oldContainer of oldContainers) {
+          log.say(`├── Removing leftover container: ${oldContainer}`, 2);
+          await executeBestEffort(
+            ssh,
+            `${this.engine} rm -f ${oldContainer}`,
+            `removing leftover container ${oldContainer}`,
+          );
+        }
+      }
+    } catch (error) {
+      log.debug(
+        `Failed to cleanup old renamed containers: ${error} (deployment will continue)`,
+        "deploy",
       );
     }
   }

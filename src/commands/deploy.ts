@@ -112,9 +112,16 @@ async function displayDeploymentPlan(
       }
 
       if (service.proxy?.enabled) {
-        const hosts = service.proxy.hosts.length > 0
-          ? service.proxy.hosts.join(", ")
-          : "auto";
+        // Collect all hosts from all targets
+        const allHosts: string[] = [];
+        for (const target of service.proxy.targets) {
+          if (target.hosts) {
+            allHosts.push(...target.hosts);
+          } else if (target.host) {
+            allHosts.push(target.host);
+          }
+        }
+        const hosts = allHosts.length > 0 ? allHosts.join(", ") : "auto";
         log.say(`Proxy: Enabled (${hosts})`, 3);
       }
     }

@@ -2,117 +2,287 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { ProxyConfiguration } from "../proxy.ts";
 import { ConfigurationError } from "../base.ts";
 
-Deno.test("ProxyConfiguration - basic host configuration", () => {
+// ============================================================================
+// Single Target Configuration Tests
+// ============================================================================
+
+Deno.test("ProxyConfiguration - single target with port", () => {
   const config = new ProxyConfiguration({
-    ssl: true,
+    app_port: 3000,
     host: "example.com",
+    ssl: true,
   });
 
-  assertEquals(config.ssl, true);
-  assertEquals(config.host, "example.com");
-  assertEquals(config.pathPrefix, undefined);
+  assertEquals(config.isMultiTarget, false);
+  assertEquals(config.targets.length, 1);
+  assertEquals(config.targets[0].app_port, 3000);
+  assertEquals(config.targets[0].host, "example.com");
+  assertEquals(config.targets[0].ssl, true);
   assertEquals(config.enabled, true);
+  config.validate();
 });
 
-Deno.test("ProxyConfiguration - host with path prefix", () => {
+Deno.test("ProxyConfiguration - single target with path prefix", () => {
   const config = new ProxyConfiguration({
-    ssl: false,
+    app_port: 8080,
     host: "api.example.com",
     path_prefix: "/v1",
+    ssl: false,
   });
 
-  assertEquals(config.ssl, false);
-  assertEquals(config.host, "api.example.com");
-  assertEquals(config.pathPrefix, "/v1");
-  assertEquals(config.enabled, true);
+  assertEquals(config.targets[0].app_port, 8080);
+  assertEquals(config.targets[0].host, "api.example.com");
+  assertEquals(config.targets[0].path_prefix, "/v1");
+  assertEquals(config.targets[0].ssl, false);
+  config.validate();
 });
 
-Deno.test("ProxyConfiguration - path prefix only (no host)", () => {
+Deno.test("ProxyConfiguration - single target with healthcheck", () => {
   const config = new ProxyConfiguration({
-    ssl: true,
-    path_prefix: "/api",
-  });
-
-  assertEquals(config.ssl, true);
-  assertEquals(config.host, undefined);
-  assertEquals(config.pathPrefix, "/api");
-  assertEquals(config.enabled, false); // No host means proxy is disabled
-});
-
-Deno.test("ProxyConfiguration - healthcheck configuration", () => {
-  const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     healthcheck: {
       path: "/health",
       interval: "30s",
+      timeout: "5s",
+      deploy_timeout: "60s",
     },
   });
 
-  assertEquals(config.host, "example.com");
-  assertEquals(config.healthcheck?.path, "/health");
-  assertEquals(config.healthcheck?.interval, "30s");
-});
-
-Deno.test("ProxyConfiguration - empty configuration", () => {
-  const config = new ProxyConfiguration({});
-
-  assertEquals(config.ssl, false);
-  assertEquals(config.host, undefined);
-  assertEquals(config.pathPrefix, undefined);
-  assertEquals(config.enabled, false);
-  assertEquals(config.healthcheck, undefined);
-});
-
-Deno.test("ProxyConfiguration - validate with valid host", () => {
-  const config = new ProxyConfiguration({
-    ssl: true,
-    host: "api.example.com",
-    path_prefix: "/v1",
-    healthcheck: {
-      path: "/health",
-      interval: "10s",
-    },
-  });
-
-  // Should not throw
+  assertEquals(config.targets[0].healthcheck?.path, "/health");
+  assertEquals(config.targets[0].healthcheck?.interval, "30s");
+  assertEquals(config.targets[0].healthcheck?.timeout, "5s");
+  assertEquals(config.targets[0].healthcheck?.deploy_timeout, "60s");
   config.validate();
 });
 
-Deno.test("ProxyConfiguration - validate invalid host format", () => {
+Deno.test("ProxyConfiguration - single target with hosts array", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
+    hosts: ["api.example.com", "api2.example.com"],
+    ssl: true,
+  });
+
+  assertEquals(config.targets[0].hosts, [
+    "api.example.com",
+    "api2.example.com",
+  ]);
+  assertEquals(config.targets[0].host, undefined);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - single target missing port", () => {
+  const config = new ProxyConfiguration({
+    host: "example.com",
+    ssl: true,
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "proxy must specify an 'app_port' number",
+  );
+});
+
+Deno.test("ProxyConfiguration - single target missing host", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    ssl: true,
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "proxy must specify either 'host' or 'hosts'",
+  );
+});
+
+Deno.test("ProxyConfiguration - single target with both host and hosts", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    hosts: ["api.example.com"],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "proxy: use either 'host' or 'hosts', not both",
+  );
+});
+
+// ============================================================================
+// Multi-Target Configuration Tests
+// ============================================================================
+
+Deno.test("ProxyConfiguration - multi-target with two ports", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3900, host: "s3.example.com", ssl: false },
+      { app_port: 3903, host: "admin.example.com", ssl: true },
+    ],
+  });
+
+  assertEquals(config.isMultiTarget, true);
+  assertEquals(config.targets.length, 2);
+  assertEquals(config.targets[0].app_port, 3900);
+  assertEquals(config.targets[0].host, "s3.example.com");
+  assertEquals(config.targets[0].ssl, false);
+  assertEquals(config.targets[1].app_port, 3903);
+  assertEquals(config.targets[1].host, "admin.example.com");
+  assertEquals(config.targets[1].ssl, true);
+  assertEquals(config.enabled, true);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - multi-target with healthchecks", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      {
+        app_port: 3900,
+        host: "s3.example.com",
+        healthcheck: {
+          path: "/health",
+          interval: "10s",
+        },
+      },
+      {
+        app_port: 3903,
+        host: "admin.example.com",
+        healthcheck: {
+          path: "/admin/health",
+          interval: "15s",
+          deploy_timeout: "30s",
+        },
+      },
+    ],
+  });
+
+  assertEquals(config.targets[0].healthcheck?.path, "/health");
+  assertEquals(config.targets[0].healthcheck?.interval, "10s");
+  assertEquals(config.targets[1].healthcheck?.path, "/admin/health");
+  assertEquals(config.targets[1].healthcheck?.interval, "15s");
+  assertEquals(config.targets[1].healthcheck?.deploy_timeout, "30s");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - multi-target with path prefixes", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000, host: "example.com", path_prefix: "/api" },
+      { app_port: 3001, host: "example.com", path_prefix: "/admin" },
+    ],
+  });
+
+  assertEquals(config.targets[0].path_prefix, "/api");
+  assertEquals(config.targets[1].path_prefix, "/admin");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - multi-target with hosts arrays", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000, hosts: ["api.example.com", "api2.example.com"] },
+      { app_port: 3001, hosts: ["admin.example.com"] },
+    ],
+  });
+
+  assertEquals(config.targets[0].hosts, [
+    "api.example.com",
+    "api2.example.com",
+  ]);
+  assertEquals(config.targets[1].hosts, ["admin.example.com"]);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - empty targets array", () => {
+  const config = new ProxyConfiguration({
+    targets: [],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "'targets' array cannot be empty",
+  );
+});
+
+Deno.test("ProxyConfiguration - target missing port", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { host: "example.com" },
+    ],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "target at index 0 must specify an 'app_port' number",
+  );
+});
+
+Deno.test("ProxyConfiguration - target missing host", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000 },
+    ],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "target at index 0 must specify either 'host' or 'hosts'",
+  );
+});
+
+Deno.test("ProxyConfiguration - target with both host and hosts", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000, host: "example.com", hosts: ["api.example.com"] },
+    ],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "target at index 0: use either 'host' or 'hosts', not both",
+  );
+});
+
+// ============================================================================
+// Validation Tests
+// ============================================================================
+
+Deno.test("ProxyConfiguration - invalid host format in single target", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "invalid..host",
   });
 
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Invalid host format: invalid..host",
+    "Invalid host format in proxy: invalid..host",
   );
 });
 
-Deno.test("ProxyConfiguration - validate localhost warning", () => {
+Deno.test("ProxyConfiguration - invalid host format in multi-target", () => {
   const config = new ProxyConfiguration({
-    host: "localhost",
-  });
-
-  // Should not throw but should warn (we can't easily test console.warn)
-  config.validate();
-});
-
-Deno.test("ProxyConfiguration - validate SSL without host", () => {
-  const config = new ProxyConfiguration({
-    ssl: true,
+    targets: [
+      { app_port: 3000, host: "invalid..host" },
+    ],
   });
 
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "SSL requires at least one host to be configured",
+    "Invalid host format in target at index 0: invalid..host",
   );
 });
 
-Deno.test("ProxyConfiguration - validate path prefix without leading slash", () => {
+Deno.test("ProxyConfiguration - path prefix without leading slash", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     path_prefix: "api",
   });
@@ -120,12 +290,13 @@ Deno.test("ProxyConfiguration - validate path prefix without leading slash", () 
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Path prefix must start with '/': api",
+    "Path prefix in proxy must start with '/': api",
   );
 });
 
-Deno.test("ProxyConfiguration - validate path prefix with invalid characters", () => {
+Deno.test("ProxyConfiguration - path prefix with invalid characters", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     path_prefix: "/api<script>",
   });
@@ -133,32 +304,13 @@ Deno.test("ProxyConfiguration - validate path prefix with invalid characters", (
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Path prefix contains invalid characters: /api<script>",
+    "Path prefix in proxy contains invalid characters: /api<script>",
   );
 });
 
-Deno.test("ProxyConfiguration - validate root path prefix", () => {
+Deno.test("ProxyConfiguration - healthcheck path without leading slash", () => {
   const config = new ProxyConfiguration({
-    host: "example.com",
-    path_prefix: "/",
-  });
-
-  // Should not throw or warn for root path
-  config.validate();
-});
-
-Deno.test("ProxyConfiguration - validate path prefix with trailing slash warning", () => {
-  const config = new ProxyConfiguration({
-    host: "example.com",
-    path_prefix: "/api/",
-  });
-
-  // Should not throw but should warn (we can't easily test console.warn)
-  config.validate();
-});
-
-Deno.test("ProxyConfiguration - validate healthcheck path without leading slash", () => {
-  const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     healthcheck: {
       path: "health",
@@ -168,12 +320,13 @@ Deno.test("ProxyConfiguration - validate healthcheck path without leading slash"
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Health check path must start with /: health",
+    "Health check path in proxy must start with /: health",
   );
 });
 
-Deno.test("ProxyConfiguration - validate healthcheck path with invalid characters", () => {
+Deno.test("ProxyConfiguration - healthcheck path with invalid characters", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     healthcheck: {
       path: "/health?<script>",
@@ -183,12 +336,13 @@ Deno.test("ProxyConfiguration - validate healthcheck path with invalid character
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Health check path contains invalid characters: /health?<script>",
+    "Health check path in proxy contains invalid characters: /health?<script>",
   );
 });
 
-Deno.test("ProxyConfiguration - validate healthcheck interval format", () => {
+Deno.test("ProxyConfiguration - invalid healthcheck interval format", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     healthcheck: {
       interval: "invalid",
@@ -198,12 +352,13 @@ Deno.test("ProxyConfiguration - validate healthcheck interval format", () => {
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Invalid health check interval: invalid",
+    "Invalid health check interval in proxy: invalid",
   );
 });
 
-Deno.test("ProxyConfiguration - validate healthcheck interval too short", () => {
+Deno.test("ProxyConfiguration - healthcheck interval too short", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
     healthcheck: {
       interval: "0s",
@@ -213,15 +368,16 @@ Deno.test("ProxyConfiguration - validate healthcheck interval too short", () => 
   assertThrows(
     () => config.validate(),
     ConfigurationError,
-    "Health check interval too short: 0s. Minimum is 1s.",
+    "Health check interval too short in proxy: 0s. Minimum is 1s.",
   );
 });
 
-Deno.test("ProxyConfiguration - validate various time formats", () => {
+Deno.test("ProxyConfiguration - valid time formats", () => {
   const validIntervals = ["1s", "30s", "5m", "1h"];
 
   for (const interval of validIntervals) {
     const config = new ProxyConfiguration({
+      app_port: 3000,
       host: "example.com",
       healthcheck: {
         interval,
@@ -233,60 +389,157 @@ Deno.test("ProxyConfiguration - validate various time formats", () => {
   }
 });
 
-Deno.test("ProxyConfiguration - complex valid configuration", () => {
+Deno.test("ProxyConfiguration - invalid healthcheck timeout format", () => {
   const config = new ProxyConfiguration({
-    ssl: true,
-    host: "api.myproject.example.com",
-    path_prefix: "/v2/graphql",
+    app_port: 3000,
+    host: "example.com",
     healthcheck: {
-      path: "/v2/graphql/health",
-      interval: "15s",
+      timeout: "invalid",
     },
   });
 
-  assertEquals(config.ssl, true);
-  assertEquals(config.host, "api.myproject.example.com");
-  assertEquals(config.pathPrefix, "/v2/graphql");
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Invalid health check timeout in proxy: invalid",
+  );
+});
+
+Deno.test("ProxyConfiguration - invalid deploy timeout format", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      deploy_timeout: "invalid",
+    },
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Invalid deploy timeout in proxy: invalid",
+  );
+});
+
+// ============================================================================
+// Complex Scenarios
+// ============================================================================
+
+Deno.test("ProxyConfiguration - complex multi-target configuration", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      {
+        app_port: 3900,
+        host: "s3.garage.example.com",
+        ssl: false,
+        healthcheck: {
+          path: "/health",
+          interval: "10s",
+        },
+      },
+      {
+        app_port: 3903,
+        host: "admin.garage.example.com",
+        ssl: true,
+        path_prefix: "/admin",
+        healthcheck: {
+          path: "/admin/health",
+          interval: "15s",
+          timeout: "5s",
+          deploy_timeout: "60s",
+        },
+      },
+      {
+        app_port: 8080,
+        hosts: ["api1.example.com", "api2.example.com"],
+        ssl: true,
+      },
+    ],
+  });
+
+  assertEquals(config.isMultiTarget, true);
+  assertEquals(config.targets.length, 3);
   assertEquals(config.enabled, true);
-  assertEquals(config.healthcheck?.path, "/v2/graphql/health");
-  assertEquals(config.healthcheck?.interval, "15s");
+
+  // Validate all targets
+  assertEquals(config.targets[0].app_port, 3900);
+  assertEquals(config.targets[0].host, "s3.garage.example.com");
+  assertEquals(config.targets[0].ssl, false);
+
+  assertEquals(config.targets[1].app_port, 3903);
+  assertEquals(config.targets[1].host, "admin.garage.example.com");
+  assertEquals(config.targets[1].ssl, true);
+  assertEquals(config.targets[1].path_prefix, "/admin");
+
+  assertEquals(config.targets[2].app_port, 8080);
+  assertEquals(config.targets[2].hosts, [
+    "api1.example.com",
+    "api2.example.com",
+  ]);
+  assertEquals(config.targets[2].ssl, true);
 
   // Should validate successfully
   config.validate();
 });
 
-Deno.test("ProxyConfiguration - invalid healthcheck object", () => {
+Deno.test("ProxyConfiguration - non-array targets value", () => {
   const config = new ProxyConfiguration({
-    host: "example.com",
-    healthcheck: "not-an-object",
+    targets: "not-an-array",
   });
 
-  assertEquals(config.healthcheck, undefined);
+  // Should parse as empty array and fail validation
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "'targets' array cannot be empty",
+  );
 });
 
-Deno.test("ProxyConfiguration - non-string path_prefix", () => {
+Deno.test("ProxyConfiguration - localhost warning in single target", () => {
   const config = new ProxyConfiguration({
-    host: "example.com",
-    path_prefix: 123,
+    app_port: 3000,
+    host: "localhost",
   });
 
-  assertEquals(config.pathPrefix, undefined);
+  // Should not throw but will warn (we can't easily test console.warn)
+  config.validate();
 });
 
-Deno.test("ProxyConfiguration - non-string host", () => {
+Deno.test("ProxyConfiguration - 127.0.0.1 warning in multi-target", () => {
   const config = new ProxyConfiguration({
-    host: 123,
+    targets: [
+      { app_port: 3000, host: "127.0.0.1" },
+    ],
   });
 
-  assertEquals(config.host, undefined);
+  // Should not throw but will warn (we can't easily test console.warn)
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - enabled check with no targets", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+  });
+
   assertEquals(config.enabled, false);
 });
 
-Deno.test("ProxyConfiguration - non-boolean ssl", () => {
+Deno.test("ProxyConfiguration - enabled check with single target", () => {
   const config = new ProxyConfiguration({
+    app_port: 3000,
     host: "example.com",
-    ssl: "true",
   });
 
-  assertEquals(config.ssl, false); // Should default to false for non-boolean
+  assertEquals(config.enabled, true);
+});
+
+Deno.test("ProxyConfiguration - enabled check with multi-target", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000, host: "example.com" },
+      { app_port: 3001, host: "api.example.com" },
+    ],
+  });
+
+  assertEquals(config.enabled, true);
 });

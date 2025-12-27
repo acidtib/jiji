@@ -370,7 +370,57 @@ export class ServiceConfiguration extends BaseConfiguration
 
     if (this.proxy) {
       this.proxy.validate();
+
+      // Validate that proxy target ports exist in service ports
+      for (const target of this.proxy.targets) {
+        if (!this.hasPort(target.app_port)) {
+          throw new ConfigurationError(
+            `Proxy target app_port ${target.app_port} not found in service '${this.name}' ports. ` +
+              `Available ports: ${this.ports.join(", ")}`,
+          );
+        }
+      }
     }
+  }
+
+  /**
+   * Check if a specific port exists in the service's port mappings
+   */
+  private hasPort(targetPort: number): boolean {
+    for (const portMapping of this.ports) {
+      const extractedPort = this.extractContainerPort(portMapping);
+      if (extractedPort === targetPort) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Extract container port from port mapping
+   */
+  private extractContainerPort(portMapping: string): number {
+    // Remove protocol suffix if present
+    const portWithoutProtocol = portMapping.replace(/(\/tcp|\/udp)$/, "");
+    const parts = portWithoutProtocol.split(":");
+
+    let containerPortStr: string;
+
+    if (parts.length === 1) {
+      // Format: "8000" (container port only)
+      containerPortStr = parts[0];
+    } else if (parts.length === 2) {
+      // Format: "8080:8000" (host_port:container_port)
+      containerPortStr = parts[1];
+    } else if (parts.length === 3) {
+      // Format: "192.168.1.1:8080:8000" (host_ip:host_port:container_port)
+      containerPortStr = parts[2];
+    } else {
+      return 0; // Invalid format
+    }
+
+    const port = parseInt(containerPortStr, 10);
+    return isNaN(port) ? 0 : port;
   }
 
   /**

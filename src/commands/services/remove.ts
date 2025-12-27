@@ -146,8 +146,18 @@ export const removeCommand = new Command()
                     ctxConfig.builder.engine,
                     hostSsh,
                   );
-                  await proxyCmd.remove(service.name);
-                  log.say(`├── Removed ${service.name} from proxy`, 2);
+
+                  // For multi-target services, remove each target from proxy
+                  const targets = service.proxy.targets;
+                  for (const target of targets) {
+                    const targetServiceName =
+                      `${ctxConfig.project}-${service.name}-${target.app_port}`;
+                    await proxyCmd.remove(targetServiceName);
+                    log.say(
+                      `├── Removed ${targetServiceName} from proxy`,
+                      2,
+                    );
+                  }
                 } catch (_error) {
                   // Best effort removal
                 }
@@ -179,6 +189,24 @@ export const removeCommand = new Command()
                 `${containerPrefix} Removed container ${containerName}`,
                 2,
               );
+
+              // Also remove any _old_* containers from failed/incomplete deployments
+              // These are created during zero-downtime deployments and may be left behind
+              const listOldCmd =
+                `${ctxConfig.builder.engine} ps -a --filter "name=^${containerName}_old_" --format "{{.Names}}"`;
+              const listResult = await hostSsh.executeCommand(listOldCmd);
+
+              if (listResult.success && listResult.stdout.trim()) {
+                const oldContainers = listResult.stdout.trim().split("\n");
+                for (const oldContainer of oldContainers) {
+                  await executeBestEffort(
+                    hostSsh,
+                    `${ctxConfig.builder.engine} rm -f ${oldContainer}`,
+                    `removing old container ${oldContainer}`,
+                  );
+                  log.say(`├── Removed old container ${oldContainer}`, 2);
+                }
+              }
 
               // Remove named volumes
               for (let i = 0; i < namedVolumes.length; i++) {

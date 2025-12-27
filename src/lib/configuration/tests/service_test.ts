@@ -186,6 +186,57 @@ Deno.test("ServiceConfiguration - getImageName method", () => {
   );
 });
 
+Deno.test("ServiceConfiguration - getImageName preserves version tag from image", () => {
+  const service = new ServiceConfiguration(
+    "garage",
+    {
+      image: "dxflrs/garage:v2.1.0",
+      servers: [{ host: "server.example.com", arch: "amd64" }],
+    },
+    "s3",
+  );
+
+  // When no version is passed, should preserve the version from the image
+  assertEquals(service.getImageName(), "dxflrs/garage:v2.1.0");
+  assertEquals(service.getImageName(undefined), "dxflrs/garage:v2.1.0");
+});
+
+Deno.test("ServiceConfiguration - getImageName can override version tag", () => {
+  const service = new ServiceConfiguration(
+    "garage",
+    {
+      image: "dxflrs/garage:v2.1.0",
+      servers: [{ host: "server.example.com", arch: "amd64" }],
+    },
+    "s3",
+  );
+
+  // When version is explicitly passed, should override the version from the image
+  assertEquals(
+    service.getImageName(undefined, "v2.2.0"),
+    "dxflrs/garage:v2.2.0",
+  );
+  assertEquals(
+    service.getImageName(undefined, "latest"),
+    "dxflrs/garage:latest",
+  );
+});
+
+Deno.test("ServiceConfiguration - getImageName adds version to untagged image", () => {
+  const service = new ServiceConfiguration(
+    "nginx",
+    {
+      image: "nginx",
+      servers: [{ host: "server.example.com", arch: "amd64" }],
+    },
+    "web",
+  );
+
+  // When version is passed and image has no tag, should add the version
+  assertEquals(service.getImageName(undefined, "1.24"), "nginx:1.24");
+  assertEquals(service.getImageName(undefined, "alpine"), "nginx:alpine");
+});
+
 Deno.test("ServiceConfiguration - getContainerName method", () => {
   const service = new ServiceConfiguration(
     "web",
