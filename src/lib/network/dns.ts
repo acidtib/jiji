@@ -157,14 +157,19 @@ echo "# Jiji container hostnames" >> "\$SYSTEM_TEMP_FILE"
 
 # Query Corrosion for all healthy containers with service and project info
 /opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "
-  SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id
+  SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id || '|' || COALESCE(c.instance_id, '')
   FROM containers c
   JOIN services s ON c.service = s.name
   WHERE c.healthy = 1;
-" 2>/dev/null | while IFS='|' read -r project service ip container_id; do
+" 2>/dev/null | while IFS='|' read -r project service ip container_id instance_id; do
   if [ -n "\$project" ] && [ -n "\$service" ] && [ -n "\$ip" ] && [ -n "\$container_id" ]; then
-    # For CoreDNS (project-service discovery domain) - ONLY FORMAT NEEDED
+    # For CoreDNS (project-service discovery domain)
     echo "\$ip \${project}-\${service}.${serviceDomain}" >> "\$TEMP_FILE"
+
+    # Also add instance-specific domain if instance_id is set
+    if [ -n "\$instance_id" ]; then
+      echo "\$ip \${project}-\${service}-\${instance_id}.${serviceDomain}" >> "\$TEMP_FILE"
+    fi
   fi
 done
 
@@ -388,11 +393,25 @@ export function registerContainerHostname(
   serviceName: string,
   projectName: string,
   containerIp: string,
+  instanceId?: string,
 ): void {
-  log.say(
-    `├── Registered ${projectName}-${serviceName}.jiji -> ${containerIp} in CoreDNS`,
-    2,
-  );
+  const baseDomain = `${projectName}-${serviceName}.jiji`;
+  if (instanceId) {
+    const instanceDomain = `${projectName}-${serviceName}-${instanceId}.jiji`;
+    log.say(
+      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+    log.say(
+      `├── Registered ${instanceDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+  } else {
+    log.say(
+      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+  }
 }
 
 /**

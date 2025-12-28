@@ -142,6 +142,8 @@ export class ContainerDeploymentService {
             host,
             ssh,
             options.allSshManagers,
+            options.serverConfig,
+            options.hasMultipleServers,
           );
         }
 
@@ -222,7 +224,8 @@ export class ContainerDeploymentService {
   ): Promise<DeploymentResult[]> {
     const results: DeploymentResult[] = [];
 
-    for (const server of service.servers) {
+    for (let i = 0; i < service.servers.length; i++) {
+      const server = service.servers[i];
       const host = server.host;
 
       if (!connectedHosts.includes(host)) {
@@ -251,10 +254,21 @@ export class ContainerDeploymentService {
       }
 
       await log.hostBlock(host, async () => {
-        const result = await this.deployService(service, host, hostSsh, {
+        // Pass server config and deployment options
+        // Instance ID will be calculated during network registration using server.id
+        const deployOptions = {
           ...options,
           allSshManagers: sshManagers,
-        });
+          serverConfig: server, // Pass the full server config (includes alias if set)
+          hasMultipleServers: service.servers.length > 1,
+        };
+
+        const result = await this.deployService(
+          service,
+          host,
+          hostSsh,
+          deployOptions,
+        );
         results.push(result);
       }, { indent: 1 });
     }
@@ -618,6 +632,8 @@ export class ContainerDeploymentService {
     host: string,
     ssh: SSHManager,
     allSshManagers?: SSHManager[],
+    serverConfig?: { host: string; arch?: string; alias?: string },
+    hasMultipleServers?: boolean,
   ): Promise<string | undefined> {
     try {
       // Load topology from Corrosion via SSH
@@ -636,6 +652,27 @@ export class ContainerDeploymentService {
         return undefined;
       }
 
+      // Calculate instance ID: use alias if provided, otherwise generate a random short hash
+      // Only set instance ID if service has multiple servers
+      let instanceId: string | undefined;
+      if (hasMultipleServers) {
+        if (serverConfig?.alias) {
+          instanceId = serverConfig.alias;
+        } else {
+          // Generate a stable, short identifier based on project + service + host
+          // This avoids exposing the public IP while remaining stable across deployments
+          const input = `${this.config.project}-${service.name}-${host}`;
+          const hashBuffer = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(input),
+          );
+          const hashArray = Array.from(new Uint8Array(hashBuffer));
+          const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+          instanceId = hashHex.substring(0, 8);
+        }
+      }
+
       log.say(`├── Registering ${service.name} in network...`, 2);
 
       // First register locally (this gets IP and sets up DNS)
@@ -646,6 +683,7 @@ export class ContainerDeploymentService {
         server.id,
         containerId,
         this.engine,
+        instanceId,
       );
 
       if (!registered) {
@@ -673,6 +711,7 @@ export class ContainerDeploymentService {
           containerId,
           containerIp,
           Date.now(),
+          instanceId,
         );
         log.say(
           `├── Registered ${service.name} cluster-wide for DNS resolution`,

@@ -89,6 +89,7 @@ export interface ContainerRegistration {
   ip: string;
   healthy: boolean;
   startedAt: number;
+  instanceId?: string; // Identifier for multi-server deployments (e.g., "primary", "157-230-162-210")
 }
 
 /**

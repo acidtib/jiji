@@ -22,6 +22,7 @@ export interface BuildConfig {
 export type ServerConfig = {
   host: string;
   arch?: string;
+  alias?: string; // Optional human-friendly identifier for instance-specific domains
 };
 
 /**
@@ -71,6 +72,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _command?: string | string[];
   private _proxy?: ProxyConfiguration;
   private _retain?: number;
+  private _network_mode?: string;
 
   constructor(
     name: string,
@@ -303,6 +305,23 @@ export class ServiceConfiguration extends BaseConfiguration
       }
     }
     return this._retain ?? 3; // Default to 3 if not specified
+  }
+
+  /**
+   * Network mode for the container (default: "bridge")
+   */
+  get network_mode(): string {
+    if (!this._network_mode && this.has("network_mode")) {
+      const networkModeValue = this.get("network_mode");
+      if (typeof networkModeValue === "string") {
+        this._network_mode = networkModeValue;
+      } else {
+        throw new ConfigurationError(
+          `'network_mode' for service '${this.name}' must be a string`,
+        );
+      }
+    }
+    return this._network_mode ?? "bridge"; // Default to "bridge" if not specified
   }
 
   /**
@@ -542,7 +561,19 @@ export class ServiceConfiguration extends BaseConfiguration
       result.build = this.build;
     }
 
-    result.servers = this.servers;
+    // Filter out undefined values from servers
+    result.servers = this.servers.map((server) => {
+      const cleanServer: Record<string, string> = {
+        host: server.host,
+      };
+      if (server.arch !== undefined) {
+        cleanServer.arch = server.arch;
+      }
+      if (server.alias !== undefined) {
+        cleanServer.alias = server.alias;
+      }
+      return cleanServer;
+    });
 
     if (this.ports.length > 0) {
       result.ports = this.ports;
@@ -716,10 +747,32 @@ export class ServiceConfiguration extends BaseConfiguration
             `Server architecture at index ${index} for service '${this.name}' must be a string`,
           );
         }
-        return {
+        if (serverObj.alias !== undefined) {
+          if (typeof serverObj.alias !== "string") {
+            throw new ConfigurationError(
+              `Server alias at index ${index} for service '${this.name}' must be a string`,
+            );
+          }
+          // Validate alias is DNS-safe: alphanumeric and hyphens only, no leading/trailing hyphens
+          const dnsPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+          if (!dnsPattern.test(serverObj.alias)) {
+            throw new ConfigurationError(
+              `Server alias at index ${index} for service '${this.name}' must contain only alphanumeric characters and hyphens, and cannot start or end with a hyphen`,
+            );
+          }
+        }
+
+        // Build server config object, only including defined fields
+        const serverConfig: ServerConfig = {
           host: serverObj.host,
-          arch: serverObj.arch as string | undefined,
         };
+        if (serverObj.arch !== undefined) {
+          serverConfig.arch = serverObj.arch as string;
+        }
+        if (serverObj.alias !== undefined) {
+          serverConfig.alias = serverObj.alias as string;
+        }
+        return serverConfig;
       } else {
         throw new ConfigurationError(
           `Server at index ${index} for service '${this.name}' must be an object with 'host' property`,

@@ -91,6 +91,7 @@ export async function getContainerIdByName(
  * @param serverId - Server ID from network topology
  * @param containerId - Container ID
  * @param engine - Container engine (docker or podman)
+ * @param instanceId - Optional instance identifier for multi-server deployments
  * @returns True if registration was successful
  */
 export async function registerContainerInNetwork(
@@ -100,6 +101,7 @@ export async function registerContainerInNetwork(
   serverId: string,
   containerId: string,
   engine: "docker" | "podman",
+  instanceId?: string,
 ): Promise<boolean> {
   try {
     // Get container IP
@@ -126,6 +128,7 @@ export async function registerContainerInNetwork(
       ip,
       healthy: true,
       startedAt: Date.now(),
+      instanceId,
     };
 
     await registerContainer(ssh, registration);
@@ -136,6 +139,7 @@ export async function registerContainerInNetwork(
         serviceName,
         projectName,
         ip,
+        instanceId,
       );
 
       // CoreDNS will handle all resolution via project-service.jiji format
@@ -410,6 +414,8 @@ export async function cleanupServiceContainers(
  *
  * This ensures that all servers know about containers on all other servers,
  * enabling proper DNS resolution for cross-server container communication.
+ *
+ * @param instanceId - Optional instance identifier for multi-server deployments
  */
 export async function registerContainerClusterWide(
   allSshManagers: SSHManager[],
@@ -419,6 +425,7 @@ export async function registerContainerClusterWide(
   containerId: string,
   containerIp: string,
   startedAt: number,
+  instanceId?: string,
 ): Promise<void> {
   const registration: ContainerRegistration = {
     id: containerId,
@@ -427,6 +434,7 @@ export async function registerContainerClusterWide(
     ip: containerIp,
     healthy: true,
     startedAt,
+    instanceId,
   };
 
   // Register this container on all servers in the cluster

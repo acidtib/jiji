@@ -48,6 +48,18 @@ export interface DeploymentOptions {
    * All SSH managers for cluster-wide operations
    */
   allSshManagers?: SSHManager[];
+  /**
+   * Server configuration (includes optional alias)
+   */
+  serverConfig?: {
+    host: string;
+    arch?: string;
+    alias?: string;
+  };
+  /**
+   * Whether this service has multiple servers (determines if instance ID should be set)
+   */
+  hasMultipleServers?: boolean;
 }
 
 /**

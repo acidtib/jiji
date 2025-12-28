@@ -444,15 +444,17 @@ export async function setupNetwork(
               // logic to recreate or warn... original code warned.
             }
           } else {
+            // For podman, configure network to use CoreDNS running on the WireGuard interface
+            // This ensures containers can resolve .jiji domains via the distributed DNS system
             const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway}`
+              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns=${server.wireguardIp} --dns=8.8.8.8`
               : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);
             if (networkResult.code !== 0) throw new Error(networkResult.stderr);
 
             log.say(
-              `└── ${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}`,
+              `└── ${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}, dns=${server.wireguardIp}`,
               2,
             );
           }
