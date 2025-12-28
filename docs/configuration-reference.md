@@ -650,7 +650,7 @@ Enable kamal-proxy for HTTP/HTTPS routing:
 
 ```yaml
 proxy:
-  enabled: true
+  app_port: 3000
   host: myapp.example.com
   ssl: false
 ```
@@ -659,43 +659,93 @@ proxy:
 
 ```yaml
 proxy:
-  enabled: true
+  app_port: 3000
   hosts: # Array of hostnames
     - myapp.example.com
     - www.myapp.example.com
   ssl: true
 ```
 
-**Health checks:**
+**HTTP health checks:**
 
 ```yaml
 proxy:
-  enabled: true
+  app_port: 3000
   host: myapp.example.com
-  health_check:
-    path: /health # Health check endpoint
-    interval: "10s" # Check interval
-    timeout: "5s" # Request timeout
-    deploy_timeout: "60s" # Timeout during deployment
+  healthcheck:
+    path: /health # HTTP health check endpoint
+    interval: 10s # Check interval
+    timeout: 5s # Request timeout
+    deploy_timeout: 60s # Timeout during deployment
 ```
+
+**Command-based health checks:**
+
+```yaml
+proxy:
+  app_port: 3000
+  host: myapp.example.com
+  healthcheck:
+    cmd: "test -f /app/ready" # Command to execute (exit 0 = healthy)
+    cmd_runtime: docker # Optional: Runtime (docker/podman, auto-detects from builder.engine)
+    interval: 10s # Check interval
+    timeout: 5s # Command timeout
+    deploy_timeout: 60s # Timeout during deployment
+```
+
+Command health check examples:
+
+- File-based readiness: `cmd: "test -f /app/ready"`
+- Process check: `cmd: "pgrep -f myapp"`
+- Custom script: `cmd: "/app/healthcheck.sh"`
+- Internal HTTP: `cmd: "curl -f http://localhost:3000/health"`
+- Complex: `cmd: '/app/healthcheck --config "/etc/app.conf"'`
+
+**Note:**
+
+- HTTP (`path`) and command (`cmd`) health checks are mutually exclusive
+- `cmd_runtime` is optional and defaults to the container engine configured in
+  `builder.engine` (docker or podman)
+- You only need to specify `cmd_runtime` if you want to override the builder
+  engine for health checks
 
 **Path prefix routing:**
 
 ```yaml
 proxy:
-  enabled: true
+  app_port: 3000
   host: myapp.example.com
-  path: /api # Route only /api/* to this service
+  path_prefix: /api # Route only /api/* to this service
 ```
 
 **SSL configuration:**
 
 ```yaml
 proxy:
-  enabled: true
+  app_port: 3000
   hosts:
     - myapp.example.com
   ssl: true
+```
+
+**Multi-target proxy (multiple ports):**
+
+```yaml
+proxy:
+  targets:
+    - app_port: 3900
+      host: s3.example.com
+      ssl: false
+      healthcheck:
+        path: /health
+        interval: 30s
+    - app_port: 3903
+      host: admin.example.com
+      ssl: true
+      healthcheck:
+        cmd: "test -f /ready"
+        cmd_runtime: docker
+        interval: 15s
 ```
 
 **Note:** SSL requires host configuration (kamal-proxy handles SSL termination).

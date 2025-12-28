@@ -1,9 +1,11 @@
 import { assertEquals } from "@std/assert";
 import {
   buildDeployCommandArgs,
+  buildKamalProxyOptionsFromTarget,
   type KamalProxyDeployOptions,
 } from "../proxy.ts";
 import { ProxyConfiguration } from "../../lib/configuration/proxy.ts";
+import type { ProxyTarget } from "../../lib/configuration/proxy.ts";
 
 // Unit tests for buildDeployCommandArgs
 
@@ -116,4 +118,115 @@ Deno.test("ProxyConfiguration - supports hosts array", () => {
   assertEquals(config.targets[0].hosts, ["domain.com", "www.domain.com"]);
   assertEquals(config.enabled, true);
   assertEquals(config.targets[0].ssl, true);
+});
+
+// Tests for command-based health checks
+
+Deno.test("buildDeployCommandArgs - command health check with runtime", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "test",
+    target: "container:3000",
+    hosts: ["example.com"],
+    healthCheckCmd: "test -f /app/ready",
+    healthCheckCmdRuntime: "docker",
+    healthCheckInterval: "10s",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes('--health-check-cmd="test -f /app/ready"'), true);
+  assertEquals(args.includes("--health-check-cmd-runtime=docker"), true);
+  assertEquals(args.includes("--health-check-interval=10s"), true);
+  // Should not include HTTP health check
+  assertEquals(args.includes("--health-check-path"), false);
+});
+
+Deno.test("buildDeployCommandArgs - command health check with podman runtime", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "test",
+    target: "container:3000",
+    hosts: ["example.com"],
+    healthCheckCmd: "curl -f http://localhost:3000/health",
+    healthCheckCmdRuntime: "podman",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(
+    args.includes('--health-check-cmd="curl -f http://localhost:3000/health"'),
+    true,
+  );
+  assertEquals(args.includes("--health-check-cmd-runtime=podman"), true);
+});
+
+Deno.test("buildKamalProxyOptionsFromTarget - auto-detects runtime from builder engine", () => {
+  const target: ProxyTarget = {
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "test -f /app/ready",
+      interval: "10s",
+    },
+  };
+
+  const options = buildKamalProxyOptionsFromTarget(
+    "test-service",
+    target,
+    3000,
+    "myproject",
+    undefined,
+    "podman", // Builder engine is podman
+  );
+
+  assertEquals(options.healthCheckCmd, "test -f /app/ready");
+  assertEquals(options.healthCheckCmdRuntime, "podman"); // Should auto-detect from builder
+  assertEquals(options.healthCheckInterval, "10s");
+});
+
+Deno.test("buildKamalProxyOptionsFromTarget - respects explicit cmd_runtime over builder engine", () => {
+  const target: ProxyTarget = {
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "test -f /app/ready",
+      cmd_runtime: "docker", // Explicitly set to docker
+      interval: "10s",
+    },
+  };
+
+  const options = buildKamalProxyOptionsFromTarget(
+    "test-service",
+    target,
+    3000,
+    "myproject",
+    undefined,
+    "podman", // Builder engine is podman
+  );
+
+  assertEquals(options.healthCheckCmd, "test -f /app/ready");
+  assertEquals(options.healthCheckCmdRuntime, "docker"); // Should use explicit value, not builder
+});
+
+Deno.test("buildKamalProxyOptionsFromTarget - no runtime without cmd", () => {
+  const target: ProxyTarget = {
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      path: "/health",
+      interval: "10s",
+    },
+  };
+
+  const options = buildKamalProxyOptionsFromTarget(
+    "test-service",
+    target,
+    3000,
+    "myproject",
+    undefined,
+    "podman", // Builder engine is podman
+  );
+
+  assertEquals(options.healthCheckPath, "/health");
+  assertEquals(options.healthCheckCmd, undefined);
+  assertEquals(options.healthCheckCmdRuntime, undefined); // No runtime for HTTP health checks
 });

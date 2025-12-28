@@ -22,8 +22,12 @@ export interface KamalProxyDeployOptions {
   pathPrefix?: string;
   /** Enable TLS/SSL */
   tls?: boolean;
-  /** Health check endpoint path */
+  /** Health check endpoint path (HTTP-based) */
   healthCheckPath?: string;
+  /** Health check command (command-based) */
+  healthCheckCmd?: string;
+  /** Health check command runtime (docker or podman) */
+  healthCheckCmdRuntime?: "docker" | "podman";
   /** Health check interval (e.g., "30s", "5m") */
   healthCheckInterval?: string;
   /** Health check timeout (e.g., "5s", "10s") */
@@ -41,20 +45,36 @@ export function buildKamalProxyOptionsFromTarget(
   appPort: number,
   projectName: string,
   containerIp?: string,
+  defaultRuntime?: "docker" | "podman",
+  containerName?: string,
 ): KamalProxyDeployOptions {
-  // Use container IP directly if available to avoid DNS caching issues
-  // Otherwise fall back to DNS name
-  // Extract base service name (remove port suffix if present for DNS lookup)
-  const parts = serviceName.split("-");
-  const lastPart = parts[parts.length - 1];
-  const baseServiceName = /^\d+$/.test(lastPart)
-    ? parts.slice(0, -1).join("-")
-    : serviceName;
-  const targetAddr = containerIp
-    ? `${containerIp}:${appPort}`
-    : `${projectName}-${baseServiceName}.jiji:${appPort}`;
+  // Determine target address based on health check type
+  let targetAddr: string;
+
+  if (target.healthcheck?.cmd && containerName) {
+    // For command-based health checks, use container name so kamal-proxy can exec into it
+    targetAddr = `${containerName}:${appPort}`;
+  } else if (containerIp) {
+    // Use container IP directly if available to avoid DNS caching issues
+    targetAddr = `${containerIp}:${appPort}`;
+  } else {
+    // Fall back to DNS name
+    // Extract base service name (remove port suffix if present for DNS lookup)
+    const parts = serviceName.split("-");
+    const lastPart = parts[parts.length - 1];
+    const baseServiceName = /^\d+$/.test(lastPart)
+      ? parts.slice(0, -1).join("-")
+      : serviceName;
+    targetAddr = `${projectName}-${baseServiceName}.jiji:${appPort}`;
+  }
 
   const hosts = target.hosts || (target.host ? [target.host] : undefined);
+
+  // Auto-detect cmd_runtime from builder engine if not specified
+  let cmdRuntime = target.healthcheck?.cmd_runtime;
+  if (target.healthcheck?.cmd && !cmdRuntime && defaultRuntime) {
+    cmdRuntime = defaultRuntime;
+  }
 
   return {
     serviceName,
@@ -63,6 +83,8 @@ export function buildKamalProxyOptionsFromTarget(
     pathPrefix: target.path_prefix,
     tls: target.ssl,
     healthCheckPath: target.healthcheck?.path,
+    healthCheckCmd: target.healthcheck?.cmd,
+    healthCheckCmdRuntime: cmdRuntime,
     healthCheckInterval: target.healthcheck?.interval,
     healthCheckTimeout: target.healthcheck?.timeout,
     deployTimeout: target.healthcheck?.deploy_timeout,
@@ -87,9 +109,26 @@ export function buildDeployCommandArgs(
   if (options.pathPrefix) args.push(`--path-prefix=${options.pathPrefix}`);
   if (options.tls) args.push("--tls");
 
+  // HTTP-based health check
   if (options.healthCheckPath) {
     args.push(`--health-check-path=${options.healthCheckPath}`);
   }
+
+  // Command-based health check
+  if (options.healthCheckCmd) {
+    // Quote the command value if it contains spaces for proper shell parsing
+    const cmdValue = options.healthCheckCmd.includes(" ")
+      ? `"${options.healthCheckCmd}"`
+      : options.healthCheckCmd;
+    args.push(`--health-check-cmd=${cmdValue}`);
+
+    // Add runtime if specified, otherwise kamal-proxy defaults to docker
+    if (options.healthCheckCmdRuntime) {
+      args.push(`--health-check-cmd-runtime=${options.healthCheckCmdRuntime}`);
+    }
+  }
+
+  // Common health check options (work with both HTTP and command checks)
   if (options.healthCheckInterval) {
     args.push(`--health-check-interval=${options.healthCheckInterval}`);
   }
@@ -144,7 +183,8 @@ export class ProxyCommands {
   }
 
   async pullImage(): Promise<void> {
-    const image = "docker.io/basecamp/kamal-proxy:latest";
+    // const image = "docker.io/basecamp/kamal-proxy:latest";
+    const image = "ghcr.io/acidtib/kamal-proxy:jiji";
     const command = `${this.engine} pull ${image}`;
     const result = await this.ssh.executeCommand(command);
 
@@ -184,8 +224,30 @@ export class ProxyCommands {
       ? `--dns ${dnsServer} --dns 8.8.8.8 --dns-search jiji --dns-option ndots:1`
       : "";
 
+    // Mount container runtime for command-based health checks
+    // For podman with --pid=host and --cgroupns=host, we need:
+    // - /run for podman socket and runtime state
+    // - /usr/bin for podman and helper binaries
+    // - /usr/lib for podman network helpers (netavark, aardvark-dns) and shared libraries
+    // - /lib* for additional shared libraries
+    // - /var/lib/containers for container storage
+    // The host namespaces give direct access to processes and cgroups
+    // For docker: mount socket only (binary already in image)
+    const runtimeMounts = this.engine === "podman"
+      ? "--volume /run:/run --volume /usr/bin:/usr/bin:ro --volume /usr/lib:/usr/lib:ro --volume /lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:ro --volume /lib64:/lib64:ro --volume /var/lib/containers:/var/lib/containers"
+      : "--volume /var/run/docker.sock:/var/run/docker.sock";
+
+    // For podman command health checks to work, we need:
+    // - privileged mode for namespace operations
+    // - root user so podman commands have proper permissions
+    // - host PID namespace so kamal-proxy can see and exec into other container processes
+    // - host cgroup namespace so kamal-proxy can access container cgroups in /sys
+    const privilegedFlag = this.engine === "podman"
+      ? "--privileged --user root --pid=host --cgroupns=host"
+      : "";
+
     const command =
-      `${this.engine} run --name ${this.containerName} --network ${this.networkName} ${dnsArgs} --detach --restart unless-stopped --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy ${publishArgs} docker.io/basecamp/kamal-proxy:latest kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
+      `${this.engine} run --name ${this.containerName} --network ${this.networkName} ${dnsArgs} --detach --restart unless-stopped ${privilegedFlag} --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy ${runtimeMounts} ${publishArgs} ghcr.io/acidtib/kamal-proxy:jiji kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
 
     const result = await this.ssh.executeCommand(command);
     if (!result.success) {
@@ -314,7 +376,7 @@ export class ProxyCommands {
    */
   async deployTarget(
     serviceName: string,
-    _containerName: string,
+    containerName: string,
     target: ProxyTarget,
     appPort: number,
     projectName: string,
@@ -326,6 +388,8 @@ export class ProxyCommands {
       appPort,
       projectName,
       containerIp,
+      this.engine, // Pass engine as default runtime for command health checks
+      containerName, // Pass container name for command-based health checks
     );
 
     const args = buildDeployCommandArgs(options);
