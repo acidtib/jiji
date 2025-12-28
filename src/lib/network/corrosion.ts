@@ -437,6 +437,37 @@ export async function queryServiceContainers(
 }
 
 /**
+ * Query containers for a service on a specific server
+ *
+ * @param ssh - SSH connection to the server
+ * @param serviceName - Service name to query
+ * @param serverId - Server ID to filter by
+ * @returns Array of container IPs on that server
+ */
+export async function queryServerServiceContainers(
+  ssh: SSHManager,
+  serviceName: string,
+  serverId: string,
+): Promise<string[]> {
+  const sql = `SELECT ip FROM containers WHERE service = '${
+    escapeSql(serviceName)
+  }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(
+      `Failed to query server service containers: ${result.stderr}`,
+    );
+  }
+
+  // Parse output (one IP per line)
+  return result.stdout.trim().split("\n").filter((ip: string) => ip.length > 0);
+}
+
+/**
  * Check if Corrosion binary is installed
  *
  * @param ssh - SSH connection to the server

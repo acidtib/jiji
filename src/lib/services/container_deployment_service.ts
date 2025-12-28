@@ -122,7 +122,7 @@ export class ContainerDeploymentService {
 
       // Start new container (old one still running if it existed)
       try {
-        await this.startContainer(
+        const containerId = await this.startContainer(
           service,
           fullImageName,
           containerName,
@@ -138,7 +138,7 @@ export class ContainerDeploymentService {
         if (this.config.network.enabled) {
           containerIp = await this.registerInNetwork(
             service,
-            containerName,
+            containerId,
             host,
             ssh,
             options.allSshManagers,
@@ -614,7 +614,7 @@ export class ContainerDeploymentService {
    */
   private async registerInNetwork(
     service: ServiceConfiguration,
-    containerName: string,
+    containerId: string,
     host: string,
     ssh: SSHManager,
     allSshManagers?: SSHManager[],
@@ -644,7 +644,7 @@ export class ContainerDeploymentService {
         service.name,
         this.config.project,
         server.id,
-        containerName,
+        containerId,
         this.engine,
       );
 
@@ -659,7 +659,7 @@ export class ContainerDeploymentService {
       // Get container IP for cluster-wide registration
       const containerIp = await getContainerIp(
         ssh,
-        containerName,
+        containerId,
         this.engine,
       );
 
@@ -670,7 +670,7 @@ export class ContainerDeploymentService {
           service.name,
           this.config.project,
           server.id,
-          containerName,
+          containerId,
           containerIp,
           Date.now(),
         );

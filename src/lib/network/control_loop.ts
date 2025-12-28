@@ -202,8 +202,8 @@ sync_container_health() {
   while IFS= read -r container_id; do
     [ -z "$container_id" ] && continue
 
-    # Check if container is running
-    if $ENGINE ps -q --filter name=$container_id 2>/dev/null | grep -q .; then
+    # Check if container is running (by ID, not name)
+    if $ENGINE ps -q --filter id=$container_id 2>/dev/null | grep -q .; then
       # Container is running, mark healthy
       \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "UPDATE containers SET healthy = 1 WHERE id = '$container_id';" 2>/dev/null || true
     else

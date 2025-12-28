@@ -16,7 +16,7 @@ import { getTopologyStats, loadTopology } from "../../lib/network/topology.ts";
 import { getWireGuardStatus } from "../../lib/network/wireguard.ts";
 import {
   isCorrosionRunning,
-  queryServiceContainers,
+  queryServerServiceContainers,
 } from "../../lib/network/corrosion.ts";
 import { isCoreDNSRunning } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
@@ -131,20 +131,15 @@ export const statusCommand = new Command()
                 > = [];
 
                 for (const serviceName of services) {
-                  const ips = await queryServiceContainers(ssh, serviceName);
+                  const ips = await queryServerServiceContainers(
+                    ssh,
+                    serviceName,
+                    server.id,
+                  );
                   for (const ip of ips) {
-                    if (
-                      ip.startsWith(
-                        server.subnet.split("/")[0].substring(
-                          0,
-                          server.subnet.lastIndexOf(".") - 1,
-                        ),
-                      )
-                    ) {
-                      const domain =
-                        `${config.project}-${serviceName}.${topology.serviceDomain}`;
-                      containers.push({ service: serviceName, ip, domain });
-                    }
+                    const domain =
+                      `${config.project}-${serviceName}.${topology.serviceDomain}`;
+                    containers.push({ service: serviceName, ip, domain });
                   }
                 }
 
