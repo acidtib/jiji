@@ -481,6 +481,12 @@ export async function setupNetwork(
               hostname: peer.hostname,
             }));
 
+          // Calculate container subnet for this server
+          const serverIndex = parseInt(server.subnet.split(".")[2]);
+          const containerThirdOctet = 128 + serverIndex;
+          const baseNetwork = server.subnet.split(".").slice(0, 2).join(".");
+          const containerSubnet = `${baseNetwork}.${containerThirdOctet}.0/24`;
+
           // Warn about bridges if needed (captured in original code logging)
           // TODO:
           if (config.builder.engine === "podman") {
@@ -496,6 +502,7 @@ export async function setupNetwork(
           await setupServerRouting(
             ssh,
             server.subnet,
+            containerSubnet,
             config.network.clusterCidr,
             peers,
             "jiji",

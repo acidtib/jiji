@@ -167,7 +167,8 @@ export async function getDockerBridgeInterface(
  * Configure iptables rules for container-to-container communication
  *
  * @param ssh - SSH connection to the server
- * @param localSubnet - Local container subnet CIDR
+ * @param localSubnet - Local WireGuard subnet CIDR
+ * @param containerSubnet - Local container subnet CIDR
  * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param dockerBridge - Docker bridge interface name
  * @param wireguardInterface - WireGuard interface name (default: jiji0)
@@ -175,6 +176,7 @@ export async function getDockerBridgeInterface(
 export async function setupIPTablesRules(
   ssh: SSHManager,
   localSubnet: string,
+  containerSubnet: string,
   clusterCidr: string,
   dockerBridge: string,
   wireguardInterface = "jiji0",
@@ -208,14 +210,28 @@ export async function setupIPTablesRules(
     );
   }
 
-  // Skip NAT for container-to-container traffic within the cluster
-  // This preserves source IPs so containers can communicate with their real IPs across the mesh
-  const skipNatRule =
+  // Skip NAT for WireGuard-to-cluster traffic
+  // This preserves source IPs for WireGuard subnet traffic within the cluster
+  const skipNatWireGuardRule =
     `iptables -t nat -C POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN`;
-  const result3 = await ssh.executeCommand(skipNatRule);
+  const result3 = await ssh.executeCommand(skipNatWireGuardRule);
   if (result3.code !== 0 && !result3.stderr.includes("Bad rule")) {
     log.warn(
-      `Failed to add skip NAT rule for cluster traffic on ${host}`,
+      `Failed to add skip NAT rule for WireGuard traffic on ${host}`,
+      "network",
+    );
+  }
+
+  // Skip NAT for container-to-cluster traffic
+  // This is critical - prevents container source IPs from being masqueraded to host IP
+  // Without this, containers can't communicate across servers (handshake failures)
+  // IMPORTANT: Must INSERT (not APPEND) to ensure this rule comes BEFORE any MASQUERADE rules
+  const skipNatContainerRule =
+    `iptables -t nat -C POSTROUTING -s ${containerSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${containerSubnet} -d ${clusterCidr} -j RETURN`;
+  const result3b = await ssh.executeCommand(skipNatContainerRule);
+  if (result3b.code !== 0 && !result3b.stderr.includes("Bad rule")) {
+    log.warn(
+      `Failed to add skip NAT rule for container traffic on ${host}`,
       "network",
     );
   }
@@ -258,7 +274,8 @@ export async function setupIPTablesRules(
  * - iptables forwarding rules
  *
  * @param ssh - SSH connection to the server
- * @param localSubnet - Local container subnet CIDR
+ * @param localSubnet - Local WireGuard subnet CIDR
+ * @param containerSubnet - Local container subnet CIDR
  * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param peers - Array of peer information
  * @param networkName - Docker network name
@@ -268,6 +285,7 @@ export async function setupIPTablesRules(
 export async function setupServerRouting(
   ssh: SSHManager,
   localSubnet: string,
+  containerSubnet: string,
   clusterCidr: string,
   peers: Array<{ subnet: string; hostname: string }>,
   networkName: string,
@@ -296,6 +314,7 @@ export async function setupServerRouting(
     await setupIPTablesRules(
       ssh,
       localSubnet,
+      containerSubnet,
       clusterCidr,
       dockerBridge,
       wireguardInterface,
