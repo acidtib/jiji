@@ -99,6 +99,9 @@ ${config.serviceDomain} {
         fallthrough
     }
 
+    # Forward queries not in hosts file to system resolvers
+    forward . /etc/resolv.conf
+
     # Cache DNS responses
     cache 30
 
@@ -118,7 +121,8 @@ ${config.serviceDomain} {
         fallthrough
     }
 
-    forward . ${config.upstreamResolvers.join(" ")}
+    # Use system's default resolvers from /etc/resolv.conf
+    forward . /etc/resolv.conf
     cache 30
     log
     errors
@@ -461,7 +465,7 @@ export async function configureContainerDNS(
     // Merge DNS configuration with existing config
     const daemonConfig = {
       ...existingConfig,
-      dns: [dnsServer, "8.8.8.8", "1.1.1.1"],
+      dns: [dnsServer],
       "dns-search": [serviceDomain],
       "dns-opts": ["ndots:1"],
     };
@@ -487,7 +491,7 @@ export async function configureContainerDNS(
   } else if (engine === "podman") {
     // Podman uses containers.conf
     const containersConf = `[network]
-dns_servers = ["${dnsServer}", "8.8.8.8", "1.1.1.1"]
+dns_servers = ["${dnsServer}"]
 dns_searches = ["${serviceDomain}"]
 dns_options = ["ndots:1"]
 `;

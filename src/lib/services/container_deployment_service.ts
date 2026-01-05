@@ -224,8 +224,13 @@ export class ContainerDeploymentService {
   ): Promise<DeploymentResult[]> {
     const results: DeploymentResult[] = [];
 
-    for (let i = 0; i < service.servers.length; i++) {
-      const server = service.servers[i];
+    // Get resolved servers for this service
+    const resolvedServers = this.config.getResolvedServersForService(
+      service.name,
+    );
+
+    for (let i = 0; i < resolvedServers.length; i++) {
+      const server = resolvedServers[i];
       const host = server.host;
 
       if (!connectedHosts.includes(host)) {
@@ -259,8 +264,11 @@ export class ContainerDeploymentService {
         const deployOptions = {
           ...options,
           allSshManagers: sshManagers,
-          serverConfig: server, // Pass the full server config (includes alias if set)
-          hasMultipleServers: service.servers.length > 1,
+          serverConfig: {
+            host: server.host,
+            arch: server.arch,
+          },
+          hasMultipleServers: resolvedServers.length > 1,
         };
 
         const result = await this.deployService(
@@ -497,6 +505,13 @@ export class ContainerDeploymentService {
       this.config.network.enabled,
     );
 
+    log.debug(
+      `DNS server for ${host}: ${
+        dnsServer || "none (network registration may have failed)"
+      }`,
+      "deploy",
+    );
+
     const builder = new ContainerRunBuilder(
       this.engine,
       containerName,
@@ -511,7 +526,36 @@ export class ContainerDeploymentService {
 
     // Add DNS configuration if network is enabled
     if (dnsServer) {
+      log.debug(
+        `Adding DNS configuration: server=${dnsServer}, search=${this.config.network.serviceDomain}`,
+        "deploy",
+      );
       builder.dns(dnsServer, this.config.network.serviceDomain);
+    } else {
+      log.warn(
+        `No DNS server configured for ${host} - containers won't be able to resolve .${this.config.network.serviceDomain} domains`,
+        2,
+      );
+    }
+
+    // Add resource constraints if specified
+    if (service.cpus !== undefined) {
+      builder.cpus(service.cpus);
+    }
+    if (service.memory !== undefined) {
+      builder.memory(service.memory);
+    }
+    if (service.gpus !== undefined) {
+      builder.gpus(service.gpus);
+    }
+    if (service.devices.length > 0) {
+      builder.devices(service.devices);
+    }
+    if (service.privileged) {
+      builder.privileged();
+    }
+    if (service.cap_add.length > 0) {
+      builder.capAdd(service.cap_add);
     }
 
     const runCommand = builder.build();

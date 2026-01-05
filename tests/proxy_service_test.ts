@@ -147,16 +147,34 @@ class MockSSHManager {
 // Test configuration data
 const TEST_CONFIG_DATA = {
   project: "test-app",
+  ssh: {
+    user: "deploy",
+    port: 22,
+  },
   builder: {
     engine: "docker",
     registry: {
       type: "local",
     },
   },
+  servers: {
+    web1: {
+      host: "192.168.1.10",
+      arch: "amd64",
+    },
+    api1: {
+      host: "192.168.1.11",
+      arch: "amd64",
+    },
+    worker1: {
+      host: "192.168.1.12",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      servers: [{ host: "192.168.1.10" }],
+      hosts: ["web1"],
       ports: ["3000:80"],
       proxy: {
         app_port: 80,
@@ -172,7 +190,7 @@ const TEST_CONFIG_DATA = {
     },
     api: {
       image: "node:18",
-      servers: [{ host: "192.168.1.11" }],
+      hosts: ["api1"],
       ports: ["4000:4000"],
       proxy: {
         app_port: 4000,
@@ -182,7 +200,7 @@ const TEST_CONFIG_DATA = {
     },
     worker: {
       image: "redis:latest",
-      servers: [{ host: "192.168.1.12" }],
+      hosts: ["worker1"],
       ports: ["6379:6379"],
       // No proxy configuration
     },
@@ -207,6 +225,7 @@ Deno.test("ProxyService.getHostsNeedingProxy - identifies hosts with proxy-enabl
   const connectedHosts = ["192.168.1.10", "192.168.1.11", "192.168.1.12"];
 
   const proxyHosts = ProxyService.getHostsNeedingProxy(
+    config,
     services,
     connectedHosts,
   );
@@ -223,6 +242,7 @@ Deno.test("ProxyService.getHostsNeedingProxy - filters by connected hosts", () =
   const connectedHosts = ["192.168.1.10"]; // Only one host connected
 
   const proxyHosts = ProxyService.getHostsNeedingProxy(
+    config,
     services,
     connectedHosts,
   );

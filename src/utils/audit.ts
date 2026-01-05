@@ -95,10 +95,12 @@ export class RemoteAuditLogger {
 
       const formattedEntry = this.formatEntry(fullEntry);
 
-      const escapedEntry = formattedEntry.replace(/"/g, '\\"').replace(
-        /'/g,
-        "\\'",
-      );
+      const escapedEntry = formattedEntry
+        .replace(/\\/g, "\\\\") // Escape backslashes first
+        .replace(/"/g, '\\"') // Escape double quotes
+        .replace(/'/g, "\\'") // Escape single quotes
+        .replace(/`/g, "\\`") // Escape backticks
+        .replace(/\$/g, "\\$"); // Escape dollar signs
 
       const result = await this.sshManager.executeCommand(
         `echo "${escapedEntry}" >> ${this.auditFile}`,

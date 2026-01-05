@@ -202,6 +202,58 @@ export async function writeWireGuardConfig(
 }
 
 /**
+ * Clean up orphaned network interfaces that might conflict with WireGuard
+ *
+ * This removes stale bridge interfaces (like podman1, docker0) that might have
+ * IP addresses or routes in the cluster CIDR range, which would conflict with
+ * WireGuard route setup.
+ *
+ * @param ssh - SSH connection to the server
+ * @param clusterCidr - Cluster CIDR to check for conflicts (e.g., "10.210.0.0/16")
+ */
+export async function cleanupOrphanedInterfaces(
+  ssh: SSHManager,
+  clusterCidr: string,
+): Promise<void> {
+  const host = ssh.getHost();
+
+  // Extract base network from CIDR (e.g., "10.210" from "10.210.0.0/16")
+  const baseNetwork = clusterCidr.split(".").slice(0, 2).join(".");
+
+  // Find all bridge interfaces
+  const bridgesResult = await ssh.executeCommand(
+    `ip -o link show type bridge | awk -F': ' '{print $2}'`,
+  );
+  if (bridgesResult.code !== 0) return;
+
+  const bridges = bridgesResult.stdout.trim().split("\n").filter((b) =>
+    b && !b.includes("jiji")
+  );
+
+  for (const bridge of bridges) {
+    // Check if this bridge has an IP in our cluster range
+    const ipResult = await ssh.executeCommand(
+      `ip -o -4 addr show ${bridge} | awk '{print $4}'`,
+    );
+    if (ipResult.code !== 0 || !ipResult.stdout.trim()) continue;
+
+    const ip = ipResult.stdout.trim();
+    if (ip.startsWith(baseNetwork)) {
+      log.debug(
+        `Found orphaned bridge ${bridge} with conflicting IP ${ip}, removing...`,
+        "network",
+      );
+
+      // Bring down and delete the interface
+      await ssh.executeCommand(`ip link set ${bridge} down || true`);
+      await ssh.executeCommand(`ip link delete ${bridge} || true`);
+
+      log.debug(`Removed orphaned bridge ${bridge} on ${host}`, "network");
+    }
+  }
+}
+
+/**
  * Bring up a WireGuard interface
  *
  * @param ssh - SSH connection to the server
@@ -223,6 +275,23 @@ export async function bringUpWireGuardInterface(
   // Bring up the interface
   const upResult = await ssh.executeCommand(`wg-quick up ${interfaceName}`);
   if (upResult.code !== 0) {
+    // Check if it's a route conflict error
+    if (upResult.stderr.includes("RTNETLINK answers: File exists")) {
+      // Extract the conflicting route if possible
+      const routeMatch = upResult.stderr.match(/ip -4 route add ([0-9.\/]+)/);
+      const conflictingRoute = routeMatch ? routeMatch[1] : "unknown";
+
+      throw new Error(
+        `Failed to bring up WireGuard interface: Route conflict detected for ${conflictingRoute}.\n` +
+          `This usually means an orphaned network interface is using the same subnet.\n` +
+          `Try running: ip route show | grep ${
+            conflictingRoute.split("/")[0]
+          }\n` +
+          `Then remove the conflicting interface with: ip link delete <interface_name>\n` +
+          `Full error: ${upResult.stderr}`,
+      );
+    }
+
     throw new Error(
       `Failed to bring up WireGuard interface: ${upResult.stderr}`,
     );

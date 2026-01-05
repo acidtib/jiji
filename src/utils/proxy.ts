@@ -221,7 +221,7 @@ export class ProxyCommands {
     // For Podman, explicitly set DNS to ensure service discovery works
     // For Docker, daemon.json handles this but explicit --dns doesn't hurt
     const dnsArgs = dnsServer
-      ? `--dns ${dnsServer} --dns 8.8.8.8 --dns-search jiji --dns-option ndots:1`
+      ? `--dns ${dnsServer} --dns-search jiji --dns-option ndots:1`
       : "";
 
     // Mount container runtime for command-based health checks

@@ -225,6 +225,7 @@ export function filterServicesByPatterns<T extends { name: string }>(
       `No services match pattern: ${servicePatterns}`,
       "config",
     );
+    log.say(`Available services: ${config.getServiceNames().join(", ")}`, 1);
     Deno.exit(1);
   }
 

@@ -89,9 +89,12 @@ export const restartCommand = new Command()
       for (const service of servicesToRestart) {
         log.say(`- Restarting ${service.name} containers`, 1);
 
-        const serviceHosts = service.servers
-          .map((server: { host: string }) => server.host)
-          .filter((host: string) => context.targetHosts.includes(host));
+        const resolvedServers = context.config.getResolvedServersForService(
+          service.name,
+        );
+        const serviceHosts = resolvedServers
+          .map((server) => server.host)
+          .filter((host) => context.targetHosts.includes(host));
 
         if (serviceHosts.length === 0) {
           log.warn(

@@ -17,15 +17,6 @@ export interface BuildConfig {
 }
 
 /**
- * Server configuration
- */
-export type ServerConfig = {
-  host: string;
-  arch?: string;
-  alias?: string; // Optional human-friendly identifier for instance-specific domains
-};
-
-/**
  * Mount options for files and directories
  */
 type MountOptions = "ro" | "z" | "Z";
@@ -62,7 +53,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _project: string;
   private _image?: string;
   private _build?: string | BuildConfig;
-  private _servers?: ServerConfig[];
+  private _hosts?: string[];
   private _ports?: string[];
   private _volumes?: string[];
   private _files?: FileMountConfig[];
@@ -73,6 +64,12 @@ export class ServiceConfiguration extends BaseConfiguration
   private _proxy?: ProxyConfiguration;
   private _retain?: number;
   private _network_mode?: string;
+  private _cpus?: number | string;
+  private _memory?: string;
+  private _gpus?: string;
+  private _devices?: string[];
+  private _privileged?: boolean;
+  private _cap_add?: string[];
 
   constructor(
     name: string,
@@ -154,15 +151,15 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
-   * List of servers to deploy to
+   * List of server names to deploy to (references servers in top-level servers section)
    */
-  get servers(): ServerConfig[] {
-    if (!this._servers) {
-      this._servers = this.has("servers")
-        ? this.validateServers(this.get("servers"))
+  get hosts(): string[] {
+    if (!this._hosts) {
+      this._hosts = this.has("hosts")
+        ? this.validateHosts(this.get("hosts"))
         : [];
     }
-    return this._servers;
+    return this._hosts;
   }
 
   /**
@@ -325,6 +322,115 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
+   * CPU limit for the container (e.g., 0.5, 1, 2.5)
+   */
+  get cpus(): number | string | undefined {
+    if (this._cpus === undefined && this.has("cpus")) {
+      const cpusValue = this.get("cpus");
+      if (typeof cpusValue === "number" && cpusValue > 0) {
+        this._cpus = cpusValue;
+      } else if (typeof cpusValue === "string") {
+        const parsed = parseFloat(cpusValue);
+        if (!isNaN(parsed) && parsed > 0) {
+          this._cpus = cpusValue;
+        } else {
+          throw new ConfigurationError(
+            `'cpus' for service '${this.name}' must be a positive number or numeric string`,
+          );
+        }
+      } else {
+        throw new ConfigurationError(
+          `'cpus' for service '${this.name}' must be a positive number or numeric string`,
+        );
+      }
+    }
+    return this._cpus;
+  }
+
+  /**
+   * Memory limit for the container (e.g., "512m", "1g", "2gb")
+   */
+  get memory(): string | undefined {
+    if (this._memory === undefined && this.has("memory")) {
+      const memoryValue = this.get("memory");
+      if (typeof memoryValue === "string") {
+        // Validate memory format: number followed by unit (b, k, m, g, kb, mb, gb)
+        const memoryRegex = /^\d+(\.\d+)?[bkmg]b?$/i;
+        if (memoryRegex.test(memoryValue)) {
+          this._memory = memoryValue;
+        } else {
+          throw new ConfigurationError(
+            `'memory' for service '${this.name}' must be a string with format: number + unit (e.g., "512m", "1g", "2gb")`,
+          );
+        }
+      } else {
+        throw new ConfigurationError(
+          `'memory' for service '${this.name}' must be a string`,
+        );
+      }
+    }
+    return this._memory;
+  }
+
+  /**
+   * GPU devices for the container (e.g., "all", "0", "0,1", "device=0")
+   */
+  get gpus(): string | undefined {
+    if (this._gpus === undefined && this.has("gpus")) {
+      const gpusValue = this.get("gpus");
+      if (typeof gpusValue === "string") {
+        this._gpus = gpusValue;
+      } else {
+        throw new ConfigurationError(
+          `'gpus' for service '${this.name}' must be a string`,
+        );
+      }
+    }
+    return this._gpus;
+  }
+
+  /**
+   * Device mappings for the container (e.g., ["/dev/video0", "/dev/snd"])
+   */
+  get devices(): string[] {
+    if (!this._devices) {
+      this._devices = this.has("devices")
+        ? this.validateArray<string>(this.get("devices"), "devices", this.name)
+        : [];
+    }
+    return this._devices;
+  }
+
+  /**
+   * Run container in privileged mode (grants extended privileges)
+   */
+  get privileged(): boolean {
+    if (this._privileged === undefined && this.has("privileged")) {
+      const privilegedValue = this.get("privileged");
+      if (typeof privilegedValue === "boolean") {
+        this._privileged = privilegedValue;
+      } else {
+        throw new ConfigurationError(
+          `'privileged' for service '${this.name}' must be a boolean`,
+        );
+      }
+    }
+    return this._privileged ?? false;
+  }
+
+  /**
+   * Linux capabilities to add to the container (e.g., ["SYS_ADMIN", "NET_ADMIN"])
+   */
+  get cap_add(): string[] {
+    if (!this._cap_add) {
+      this._cap_add = this.has("cap_add")
+        ? this.validateArray<string>(this.get("cap_add"), "cap_add", this.name)
+        : [];
+    }
+    return this._cap_add;
+  }
+
+  /**
    * Validates the service configuration
    */
   validate(): void {
@@ -374,17 +480,10 @@ export class ServiceConfiguration extends BaseConfiguration
 
     this.environment.validate();
 
-    if (this.servers.length === 0) {
+    if (this.hosts.length === 0) {
       throw new ConfigurationError(
-        `Service '${this.name}' must specify at least one server`,
+        `Service '${this.name}' must specify at least one host in the 'hosts' array`,
       );
-    }
-
-    for (const serverConfig of this.servers) {
-      this.validateHost(serverConfig.host, "servers", this.name);
-      if (serverConfig.arch) {
-        this.validateArch(serverConfig.arch);
-      }
     }
 
     if (this.proxy) {
@@ -561,19 +660,9 @@ export class ServiceConfiguration extends BaseConfiguration
       result.build = this.build;
     }
 
-    // Filter out undefined values from servers
-    result.servers = this.servers.map((server) => {
-      const cleanServer: Record<string, string> = {
-        host: server.host,
-      };
-      if (server.arch !== undefined) {
-        cleanServer.arch = server.arch;
-      }
-      if (server.alias !== undefined) {
-        cleanServer.alias = server.alias;
-      }
-      return cleanServer;
-    });
+    if (this.hosts.length > 0) {
+      result.hosts = this.hosts;
+    }
 
     if (this.ports.length > 0) {
       result.ports = this.ports;
@@ -725,96 +814,27 @@ export class ServiceConfiguration extends BaseConfiguration
   }
 
   /**
-   * Validate servers configuration
+   * Validate hosts configuration (array of server names)
    */
-  private validateServers(servers: unknown): ServerConfig[] {
-    if (!Array.isArray(servers)) {
+  private validateHosts(hosts: unknown): string[] {
+    if (!Array.isArray(hosts)) {
       throw new ConfigurationError(
-        `'servers' for service '${this.name}' must be an array`,
+        `'hosts' for service '${this.name}' must be an array of server names`,
       );
     }
 
-    return servers.map((server, index) => {
-      if (typeof server === "object" && server !== null) {
-        const serverObj = server as Record<string, unknown>;
-        if (!serverObj.host || typeof serverObj.host !== "string") {
-          throw new ConfigurationError(
-            `Server at index ${index} for service '${this.name}' must have a 'host' property`,
-          );
-        }
-        if (serverObj.arch && typeof serverObj.arch !== "string") {
-          throw new ConfigurationError(
-            `Server architecture at index ${index} for service '${this.name}' must be a string`,
-          );
-        }
-        if (serverObj.alias !== undefined) {
-          if (typeof serverObj.alias !== "string") {
-            throw new ConfigurationError(
-              `Server alias at index ${index} for service '${this.name}' must be a string`,
-            );
-          }
-          // Validate alias is DNS-safe: alphanumeric and hyphens only, no leading/trailing hyphens
-          const dnsPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
-          if (!dnsPattern.test(serverObj.alias)) {
-            throw new ConfigurationError(
-              `Server alias at index ${index} for service '${this.name}' must contain only alphanumeric characters and hyphens, and cannot start or end with a hyphen`,
-            );
-          }
-        }
-
-        // Build server config object, only including defined fields
-        const serverConfig: ServerConfig = {
-          host: serverObj.host,
-        };
-        if (serverObj.arch !== undefined) {
-          serverConfig.arch = serverObj.arch as string;
-        }
-        if (serverObj.alias !== undefined) {
-          serverConfig.alias = serverObj.alias as string;
-        }
-        return serverConfig;
-      } else {
+    return hosts.map((host, index) => {
+      if (typeof host !== "string") {
         throw new ConfigurationError(
-          `Server at index ${index} for service '${this.name}' must be an object with 'host' property`,
+          `Host at index ${index} for service '${this.name}' must be a string (server name)`,
         );
       }
-    });
-  }
-
-  /**
-   * Get all unique architectures required by this service's servers
-   */
-  getRequiredArchitectures(): string[] {
-    const architectures = new Set<string>();
-
-    const defaultArch = ServiceConfiguration.getDefaultArch();
-
-    for (const serverConfig of this.servers) {
-      const arch = serverConfig.arch || defaultArch;
-      architectures.add(arch);
-    }
-
-    return Array.from(architectures);
-  }
-
-  /**
-   * Get servers by architecture
-   */
-  getServersByArchitecture(): Map<string, string[]> {
-    const serversByArch = new Map<string, string[]>();
-
-    const defaultArch = ServiceConfiguration.getDefaultArch();
-
-    for (const serverConfig of this.servers) {
-      const serverAddress = serverConfig.host;
-      const arch = serverConfig.arch || defaultArch;
-
-      if (!serversByArch.has(arch)) {
-        serversByArch.set(arch, []);
+      if (host.trim() === "") {
+        throw new ConfigurationError(
+          `Host at index ${index} for service '${this.name}' cannot be empty`,
+        );
       }
-      serversByArch.get(arch)!.push(serverAddress);
-    }
-
-    return serversByArch;
+      return host;
+    });
   }
 }

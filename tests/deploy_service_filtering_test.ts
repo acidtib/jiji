@@ -16,13 +16,23 @@ const TEST_CONFIG_DATA = {
       port: 6767,
     },
   },
+  servers: {
+    server1: {
+      host: "192.168.1.87",
+      arch: "amd64",
+    },
+    server2: {
+      host: "192.168.1.88",
+      arch: "amd64",
+    },
+  },
   services: {
     api: {
       build: {
         context: "./api",
         dockerfile: "Dockerfile",
       },
-      servers: [{ host: "192.168.1.87" }],
+      hosts: ["server1"],
       ports: ["3000:3000"],
       environment: {
         NODE_ENV: "production",
@@ -31,7 +41,7 @@ const TEST_CONFIG_DATA = {
     },
     database: {
       image: "postgres:15-alpine",
-      servers: [{ host: "192.168.1.87" }],
+      hosts: ["server1"],
       ports: ["5432:5432"],
       environment: {
         POSTGRES_DB: "testapp",
@@ -44,7 +54,7 @@ const TEST_CONFIG_DATA = {
         context: "./worker",
         dockerfile: "Dockerfile",
       },
-      servers: [{ host: "192.168.1.88" }],
+      hosts: ["server2"],
       environment: {
         NODE_ENV: "production",
         REDIS_URL: "redis://cache:6379",
@@ -52,7 +62,7 @@ const TEST_CONFIG_DATA = {
     },
     cache: {
       image: "redis:7-alpine",
-      servers: [{ host: "192.168.1.88" }],
+      hosts: ["server2"],
       ports: ["6379:6379"],
     },
   },
@@ -168,14 +178,14 @@ Deno.test("Deploy Service Filtering - configuration has expected structure", () 
   // Verify api service configuration
   const apiService = config.services.get("api")!;
   assertEquals(apiService.name, "api");
-  assertEquals(apiService.servers.length, 1);
-  assertEquals(apiService.servers[0].host, "192.168.1.87");
+  assertEquals(apiService.hosts.length, 1);
+  assertEquals(apiService.hosts, ["server1"]);
   assertEquals(apiService.requiresBuild(), true);
 
   // Verify database service configuration
   const dbService = config.services.get("database")!;
   assertEquals(dbService.name, "database");
-  assertEquals(dbService.servers.length, 1);
-  assertEquals(dbService.servers[0].host, "192.168.1.87");
+  assertEquals(dbService.hosts.length, 1);
+  assertEquals(dbService.hosts, ["server1"]);
   assertEquals(dbService.requiresBuild(), false);
 });

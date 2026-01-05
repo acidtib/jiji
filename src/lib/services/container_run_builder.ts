@@ -34,8 +34,6 @@ export class ContainerRunBuilder {
    */
   dns(dnsServer: string, searchDomain?: string): this {
     this.args.push("--dns", dnsServer);
-    // Add fallback DNS servers
-    this.args.push("--dns", "8.8.8.8");
     if (searchDomain) {
       this.args.push("--dns-search", searchDomain);
       this.args.push("--dns-option", "ndots:1");
@@ -88,6 +86,69 @@ export class ContainerRunBuilder {
    */
   restart(policy: string): this {
     this.args.push("--restart", policy);
+    return this;
+  }
+
+  /**
+   * Set CPU limit
+   * @param cpus Number of CPUs (e.g., 0.5, 1, 2.5, or "1.5")
+   * @returns This builder for chaining
+   */
+  cpus(cpus: number | string): this {
+    this.args.push("--cpus", String(cpus));
+    return this;
+  }
+
+  /**
+   * Set memory limit
+   * @param memory Memory limit (e.g., "512m", "1g", "2gb")
+   * @returns This builder for chaining
+   */
+  memory(memory: string): this {
+    this.args.push("--memory", memory);
+    return this;
+  }
+
+  /**
+   * Add GPU devices
+   * @param gpus GPU specification (e.g., "all", "0", "0,1", "device=0")
+   * @returns This builder for chaining
+   */
+  gpus(gpus: string): this {
+    this.args.push("--gpus", gpus);
+    return this;
+  }
+
+  /**
+   * Add device mappings
+   * @param devices Array of device paths (e.g., ["/dev/video0", "/dev/snd"])
+   * @returns This builder for chaining
+   */
+  devices(devices: string[]): this {
+    for (const device of devices) {
+      this.args.push("--device", device);
+    }
+    return this;
+  }
+
+  /**
+   * Run container in privileged mode
+   * @returns This builder for chaining
+   */
+  privileged(): this {
+    this.args.push("--privileged");
+    return this;
+  }
+
+  /**
+   * Add Linux capabilities to the container
+   * @param capabilities Array of capabilities (e.g., ["SYS_ADMIN", "NET_ADMIN"])
+   * @returns This builder for chaining
+   */
+  capAdd(capabilities: string[]): this {
+    for (const cap of capabilities) {
+      this.args.push("--cap-add", cap);
+    }
     return this;
   }
 

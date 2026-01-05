@@ -117,9 +117,8 @@ export async function getDockerBridgeInterface(
 ): Promise<string> {
   const host = ssh.getHost();
 
-  // Get network gateway IP (this is the IP assigned to the bridge interface)
-  const inspectCmd =
-    `${engine} network inspect ${networkName} --format '{{range .Subnets}}{{.Gateway}}{{end}}'`;
+  // Get network gateway IP using JSON inspection (works across all versions)
+  const inspectCmd = `${engine} network inspect ${networkName}`;
   const inspectResult = await ssh.executeCommand(inspectCmd);
 
   if (inspectResult.code !== 0) {
@@ -128,11 +127,44 @@ export async function getDockerBridgeInterface(
     );
   }
 
-  const gatewayIp = inspectResult.stdout.trim();
+  let gatewayIp = "";
+
+  try {
+    const networkData = JSON.parse(inspectResult.stdout);
+    if (networkData && networkData[0]) {
+      const network = networkData[0];
+
+      // Try different possible JSON structures
+      // Podman (new): network.subnets[0].gateway
+      // Podman (old): network.plugins[0].ipam.ranges[0][0].gateway
+      // Docker: network.IPAM.Config[0].Gateway
+      if (network.subnets && network.subnets[0]) {
+        gatewayIp = network.subnets[0].gateway;
+      } else if (network.Subnets && network.Subnets[0]) {
+        gatewayIp = network.Subnets[0].Gateway;
+      } else if (
+        network.plugins && network.plugins[0] && network.plugins[0].ipam &&
+        network.plugins[0].ipam.ranges && network.plugins[0].ipam.ranges[0] &&
+        network.plugins[0].ipam.ranges[0][0]
+      ) {
+        // Old podman CNI format
+        gatewayIp = network.plugins[0].ipam.ranges[0][0].gateway;
+      } else if (
+        network.IPAM && network.IPAM.Config && network.IPAM.Config[0]
+      ) {
+        // Docker format
+        gatewayIp = network.IPAM.Config[0].Gateway;
+      }
+    }
+  } catch (e) {
+    throw new Error(
+      `Failed to parse network JSON for ${networkName} on ${host}: ${e}`,
+    );
+  }
 
   if (!gatewayIp) {
     throw new Error(
-      `Could not determine gateway IP for network ${networkName} on ${host}`,
+      `Could not determine gateway IP for network ${networkName} on ${host}. Inspect output: "${inspectResult.stdout}"`,
     );
   }
 

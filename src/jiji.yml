@@ -111,6 +111,107 @@ builder:
 #     type: local
 #     port: 6000
 
+# Server Definitions (required)
+# ===============================
+# Define all servers once by name, then reference them in services using hosts: [name]
+# This eliminates duplication and allows per-server SSH configuration overrides
+#
+# Benefits:
+# - Define servers once, reference by name in multiple services
+# - Per-server SSH credentials (different users, ports, keys per server)
+# - Clear deployment targets - explicit server names in service configs
+# - Foundation for future features (server groups, tags, health monitoring)
+# - WireGuard peering works between ALL defined servers (not just those with services)
+#
+# Each server must have:
+# - Unique name (DNS-safe: alphanumeric + hyphens, no start/end hyphen, max 63 chars)
+# - Unique hostname/IP address (no duplicate hosts across servers)
+#
+# Per-server SSH overrides (all optional, inherit from global ssh section if not specified):
+# - user: SSH username for this specific server
+# - port: SSH port for this specific server
+# - key_path: Path to SSH private key for this server
+# - keys: Array of SSH key paths for this server
+# - key_data: Array of inline SSH key data from environment variables
+#
+# Architecture (arch):
+# - amd64 (default): x86_64/AMD64 architecture
+# - arm64: ARM64/aarch64 architecture
+# - Used for multi-architecture image builds
+
+servers:
+  # Production VPS (default settings)
+  vps-prod:
+    host: 15.204.224.81
+    arch: amd64 # Optional, defaults to amd64
+
+  # Home server with custom SSH user
+  home-server:
+    host: 192.168.1.220
+    arch: amd64
+    user: ubuntu # Override global SSH user for this server
+
+  # ARM build server with custom port and key
+  arm-builder:
+    host: 192.168.1.230
+    arch: arm64
+    port: 2222 # Custom SSH port
+    key_path: ~/.ssh/arm_builder_key # Server-specific SSH key
+
+# Server Configuration Examples:
+# ===============================
+#
+# Example 1: Simple Multi-Server Setup
+# servers:
+#   server1:
+#     host: 192.168.1.100
+#   server2:
+#     host: 192.168.1.101
+#
+# Example 2: Mixed Architectures
+# servers:
+#   amd-server:
+#     host: 10.0.0.10
+#     arch: amd64
+#   arm-server:
+#     host: 10.0.0.20
+#     arch: arm64
+#
+# Example 3: Different SSH Users Per Server
+# servers:
+#   ubuntu-box:
+#     host: 192.168.1.10
+#     user: ubuntu
+#   centos-box:
+#     host: 192.168.1.20
+#     user: centos
+#
+# Example 4: CI/CD with Build Server
+# servers:
+#   build-server:
+#     host: builder.example.com
+#     user: buildbot
+#     port: 2222
+#   prod-server:
+#     host: prod.example.com
+#     user: deploy
+#
+# Migration from Old Format:
+# ==========================
+# OLD (deprecated):
+# services:
+#   web:
+#     servers:
+#       - host: 192.168.1.100
+#
+# NEW (current):
+# servers:
+#   server1:
+#     host: 192.168.1.100
+# services:
+#   web:
+#     hosts: [server1]
+
 # SSH configuration for remote connections
 ssh:
   user: root
@@ -280,17 +381,22 @@ ssh:
 #
 # Service Communication Example:
 # ============================
-# Given these services:
+# Given this configuration:
+#
+# servers:
+#   server1:
+#     host: 192.168.1.100
+#   server2:
+#     host: 192.168.1.101
+#   server3:
+#     host: 192.168.1.102
 #
 # services:
 #   api-backend:
-#     servers:
-#       - host: 192.168.1.100
-#       - host: 192.168.1.101
+#     hosts: [server1, server2]
 #
 #   database:
-#     servers:
-#       - host: 192.168.1.102
+#     hosts: [server3]
 #
 # The api-backend containers can connect to database via:
 #   DATABASE_URL: postgresql://user:pass@database.jiji:5432/myapp
@@ -355,11 +461,20 @@ services:
   # Example: Web frontend service using pre-built image
   web-frontend:
     image: nginx:latest
-    servers:
-      - host: 192.168.1.100
-        arch: amd64
-      - host: 192.168.1.101
-        arch: amd64
+    # Server targets: Reference servers by name from the servers section
+    hosts: [vps-prod, home-server]
+    # Port Mappings: Map host ports to container ports
+    # Supported formats:
+    #   - "8000"                           # Container port only (host port auto-assigned)
+    #   - "8080:8000"                      # host_port:container_port
+    #   - "127.0.0.1:8080:80"              # host_ip:host_port:container_port
+    #   - "8080:8000/tcp"                  # Specify TCP protocol (default)
+    #   - "1900/udp"                       # Container port with UDP protocol
+    #   - "53:53/udp"                      # Host:container with UDP
+    #   - "127.0.0.1:5353:53/udp"          # Full format with IP and UDP
+    # Protocol suffix: /tcp or /udp (optional, defaults to TCP)
+    # Port range: 1-65535
+    # IP: Valid IPv4 address (bind to specific interface)
     ports:
       - "127.0.0.1:8080:80"
     # Image Retention: Number of images to keep for rollbacks (default: 3)
@@ -416,12 +531,7 @@ services:
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: "${BUILD_DATE}"    # Environment variable substitution
-  #   servers:
-  #     # Mixed architecture deployment
-  #     - host: 192.168.1.100
-  #       arch: amd64
-  #     - host: 192.168.1.102
-  #       arch: arm64
+  #   hosts: [vps-prod, arm-builder]     # Deploy to both amd64 and arm64 servers
   #   ports:
   #     - "3000:3000"
   #   environment:
@@ -668,6 +778,174 @@ services:
 #   volumes:
 #     - "/data/redis:/data"
 #   command: ["redis-server", "--appendonly", "yes"]
+#
+# # Example: DNS server with UDP ports
+# dns-server:
+#   image: coredns/coredns:latest
+#   servers:
+#     - host: 192.168.1.105
+#       arch: amd64
+#   ports:
+#     - "53:53/udp"              # DNS queries over UDP
+#     - "53:53/tcp"              # DNS zone transfers over TCP
+#   volumes:
+#     - "./coredns/Corefile:/etc/coredns/Corefile:ro"
+#   command: ["-conf", "/etc/coredns/Corefile"]
+#
+# # Example: Service with mixed TCP/UDP ports
+# game-server:
+#   image: game-server:latest
+#   servers:
+#     - host: 192.168.1.106
+#       arch: amd64
+#   ports:
+#     - "8080:8080/tcp"          # HTTP API
+#     - "7777:7777/udp"          # Game protocol
+#     - "7778:7778/udp"          # Voice chat
+#     - "127.0.0.1:9000:9000"    # Admin interface (localhost only)
+#
+# # Example: ML service with GPU and resource constraints
+# ml-trainer:
+#   image: tensorflow/tensorflow:latest-gpu
+#   servers:
+#     - host: 192.168.1.107
+#       arch: amd64
+#   ports:
+#     - "8888:8888"              # Jupyter notebook
+#   # Resource Constraints:
+#   cpus: 4                      # Limit to 4 CPUs (can be fractional: 0.5, 1.5, etc.)
+#   memory: "8g"                 # Memory limit (e.g., "512m", "1g", "2gb", "1024mb")
+#   gpus: "all"                  # GPU access: "all", "0", "0,1", "device=0"
+#   volumes:
+#     - "ml_models:/models"
+#     - "ml_data:/data"
+#   environment:
+#     clear:
+#       CUDA_VISIBLE_DEVICES: "0"
+#
+# # Example: Media server with device access
+# media-processor:
+#   image: ffmpeg:latest
+#   servers:
+#     - host: 192.168.1.108
+#       arch: amd64
+#   ports:
+#     - "8080:8080"
+#   # Device Mappings: Grant access to host devices
+#   devices:
+#     - "/dev/video0"            # Simple device mapping
+#     - "/dev/video1:/dev/video1:rwm"  # With permissions (r=read, w=write, m=mknod)
+#     - "/dev/snd"               # Audio devices
+#   cpus: 2
+#   memory: "2g"
+#   volumes:
+#     - "media_input:/input"
+#     - "media_output:/output"
+#
+# # Example: FUSE filesystem with privileged mode
+# rclone-mount:
+#   image: rclone/rclone:latest
+#   servers:
+#     - host: 192.168.1.109
+#       arch: amd64
+#   ports:
+#     - "5572:5572"              # WebUI
+#   # Privileged mode: Grants extended privileges to container
+#   privileged: true             # Required for FUSE mounts
+#   devices:
+#     - "/dev/fuse"              # FUSE device access
+#   memory: "2g"
+#   volumes:
+#     - "rclone_config:/config"
+#     - "rclone_cache:/cache"
+#   command: ["rcd", "--rc-web-gui", "--rc-addr", ":5572"]
+#
+# # Example: Network service with specific capabilities
+# vpn-server:
+#   image: linuxserver/wireguard:latest
+#   servers:
+#     - host: 192.168.1.110
+#       arch: amd64
+#   ports:
+#     - "51820:51820/udp"        # WireGuard
+#   # Linux Capabilities: Add specific capabilities instead of full privileged mode
+#   cap_add:
+#     - NET_ADMIN                # Network administration operations
+#     - SYS_MODULE               # Load/unload kernel modules
+#   devices:
+#     - "/dev/net/tun"           # TUN device for VPN
+#   environment:
+#     clear:
+#       PEERX_PUBLIC_KEY: "your-public-key"
+#       SERVERURL: "vpn.example.com"
+#
+# Resource Constraints Reference:
+# ==============================
+#
+# cpus: Number of CPUs to allocate
+#   - Type: number or string
+#   - Examples: 0.5, 1, 2, 4, "1.5"
+#   - Limits CPU usage for the container
+#
+# memory: Memory limit for the container
+#   - Type: string with format: number + unit
+#   - Units: b, k, m, g, kb, mb, gb (case-insensitive)
+#   - Examples: "512m", "1g", "2gb", "1024mb"
+#   - Prevents container from using more than specified memory
+#
+# gpus: GPU device access
+#   - Type: string
+#   - Examples:
+#     - "all" - Access to all available GPUs
+#     - "0" - Access to GPU device 0
+#     - "0,1" - Access to GPU devices 0 and 1
+#     - "device=0" - Specific device notation
+#   - Note: Requires NVIDIA Container Toolkit (Docker) or equivalent (Podman)
+#
+# devices: Device mappings for hardware access
+#   - Type: array of strings
+#   - Formats:
+#     - "/dev/video0" - Simple mapping (host:container same path)
+#     - "/dev/video0:/dev/video0" - Explicit host:container mapping
+#     - "/dev/video0:/dev/video0:rwm" - With permissions
+#   - Permissions (optional): r (read), w (write), m (mknod)
+#   - Common devices:
+#     - Video: /dev/video0, /dev/video1
+#     - Audio: /dev/snd
+#     - GPU: /dev/nvidia0, /dev/nvidiactl
+#     - USB: /dev/bus/usb
+#     - FUSE: /dev/fuse
+#     - TUN: /dev/net/tun
+#
+# privileged: Run container in privileged mode
+#   - Type: boolean
+#   - Default: false
+#   - Examples: true, false
+#   - Grants extended privileges to the container
+#   - Security Warning: Gives container nearly all capabilities of the host
+#   - Use Cases:
+#     - FUSE filesystems (with /dev/fuse device)
+#     - Docker-in-Docker
+#     - Low-level system operations
+#   - Alternative: Use cap_add for specific capabilities when possible
+#
+# cap_add: Add Linux capabilities to container
+#   - Type: array of strings
+#   - Default: [] (empty)
+#   - Examples: ["SYS_ADMIN"], ["NET_ADMIN", "SYS_MODULE"]
+#   - Grants specific Linux capabilities without full privileged mode
+#   - More secure than privileged mode - principle of least privilege
+#   - Common capabilities:
+#     - SYS_ADMIN: Mount filesystems, FUSE operations, namespace operations
+#     - NET_ADMIN: Network configuration, routing, firewall rules
+#     - NET_RAW: Use RAW and PACKET sockets
+#     - SYS_MODULE: Load/unload kernel modules
+#     - SYS_PTRACE: Debug processes, trace system calls
+#     - SYS_TIME: Set system clock
+#     - MKNOD: Create special files (device nodes)
+#   - Full list: man 7 capabilities
+#   - Note: Capability names should NOT include "CAP_" prefix
+#
 
 # Proxy Routing Configuration:
 # ============================

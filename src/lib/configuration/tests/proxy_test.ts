@@ -280,6 +280,44 @@ Deno.test("ProxyConfiguration - invalid host format in multi-target", () => {
   );
 });
 
+Deno.test("ProxyConfiguration - wildcard domain in single target", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "*.example.com",
+    ssl: true,
+  });
+
+  assertEquals(config.targets[0].host, "*.example.com");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - wildcard domain in hosts array", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    hosts: ["*.example.com", "example.com"],
+    ssl: true,
+  });
+
+  assertEquals(config.targets[0].hosts, ["*.example.com", "example.com"]);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - wildcard domain in multi-target", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      { app_port: 3000, host: "*.api.example.com" },
+      { app_port: 3001, hosts: ["*.web.example.com", "web.example.com"] },
+    ],
+  });
+
+  assertEquals(config.targets[0].host, "*.api.example.com");
+  assertEquals(config.targets[1].hosts, [
+    "*.web.example.com",
+    "web.example.com",
+  ]);
+  config.validate();
+});
+
 Deno.test("ProxyConfiguration - path prefix without leading slash", () => {
   const config = new ProxyConfiguration({
     app_port: 3000,

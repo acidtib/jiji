@@ -188,6 +188,7 @@ export class DeploymentOrchestrator {
     targetHosts: string[],
   ): Promise<ProxyInstallResult[]> {
     const proxyHosts = ProxyService.getHostsNeedingProxy(
+      this.config,
       servicesWithProxy,
       targetHosts,
     );

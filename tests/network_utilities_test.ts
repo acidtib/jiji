@@ -8,6 +8,7 @@ import type { SSHManager } from "../src/utils/ssh.ts";
 import {
   discoverPrivateIPs,
   isPrivateIP,
+  selectBestEndpoint,
 } from "../src/lib/network/ip_discovery.ts";
 import { getDockerBridgeInterface } from "../src/lib/network/routes.ts";
 import { MockSSHManager } from "./mocks.ts";
@@ -76,7 +77,7 @@ Deno.test(
 
     // Mock interface lookups for each IP
     // 10.120.0.2 - private IP on eth0 (should be included)
-    mockSSH.addMockResponse('ip addr show | grep -B 2 "10.120.0.2"', {
+    mockSSH.addMockResponse('ip addr show | grep "inet 10.120.0.2" | awk \'{print $NF}\'', {
       success: true,
       stdout: "eth0",
       stderr: "",
@@ -93,7 +94,7 @@ Deno.test(
     // Mock won't be called because isPrivateIP returns false
 
     // 192.168.1.5 - private IP on eth1 (should be included)
-    mockSSH.addMockResponse('ip addr show | grep -B 2 "192.168.1.5"', {
+    mockSSH.addMockResponse('ip addr show | grep "inet 192.168.1.5" | awk \'{print $NF}\'', {
       success: true,
       stdout: "eth1",
       stderr: "",
@@ -133,7 +134,7 @@ Deno.test(
     });
 
     // Docker bridge IP
-    mockSSH.addMockResponse('ip addr show | grep -B 2 "10.0.0.1"', {
+    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.1" | awk \'{print $NF}\'', {
       success: true,
       stdout: "docker0",
       stderr: "",
@@ -141,7 +142,7 @@ Deno.test(
     });
 
     // WireGuard interface IP
-    mockSSH.addMockResponse('ip addr show | grep -B 2 "10.0.0.2"', {
+    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.2" | awk \'{print $NF}\'', {
       success: true,
       stdout: "jiji0",
       stderr: "",
@@ -149,7 +150,7 @@ Deno.test(
     });
 
     // Regular private IP
-    mockSSH.addMockResponse('ip addr show | grep -B 2 "10.0.0.3"', {
+    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.3" | awk \'{print $NF}\'', {
       success: true,
       stdout: "eth0",
       stderr: "",
@@ -178,10 +179,17 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
-    // Mock network inspect to return gateway IP
+    // Mock network inspect to return JSON
     mockSSH.addMockResponse("docker network inspect jiji", {
       success: true,
-      stdout: "172.18.0.1",
+      stdout: JSON.stringify([{
+        IPAM: {
+          Config: [{
+            Subnet: "172.18.0.0/16",
+            Gateway: "172.18.0.1",
+          }],
+        },
+      }]),
       stderr: "",
       code: 0,
     });
@@ -210,10 +218,15 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
-    // Mock network inspect to return gateway IP
+    // Mock network inspect to return JSON (Netavark format)
     mockSSH.addMockResponse("podman network inspect jiji", {
       success: true,
-      stdout: "10.89.0.1",
+      stdout: JSON.stringify([{
+        subnets: [{
+          subnet: "10.89.0.0/24",
+          gateway: "10.89.0.1",
+        }],
+      }]),
       stderr: "",
       code: 0,
     });
@@ -242,10 +255,20 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
-    // Mock network inspect to return gateway IP
+    // Mock network inspect to return JSON (CNI format)
     mockSSH.addMockResponse("podman network inspect jiji", {
       success: true,
-      stdout: "10.88.0.1",
+      stdout: JSON.stringify([{
+        plugins: [{
+          type: "bridge",
+          ipam: {
+            ranges: [[{
+              subnet: "10.88.0.0/24",
+              gateway: "10.88.0.1",
+            }]],
+          },
+        }],
+      }]),
       stderr: "",
       code: 0,
     });
@@ -274,10 +297,17 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
-    // Mock network inspect to return gateway IP
+    // Mock network inspect to return JSON
     mockSSH.addMockResponse("docker network inspect jiji", {
       success: true,
-      stdout: "172.18.0.1",
+      stdout: JSON.stringify([{
+        IPAM: {
+          Config: [{
+            Subnet: "172.18.0.0/16",
+            Gateway: "172.18.0.1",
+          }],
+        },
+      }]),
       stderr: "",
       code: 0,
     });
@@ -332,10 +362,16 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
-    // Mock network inspect returning empty gateway
+    // Mock network inspect returning JSON with no gateway
     mockSSH.addMockResponse("docker network inspect jiji", {
       success: true,
-      stdout: "",
+      stdout: JSON.stringify([{
+        IPAM: {
+          Config: [{
+            Subnet: "172.18.0.0/16",
+          }],
+        },
+      }]),
       stderr: "",
       code: 0,
     });
@@ -351,5 +387,85 @@ Deno.test(
       Error,
       "Could not determine gateway IP",
     );
+  },
+);
+
+Deno.test(
+  "selectBestEndpoint - should use local IP when servers are on same subnet",
+  () => {
+    const sourceEndpoints = [
+      "184.96.186.116:51820", // Public IP
+      "192.168.1.220:51820", // Local IP
+      "10.210.0.1:51820", // WireGuard IP
+    ];
+
+    const targetEndpoints = [
+      "184.96.186.116:51820", // Public IP
+      "192.168.1.222:51820", // Local IP (same subnet as source)
+      "10.210.3.1:51820", // WireGuard IP
+    ];
+
+    const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
+
+    // Should select the local IP since both are on 192.168.1.x
+    assertEquals(bestEndpoint, "192.168.1.222:51820");
+  },
+);
+
+Deno.test(
+  "selectBestEndpoint - should use public IP when servers are on different subnets",
+  () => {
+    const sourceEndpoints = [
+      "184.96.186.116:51820", // Public IP
+      "192.168.1.220:51820", // Local IP on subnet 192.168.1.x
+    ];
+
+    const targetEndpoints = [
+      "15.204.224.81:51820", // Public IP
+      "10.120.0.5:51820", // Local IP on different subnet 10.120.0.x
+    ];
+
+    const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
+
+    // Should select the public IP since subnets don't match
+    assertEquals(bestEndpoint, "15.204.224.81:51820");
+  },
+);
+
+Deno.test(
+  "selectBestEndpoint - should use public IP when no private IPs available",
+  () => {
+    const sourceEndpoints = [
+      "184.96.186.116:51820", // Public IP only
+    ];
+
+    const targetEndpoints = [
+      "15.204.224.81:51820", // Public IP only
+    ];
+
+    const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
+
+    // Should select the first (public) endpoint
+    assertEquals(bestEndpoint, "15.204.224.81:51820");
+  },
+);
+
+Deno.test(
+  "selectBestEndpoint - should match partial subnet for local network",
+  () => {
+    const sourceEndpoints = [
+      "184.96.186.116:51820",
+      "192.168.1.100:51820", // Different host on 192.168.1.x
+    ];
+
+    const targetEndpoints = [
+      "184.96.186.116:51820",
+      "192.168.1.200:51820", // Different host but same /24 subnet
+    ];
+
+    const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
+
+    // Should match on 192.168.1.x subnet
+    assertEquals(bestEndpoint, "192.168.1.200:51820");
   },
 );

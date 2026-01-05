@@ -4,6 +4,7 @@
 
 import type { ContainerEngine } from "../lib/configuration/builder.ts";
 import type { RegistryConfiguration } from "../lib/configuration/registry.ts";
+import type { Configuration } from "../lib/configuration.ts";
 import type { SSHManager } from "../utils/ssh.ts";
 
 /**
@@ -12,6 +13,7 @@ import type { SSHManager } from "../utils/ssh.ts";
 export interface BuildServiceOptions {
   engine: ContainerEngine;
   registry: RegistryConfiguration;
+  config: Configuration;
   globalOptions: {
     environment?: string;
     verbose?: boolean;
@@ -49,12 +51,11 @@ export interface DeploymentOptions {
    */
   allSshManagers?: SSHManager[];
   /**
-   * Server configuration (includes optional alias)
+   * Server configuration
    */
   serverConfig?: {
     host: string;
     arch?: string;
-    alias?: string;
   };
   /**
    * Whether this service has multiple servers (determines if instance ID should be set)

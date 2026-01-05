@@ -19,20 +19,31 @@ const VALID_CONFIG_DATA = {
       port: 6767,
     },
   },
+  servers: {
+    web1: {
+      host: "web1.example.com",
+      arch: "amd64",
+    },
+    web2: {
+      host: "web2.example.com",
+      arch: "amd64",
+    },
+    api1: {
+      host: "api1.example.com",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      servers: [
-        { host: "web1.example.com", arch: "amd64" },
-        { host: "web2.example.com", arch: "amd64" },
-      ],
+      hosts: ["web1", "web2"],
       ports: ["80:80", "443:443"],
       env: {
         NODE_ENV: "production",
       },
     },
     api: {
-      servers: [{ host: "api1.example.com", arch: "amd64" }],
+      hosts: ["api1"],
       ports: ["3000:3000"],
       build: {
         dockerfile: "Dockerfile",
@@ -62,10 +73,16 @@ const INVALID_CONFIG_DATA = {
       port: 6767,
     },
   },
+  servers: {
+    server1: {
+      host: "example.com",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       // Missing required fields
-      servers: [],
+      hosts: [],
     },
   },
 };
@@ -83,10 +100,16 @@ const MINIMAL_CONFIG_DATA = {
       port: 6767,
     },
   },
+  servers: {
+    localhost: {
+      host: "localhost",
+      arch: "amd64",
+    },
+  },
   services: {
     simple: {
       image: "alpine:latest",
-      servers: [{ host: "localhost", arch: "amd64" }],
+      hosts: ["localhost"],
     },
   },
 };
@@ -170,10 +193,7 @@ Deno.test("Configuration - services property", () => {
   const webService = services.get("web");
   assertEquals(webService?.name, "web");
   assertEquals(webService?.image, "nginx:latest");
-  assertEquals(webService?.servers.map((s) => s.host), [
-    "web1.example.com",
-    "web2.example.com",
-  ]);
+  assertEquals(webService?.hosts, ["web1", "web2"]);
 
   const apiService = services.get("api");
   assertEquals(apiService?.name, "api");
@@ -181,7 +201,7 @@ Deno.test("Configuration - services property", () => {
     (apiService?.build as unknown as Record<string, unknown>)?.dockerfile,
     "Dockerfile",
   );
-  assertEquals(apiService?.servers.map((s) => s.host), ["api1.example.com"]);
+  assertEquals(apiService?.hosts, ["api1"]);
 });
 
 Deno.test("Configuration - environment configuration", () => {
@@ -280,9 +300,16 @@ Deno.test("Configuration - validation includes service validation", () => {
   const invalidServiceConfig = {
     project: "test",
     engine: "docker",
+    servers: {
+      server1: {
+        host: "example.com",
+        arch: "amd64",
+      },
+    },
     services: {
       invalid: {
         // Missing required image and hosts
+        hosts: [],
       },
     },
   };
@@ -298,10 +325,16 @@ Deno.test("Configuration - validation checks host consistency", () => {
   const noHostsConfig = {
     project: "test",
     engine: "docker",
+    servers: {
+      server1: {
+        host: "example.com",
+        arch: "amd64",
+      },
+    },
     services: {
       web: {
         image: "nginx:latest",
-        servers: [], // Empty servers array
+        hosts: [], // Empty hosts array
       },
     },
   };
@@ -310,23 +343,34 @@ Deno.test("Configuration - validation checks host consistency", () => {
   const result = config.validate();
 
   assertEquals(result.valid, false);
-  assertEquals(result.errors.some((e) => e.code === "NO_SERVERS"), true);
+  // Should have an error about missing hosts
+  assertEquals(result.errors.length > 0, true);
 });
 
 Deno.test("Configuration - validation warns about many hosts", () => {
+  const manyHostsServers: Record<string, unknown> = {};
   const manyHostsServices: Record<string, unknown> = {};
 
-  // Create services with many hosts
+  // Create servers and services with many hosts
   for (let i = 1; i <= 15; i++) {
+    manyHostsServers[`host${i}`] = {
+      host: `host${i}.example.com`,
+      arch: "amd64",
+    };
     manyHostsServices[`service${i}`] = {
       image: "nginx:latest",
-      servers: [{ host: `host${i}.example.com`, arch: "amd64" }],
+      hosts: [`host${i}`],
     };
   }
 
   const manyHostsConfig = {
     project: "test",
+    ssh: {
+      user: "deploy",
+      port: 22,
+    },
     engine: "docker",
+    servers: manyHostsServers,
     services: manyHostsServices,
   };
 

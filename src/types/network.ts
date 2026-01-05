@@ -76,7 +76,7 @@ export interface DNSConfig {
   listenAddr: string;
   serviceDomain: string;
   corrosionApiAddr: string;
-  upstreamResolvers: string[];
+  upstreamResolvers?: string[];
 }
 
 /**

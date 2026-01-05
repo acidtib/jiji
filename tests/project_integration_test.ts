@@ -12,10 +12,28 @@ const PROJECT_CONFIG_DATA = {
     engine: "docker",
     local: true,
   },
+  servers: {
+    web1: {
+      host: "web1.example.com",
+      arch: "amd64",
+    },
+    web2: {
+      host: "web2.example.com",
+      arch: "amd64",
+    },
+    api1: {
+      host: "api1.example.com",
+      arch: "amd64",
+    },
+    db1: {
+      host: "db1.example.com",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      servers: [{ host: "web1.example.com" }, { host: "web2.example.com" }],
+      hosts: ["web1", "web2"],
       ports: ["80:80", "443:443"],
     },
     api: {
@@ -23,7 +41,7 @@ const PROJECT_CONFIG_DATA = {
         context: "./api",
         dockerfile: "Dockerfile.prod",
       },
-      servers: [{ host: "api1.example.com" }],
+      hosts: ["api1"],
       ports: ["3000:3000"],
       environment: {
         NODE_ENV: "production",
@@ -32,7 +50,7 @@ const PROJECT_CONFIG_DATA = {
     },
     database: {
       image: "postgres:15",
-      servers: [{ host: "db1.example.com" }],
+      hosts: ["db1"],
       ports: ["5432:5432"],
       environment: {
         POSTGRES_DB: "myapp",
@@ -106,25 +124,29 @@ Deno.test("Project Integration - Project validation enforces naming rules", () =
       project: "myapp",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     },
     {
       project: "my-app",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     },
     {
       project: "my_app",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     },
     {
       project: "app123",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     },
   ];
 
@@ -143,43 +165,50 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
       project: "",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Empty
     {
       project: "My-App",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Uppercase
     {
       project: "my app",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Space
     {
       project: "my.app",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Dot
     {
       project: "my@app",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Special char
     {
       project: "-myapp",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // Start with hyphen
     {
       project: "myapp-",
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
-      services: { web: { image: "nginx", servers: [{ host: "localhost" }] } },
+      servers: { localhost: { host: "localhost", arch: "amd64" } },
+      services: { web: { image: "nginx", hosts: ["localhost"] } },
     }, // End with hyphen
   ];
 
@@ -203,10 +232,16 @@ Deno.test("Project Integration - Project validation rejects invalid names", () =
 Deno.test("Project Integration - Missing project field fails validation", () => {
   const configWithoutProject = {
     engine: "docker" as const,
+    servers: {
+      localhost: {
+        host: "localhost",
+        arch: "amd64",
+      },
+    },
     services: {
       web: {
         image: "nginx:latest",
-        servers: [{ host: "localhost" }],
+        hosts: ["localhost"],
       },
     },
   };
@@ -309,10 +344,16 @@ Deno.test("Project Integration - Complex project name validation", () => {
       project: name,
       ssh: { user: "deploy" },
       builder: { engine: "docker", local: true },
+      servers: {
+        localhost: {
+          host: "localhost",
+          arch: "amd64",
+        },
+      },
       services: {
         web: {
           image: "nginx:latest",
-          servers: [{ host: "localhost" }],
+          hosts: ["localhost"],
         },
       },
     };
