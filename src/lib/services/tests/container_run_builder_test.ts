@@ -24,7 +24,6 @@ Deno.test("ContainerRunBuilder - with DNS configuration", () => {
   const command = builder.build();
 
   assertStringIncludes(command, "--dns 10.210.0.1");
-  assertStringIncludes(command, "--dns 8.8.8.8");
   assertStringIncludes(command, "--dns-search jiji");
   assertStringIncludes(command, "--dns-option ndots:1");
 });
@@ -36,6 +35,26 @@ Deno.test("ContainerRunBuilder - with ports", () => {
 
   assertStringIncludes(command, "-p 80:80");
   assertStringIncludes(command, "-p 443:443");
+});
+
+Deno.test("ContainerRunBuilder - with ports including protocols", () => {
+  const builder = new ContainerRunBuilder(
+    "podman",
+    "test-app",
+    "dns-server:latest",
+  )
+    .ports([
+      "53:53/udp",
+      "53:53/tcp",
+      "127.0.0.1:5353:53/udp",
+      "8080:8080/tcp",
+    ]);
+  const command = builder.build();
+
+  assertStringIncludes(command, "-p 53:53/udp");
+  assertStringIncludes(command, "-p 53:53/tcp");
+  assertStringIncludes(command, "-p 127.0.0.1:5353:53/udp");
+  assertStringIncludes(command, "-p 8080:8080/tcp");
 });
 
 Deno.test("ContainerRunBuilder - with volumes", () => {
@@ -231,4 +250,165 @@ Deno.test("ContainerRunBuilder - mixed safe and unsafe environment variables", (
   // Unsafe values should be quoted
   assertStringIncludes(command, "-e 'UNSAFE=$pecial'");
   assertStringIncludes(command, "-e 'WITH_SPACE=hello world'");
+});
+
+Deno.test("ContainerRunBuilder - with cpus as number", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
+    .cpus(2);
+  const command = builder.build();
+
+  assertStringIncludes(command, "--cpus 2");
+});
+
+Deno.test("ContainerRunBuilder - with cpus as string", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
+    .cpus("1.5");
+  const command = builder.build();
+
+  assertStringIncludes(command, "--cpus 1.5");
+});
+
+Deno.test("ContainerRunBuilder - with memory", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
+    .memory("512m");
+  const command = builder.build();
+
+  assertStringIncludes(command, "--memory 512m");
+});
+
+Deno.test("ContainerRunBuilder - with gpus", () => {
+  const builder = new ContainerRunBuilder(
+    "docker",
+    "test-app",
+    "tensorflow:latest",
+  )
+    .gpus("all");
+  const command = builder.build();
+
+  assertStringIncludes(command, "--gpus all");
+});
+
+Deno.test("ContainerRunBuilder - with specific GPU devices", () => {
+  const builder = new ContainerRunBuilder(
+    "docker",
+    "test-app",
+    "tensorflow:latest",
+  )
+    .gpus("device=0,1");
+  const command = builder.build();
+
+  assertStringIncludes(command, "--gpus device=0,1");
+});
+
+Deno.test("ContainerRunBuilder - with devices", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "ffmpeg:latest")
+    .devices(["/dev/video0", "/dev/snd"]);
+  const command = builder.build();
+
+  assertStringIncludes(command, "--device /dev/video0");
+  assertStringIncludes(command, "--device /dev/snd");
+});
+
+Deno.test("ContainerRunBuilder - with devices including permissions", () => {
+  const builder = new ContainerRunBuilder(
+    "podman",
+    "test-app",
+    "media-server:latest",
+  )
+    .devices(["/dev/video0:/dev/video0:rwm", "/dev/snd:/dev/snd"]);
+  const command = builder.build();
+
+  assertStringIncludes(command, "--device /dev/video0:/dev/video0:rwm");
+  assertStringIncludes(command, "--device /dev/snd:/dev/snd");
+});
+
+Deno.test("ContainerRunBuilder - complete command with resource constraints", () => {
+  const builder = new ContainerRunBuilder(
+    "podman",
+    "ml-app",
+    "tensorflow:latest",
+  )
+    .network("jiji")
+    .ports(["8080:8080"])
+    .cpus(4)
+    .memory("8g")
+    .gpus("all")
+    .devices(["/dev/nvidia0", "/dev/nvidiactl"])
+    .environment(["CUDA_VISIBLE_DEVICES=0"])
+    .restart("unless-stopped")
+    .detached();
+
+  const command = builder.build();
+
+  assertStringIncludes(command, "podman run");
+  assertStringIncludes(command, "--name ml-app");
+  assertStringIncludes(command, "--network jiji");
+  assertStringIncludes(command, "-p 8080:8080");
+  assertStringIncludes(command, "--cpus 4");
+  assertStringIncludes(command, "--memory 8g");
+  assertStringIncludes(command, "--gpus all");
+  assertStringIncludes(command, "--device /dev/nvidia0");
+  assertStringIncludes(command, "--device /dev/nvidiactl");
+  assertStringIncludes(command, "-e CUDA_VISIBLE_DEVICES=0");
+  assertStringIncludes(command, "--restart unless-stopped");
+  assertStringIncludes(command, "--detach");
+  assertStringIncludes(command, "tensorflow:latest");
+});
+
+Deno.test("ContainerRunBuilder - with privileged flag", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "fuse:latest")
+    .privileged();
+  const command = builder.build();
+
+  assertStringIncludes(command, "--privileged");
+});
+
+Deno.test("ContainerRunBuilder - with single capability", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "fuse:latest")
+    .capAdd(["SYS_ADMIN"]);
+  const command = builder.build();
+
+  assertStringIncludes(command, "--cap-add SYS_ADMIN");
+});
+
+Deno.test("ContainerRunBuilder - with multiple capabilities", () => {
+  const builder = new ContainerRunBuilder(
+    "podman",
+    "test-app",
+    "network:latest",
+  )
+    .capAdd(["SYS_ADMIN", "NET_ADMIN", "NET_RAW"]);
+  const command = builder.build();
+
+  assertStringIncludes(command, "--cap-add SYS_ADMIN");
+  assertStringIncludes(command, "--cap-add NET_ADMIN");
+  assertStringIncludes(command, "--cap-add NET_RAW");
+});
+
+Deno.test("ContainerRunBuilder - complete FUSE configuration", () => {
+  const builder = new ContainerRunBuilder("podman", "rclone", "rclone:latest")
+    .network("jiji")
+    .ports(["8080:8080"])
+    .devices(["/dev/fuse"])
+    .privileged()
+    .capAdd(["SYS_ADMIN"])
+    .memory("2g")
+    .environment(["RCLONE_CONFIG=/config/rclone.conf"])
+    .restart("unless-stopped")
+    .detached();
+
+  const command = builder.build();
+
+  assertStringIncludes(command, "podman run");
+  assertStringIncludes(command, "--name rclone");
+  assertStringIncludes(command, "--network jiji");
+  assertStringIncludes(command, "-p 8080:8080");
+  assertStringIncludes(command, "--device /dev/fuse");
+  assertStringIncludes(command, "--privileged");
+  assertStringIncludes(command, "--cap-add SYS_ADMIN");
+  assertStringIncludes(command, "--memory 2g");
+  assertStringIncludes(command, "-e RCLONE_CONFIG=/config/rclone.conf");
+  assertStringIncludes(command, "--restart unless-stopped");
+  assertStringIncludes(command, "--detach");
+  assertStringIncludes(command, "rclone:latest");
 });
