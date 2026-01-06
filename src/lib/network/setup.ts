@@ -867,8 +867,13 @@ export async function setupNetwork(
             "└── Network state stored in Corrosion distributed database",
             2,
           );
-        } catch (_error) {
-          log.say("└── Continuing without control loop", 2);
+        } catch (error) {
+          log.error(
+            `Failed to setup network control loop on ${host}: ${error}`,
+            "network",
+          );
+          results.push({ host, success: false, error: String(error) });
+          throw error;
         }
       }, { indent: 1 });
     }
