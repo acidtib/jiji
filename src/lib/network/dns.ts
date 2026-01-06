@@ -102,8 +102,9 @@ ${config.serviceDomain} {
     # Forward queries not in hosts file to system resolvers
     forward . /etc/resolv.conf
 
-    # Cache DNS responses
-    cache 30
+    # Cache DNS responses (5 minutes - balanced for distributed systems)
+    # Active health checks via control loop ensure stale entries are cleaned
+    cache 300
 
     # Log queries
     log
@@ -123,7 +124,7 @@ ${config.serviceDomain} {
 
     # Use system's default resolvers from /etc/resolv.conf
     forward . /etc/resolv.conf
-    cache 30
+    cache 300
     log
     errors
 }

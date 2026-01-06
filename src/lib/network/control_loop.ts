@@ -192,7 +192,7 @@ monitor_peer_health() {
   done <<< "$wg_status"
 }
 
-# Sync container health states
+# Sync container health states (local containers only)
 sync_container_health() {
   local changes=0
 
@@ -216,6 +216,61 @@ sync_container_health() {
   # Trigger DNS update if any changes
   if [ $changes -gt 0 ]; then
     log_info "Container health changed, triggering DNS update"
+    systemctl restart jiji-dns-update.service 2>/dev/null || true
+  fi
+}
+
+# Cluster-wide garbage collection (runs every 5 minutes)
+# Removes stale container records that have been unhealthy for too long
+garbage_collect_containers() {
+  # Only run every 10 iterations (10 * 30s = 5 minutes)
+  if [ $((ITERATION % 10)) -ne 0 ]; then
+    return
+  fi
+
+  log_info "Running cluster-wide container garbage collection..."
+
+  local now=$(date +%s)
+  local stale_threshold=$((now - 180))  # 3 minutes in seconds
+  local deleted=0
+
+  # Find containers that have been unhealthy for more than 3 minutes
+  # We convert started_at from milliseconds to seconds for comparison
+  local stale_containers=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "
+    SELECT id, service
+    FROM containers
+    WHERE healthy = 0
+    AND (started_at / 1000) < $stale_threshold
+  " 2>/dev/null || echo "")
+
+  while IFS='|' read -r container_id service; do
+    [ -z "$container_id" ] && continue
+
+    log_info "Deleting stale container: $container_id (service: $service)"
+    \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "DELETE FROM containers WHERE id = '$container_id';" 2>/dev/null || log_error "Failed to delete container $container_id"
+    deleted=$((deleted + 1))
+  done <<< "$stale_containers"
+
+  # Also delete containers from servers that are offline (no heartbeat in 10 minutes)
+  local offline_threshold=$((now - 600))000  # 10 minutes in milliseconds
+  local offline_servers=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "
+    SELECT id
+    FROM servers
+    WHERE last_seen < $offline_threshold
+    AND id != '$SERVER_ID'
+  " 2>/dev/null || echo "")
+
+  while IFS= read -r server_id; do
+    [ -z "$server_id" ] && continue
+
+    log_warn "Server $server_id appears offline, cleaning up its containers"
+    local count=$(\${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "DELETE FROM containers WHERE server_id = '$server_id';" 2>/dev/null | grep -oP 'Rows affected: \\K[0-9]+' || echo "0")
+    deleted=$((deleted + count))
+  done <<< "$offline_servers"
+
+  if [ $deleted -gt 0 ]; then
+    log_info "Garbage collection complete: removed $deleted stale container record(s)"
+    # Trigger DNS update after cleanup
     systemctl restart jiji-dns-update.service 2>/dev/null || true
   fi
 }
@@ -277,10 +332,13 @@ while true; do
   # 3. Monitor peer health
   monitor_peer_health
 
-  # 4. Sync container health
+  # 4. Sync container health (local containers)
   sync_container_health
 
-  # 5. Update public IP (periodic)
+  # 5. Cluster-wide garbage collection (periodic)
+  garbage_collect_containers
+
+  # 6. Update public IP (periodic)
   update_public_ip
 
   # Sleep before next iteration

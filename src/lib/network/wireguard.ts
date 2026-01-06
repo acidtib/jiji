@@ -434,3 +434,122 @@ export async function getWireGuardStatus(
     peers,
   };
 }
+
+/**
+ * Verify WireGuard configuration matches expected state
+ *
+ * This is critical to catch cases where the config file was written but the
+ * running interface doesn't reflect the configuration (e.g., after reload failures).
+ *
+ * @param ssh - SSH connection to the server
+ * @param expectedPeers - Array of expected peer configurations
+ * @param interfaceName - Interface name (default: jiji0)
+ * @returns Verification result with details about any mismatches
+ */
+export async function verifyWireGuardConfig(
+  ssh: SSHManager,
+  expectedPeers: Array<{
+    publicKey: string;
+    allowedIps: string[];
+  }>,
+  interfaceName = "jiji0",
+): Promise<{
+  success: boolean;
+  peerCountMatch: boolean;
+  missingPeers: string[];
+  incorrectAllowedIps: Array<
+    { peer: string; expected: string[]; actual: string[] }
+  >;
+  details?: string;
+}> {
+  const host = ssh.getHost();
+
+  // Get detailed WireGuard configuration
+  const result = await ssh.executeCommand(`wg show ${interfaceName} dump`);
+  if (result.code !== 0) {
+    return {
+      success: false,
+      peerCountMatch: false,
+      missingPeers: [],
+      incorrectAllowedIps: [],
+      details: `Failed to get WireGuard status on ${host}: ${result.stderr}`,
+    };
+  }
+
+  // Parse dump output (format: interface line, then peer lines)
+  // Interface: private-key public-key listen-port fwmark
+  // Peer: public-key preshared-key endpoint allowed-ips latest-handshake transfer-rx transfer-tx persistent-keepalive
+  const lines = result.stdout.trim().split("\n");
+  const actualPeers = new Map<string, string[]>();
+
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split("\t");
+    if (parts.length >= 4) {
+      const publicKey = parts[0];
+      const allowedIps = parts[3].split(",").map((ip) => ip.trim());
+      actualPeers.set(publicKey, allowedIps);
+    }
+  }
+
+  // Check peer count
+  const peerCountMatch = actualPeers.size === expectedPeers.length;
+  const missingPeers: string[] = [];
+  const incorrectAllowedIps: Array<
+    { peer: string; expected: string[]; actual: string[] }
+  > = [];
+
+  // Helper to normalize IP addresses for comparison
+  // IPv6 addresses may have leading zeros stripped by WireGuard
+  const normalizeIp = (ip: string): string => {
+    // For IPv6, expand compressed notation and normalize
+    if (ip.includes(":")) {
+      // Remove /128 suffix for comparison
+      const [addr, suffix] = ip.split("/");
+      // Normalize by expanding :: and padding segments
+      const segments = addr.split(":");
+      const normalized = segments.map((seg) => {
+        // Pad each segment to 4 chars, handling empty segments from ::
+        return seg.length > 0 ? seg.padStart(4, "0") : "0000";
+      }).join(":");
+      return suffix ? `${normalized}/${suffix}` : normalized;
+    }
+    return ip;
+  };
+
+  // Verify each expected peer
+  for (const expectedPeer of expectedPeers) {
+    const actualAllowedIps = actualPeers.get(expectedPeer.publicKey);
+
+    if (!actualAllowedIps) {
+      missingPeers.push(expectedPeer.publicKey);
+      continue;
+    }
+
+    // Normalize and sort both arrays for comparison
+    const expectedSorted = [...expectedPeer.allowedIps].map(normalizeIp).sort();
+    const actualSorted = [...actualAllowedIps].map(normalizeIp).sort();
+
+    // Check if AllowedIPs match
+    const allowedIpsMatch = expectedSorted.length === actualSorted.length &&
+      expectedSorted.every((ip, idx) => ip === actualSorted[idx]);
+
+    if (!allowedIpsMatch) {
+      incorrectAllowedIps.push({
+        peer: expectedPeer.publicKey.substring(0, 8) + "...",
+        expected: expectedSorted,
+        actual: actualSorted,
+      });
+    }
+  }
+
+  const success = peerCountMatch &&
+    missingPeers.length === 0 &&
+    incorrectAllowedIps.length === 0;
+
+  return {
+    success,
+    peerCountMatch,
+    missingPeers,
+    incorrectAllowedIps,
+  };
+}

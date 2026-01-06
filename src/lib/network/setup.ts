@@ -23,6 +23,7 @@ import {
   generateWireGuardKeypair,
   installWireGuard,
   restartWireGuardInterface,
+  verifyWireGuardConfig,
   writeWireGuardConfig,
 } from "./wireguard.ts";
 import {
@@ -462,6 +463,79 @@ export async function setupNetwork(
           }
 
           log.say(`├── WireGuard interface jiji0 is up`, 2);
+
+          // Verify WireGuard configuration was properly loaded
+          log.debug(
+            `Verifying WireGuard configuration on ${host}`,
+            "network",
+          );
+          const verification = await verifyWireGuardConfig(ssh, peers);
+
+          if (!verification.success) {
+            const errorDetails: string[] = [
+              `WireGuard configuration verification failed on ${host}:`,
+            ];
+
+            if (!verification.peerCountMatch) {
+              errorDetails.push(
+                `  - Expected ${peers.length} peers, found ${verification.missingPeers.length} missing`,
+              );
+            }
+
+            if (verification.missingPeers.length > 0) {
+              errorDetails.push(
+                `  - Missing peers: ${
+                  verification.missingPeers.map((p) =>
+                    p.substring(0, 8) + "..."
+                  ).join(", ")
+                }`,
+              );
+            }
+
+            if (verification.incorrectAllowedIps.length > 0) {
+              errorDetails.push(`  - Incorrect AllowedIPs on peers:`);
+              for (const mismatch of verification.incorrectAllowedIps) {
+                errorDetails.push(`    Peer ${mismatch.peer}:`);
+                errorDetails.push(
+                  `      Expected: ${mismatch.expected.join(", ")}`,
+                );
+                errorDetails.push(
+                  `      Actual:   ${mismatch.actual.join(", ")}`,
+                );
+              }
+            }
+
+            if (verification.details) {
+              errorDetails.push(`  - Details: ${verification.details}`);
+            }
+
+            // Try reloading one more time
+            log.warn(
+              `First verification failed, attempting reload on ${host}`,
+              "network",
+            );
+            await restartWireGuardInterface(ssh);
+
+            // Verify again
+            const secondVerification = await verifyWireGuardConfig(ssh, peers);
+            if (!secondVerification.success) {
+              errorDetails.push(
+                `\nSecond reload also failed. This indicates a persistent issue.`,
+              );
+              throw new Error(errorDetails.join("\n"));
+            }
+
+            log.success(
+              `WireGuard configuration verified after retry on ${host}`,
+              "network",
+            );
+          } else {
+            log.debug(
+              `WireGuard configuration verified successfully on ${host}`,
+              "network",
+            );
+          }
+
           await enableWireGuardService(ssh);
           log.say(
             `└── WireGuard mesh configured with ${peers.length} peer(s)`,
@@ -536,7 +610,9 @@ export async function setupNetwork(
               });
             }
             log.say(
-              `└── Registered ${topology!.servers.length} server(s) in Corrosion`,
+              `└── Registered ${
+                topology!.servers.length
+              } server(s) in Corrosion`,
               2,
             );
           } catch (error) {
@@ -689,8 +765,11 @@ export async function setupNetwork(
               // Calculate peer's container subnet the same way we calculate ours
               const peerIndex = parseInt(peer.subnet.split(".")[2]);
               const peerContainerThirdOctet = 128 + peerIndex;
-              const peerBaseNetwork = peer.subnet.split(".").slice(0, 2).join(".");
-              const peerContainerSubnet = `${peerBaseNetwork}.${peerContainerThirdOctet}.0/24`;
+              const peerBaseNetwork = peer.subnet.split(".").slice(0, 2).join(
+                ".",
+              );
+              const peerContainerSubnet =
+                `${peerBaseNetwork}.${peerContainerThirdOctet}.0/24`;
 
               log.debug(
                 `Peer ${peer.hostname}: WireGuard subnet=${peer.subnet}, Container subnet=${peerContainerSubnet}`,
@@ -704,7 +783,9 @@ export async function setupNetwork(
             });
 
           log.debug(
-            `Configuring routing for ${host}: own container=${containerSubnet}, peers=${JSON.stringify(peers)}`,
+            `Configuring routing for ${host}: own container=${containerSubnet}, peers=${
+              JSON.stringify(peers)
+            }`,
             "network",
           );
 

@@ -653,17 +653,82 @@ export class ContainerDeploymentService {
   /**
    * Clean up old container after successful deployment
    * This should be called after health checks pass
+   *
+   * Performs cluster-wide cleanup to ensure stale DNS entries are removed
    */
   async cleanupOldContainer(
     oldContainerName: string,
     _host: string,
     ssh: SSHManager,
+    allSshManagers?: SSHManager[],
   ): Promise<void> {
     log.say(
       `├── Cleaning up old container: ${oldContainerName}`,
       2,
     );
+
+    // Get container ID before removal (needed for network unregistration)
+    const getIdResult = await ssh.executeCommand(
+      `${this.engine} ps -aq --filter name=^${oldContainerName}$`,
+    );
+    const oldContainerId = getIdResult.stdout.trim();
+
+    // Remove the container from the host
     await this.removeContainer(oldContainerName, ssh);
+
+    // If network is enabled and we have the container ID, perform cluster-wide cleanup
+    if (this.config.network.enabled && oldContainerId && allSshManagers) {
+      try {
+        log.debug(
+          `Performing cluster-wide cleanup for container ${oldContainerId}`,
+          "deploy",
+        );
+
+        // Delete container record from Corrosion on all servers
+        // This ensures immediate propagation instead of waiting for eventual consistency
+        const deletePromises = allSshManagers.map(async (remoteSsh) => {
+          try {
+            await remoteSsh.executeCommand(
+              `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "DELETE FROM containers WHERE id = '${oldContainerId}';" 2>/dev/null || true`,
+            );
+          } catch (error) {
+            log.debug(
+              `Failed to delete container from ${remoteSsh.getHost()}: ${error}`,
+              "deploy",
+            );
+          }
+        });
+
+        await Promise.all(deletePromises);
+
+        // Small delay to allow Corrosion writes to commit
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Trigger DNS update on all servers
+        const dnsUpdatePromises = allSshManagers.map(async (remoteSsh) => {
+          try {
+            await remoteSsh.executeCommand(
+              "/opt/jiji/dns/update-hosts.sh 2>/dev/null || true",
+            );
+          } catch (error) {
+            log.debug(
+              `Failed to trigger DNS update on ${remoteSsh.getHost()}: ${error}`,
+              "deploy",
+            );
+          }
+        });
+
+        await Promise.all(dnsUpdatePromises);
+
+        log.debug("Cluster-wide cleanup completed", "deploy");
+      } catch (error) {
+        log.warn(
+          `Cluster-wide cleanup failed: ${error} (old container removed locally)`,
+          2,
+        );
+      }
+    }
+
     log.say(`└── Old container removed: ${oldContainerName}`, 2);
   }
 
