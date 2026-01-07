@@ -75,7 +75,6 @@ utility and `jiji version` command
 - [Testing Guide](testing.md) - How to test your changes
 - [Network Reference](network-reference.md) - Understanding networking layer
 - [Logs Reference](logs-reference.md) - Debugging with logs
-- [LLM.md](LLM.md) - AI/LLM guidance for development
 
 ## Getting Help
 
