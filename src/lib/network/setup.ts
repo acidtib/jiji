@@ -691,8 +691,10 @@ export async function setupNetwork(
               }
 
               // Recreate with correct configuration
+              // For podman: --disable-dns prevents aardvark-dns from intercepting queries
+              // Containers will use daemon-level DNS from /etc/containers/containers.conf
               const createNetworkCmd = engine === "podman"
-                ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns ${server.wireguardIp}`
+                ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --disable-dns`
                 : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
               const networkResult = await ssh.executeCommand(createNetworkCmd);
@@ -715,8 +717,10 @@ export async function setupNetwork(
             }
           } else {
             // Create network for podman or docker
+            // For podman: --disable-dns prevents aardvark-dns from intercepting queries
+            // Containers will use daemon-level DNS from /etc/containers/containers.conf
             const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns ${server.wireguardIp}`
+              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --disable-dns`
               : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);

@@ -70,6 +70,7 @@ export class ServiceConfiguration extends BaseConfiguration
   private _devices?: string[];
   private _privileged?: boolean;
   private _cap_add?: string[];
+  private _stop_first?: boolean;
 
   constructor(
     name: string,
@@ -428,6 +429,31 @@ export class ServiceConfiguration extends BaseConfiguration
         : [];
     }
     return this._cap_add;
+  }
+
+  /**
+   * Stop old container before starting new one (for stateful services with exclusive locks)
+   *
+   * When true, the deployment will stop and remove the old container BEFORE starting
+   * the new one. This causes brief downtime but is required for services that:
+   * - Use file-based locks (e.g., LevelDB, SQLite)
+   * - Register unique IDs with a coordinator (e.g., volume servers)
+   * - Cannot have two instances running simultaneously
+   *
+   * Default: false (zero-downtime deployment)
+   */
+  get stop_first(): boolean {
+    if (this._stop_first === undefined && this.has("stop_first")) {
+      const stopFirstValue = this.get("stop_first");
+      if (typeof stopFirstValue === "boolean") {
+        this._stop_first = stopFirstValue;
+      } else {
+        throw new ConfigurationError(
+          `'stop_first' for service '${this.name}' must be a boolean`,
+        );
+      }
+    }
+    return this._stop_first ?? false;
   }
 
   /**

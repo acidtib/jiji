@@ -9,9 +9,11 @@ import type { SSHManager } from "../../utils/ssh.ts";
 import { ContainerRunBuilder } from "./container_run_builder.ts";
 import {
   cleanupServiceContainers,
+  getContainerIdByName,
   getContainerIp,
   registerContainerClusterWide,
   registerContainerInNetwork,
+  updateContainerHealth,
 } from "./container_registry.ts";
 import {
   buildAllMountArgs,
@@ -103,21 +105,75 @@ export class ContainerDeploymentService {
       // This prevents UNIQUE constraint errors when renaming containers
       await this.cleanupOldRenamedContainers(containerName, ssh);
 
-      // Check if old container exists and rename it to keep it running during deployment
+      // Check if old container exists
       const oldContainerExists = await this.containerExists(containerName, ssh);
       let renamedContainerName: string | undefined;
+      let oldContainerId: string | undefined;
 
       if (oldContainerExists) {
-        renamedContainerName = `${containerName}_old_${Date.now()}`;
-        log.say(
-          `├── Renaming existing container ${containerName} to ${renamedContainerName}`,
-          2,
-        );
-        await this.renameContainer(containerName, renamedContainerName, ssh);
-        log.say(
-          `├── Old container kept running: ${renamedContainerName}`,
-          2,
-        );
+        // Get old container ID before any changes (needed for network health update)
+        oldContainerId =
+          (await getContainerIdByName(ssh, containerName, this.engine)) ??
+            undefined;
+
+        if (service.stop_first) {
+          // Stop-first deployment: stop and remove old container BEFORE starting new one
+          // This causes brief downtime but is required for stateful services with exclusive locks
+          log.say(
+            `├── Stopping old container ${containerName} (stop_first mode)`,
+            2,
+          );
+
+          // Unregister from network first
+          if (this.config.network.enabled && oldContainerId) {
+            await updateContainerHealth(ssh, oldContainerId, false);
+          }
+
+          // Stop and remove the old container
+          await this.removeContainer(containerName, ssh);
+
+          // If network is enabled, perform cluster-wide cleanup
+          if (
+            this.config.network.enabled && oldContainerId &&
+            options.allSshManagers
+          ) {
+            // Delete from Corrosion on all servers
+            for (const remoteSsh of options.allSshManagers) {
+              try {
+                await remoteSsh.executeCommand(
+                  `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "DELETE FROM containers WHERE id = '${oldContainerId}';" 2>/dev/null || true`,
+                );
+              } catch {
+                // Ignore errors
+              }
+            }
+          }
+
+          log.say(`├── Old container stopped and removed`, 2);
+        } else {
+          // Zero-downtime deployment: rename old container to keep it running
+          renamedContainerName = `${containerName}_old_${Date.now()}`;
+          log.say(
+            `├── Renaming existing container ${containerName} to ${renamedContainerName}`,
+            2,
+          );
+          await this.renameContainer(containerName, renamedContainerName, ssh);
+
+          // Mark old container as unhealthy in Corrosion so DNS immediately stops
+          // returning its IP (prevents duplicate DNS entries during zero-downtime deployment)
+          if (this.config.network.enabled && oldContainerId) {
+            await updateContainerHealth(ssh, oldContainerId, false);
+            log.debug(
+              `Marked old container ${oldContainerId} as unhealthy for DNS`,
+              "deploy",
+            );
+          }
+
+          log.say(
+            `├── Old container kept running: ${renamedContainerName}`,
+            2,
+          );
+        }
       }
 
       // Start new container (old one still running if it existed)
@@ -166,21 +222,33 @@ export class ContainerDeploymentService {
           oldContainerName: renamedContainerName, // Pass this for cleanup after health checks
         };
       } catch (error) {
-        // Deployment failed - rollback by removing new container and keeping old one
-        log.warn(
-          `Deployment failed, removing new container if it exists and keeping old one running`,
-          2,
-        );
+        // Deployment failed - clean up and attempt rollback if possible
         // Always try to remove the new container name to clean up failed starts
         await this.removeContainer(containerName, ssh);
 
-        // Restore old container name if we renamed it
-        if (renamedContainerName) {
+        if (service.stop_first) {
+          // No rollback possible with stop_first - old container was already removed
+          log.error(
+            `Deployment failed. No rollback available (stop_first mode - old container was removed)`,
+            2,
+          );
+        } else if (renamedContainerName) {
+          // Restore old container name for zero-downtime rollback
+          log.warn(
+            `Deployment failed, restoring old container`,
+            2,
+          );
           log.say(
             `Restoring old container: ${renamedContainerName}`,
             2,
           );
           await this.renameContainer(renamedContainerName, containerName, ssh);
+
+          // Restore health status in Corrosion if network is enabled
+          if (this.config.network.enabled && oldContainerId) {
+            await updateContainerHealth(ssh, oldContainerId, true);
+          }
+
           log.say(
             `Rollback complete: old container ${containerName} still serving traffic`,
             2,

@@ -946,6 +946,26 @@ services:
 #   - Full list: man 7 capabilities
 #   - Note: Capability names should NOT include "CAP_" prefix
 #
+# stop_first: Stop old container before starting new one
+#   - Type: boolean
+#   - Default: false
+#   - When false: Zero-downtime deployment (rename old → start new → stop old)
+#   - When true: Stop-first deployment (stop old → start new)
+#   - Use for stateful services that cannot have two instances running:
+#     - Databases with file locks (SQLite, LevelDB, embedded stores)
+#     - Services registering unique IDs (volume servers, cluster members)
+#     - Services with exclusive resource locks (FUSE mounts, GPU memory)
+#   - Trade-off: Causes brief downtime but prevents resource conflicts
+#   - Warning: No rollback possible if new container fails to start
+#   - Example:
+#     services:
+#       database:
+#         image: postgres:15
+#         stop_first: true  # Database can't have two instances with same data dir
+#       filer:
+#         image: seaweedfs/seaweedfs:latest
+#         stop_first: true  # LevelDB requires exclusive lock
+#
 
 # Proxy Routing Configuration:
 # ============================

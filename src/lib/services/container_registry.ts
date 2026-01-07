@@ -250,7 +250,7 @@ export async function updateContainerHealth(
     } WHERE id = '${containerId}';`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec "${sql}"`,
+      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code !== 0) {
@@ -287,7 +287,7 @@ export async function getServiceContainers(
       `SELECT ip FROM containers WHERE service = '${serviceName}' AND healthy = 1;`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec "${sql}"`,
+      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code !== 0) {
