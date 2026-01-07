@@ -161,11 +161,12 @@ sed -i '/# Jiji container hostnames/,/# End Jiji container hostnames/d' "\$SYSTE
 echo "# Jiji container hostnames" >> "\$SYSTEM_TEMP_FILE"
 
 # Query Corrosion for all healthy containers with service and project info
+# Phase 3: Use health_status for granular filtering (falls back to healthy=1 for backwards compat)
 /opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "
   SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id || '|' || COALESCE(c.instance_id, '')
   FROM containers c
   JOIN services s ON c.service = s.name
-  WHERE c.healthy = 1;
+  WHERE c.health_status = 'healthy' OR (c.health_status IS NULL AND c.healthy = 1);
 " 2>/dev/null | while IFS='|' read -r project service ip container_id instance_id; do
   if [ -n "\$project" ] && [ -n "\$service" ] && [ -n "\$ip" ] && [ -n "\$container_id" ]; then
     # For CoreDNS (project-service discovery domain)

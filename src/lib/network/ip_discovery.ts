@@ -264,7 +264,6 @@ export function selectBestEndpoint(
 ): string {
   // Extract IPs from endpoints (remove :port)
   const sourceIPs = sourceEndpoints.map((ep) => ep.split(":")[0]);
-  const targetIPs = targetEndpoints.map((ep) => ep.split(":")[0]);
 
   // Check if both servers have private IPs in the same /24 subnet
   for (const sourceIP of sourceIPs) {

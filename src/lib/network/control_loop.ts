@@ -43,6 +43,33 @@ PEER_DOWN_THRESHOLD=${PEER_DOWN_THRESHOLD}
 ENDPOINT_TIMEOUT=${ENDPOINT_CONNECTION_TIMEOUT}
 ITERATION=0
 CORROSION_DIR="/opt/jiji/corrosion"
+SHUTTING_DOWN=0
+
+# Cleanup function for graceful shutdown
+cleanup() {
+  log_info "Received shutdown signal, cleaning up..."
+  log_info_json "Shutdown initiated" "{}"
+  SHUTTING_DOWN=1
+
+  # Update heartbeat one last time to signal we're going offline
+  update_heartbeat 2>/dev/null || true
+
+  log_info "Control loop shutdown complete"
+  exit 0
+}
+
+# Error handler - logs but doesn't exit to keep loop running
+handle_error() {
+  local line_no=\$1
+  local error_code=\$2
+  log_error "Error on line \$line_no (exit code: \$error_code)"
+  log_error_json "Control loop error" "{\\"line\\":\$line_no,\\"code\\":\$error_code}"
+  # Don't exit - continue with next iteration
+}
+
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT SIGHUP
+trap 'handle_error \$LINENO \$?' ERR
 
 log_info() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $*"
@@ -220,29 +247,89 @@ monitor_peer_health() {
   done <<< "$wg_status"
 }
 
-# Sync container health states (local containers only)
+# Perform TCP health check on container port
+# Returns 0 if healthy, 1 if unhealthy
+check_container_tcp_health() {
+  local container_ip="\$1"
+  local port="\$2"
+
+  if [ -z "\$port" ] || [ "\$port" = "null" ] || [ "\$port" = "0" ]; then
+    # No port specified, fall back to process check only (assume healthy if running)
+    return 0
+  fi
+
+  # Use timeout with bash TCP check (faster than nc and more portable)
+  if timeout 2 bash -c "echo > /dev/tcp/\$container_ip/\$port" 2>/dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Sync container health states with granular health tracking (Phase 3)
+# Supports TCP health checks when health_port is configured
 sync_container_health() {
   local changes=0
 
-  # Get containers registered on this server
-  local registered=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT id FROM containers WHERE server_id = '$SERVER_ID';" 2>/dev/null || echo "")
+  # Get containers with health info from this server
+  # Format: id|ip|health_port|health_status|consecutive_failures
+  local registered=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "
+    SELECT id, ip, health_port, health_status, consecutive_failures
+    FROM containers
+    WHERE server_id = '$SERVER_ID';" 2>/dev/null || echo "")
 
-  while IFS= read -r container_id; do
-    [ -z "$container_id" ] && continue
+  while IFS='|' read -r container_id container_ip health_port current_status consecutive_failures; do
+    [ -z "\$container_id" ] && continue
 
-    # Check if container is running (by ID, not name)
-    if $ENGINE ps -q --filter id=$container_id 2>/dev/null | grep -q .; then
-      # Container is running, mark healthy
-      \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "UPDATE containers SET healthy = 1 WHERE id = '$container_id';" 2>/dev/null || true
+    local new_status=""
+    local new_failures=\${consecutive_failures:-0}
+    local now=$(date +%s)000
+
+    # Check if container process is running
+    if ! $ENGINE ps -q --filter id=\$container_id 2>/dev/null | grep -q .; then
+      # Container not running - definitely unhealthy
+      new_status="unhealthy"
+      new_failures=\$((new_failures + 1))
     else
-      # Container stopped or removed, mark unhealthy
-      \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "UPDATE containers SET healthy = 0 WHERE id = '$container_id';" 2>/dev/null || true
-      changes=$((changes + 1))
+      # Container is running, perform TCP health check if port configured
+      if check_container_tcp_health "\$container_ip" "\$health_port"; then
+        # Health check passed
+        new_status="healthy"
+        new_failures=0
+      else
+        # Health check failed
+        new_failures=\$((new_failures + 1))
+        if [ \$new_failures -ge 3 ]; then
+          new_status="unhealthy"
+        elif [ \$new_failures -ge 1 ]; then
+          new_status="degraded"
+        fi
+      fi
     fi
-  done <<< "$registered"
 
-  # Trigger DNS update if any changes
-  if [ $changes -gt 0 ]; then
+    # Update database if status or failures changed
+    if [ "\$new_status" != "\$current_status" ] || [ \$new_failures -ne \${consecutive_failures:-0} ]; then
+      local healthy_int=0
+      [ "\$new_status" = "healthy" ] && healthy_int=1
+
+      \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "
+        UPDATE containers
+        SET health_status = '\$new_status',
+            healthy = \$healthy_int,
+            last_health_check = \$now,
+            consecutive_failures = \$new_failures
+        WHERE id = '\$container_id';" 2>/dev/null || true
+
+      if [ "\$new_status" != "\$current_status" ]; then
+        log_info "Container \$container_id health: \$current_status -> \$new_status"
+        log_info_json "Container health changed" "{\\"container_id\\":\\"\$container_id\\",\\"from\\":\\"\$current_status\\",\\"to\\":\\"\$new_status\\",\\"failures\\":\$new_failures}"
+        changes=\$((changes + 1))
+      fi
+    fi
+  done <<< "\$registered"
+
+  # Trigger DNS update if any status changes
+  if [ \$changes -gt 0 ]; then
     log_info "Container health changed, triggering DNS update"
     systemctl restart jiji-dns-update.service 2>/dev/null || true
   fi
@@ -391,12 +478,61 @@ check_corrosion_health() {
   log_info "Corrosion health check passed"
 }
 
+# Detect cluster partition / split-brain scenario
+detect_split_brain() {
+  # Only run every 20 iterations (20 * 30s = 10 minutes)
+  if [ $((ITERATION % 20)) -ne 0 ]; then
+    return
+  fi
+
+  log_info "Checking for cluster partition..."
+
+  # Get total number of registered servers
+  local total_servers=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT COUNT(*) FROM servers;" 2>/dev/null || echo "0")
+
+  if [ "$total_servers" = "0" ] || [ -z "$total_servers" ]; then
+    log_warn "Cannot determine total server count"
+    return
+  fi
+
+  # Get number of servers with recent heartbeat (active in last 5 minutes)
+  local now=$(date +%s)000
+  local active_threshold=$((now - 300000))  # 5 minutes in milliseconds
+  local active_servers=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT COUNT(*) FROM servers WHERE last_seen > $active_threshold;" 2>/dev/null || echo "0")
+
+  # Calculate reachability percentage
+  local reachable_pct=0
+  if [ "$total_servers" -gt 0 ]; then
+    reachable_pct=$((active_servers * 100 / total_servers))
+  fi
+
+  log_info "Cluster health: $active_servers/$total_servers servers reachable ($reachable_pct%)"
+  log_info_json "Cluster health check" "{\\"active\\":$active_servers,\\"total\\":$total_servers,\\"percent\\":$reachable_pct}"
+
+  # Alert if less than 50% of cluster is reachable (and we have more than 1 server)
+  if [ $total_servers -gt 1 ] && [ $reachable_pct -lt 50 ]; then
+    log_error "POTENTIAL SPLIT-BRAIN: Only $reachable_pct% of cluster reachable ($active_servers/$total_servers servers)"
+    log_error_json "Split-brain detected" "{\\"active\\":$active_servers,\\"total\\":$total_servers,\\"percent\\":$reachable_pct}"
+
+    # Log unreachable servers for debugging
+    local unreachable=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT hostname FROM servers WHERE last_seen <= $active_threshold;" 2>/dev/null || echo "")
+    if [ -n "$unreachable" ]; then
+      log_error "Unreachable servers: $unreachable"
+    fi
+  fi
+}
+
 # Main loop
 log_info "Starting Jiji control loop for server $SERVER_ID"
 log_info "Loop interval: ${LOOP_INTERVAL}s, Interface: $INTERFACE"
+log_info_json "Control loop started" "{\\"server_id\\":\\"$SERVER_ID\\",\\"interval\\":$LOOP_INTERVAL}"
 
 while true; do
-  ITERATION=$((ITERATION + 1))
+  # Check if we should exit
+  [ \$SHUTTING_DOWN -eq 1 ] && break
+
+  ITERATION=\$((ITERATION + 1))
+  ITERATION_START=\$(date +%s)
 
   # 1. Update heartbeat
   update_heartbeat
@@ -407,7 +543,7 @@ while true; do
   # 3. Monitor peer health
   monitor_peer_health
 
-  # 4. Sync container health (local containers)
+  # 4. Sync container health (local containers with TCP checks)
   sync_container_health
 
   # 5. Cluster-wide garbage collection (periodic)
@@ -419,8 +555,26 @@ while true; do
   # 7. Check Corrosion health (periodic)
   check_corrosion_health
 
+  # 8. Detect cluster partition / split-brain (periodic)
+  detect_split_brain
+
+  # Check iteration timing - warn if slow
+  ITERATION_END=\$(date +%s)
+  ITERATION_DURATION=\$((ITERATION_END - ITERATION_START))
+
+  if [ \$ITERATION_DURATION -gt 15 ]; then
+    log_warn "Slow iteration #\$ITERATION: \${ITERATION_DURATION}s (threshold: 15s)"
+    log_warn_json "Slow iteration" "{\\"iteration\\":\$ITERATION,\\"duration_s\\":\$ITERATION_DURATION}"
+  fi
+
+  # Log milestone every 100 iterations (50 minutes)
+  if [ \$((ITERATION % 100)) -eq 0 ]; then
+    log_info "Completed \$ITERATION iterations"
+    log_info_json "Iteration milestone" "{\\"iteration\\":\$ITERATION}"
+  fi
+
   # Sleep before next iteration
-  sleep $LOOP_INTERVAL
+  sleep \$LOOP_INTERVAL
 done
 `;
 }

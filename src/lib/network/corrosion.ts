@@ -67,7 +67,12 @@ CREATE TABLE IF NOT EXISTS containers (
   ip TEXT NOT NULL DEFAULT '',
   healthy INTEGER DEFAULT 1,
   started_at INTEGER NOT NULL DEFAULT 0,
-  instance_id TEXT DEFAULT NULL
+  instance_id TEXT DEFAULT NULL,
+  -- Phase 3: Granular health tracking
+  health_status TEXT DEFAULT 'unknown',
+  last_health_check INTEGER DEFAULT 0,
+  consecutive_failures INTEGER DEFAULT 0,
+  health_port INTEGER DEFAULT NULL
 );
 
 -- Enable CRDT for all tables (disabled for compatibility)
@@ -75,7 +80,87 @@ CREATE TABLE IF NOT EXISTS containers (
 -- SELECT crsql_as_crr('servers');
 -- SELECT crsql_as_crr('services');
 -- SELECT crsql_as_crr('containers');
+
+-- Performance indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_containers_server_id ON containers(server_id);
+CREATE INDEX IF NOT EXISTS idx_containers_service ON containers(service);
+CREATE INDEX IF NOT EXISTS idx_containers_healthy ON containers(healthy);
+CREATE INDEX IF NOT EXISTS idx_containers_health_status ON containers(health_status);
+CREATE INDEX IF NOT EXISTS idx_servers_last_seen ON servers(last_seen);
 `;
+
+/**
+ * Apply schema migrations for existing deployments
+ * Adds new columns if they don't exist (safe to run multiple times)
+ *
+ * @param ssh - SSH connection to a server in the cluster
+ * @returns True if migration was successful
+ */
+export async function applyMigrations(ssh: SSHManager): Promise<boolean> {
+  const host = ssh.getHost();
+
+  try {
+    // Check if containers table has health_status column
+    const checkResult = await ssh.executeCommand(
+      `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "SELECT COUNT(*) FROM pragma_table_info('containers') WHERE name = 'health_status';"`,
+    );
+
+    if (checkResult.code !== 0) {
+      log.debug(
+        `Migration check failed on ${host}: ${checkResult.stderr}`,
+        "corrosion",
+      );
+      return false;
+    }
+
+    const hasHealthStatus = checkResult.stdout.trim() !== "0";
+
+    if (!hasHealthStatus) {
+      log.info(`Applying Phase 3 migration on ${host}...`, "corrosion");
+
+      // Add columns one at a time (SQLite requires separate ALTER TABLE statements)
+      const columns = [
+        "ALTER TABLE containers ADD COLUMN health_status TEXT DEFAULT 'unknown';",
+        "ALTER TABLE containers ADD COLUMN last_health_check INTEGER DEFAULT 0;",
+        "ALTER TABLE containers ADD COLUMN consecutive_failures INTEGER DEFAULT 0;",
+        "ALTER TABLE containers ADD COLUMN health_port INTEGER DEFAULT NULL;",
+        "CREATE INDEX IF NOT EXISTS idx_containers_health_status ON containers(health_status);",
+      ];
+
+      for (const sql of columns) {
+        const result = await ssh.executeCommand(
+          `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+        );
+
+        // Ignore "duplicate column" errors
+        if (
+          result.code !== 0 &&
+          !result.stderr.includes("duplicate column") &&
+          !result.stderr.includes("already exists")
+        ) {
+          log.warn(
+            `Migration statement failed: ${result.stderr}`,
+            "corrosion",
+          );
+        }
+      }
+
+      // Initialize existing containers with 'healthy' status based on current healthy column
+      await ssh.executeCommand(
+        `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "UPDATE containers SET health_status = CASE WHEN healthy = 1 THEN 'healthy' ELSE 'unhealthy' END WHERE health_status = 'unknown' OR health_status IS NULL;"`,
+      );
+
+      log.success(`Phase 3 migration complete on ${host}`, "corrosion");
+    } else {
+      log.debug(`Migration already applied on ${host}`, "corrosion");
+    }
+
+    return true;
+  } catch (error) {
+    log.error(`Migration failed on ${host}: ${error}`, "corrosion");
+    return false;
+  }
+}
 
 /**
  * Install Corrosion on a remote server
