@@ -117,9 +117,8 @@ export async function getDockerBridgeInterface(
 ): Promise<string> {
   const host = ssh.getHost();
 
-  // Get network gateway IP (this is the IP assigned to the bridge interface)
-  const inspectCmd =
-    `${engine} network inspect ${networkName} --format '{{range .Subnets}}{{.Gateway}}{{end}}'`;
+  // Get network gateway IP using JSON inspection (works across all versions)
+  const inspectCmd = `${engine} network inspect ${networkName}`;
   const inspectResult = await ssh.executeCommand(inspectCmd);
 
   if (inspectResult.code !== 0) {
@@ -128,11 +127,44 @@ export async function getDockerBridgeInterface(
     );
   }
 
-  const gatewayIp = inspectResult.stdout.trim();
+  let gatewayIp = "";
+
+  try {
+    const networkData = JSON.parse(inspectResult.stdout);
+    if (networkData && networkData[0]) {
+      const network = networkData[0];
+
+      // Try different possible JSON structures
+      // Podman (new): network.subnets[0].gateway
+      // Podman (old): network.plugins[0].ipam.ranges[0][0].gateway
+      // Docker: network.IPAM.Config[0].Gateway
+      if (network.subnets && network.subnets[0]) {
+        gatewayIp = network.subnets[0].gateway;
+      } else if (network.Subnets && network.Subnets[0]) {
+        gatewayIp = network.Subnets[0].Gateway;
+      } else if (
+        network.plugins && network.plugins[0] && network.plugins[0].ipam &&
+        network.plugins[0].ipam.ranges && network.plugins[0].ipam.ranges[0] &&
+        network.plugins[0].ipam.ranges[0][0]
+      ) {
+        // Old podman CNI format
+        gatewayIp = network.plugins[0].ipam.ranges[0][0].gateway;
+      } else if (
+        network.IPAM && network.IPAM.Config && network.IPAM.Config[0]
+      ) {
+        // Docker format
+        gatewayIp = network.IPAM.Config[0].Gateway;
+      }
+    }
+  } catch (e) {
+    throw new Error(
+      `Failed to parse network JSON for ${networkName} on ${host}: ${e}`,
+    );
+  }
 
   if (!gatewayIp) {
     throw new Error(
-      `Could not determine gateway IP for network ${networkName} on ${host}`,
+      `Could not determine gateway IP for network ${networkName} on ${host}. Inspect output: "${inspectResult.stdout}"`,
     );
   }
 
@@ -167,7 +199,8 @@ export async function getDockerBridgeInterface(
  * Configure iptables rules for container-to-container communication
  *
  * @param ssh - SSH connection to the server
- * @param localSubnet - Local container subnet CIDR
+ * @param localSubnet - Local WireGuard subnet CIDR
+ * @param containerSubnet - Local container subnet CIDR
  * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param dockerBridge - Docker bridge interface name
  * @param wireguardInterface - WireGuard interface name (default: jiji0)
@@ -175,6 +208,7 @@ export async function getDockerBridgeInterface(
 export async function setupIPTablesRules(
   ssh: SSHManager,
   localSubnet: string,
+  containerSubnet: string,
   clusterCidr: string,
   dockerBridge: string,
   wireguardInterface = "jiji0",
@@ -208,14 +242,28 @@ export async function setupIPTablesRules(
     );
   }
 
-  // Skip NAT for container-to-container traffic within the cluster
-  // This preserves source IPs so containers can communicate with their real IPs across the mesh
-  const skipNatRule =
+  // Skip NAT for WireGuard-to-cluster traffic
+  // This preserves source IPs for WireGuard subnet traffic within the cluster
+  const skipNatWireGuardRule =
     `iptables -t nat -C POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN`;
-  const result3 = await ssh.executeCommand(skipNatRule);
+  const result3 = await ssh.executeCommand(skipNatWireGuardRule);
   if (result3.code !== 0 && !result3.stderr.includes("Bad rule")) {
     log.warn(
-      `Failed to add skip NAT rule for cluster traffic on ${host}`,
+      `Failed to add skip NAT rule for WireGuard traffic on ${host}`,
+      "network",
+    );
+  }
+
+  // Skip NAT for container-to-cluster traffic
+  // This is critical - prevents container source IPs from being masqueraded to host IP
+  // Without this, containers can't communicate across servers (handshake failures)
+  // IMPORTANT: Must INSERT (not APPEND) to ensure this rule comes BEFORE any MASQUERADE rules
+  const skipNatContainerRule =
+    `iptables -t nat -C POSTROUTING -s ${containerSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${containerSubnet} -d ${clusterCidr} -j RETURN`;
+  const result3b = await ssh.executeCommand(skipNatContainerRule);
+  if (result3b.code !== 0 && !result3b.stderr.includes("Bad rule")) {
+    log.warn(
+      `Failed to add skip NAT rule for container traffic on ${host}`,
       "network",
     );
   }
@@ -258,7 +306,8 @@ export async function setupIPTablesRules(
  * - iptables forwarding rules
  *
  * @param ssh - SSH connection to the server
- * @param localSubnet - Local container subnet CIDR
+ * @param localSubnet - Local WireGuard subnet CIDR
+ * @param containerSubnet - Local container subnet CIDR
  * @param clusterCidr - Cluster-wide CIDR for all containers
  * @param peers - Array of peer information
  * @param networkName - Docker network name
@@ -268,6 +317,7 @@ export async function setupIPTablesRules(
 export async function setupServerRouting(
   ssh: SSHManager,
   localSubnet: string,
+  containerSubnet: string,
   clusterCidr: string,
   peers: Array<{ subnet: string; hostname: string }>,
   networkName: string,
@@ -296,6 +346,7 @@ export async function setupServerRouting(
     await setupIPTablesRules(
       ssh,
       localSubnet,
+      containerSubnet,
       clusterCidr,
       dockerBridge,
       wireguardInterface,

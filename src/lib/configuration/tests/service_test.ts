@@ -5,15 +5,12 @@ import { ConfigurationError } from "../base.ts";
 // Test data
 const MINIMAL_SERVICE_DATA = {
   image: "nginx:latest",
-  servers: [{ host: "web1.example.com", arch: "amd64" }],
+  hosts: ["web1"],
 };
 
 const COMPLETE_SERVICE_DATA = {
   image: "myapp:v1.0.0",
-  servers: [
-    { host: "web1.example.com", arch: "amd64" },
-    { host: "web2.example.com", arch: "amd64" },
-  ],
+  hosts: ["web1", "web2"],
   ports: ["80:80", "443:443"],
   volumes: ["/data:/app/data", "/logs:/app/logs"],
   environment: {
@@ -27,7 +24,7 @@ const COMPLETE_SERVICE_DATA = {
 };
 
 const BUILD_SERVICE_DATA = {
-  servers: [{ host: "localhost", arch: "amd64" }],
+  hosts: ["localhost"],
   build: {
     dockerfile: "Dockerfile",
     context: ".",
@@ -40,30 +37,13 @@ const BUILD_SERVICE_DATA = {
 };
 
 const STRING_BUILD_SERVICE_DATA = {
-  servers: [{ host: "localhost", arch: "amd64" }],
+  hosts: ["localhost"],
   build: "./backend",
-};
-
-const SERVER_ARCH_SERVICE_DATA = {
-  image: "nginx:latest",
-  servers: [
-    { host: "192.168.1.100", arch: "amd64" },
-    { host: "192.168.1.101", arch: "arm64" },
-    { host: "192.168.1.102", arch: "amd64" },
-  ],
-};
-
-const MIXED_ARCH_BUILD_SERVICE_DATA = {
-  build: "./app",
-  servers: [
-    { host: "192.168.1.100", arch: "amd64" },
-    { host: "192.168.1.101", arch: "arm64" },
-  ],
 };
 
 const INVALID_SERVICE_DATA = {
   // Missing required image and build
-  servers: [{ host: "localhost", arch: "amd64" }],
+  hosts: ["localhost"],
 };
 
 Deno.test("ServiceConfiguration - minimal configuration", () => {
@@ -76,7 +56,7 @@ Deno.test("ServiceConfiguration - minimal configuration", () => {
   assertEquals(service.name, "web");
   assertEquals(service.project, "myproject");
   assertEquals(service.image, "nginx:latest");
-  assertEquals(service.servers[0].host, "web1.example.com");
+  assertEquals(service.hosts, ["web1"]);
   assertEquals(service.ports, []);
   assertEquals(service.volumes, []);
   assertEquals(Object.keys(service.environment.clear).length, 0);
@@ -95,10 +75,7 @@ Deno.test("ServiceConfiguration - complete configuration", () => {
   assertEquals(service.name, "api");
   assertEquals(service.project, "myproject");
   assertEquals(service.image, "myapp:v1.0.0");
-  assertEquals(service.servers.map((s) => s.host), [
-    "web1.example.com",
-    "web2.example.com",
-  ]);
+  assertEquals(service.hosts, ["web1", "web2"]);
   assertEquals(service.ports, ["80:80", "443:443"]);
   assertEquals(service.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(service.command, ["npm", "start"]);
@@ -191,7 +168,7 @@ Deno.test("ServiceConfiguration - getImageName preserves version tag from image"
     "garage",
     {
       image: "dxflrs/garage:v2.1.0",
-      servers: [{ host: "server.example.com", arch: "amd64" }],
+      hosts: ["server.example.com"],
     },
     "s3",
   );
@@ -206,7 +183,7 @@ Deno.test("ServiceConfiguration - getImageName can override version tag", () => 
     "garage",
     {
       image: "dxflrs/garage:v2.1.0",
-      servers: [{ host: "server.example.com", arch: "amd64" }],
+      hosts: ["server.example.com"],
     },
     "s3",
   );
@@ -227,7 +204,7 @@ Deno.test("ServiceConfiguration - getImageName adds version to untagged image", 
     "nginx",
     {
       image: "nginx",
-      servers: [{ host: "server.example.com", arch: "amd64" }],
+      hosts: ["server.example.com"],
     },
     "web",
   );
@@ -292,7 +269,7 @@ Deno.test("ServiceConfiguration - validation fails with both image and build", (
   const service = new ServiceConfiguration("invalid", {
     image: "nginx:latest",
     build: "./app",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
   }, "myproject");
 
   assertThrows(
@@ -302,36 +279,36 @@ Deno.test("ServiceConfiguration - validation fails with both image and build", (
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails without servers", () => {
+Deno.test("ServiceConfiguration - validation fails without hosts", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    // Missing servers array
+    // Missing hosts array
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Service 'web' must specify at least one server",
+    "Service 'web' must specify at least one host in the 'hosts' array",
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with empty servers", () => {
+Deno.test("ServiceConfiguration - validation fails with empty hosts", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [],
+    hosts: [],
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "Service 'web' must specify at least one server",
+    "Service 'web' must specify at least one host in the 'hosts' array",
   );
 });
 
 Deno.test("ServiceConfiguration - validation fails with invalid image type", () => {
   const service = new ServiceConfiguration("web", {
     image: 123,
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
   }, "myproject");
 
   assertThrows(
@@ -341,36 +318,23 @@ Deno.test("ServiceConfiguration - validation fails with invalid image type", () 
   );
 });
 
-Deno.test("ServiceConfiguration - validation fails with invalid servers type", () => {
+Deno.test("ServiceConfiguration - validation fails with invalid hosts type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: "not-an-array",
+    hosts: "not-an-array",
   }, "myproject");
 
   assertThrows(
     () => service.validate(),
     ConfigurationError,
-    "'servers' for service 'web' must be an array",
-  );
-});
-
-Deno.test("ServiceConfiguration - validation fails with invalid server", () => {
-  const service = new ServiceConfiguration("web", {
-    image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }, 123],
-  }, "myproject");
-
-  assertThrows(
-    () => service.validate(),
-    ConfigurationError,
-    "Server at index 1 for service 'web' must be an object with 'host' property",
+    "'hosts' for service 'web' must be an array",
   );
 });
 
 Deno.test("ServiceConfiguration - validation fails with invalid ports type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     ports: "not-an-array",
   }, "myproject");
 
@@ -384,7 +348,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid ports type", () 
 Deno.test("ServiceConfiguration - validation succeeds with container port only", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["8000"], // Container port only format
   }, "myproject");
 
@@ -395,7 +359,7 @@ Deno.test("ServiceConfiguration - validation succeeds with container port only",
 Deno.test("ServiceConfiguration - validation succeeds with host:container port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["8080:8000"], // host_port:container_port format
   }, "myproject");
 
@@ -406,8 +370,40 @@ Deno.test("ServiceConfiguration - validation succeeds with host:container port f
 Deno.test("ServiceConfiguration - validation succeeds with full port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["192.168.1.1:8080:8000/tcp"], // Full format with IP and protocol
+  }, "myproject");
+
+  // Should not throw - validation should pass
+  service.validate();
+});
+
+Deno.test("ServiceConfiguration - validation succeeds with UDP protocol", () => {
+  const service = new ServiceConfiguration("dns", {
+    image: "dns-server:latest",
+    hosts: ["dns1.example.com"],
+    ports: [
+      "1900/udp", // Container port only with UDP
+      "53:53/udp", // Host:container with UDP
+      "127.0.0.1:5353:53/udp", // Full format with IP and UDP
+    ],
+  }, "myproject");
+
+  // Should not throw - validation should pass
+  service.validate();
+});
+
+Deno.test("ServiceConfiguration - validation succeeds with mixed TCP/UDP protocols", () => {
+  const service = new ServiceConfiguration("multiport", {
+    image: "app:latest",
+    hosts: ["app1.example.com"],
+    ports: [
+      "80:80/tcp", // HTTP over TCP
+      "443:443/tcp", // HTTPS over TCP
+      "53:53/udp", // DNS over UDP
+      "123:123/udp", // NTP over UDP
+      "8080:8080", // No protocol (defaults to TCP)
+    ],
   }, "myproject");
 
   // Should not throw - validation should pass
@@ -417,7 +413,7 @@ Deno.test("ServiceConfiguration - validation succeeds with full port format", ()
 Deno.test("ServiceConfiguration - validation fails with invalid port format", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["invalid:port"], // Invalid format
   }, "myproject");
 
@@ -431,7 +427,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid port format", ()
 Deno.test("ServiceConfiguration - validation fails with out of range port", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["99999"], // Port out of range
   }, "myproject");
 
@@ -445,7 +441,7 @@ Deno.test("ServiceConfiguration - validation fails with out of range port", () =
 Deno.test("ServiceConfiguration - validation fails with invalid IP in port mapping", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "web1.example.com", arch: "amd64" }],
+    hosts: ["web1.example.com"],
     ports: ["999.999.999.999:8080:8000"], // Invalid IP
   }, "myproject");
 
@@ -459,7 +455,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid IP in port mappi
 Deno.test("ServiceConfiguration - validation fails with invalid volumes type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     volumes: "not-an-array",
   }, "myproject");
 
@@ -473,7 +469,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid volumes type", (
 Deno.test("ServiceConfiguration - validation fails with invalid environment type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     environment: "not-an-object",
   }, "myproject");
 
@@ -487,7 +483,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid environment type
 Deno.test("ServiceConfiguration - validation fails with invalid environment variable name", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     environment: {
       clear: {
         "INVALID-VAR": "value", // Hyphens not allowed
@@ -505,7 +501,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid environment vari
 Deno.test("ServiceConfiguration - validation fails with invalid command type", () => {
   const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     command: 123,
   }, "myproject");
 
@@ -520,7 +516,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid command type", (
 
 Deno.test("ServiceConfiguration - validation fails with invalid build type", () => {
   const service = new ServiceConfiguration("web", {
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     build: 123,
   }, "myproject");
 
@@ -533,7 +529,7 @@ Deno.test("ServiceConfiguration - validation fails with invalid build type", () 
 
 Deno.test("ServiceConfiguration - validation fails with build missing context", () => {
   const service = new ServiceConfiguration("web", {
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     build: {
       dockerfile: "Dockerfile",
     },
@@ -555,10 +551,7 @@ Deno.test("ServiceConfiguration - toObject method", () => {
   const obj = service.toObject();
 
   assertEquals(obj.image, "myapp:v1.0.0");
-  assertEquals(obj.servers, [
-    { host: "web1.example.com", arch: "amd64" },
-    { host: "web2.example.com", arch: "amd64" },
-  ]);
+  assertEquals(obj.hosts, ["web1", "web2"]);
   assertEquals(obj.ports, ["80:80", "443:443"]);
   assertEquals(obj.volumes, ["/data:/app/data", "/logs:/app/logs"]);
   assertEquals(obj.command, ["npm", "start"]);
@@ -580,7 +573,7 @@ Deno.test("ServiceConfiguration - toObject excludes empty arrays and undefined v
   const obj = service.toObject();
 
   assertEquals(obj.image, "nginx:latest");
-  assertEquals(obj.servers, [{ host: "web1.example.com", arch: "amd64" }]);
+  assertEquals(obj.hosts, ["web1"]);
 
   // Empty arrays and undefined values should not be included
   assertEquals("ports" in obj, false);
@@ -608,7 +601,7 @@ Deno.test("ServiceConfiguration - toObject with build configuration", () => {
     },
     target: "runtime",
   });
-  assertEquals(obj.servers, [{ host: "localhost", arch: "amd64" }]);
+  assertEquals(obj.hosts, ["localhost"]);
 });
 
 Deno.test("ServiceConfiguration - lazy loading of properties", () => {
@@ -622,9 +615,9 @@ Deno.test("ServiceConfiguration - lazy loading of properties", () => {
   assertEquals(service.image, "myapp:v1.0.0");
   assertEquals(service.image, "myapp:v1.0.0");
 
-  const servers1 = service.servers;
-  const servers2 = service.servers;
-  assertEquals(servers1, servers2); // Should be the same instance
+  const hosts1 = service.hosts;
+  const hosts2 = service.hosts;
+  assertEquals(hosts1, hosts2); // Should be the same instance
 
   const env1 = service.environment;
   const env2 = service.environment;
@@ -634,7 +627,7 @@ Deno.test("ServiceConfiguration - lazy loading of properties", () => {
 Deno.test("ServiceConfiguration - command as string", () => {
   const serviceData = {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     command: "nginx -g 'daemon off;'",
   };
 
@@ -645,7 +638,7 @@ Deno.test("ServiceConfiguration - command as string", () => {
 Deno.test("ServiceConfiguration - command as array", () => {
   const serviceData = {
     image: "nginx:latest",
-    servers: [{ host: "localhost" }],
+    hosts: ["localhost"],
     command: ["nginx", "-g", "daemon off;"],
   };
 
@@ -671,7 +664,7 @@ Deno.test("ServiceConfiguration - build with all options", () => {
 
 Deno.test("ServiceConfiguration - build with minimal options", () => {
   const serviceData = {
-    servers: [{ host: "localhost", arch: "amd64" }],
+    hosts: ["localhost"],
     build: {
       context: "./frontend",
     },
@@ -686,125 +679,268 @@ Deno.test("ServiceConfiguration - build with minimal options", () => {
   assertEquals(build.target, undefined);
 });
 
-Deno.test("ServiceConfiguration - server with architecture configuration", () => {
-  const service = new ServiceConfiguration(
-    "web",
-    SERVER_ARCH_SERVICE_DATA,
-    "myproject",
-  );
-
-  const servers = service.servers;
-  assertEquals(servers.length, 3);
-
-  // Check server objects
-  assertEquals(servers[0], { host: "192.168.1.100", arch: "amd64" });
-  assertEquals(servers[1], { host: "192.168.1.101", arch: "arm64" });
-  assertEquals(servers[2], { host: "192.168.1.102", arch: "amd64" });
-});
-
-Deno.test("ServiceConfiguration - getRequiredArchitectures returns unique architectures", () => {
-  const service = new ServiceConfiguration(
-    "web",
-    SERVER_ARCH_SERVICE_DATA,
-    "myproject",
-  );
-
-  const architectures = service.getRequiredArchitectures();
-  assertEquals(architectures.sort(), ["amd64", "arm64"]);
-});
-
-Deno.test("ServiceConfiguration - getServersByArchitecture groups servers correctly", () => {
-  const service = new ServiceConfiguration(
-    "web",
-    SERVER_ARCH_SERVICE_DATA,
-    "myproject",
-  );
-
-  const serversByArch = service.getServersByArchitecture();
-
-  assertEquals(serversByArch.get("amd64"), ["192.168.1.100", "192.168.1.102"]);
-  assertEquals(serversByArch.get("arm64"), ["192.168.1.101"]);
-});
-
-Deno.test("ServiceConfiguration - build service with mixed server architectures", () => {
-  const service = new ServiceConfiguration(
-    "web",
-    MIXED_ARCH_BUILD_SERVICE_DATA,
-    "myproject",
-  );
-
-  const architectures = service.getRequiredArchitectures();
-  assertEquals(architectures.sort(), ["amd64", "arm64"]);
-
-  const serversByArch = service.getServersByArchitecture();
-  assertEquals(serversByArch.get("amd64"), ["192.168.1.100"]);
-  assertEquals(serversByArch.get("arm64"), ["192.168.1.101"]);
-});
-
-Deno.test("ServiceConfiguration - default architecture for servers without arch", () => {
-  const serviceData = {
+// Resource constraints tests
+Deno.test("ServiceConfiguration - cpus as number", () => {
+  const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [
-      { host: "192.168.1.100" },
-      { host: "192.168.1.101" },
-    ],
-  };
+    hosts: ["web1.example.com"],
+    cpus: 2,
+  }, "myproject");
 
-  const service = new ServiceConfiguration("web", serviceData, "myproject");
-  const architectures = service.getRequiredArchitectures();
-
-  assertEquals(architectures, ["amd64"]); // all default to amd64
-
-  const serversByArch = service.getServersByArchitecture();
-  assertEquals(serversByArch.get("amd64"), ["192.168.1.100", "192.168.1.101"]);
+  assertEquals(service.cpus, 2);
 });
 
-Deno.test("ServiceConfiguration - invalid server architecture throws error", () => {
-  const serviceData = {
+Deno.test("ServiceConfiguration - cpus as numeric string", () => {
+  const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [
-      { host: "192.168.1.100", arch: "x86" }, // invalid arch
-    ],
-  };
+    hosts: ["web1.example.com"],
+    cpus: "1.5",
+  }, "myproject");
+
+  assertEquals(service.cpus, "1.5");
+});
+
+Deno.test("ServiceConfiguration - cpus as fractional number", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+    cpus: 0.5,
+  }, "myproject");
+
+  assertEquals(service.cpus, 0.5);
+});
+
+Deno.test("ServiceConfiguration - cpus validation fails with negative number", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+    cpus: -1,
+  }, "myproject");
 
   assertThrows(
-    () => {
-      const service = new ServiceConfiguration("web", serviceData, "myproject");
-      service.validate(); // This should trigger validation
-    },
+    () => service.cpus,
     ConfigurationError,
-    "Invalid architecture 'x86'",
+    "'cpus' for service 'web' must be a positive number or numeric string",
   );
 });
 
-Deno.test("ServiceConfiguration - invalid server object format throws error", () => {
-  const serviceData = {
+Deno.test("ServiceConfiguration - cpus validation fails with invalid string", () => {
+  const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [
-      { arch: "amd64" }, // missing host property
-    ],
-  };
+    hosts: ["web1.example.com"],
+    cpus: "invalid",
+  }, "myproject");
 
   assertThrows(
-    () => {
-      const service = new ServiceConfiguration("web", serviceData, "myproject");
-      service.servers; // Access servers to trigger validation
-    },
+    () => service.cpus,
     ConfigurationError,
-    "Server at index 0 for service 'web' must have a 'host' property",
+    "'cpus' for service 'web' must be a positive number or numeric string",
   );
 });
 
-Deno.test("ServiceConfiguration - server without arch defaults to amd64", () => {
-  const serviceData = {
+Deno.test("ServiceConfiguration - memory with valid formats", () => {
+  const formats = ["512m", "1g", "2gb", "1024mb", "2G", "512M"];
+
+  for (const mem of formats) {
+    const service = new ServiceConfiguration("web", {
+      image: "nginx:latest",
+      hosts: ["web1.example.com"],
+      memory: mem,
+    }, "myproject");
+
+    assertEquals(service.memory, mem);
+  }
+});
+
+Deno.test("ServiceConfiguration - memory validation fails with invalid format", () => {
+  const service = new ServiceConfiguration("web", {
     image: "nginx:latest",
-    servers: [
-      { host: "192.168.1.100" }, // no arch specified
-    ],
-  };
+    hosts: ["web1.example.com"],
+    memory: "512",
+  }, "myproject");
 
-  const service = new ServiceConfiguration("web", serviceData, "myproject");
-  const architectures = service.getRequiredArchitectures();
+  assertThrows(
+    () => service.memory,
+    ConfigurationError,
+    "'memory' for service 'web' must be a string with format: number + unit",
+  );
+});
 
-  assertEquals(architectures, ["amd64"]);
+Deno.test("ServiceConfiguration - memory validation fails with invalid unit", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+    memory: "512x",
+  }, "myproject");
+
+  assertThrows(
+    () => service.memory,
+    ConfigurationError,
+    "'memory' for service 'web' must be a string with format: number + unit",
+  );
+});
+
+Deno.test("ServiceConfiguration - gpus with valid formats", () => {
+  const formats = ["all", "0", "0,1", "device=0", "device=0,1"];
+
+  for (const gpu of formats) {
+    const service = new ServiceConfiguration("ml", {
+      image: "tensorflow:latest",
+      hosts: ["gpu1.example.com"],
+      gpus: gpu,
+    }, "myproject");
+
+    assertEquals(service.gpus, gpu);
+  }
+});
+
+Deno.test("ServiceConfiguration - gpus validation fails with non-string", () => {
+  const service = new ServiceConfiguration("ml", {
+    image: "tensorflow:latest",
+    hosts: ["gpu1.example.com"],
+    gpus: 123,
+  }, "myproject");
+
+  assertThrows(
+    () => service.gpus,
+    ConfigurationError,
+    "'gpus' for service 'ml' must be a string",
+  );
+});
+
+Deno.test("ServiceConfiguration - devices as string array", () => {
+  const service = new ServiceConfiguration("media", {
+    image: "ffmpeg:latest",
+    hosts: ["media1.example.com"],
+    devices: ["/dev/video0", "/dev/snd"],
+  }, "myproject");
+
+  assertEquals(service.devices, ["/dev/video0", "/dev/snd"]);
+});
+
+Deno.test("ServiceConfiguration - devices with mount paths", () => {
+  const service = new ServiceConfiguration("media", {
+    image: "ffmpeg:latest",
+    hosts: ["media1.example.com"],
+    devices: ["/dev/video0:/dev/video0:rwm", "/dev/snd:/dev/snd"],
+  }, "myproject");
+
+  assertEquals(service.devices, [
+    "/dev/video0:/dev/video0:rwm",
+    "/dev/snd:/dev/snd",
+  ]);
+});
+
+Deno.test("ServiceConfiguration - devices defaults to empty array", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+  }, "myproject");
+
+  assertEquals(service.devices, []);
+});
+
+Deno.test("ServiceConfiguration - complete resource constraints configuration", () => {
+  const service = new ServiceConfiguration("ml", {
+    image: "tensorflow:latest",
+    hosts: ["gpu1.example.com"],
+    cpus: 4,
+    memory: "8g",
+    gpus: "all",
+    devices: ["/dev/nvidia0", "/dev/nvidiactl"],
+  }, "myproject");
+
+  assertEquals(service.cpus, 4);
+  assertEquals(service.memory, "8g");
+  assertEquals(service.gpus, "all");
+  assertEquals(service.devices, ["/dev/nvidia0", "/dev/nvidiactl"]);
+});
+
+// Privileged and capabilities tests
+Deno.test("ServiceConfiguration - privileged defaults to false", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+  }, "myproject");
+
+  assertEquals(service.privileged, false);
+});
+
+Deno.test("ServiceConfiguration - privileged set to true", () => {
+  const service = new ServiceConfiguration("fuse", {
+    image: "fuse-app:latest",
+    hosts: ["fuse1.example.com"],
+    privileged: true,
+  }, "myproject");
+
+  assertEquals(service.privileged, true);
+});
+
+Deno.test("ServiceConfiguration - privileged set to false explicitly", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+    privileged: false,
+  }, "myproject");
+
+  assertEquals(service.privileged, false);
+});
+
+Deno.test("ServiceConfiguration - privileged validation fails with non-boolean", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+    privileged: "yes",
+  }, "myproject");
+
+  assertThrows(
+    () => service.privileged,
+    ConfigurationError,
+    "'privileged' for service 'web' must be a boolean",
+  );
+});
+
+Deno.test("ServiceConfiguration - cap_add with single capability", () => {
+  const service = new ServiceConfiguration("fuse", {
+    image: "fuse-app:latest",
+    hosts: ["fuse1.example.com"],
+    cap_add: ["SYS_ADMIN"],
+  }, "myproject");
+
+  assertEquals(service.cap_add, ["SYS_ADMIN"]);
+});
+
+Deno.test("ServiceConfiguration - cap_add with multiple capabilities", () => {
+  const service = new ServiceConfiguration("network", {
+    image: "network-app:latest",
+    hosts: ["net1.example.com"],
+    cap_add: ["SYS_ADMIN", "NET_ADMIN", "NET_RAW"],
+  }, "myproject");
+
+  assertEquals(service.cap_add, ["SYS_ADMIN", "NET_ADMIN", "NET_RAW"]);
+});
+
+Deno.test("ServiceConfiguration - cap_add defaults to empty array", () => {
+  const service = new ServiceConfiguration("web", {
+    image: "nginx:latest",
+    hosts: ["web1.example.com"],
+  }, "myproject");
+
+  assertEquals(service.cap_add, []);
+});
+
+Deno.test("ServiceConfiguration - complete configuration with privileged and cap_add", () => {
+  const service = new ServiceConfiguration("fuse-storage", {
+    image: "rclone:latest",
+    hosts: ["storage1.example.com"],
+    privileged: true,
+    cap_add: ["SYS_ADMIN"],
+    devices: ["/dev/fuse"],
+    memory: "2g",
+  }, "myproject");
+
+  assertEquals(service.privileged, true);
+  assertEquals(service.cap_add, ["SYS_ADMIN"]);
+  assertEquals(service.devices, ["/dev/fuse"]);
+  assertEquals(service.memory, "2g");
 });

@@ -103,17 +103,20 @@ export async function discoverPrivateIPs(
       }
 
       // Get interface name for this IP
+      // The interface name is at the end of the inet line
       const ifaceResult = await ssh.executeCommand(
-        `ip addr show | grep -B 2 "${ip}" | head -n 1 | awk '{print $2}' | sed 's/:$//'`,
+        `ip addr show | grep "inet ${ip}" | awk '{print $NF}'`,
       );
 
       if (ifaceResult.code === 0) {
         const iface = ifaceResult.stdout.trim();
 
-        // Skip Docker bridges and WireGuard interfaces
+        // Skip Docker/Podman bridges and WireGuard interfaces
         if (
           iface.startsWith("docker") ||
+          iface.startsWith("podman") ||
           iface.startsWith("br-") ||
+          iface.startsWith("cni-") ||
           iface.startsWith("jiji") ||
           iface.startsWith("wg")
         ) {
@@ -242,4 +245,54 @@ export function parseEndpoint(
   }
 
   return { host, port };
+}
+
+/**
+ * Select the best WireGuard endpoint based on network locality
+ *
+ * Prioritizes direct private network connections when both servers are on
+ * the same local network (e.g., 192.168.1.x). Falls back to public IP for
+ * cross-network connections.
+ *
+ * @param sourceEndpoints - Endpoints of the source server (this server)
+ * @param targetEndpoints - Endpoints of the target peer
+ * @returns Best endpoint to use for connecting to the peer
+ */
+export function selectBestEndpoint(
+  sourceEndpoints: string[],
+  targetEndpoints: string[],
+): string {
+  // Extract IPs from endpoints (remove :port)
+  const sourceIPs = sourceEndpoints.map((ep) => ep.split(":")[0]);
+  const targetIPs = targetEndpoints.map((ep) => ep.split(":")[0]);
+
+  // Check if both servers have private IPs in the same /24 subnet
+  for (const sourceIP of sourceIPs) {
+    if (!isPrivateIP(sourceIP)) continue;
+
+    const sourceSubnet = sourceIP.split(".").slice(0, 3).join("."); // e.g., "192.168.1"
+
+    for (const targetEndpoint of targetEndpoints) {
+      const targetIP = targetEndpoint.split(":")[0];
+      if (!isPrivateIP(targetIP)) continue;
+
+      const targetSubnet = targetIP.split(".").slice(0, 3).join(".");
+
+      // Same /24 subnet - use private IP for direct connection
+      if (sourceSubnet === targetSubnet) {
+        log.debug(
+          `Using local endpoint ${targetEndpoint} (same subnet: ${sourceSubnet}.x)`,
+          "network",
+        );
+        return targetEndpoint;
+      }
+    }
+  }
+
+  // No matching private subnets - use first endpoint (public IP)
+  log.debug(
+    `Using public endpoint ${targetEndpoints[0]} (no shared local network)`,
+    "network",
+  );
+  return targetEndpoints[0];
 }

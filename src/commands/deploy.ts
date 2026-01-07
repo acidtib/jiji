@@ -45,10 +45,12 @@ async function displayDeploymentPlan(
 
   let buildServices = config.getBuildServices();
   if (deployOptions.services) {
-    buildServices = filterServicesByPatterns(
-      buildServices,
-      deployOptions.services,
-      config,
+    // Filter build services, but don't error if none match
+    // (the service pattern might match non-build services)
+    const patterns = deployOptions.services.split(",").map((s) => s.trim());
+    const matchingNames = config.getMatchingServiceNames(patterns);
+    buildServices = buildServices.filter((service) =>
+      matchingNames.includes(service.name)
     );
   }
 
@@ -100,9 +102,9 @@ async function displayDeploymentPlan(
         );
       }
 
-      if (service.servers.length > 0) {
+      if (service.hosts.length > 0) {
         log.say(
-          `Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+          `Hosts: ${service.hosts.join(", ")}`,
           3,
         );
       }
@@ -206,10 +208,14 @@ export const deployCommand = new Command()
         } else {
           let filteredServices = servicesToBuild;
           if (deployOptions.services) {
-            filteredServices = filterServicesByPatterns(
-              servicesToBuild,
-              deployOptions.services,
-              config,
+            // Filter build services, but don't error if none match
+            // (the service pattern might match non-build services)
+            const patterns = deployOptions.services.split(",").map((s) =>
+              s.trim()
+            );
+            const matchingNames = config.getMatchingServiceNames(patterns);
+            filteredServices = servicesToBuild.filter((service) =>
+              matchingNames.includes(service.name)
             );
           }
 
@@ -243,6 +249,7 @@ export const deployCommand = new Command()
           const buildService = new BuildService({
             engine: config.builder.engine,
             registry,
+            config,
             globalOptions,
             noCache: deployOptions.noCache,
             push: true,

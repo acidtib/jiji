@@ -16,10 +16,28 @@ const TEST_CONFIG_DATA = {
       port: 6767,
     },
   },
+  servers: {
+    web1: {
+      host: "192.168.1.10",
+      arch: "amd64",
+    },
+    web2: {
+      host: "192.168.1.11",
+      arch: "amd64",
+    },
+    api1: {
+      host: "192.168.1.12",
+      arch: "amd64",
+    },
+    db1: {
+      host: "192.168.1.13",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      servers: [{ host: "192.168.1.10" }, { host: "192.168.1.11" }],
+      hosts: ["web1", "web2"],
       ports: ["80:80", "443:443"],
       proxy: {
         app_port: 80,
@@ -33,7 +51,7 @@ const TEST_CONFIG_DATA = {
         dockerfile: "Dockerfile.prod",
         target: "production",
       },
-      servers: [{ host: "192.168.1.12" }],
+      hosts: ["api1"],
       ports: ["3000:3000"],
       environment: {
         NODE_ENV: "production",
@@ -41,7 +59,7 @@ const TEST_CONFIG_DATA = {
     },
     database: {
       image: "postgres:15-alpine",
-      servers: [{ host: "192.168.1.13" }],
+      hosts: ["db1"],
       ports: ["5432:5432"],
       volumes: ["db_data:/var/lib/postgresql/data"],
     },
@@ -67,8 +85,8 @@ Deno.test("Configuration - deployment plan data collection", () => {
 
   // Verify web service details
   assertEquals(webService?.image, "nginx:latest");
-  assertEquals(webService?.servers.length, 2);
-  assertEquals(webService?.servers[0].host, "192.168.1.10");
+  assertEquals(webService?.hosts.length, 2);
+  assertEquals(webService?.hosts, ["web1", "web2"]);
   assertEquals(webService?.ports, ["80:80", "443:443"]);
   assertEquals(webService?.proxy?.enabled, true);
 
@@ -82,8 +100,8 @@ Deno.test("Configuration - deployment plan data collection", () => {
   assertEquals(apiBuild?.context, "./api");
   assertEquals(apiBuild?.dockerfile, "Dockerfile.prod");
   assertEquals(apiBuild?.target, "production");
-  assertEquals(apiService?.servers.length, 1);
-  assertEquals(apiService?.servers[0].host, "192.168.1.12");
+  assertEquals(apiService?.hosts.length, 1);
+  assertEquals(apiService?.hosts, ["api1"]);
 
   // Verify database service details
   assertEquals(dbService?.image, "postgres:15-alpine");
@@ -110,8 +128,8 @@ Deno.test("Configuration - deployment plan display format validation", () => {
     const hasBuild = service.build !== undefined;
     assertEquals(hasImage || hasBuild, true);
 
-    // Servers array should exist (can be empty)
-    assertEquals(Array.isArray(service.servers), true);
+    // Hosts array should exist (can be empty)
+    assertEquals(Array.isArray(service.hosts), true);
 
     // Ports array should exist (can be empty)
     assertEquals(Array.isArray(service.ports), true);

@@ -278,9 +278,12 @@ async function fetchLogs(
 
   // Fetch logs for each service on each host
   for (const service of servicesToShow) {
-    const serviceHosts = service.servers
-      .map((server: { host: string }) => server.host)
-      .filter((host: string) => context.targetHosts.includes(host));
+    const resolvedServers = context.config.getResolvedServersForService(
+      service.name,
+    );
+    const serviceHosts = resolvedServers
+      .map((server) => server.host)
+      .filter((host) => context.targetHosts.includes(host));
 
     if (serviceHosts.length === 0) {
       log.warn(`No target hosts found for service ${service.name}`);

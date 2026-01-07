@@ -211,7 +211,10 @@ export class BuildService {
     }
 
     // Get architectures required by servers
-    const requiredArchs = service.getRequiredArchitectures();
+    const requiredArchs = this.options.config
+      .getRequiredArchitecturesForService(
+        service.name,
+      );
 
     // Add platform/architecture based on server requirements
     if (requiredArchs.length > 1) {
@@ -298,8 +301,14 @@ export class BuildService {
 
     const context = buildConfig.context;
     const dockerfile = buildConfig.dockerfile || "Dockerfile";
-    const requiredArchs = service.getRequiredArchitectures();
-    const serversByArch = service.getServersByArchitecture();
+    const requiredArchs = this.options.config
+      .getRequiredArchitecturesForService(
+        service.name,
+      );
+    const serversByArch = this.options.config
+      .getServersByArchitectureForService(
+        service.name,
+      );
 
     log.say(`├── ├── Context: ${context}`, 2);
     log.say(`├── ├── Dockerfile: ${dockerfile}`, 2);

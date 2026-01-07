@@ -79,9 +79,9 @@ export const buildCommand = new Command()
           }
         }
 
-        if (service.servers.length > 0) {
+        if (service.hosts.length > 0) {
           log.say(
-            `Servers: ${service.servers.map((s) => s.host).join(", ")}`,
+            `Hosts: ${service.hosts.join(", ")}`,
             3,
           );
         }
@@ -137,6 +137,7 @@ export const buildCommand = new Command()
       const buildService = new BuildService({
         engine,
         registry,
+        config,
         globalOptions,
         noCache: buildOptions.noCache,
         push: buildOptions.push,

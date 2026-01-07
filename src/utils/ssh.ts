@@ -1193,3 +1193,105 @@ export async function setupSSHConnections(
     failedHosts,
   };
 }
+
+/**
+ * ResolvedServerConfig type for servers with merged SSH config
+ */
+export interface ResolvedServerConfig {
+  name: string;
+  host: string;
+  arch: string;
+  ssh: {
+    user: string;
+    port: number;
+    key_path?: string;
+    key_passphrase?: string;
+    keys?: string[];
+    key_data?: string[];
+  };
+}
+
+/**
+ * Setup SSH connections from resolved server configurations
+ * This function creates SSH managers with per-server SSH settings
+ *
+ * @param resolvedServers Array of resolved server configurations with per-server SSH config
+ * @param options SSH setup options
+ * @returns SSH managers, connected hosts, and failed hosts
+ */
+export async function setupSSHConnectionsFromResolvedServers(
+  resolvedServers: ResolvedServerConfig[],
+  options: {
+    skipValidation?: boolean;
+    allowPartialConnection?: boolean;
+    logLevel?: LogLevel;
+  } = {},
+): Promise<{
+  managers: SSHManager[];
+  connectedHosts: string[];
+  failedHosts: string[];
+}> {
+  // Validate SSH setup unless explicitly skipped
+  if (!options.skipValidation) {
+    const { log } = await import("./logger.ts");
+    log.say("├── Validating SSH configuration", 1);
+    const sshValidation = await validateSSHSetup();
+    if (!sshValidation.valid) {
+      log.error(`├── SSH setup validation failed:`, 1);
+      log.say(`└── ${sshValidation.message}`, 2);
+      throw new Error(`SSH validation failed: ${sshValidation.message}`);
+    }
+  }
+
+  // Create SSH managers with per-server configurations
+  const sshManagers = resolvedServers.map((server) => {
+    const sshConfig = {
+      ...createSSHConfigFromJiji({
+        user: server.ssh.user,
+        port: server.ssh.port,
+        keys: server.ssh.keys,
+        keyData: server.ssh.key_data,
+        keyPath: server.ssh.key_path,
+      }),
+      logLevel: options.logLevel,
+      useAgent: true,
+    };
+
+    return new SSHManager({
+      ...sshConfig,
+      host: server.host,
+    });
+  });
+
+  // Test connections
+  const connectionTests = await testConnections(sshManagers, undefined);
+
+  const { connectedManagers, connectedHosts, failedHosts } =
+    filterConnectedHosts(sshManagers, connectionTests);
+
+  // Handle connection results
+  if (connectedHosts.length === 0) {
+    const { log } = await import("./logger.ts");
+    log.error("No hosts are reachable. Cannot proceed.");
+    throw new Error("No SSH connections could be established");
+  }
+
+  if (failedHosts.length > 0) {
+    const { log } = await import("./logger.ts");
+    const message = `Some hosts are unreachable: ${failedHosts.join(", ")}`;
+
+    if (options.allowPartialConnection) {
+      log.warn(message);
+      log.say(`Continuing with ${connectedHosts.length} connected host(s)`, 1);
+    } else {
+      log.error(message);
+      throw new Error(message);
+    }
+  }
+
+  return {
+    managers: connectedManagers,
+    connectedHosts,
+    failedHosts,
+  };
+}

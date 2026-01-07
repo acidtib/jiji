@@ -16,7 +16,7 @@ import { getTopologyStats, loadTopology } from "../../lib/network/topology.ts";
 import { getWireGuardStatus } from "../../lib/network/wireguard.ts";
 import {
   isCorrosionRunning,
-  queryServiceContainers,
+  queryServerServiceContainerDetails,
 } from "../../lib/network/corrosion.ts";
 import { isCoreDNSRunning } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
@@ -127,24 +127,33 @@ export const statusCommand = new Command()
               try {
                 const services = config.getServiceNames();
                 const containers: Array<
-                  { service: string; ip: string; domain: string }
+                  {
+                    service: string;
+                    ip: string;
+                    baseDomain: string;
+                    instanceDomain?: string;
+                  }
                 > = [];
 
                 for (const serviceName of services) {
-                  const ips = await queryServiceContainers(ssh, serviceName);
-                  for (const ip of ips) {
-                    if (
-                      ip.startsWith(
-                        server.subnet.split("/")[0].substring(
-                          0,
-                          server.subnet.lastIndexOf(".") - 1,
-                        ),
-                      )
-                    ) {
-                      const domain =
-                        `${config.project}-${serviceName}.${topology.serviceDomain}`;
-                      containers.push({ service: serviceName, ip, domain });
-                    }
+                  const containerDetails =
+                    await queryServerServiceContainerDetails(
+                      ssh,
+                      serviceName,
+                      server.id,
+                    );
+                  for (const detail of containerDetails) {
+                    const baseDomain =
+                      `${config.project}-${serviceName}.${topology.serviceDomain}`;
+                    const instanceDomain = detail.instanceId
+                      ? `${config.project}-${serviceName}-${detail.instanceId}.${topology.serviceDomain}`
+                      : undefined;
+                    containers.push({
+                      service: serviceName,
+                      ip: detail.ip,
+                      baseDomain,
+                      instanceDomain,
+                    });
                   }
                 }
 
@@ -193,8 +202,14 @@ export const statusCommand = new Command()
                         .join(", ");
                       proxyInfo = ` -> ${hostUrls}`;
                     }
+
+                    // Display both base domain and instance-specific domain if it exists
+                    const domainInfo = container.instanceDomain
+                      ? `${container.baseDomain}, ${container.instanceDomain}`
+                      : container.baseDomain;
+
                     log.say(
-                      `    ${prefix} ${container.service}: ${container.ip} (${container.domain})${proxyInfo}`,
+                      `    ${prefix} ${container.service}: ${container.ip} (${domainInfo})${proxyInfo}`,
                       2,
                     );
                   }

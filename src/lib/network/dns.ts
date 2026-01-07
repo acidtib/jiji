@@ -99,8 +99,12 @@ ${config.serviceDomain} {
         fallthrough
     }
 
-    # Cache DNS responses
-    cache 30
+    # Forward queries not in hosts file to system resolvers
+    forward . /etc/resolv.conf
+
+    # Cache DNS responses (5 minutes - balanced for distributed systems)
+    # Active health checks via control loop ensure stale entries are cleaned
+    cache 300
 
     # Log queries
     log
@@ -118,8 +122,9 @@ ${config.serviceDomain} {
         fallthrough
     }
 
-    forward . ${config.upstreamResolvers.join(" ")}
-    cache 30
+    # Use system's default resolvers from /etc/resolv.conf
+    forward . /etc/resolv.conf
+    cache 300
     log
     errors
 }
@@ -157,14 +162,19 @@ echo "# Jiji container hostnames" >> "\$SYSTEM_TEMP_FILE"
 
 # Query Corrosion for all healthy containers with service and project info
 /opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "
-  SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id
+  SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id || '|' || COALESCE(c.instance_id, '')
   FROM containers c
   JOIN services s ON c.service = s.name
   WHERE c.healthy = 1;
-" 2>/dev/null | while IFS='|' read -r project service ip container_id; do
+" 2>/dev/null | while IFS='|' read -r project service ip container_id instance_id; do
   if [ -n "\$project" ] && [ -n "\$service" ] && [ -n "\$ip" ] && [ -n "\$container_id" ]; then
-    # For CoreDNS (project-service discovery domain) - ONLY FORMAT NEEDED
+    # For CoreDNS (project-service discovery domain)
     echo "\$ip \${project}-\${service}.${serviceDomain}" >> "\$TEMP_FILE"
+
+    # Also add instance-specific domain if instance_id is set
+    if [ -n "\$instance_id" ]; then
+      echo "\$ip \${project}-\${service}-\${instance_id}.${serviceDomain}" >> "\$TEMP_FILE"
+    fi
   fi
 done
 
@@ -388,11 +398,25 @@ export function registerContainerHostname(
   serviceName: string,
   projectName: string,
   containerIp: string,
+  instanceId?: string,
 ): void {
-  log.say(
-    `├── Registered ${projectName}-${serviceName}.jiji -> ${containerIp} in CoreDNS`,
-    2,
-  );
+  const baseDomain = `${projectName}-${serviceName}.jiji`;
+  if (instanceId) {
+    const instanceDomain = `${projectName}-${serviceName}-${instanceId}.jiji`;
+    log.say(
+      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+    log.say(
+      `├── Registered ${instanceDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+  } else {
+    log.say(
+      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      2,
+    );
+  }
 }
 
 /**
@@ -442,7 +466,7 @@ export async function configureContainerDNS(
     // Merge DNS configuration with existing config
     const daemonConfig = {
       ...existingConfig,
-      dns: [dnsServer, "8.8.8.8", "1.1.1.1"],
+      dns: [dnsServer],
       "dns-search": [serviceDomain],
       "dns-opts": ["ndots:1"],
     };
@@ -468,7 +492,7 @@ export async function configureContainerDNS(
   } else if (engine === "podman") {
     // Podman uses containers.conf
     const containersConf = `[network]
-dns_servers = ["${dnsServer}", "8.8.8.8", "1.1.1.1"]
+dns_servers = ["${dnsServer}"]
 dns_searches = ["${serviceDomain}"]
 dns_options = ["ndots:1"]
 `;

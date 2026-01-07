@@ -4,7 +4,10 @@
 
 import type { GlobalOptions } from "../types.ts";
 import { Configuration } from "../lib/configuration.ts";
-import { setupSSHConnections, type SSHManager } from "./ssh.ts";
+import {
+  setupSSHConnectionsFromResolvedServers,
+  type SSHManager,
+} from "./ssh.ts";
 import { log } from "./logger.ts";
 
 /**
@@ -55,6 +58,11 @@ export interface CommandContextOptions {
    * Skip host filtering (use all hosts)
    */
   skipHostFiltering?: boolean;
+  /**
+   * Use all defined servers from servers section (not just service-referenced)
+   * This is needed for network initialization where all servers must peer
+   */
+  useAllDefinedServers?: boolean;
 }
 
 /**
@@ -110,9 +118,15 @@ export async function setupCommandContext(
     globalOptions.configFile,
   );
   const configPath = config.configPath || "unknown";
-  let allHosts = config.getAllServerHosts();
+
+  // Get servers with SSH config
+  // Use all defined servers for network init, or only service-referenced for deploys
+  let resolvedServers = options.useAllDefinedServers
+    ? config.getAllDefinedServers()
+    : config.getAllResolvedServers();
   let matchingServices: string[] | undefined;
 
+  // Apply service filtering
   if (globalOptions.services && !options.skipServiceFiltering) {
     const requestedServices = globalOptions.services.split(",").map((s) =>
       s.trim()
@@ -131,14 +145,22 @@ export async function setupCommandContext(
       Deno.exit(1);
     }
 
-    allHosts = config.getHostsFromServices(matchingServices);
+    // Get hosts for matching services
+    const serviceHosts = config.getHostsFromServices(matchingServices);
+
+    // Filter resolved servers to only those used by matching services
+    resolvedServers = resolvedServers.filter((server) =>
+      serviceHosts.includes(server.host)
+    );
 
     log.say(`Targeting services: ${matchingServices.join(", ")}`, 1);
-    log.say(`Service hosts: ${allHosts.join(", ")}`, 1);
+    log.say(`Service hosts: ${serviceHosts.join(", ")}`, 1);
   }
 
+  // Apply host filtering
   if (globalOptions.hosts && !options.skipHostFiltering) {
     const requestedHosts = globalOptions.hosts.split(",").map((h) => h.trim());
+    const allHosts = resolvedServers.map((s) => s.host);
     const validHosts = requestedHosts.filter((host) => allHosts.includes(host));
     const invalidHosts = requestedHosts.filter((host) =>
       !allHosts.includes(host)
@@ -155,11 +177,14 @@ export async function setupCommandContext(
       Deno.exit(1);
     }
 
-    allHosts = validHosts;
-    log.say(`Targeting specific hosts: ${allHosts.join(", ")}`, 1);
+    // Filter resolved servers to only requested hosts
+    resolvedServers = resolvedServers.filter((server) =>
+      validHosts.includes(server.host)
+    );
+    log.say(`Targeting specific hosts: ${validHosts.join(", ")}`, 1);
   }
 
-  if (allHosts.length === 0) {
+  if (resolvedServers.length === 0) {
     log.error(
       `No remote hosts found in configuration at: ${configPath}`,
     );
@@ -170,19 +195,10 @@ export async function setupCommandContext(
     Deno.exit(1);
   }
 
+  // Setup SSH connections using resolved servers with per-server SSH config
   const sshTracker = log.createStepTracker("SSH Connection Setup:");
-  const sshResult = await setupSSHConnections(
-    allHosts,
-    {
-      user: config.ssh.user,
-      port: config.ssh.port,
-      proxy: config.ssh.proxy,
-      proxy_command: config.ssh.proxyCommand,
-      keys: config.ssh.allKeys.length > 0 ? config.ssh.allKeys : undefined,
-      keyData: config.ssh.keyData,
-      keysOnly: config.ssh.keysOnly,
-      dnsRetries: config.ssh.dnsRetries,
-    },
+  const sshResult = await setupSSHConnectionsFromResolvedServers(
+    resolvedServers,
     { allowPartialConnection: options.allowPartialConnection ?? true },
   );
   sshTracker.finish();

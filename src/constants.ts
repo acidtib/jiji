@@ -17,11 +17,6 @@ export const CONTAINER_START_RETRY_DELAY_MS = 1000;
 export const CONTAINER_LOG_TAIL_LINES = 50;
 
 /**
- * DNS configuration
- */
-export const FALLBACK_DNS_SERVERS = ["8.8.8.8", "8.8.4.4"];
-
-/**
  * Logging configuration
  */
 export const DEFAULT_MAX_PREFIX_LENGTH = 25;

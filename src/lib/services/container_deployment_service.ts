@@ -122,7 +122,7 @@ export class ContainerDeploymentService {
 
       // Start new container (old one still running if it existed)
       try {
-        await this.startContainer(
+        const containerId = await this.startContainer(
           service,
           fullImageName,
           containerName,
@@ -138,10 +138,12 @@ export class ContainerDeploymentService {
         if (this.config.network.enabled) {
           containerIp = await this.registerInNetwork(
             service,
-            containerName,
+            containerId,
             host,
             ssh,
             options.allSshManagers,
+            options.serverConfig,
+            options.hasMultipleServers,
           );
         }
 
@@ -222,7 +224,13 @@ export class ContainerDeploymentService {
   ): Promise<DeploymentResult[]> {
     const results: DeploymentResult[] = [];
 
-    for (const server of service.servers) {
+    // Get resolved servers for this service
+    const resolvedServers = this.config.getResolvedServersForService(
+      service.name,
+    );
+
+    for (let i = 0; i < resolvedServers.length; i++) {
+      const server = resolvedServers[i];
       const host = server.host;
 
       if (!connectedHosts.includes(host)) {
@@ -251,10 +259,24 @@ export class ContainerDeploymentService {
       }
 
       await log.hostBlock(host, async () => {
-        const result = await this.deployService(service, host, hostSsh, {
+        // Pass server config and deployment options
+        // Instance ID will be calculated during network registration using server.id
+        const deployOptions = {
           ...options,
           allSshManagers: sshManagers,
-        });
+          serverConfig: {
+            host: server.host,
+            arch: server.arch,
+          },
+          hasMultipleServers: resolvedServers.length > 1,
+        };
+
+        const result = await this.deployService(
+          service,
+          host,
+          hostSsh,
+          deployOptions,
+        );
         results.push(result);
       }, { indent: 1 });
     }
@@ -483,6 +505,13 @@ export class ContainerDeploymentService {
       this.config.network.enabled,
     );
 
+    log.debug(
+      `DNS server for ${host}: ${
+        dnsServer || "none (network registration may have failed)"
+      }`,
+      "deploy",
+    );
+
     const builder = new ContainerRunBuilder(
       this.engine,
       containerName,
@@ -497,7 +526,36 @@ export class ContainerDeploymentService {
 
     // Add DNS configuration if network is enabled
     if (dnsServer) {
+      log.debug(
+        `Adding DNS configuration: server=${dnsServer}, search=${this.config.network.serviceDomain}`,
+        "deploy",
+      );
       builder.dns(dnsServer, this.config.network.serviceDomain);
+    } else {
+      log.warn(
+        `No DNS server configured for ${host} - containers won't be able to resolve .${this.config.network.serviceDomain} domains`,
+        2,
+      );
+    }
+
+    // Add resource constraints if specified
+    if (service.cpus !== undefined) {
+      builder.cpus(service.cpus);
+    }
+    if (service.memory !== undefined) {
+      builder.memory(service.memory);
+    }
+    if (service.gpus !== undefined) {
+      builder.gpus(service.gpus);
+    }
+    if (service.devices.length > 0) {
+      builder.devices(service.devices);
+    }
+    if (service.privileged) {
+      builder.privileged();
+    }
+    if (service.cap_add.length > 0) {
+      builder.capAdd(service.cap_add);
     }
 
     const runCommand = builder.build();
@@ -595,17 +653,82 @@ export class ContainerDeploymentService {
   /**
    * Clean up old container after successful deployment
    * This should be called after health checks pass
+   *
+   * Performs cluster-wide cleanup to ensure stale DNS entries are removed
    */
   async cleanupOldContainer(
     oldContainerName: string,
     _host: string,
     ssh: SSHManager,
+    allSshManagers?: SSHManager[],
   ): Promise<void> {
     log.say(
       `├── Cleaning up old container: ${oldContainerName}`,
       2,
     );
+
+    // Get container ID before removal (needed for network unregistration)
+    const getIdResult = await ssh.executeCommand(
+      `${this.engine} ps -aq --filter name=^${oldContainerName}$`,
+    );
+    const oldContainerId = getIdResult.stdout.trim();
+
+    // Remove the container from the host
     await this.removeContainer(oldContainerName, ssh);
+
+    // If network is enabled and we have the container ID, perform cluster-wide cleanup
+    if (this.config.network.enabled && oldContainerId && allSshManagers) {
+      try {
+        log.debug(
+          `Performing cluster-wide cleanup for container ${oldContainerId}`,
+          "deploy",
+        );
+
+        // Delete container record from Corrosion on all servers
+        // This ensures immediate propagation instead of waiting for eventual consistency
+        const deletePromises = allSshManagers.map(async (remoteSsh) => {
+          try {
+            await remoteSsh.executeCommand(
+              `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "DELETE FROM containers WHERE id = '${oldContainerId}';" 2>/dev/null || true`,
+            );
+          } catch (error) {
+            log.debug(
+              `Failed to delete container from ${remoteSsh.getHost()}: ${error}`,
+              "deploy",
+            );
+          }
+        });
+
+        await Promise.all(deletePromises);
+
+        // Small delay to allow Corrosion writes to commit
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Trigger DNS update on all servers
+        const dnsUpdatePromises = allSshManagers.map(async (remoteSsh) => {
+          try {
+            await remoteSsh.executeCommand(
+              "/opt/jiji/dns/update-hosts.sh 2>/dev/null || true",
+            );
+          } catch (error) {
+            log.debug(
+              `Failed to trigger DNS update on ${remoteSsh.getHost()}: ${error}`,
+              "deploy",
+            );
+          }
+        });
+
+        await Promise.all(dnsUpdatePromises);
+
+        log.debug("Cluster-wide cleanup completed", "deploy");
+      } catch (error) {
+        log.warn(
+          `Cluster-wide cleanup failed: ${error} (old container removed locally)`,
+          2,
+        );
+      }
+    }
+
     log.say(`└── Old container removed: ${oldContainerName}`, 2);
   }
 
@@ -614,10 +737,12 @@ export class ContainerDeploymentService {
    */
   private async registerInNetwork(
     service: ServiceConfiguration,
-    containerName: string,
+    containerId: string,
     host: string,
     ssh: SSHManager,
     allSshManagers?: SSHManager[],
+    serverConfig?: { host: string; arch?: string; alias?: string },
+    hasMultipleServers?: boolean,
   ): Promise<string | undefined> {
     try {
       // Load topology from Corrosion via SSH
@@ -636,6 +761,27 @@ export class ContainerDeploymentService {
         return undefined;
       }
 
+      // Calculate instance ID: use alias if provided, otherwise generate a random short hash
+      // Only set instance ID if service has multiple servers
+      let instanceId: string | undefined;
+      if (hasMultipleServers) {
+        if (serverConfig?.alias) {
+          instanceId = serverConfig.alias;
+        } else {
+          // Generate a stable, short identifier based on project + service + host
+          // This avoids exposing the public IP while remaining stable across deployments
+          const input = `${this.config.project}-${service.name}-${host}`;
+          const hashBuffer = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(input),
+          );
+          const hashArray = Array.from(new Uint8Array(hashBuffer));
+          const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+          instanceId = hashHex.substring(0, 8);
+        }
+      }
+
       log.say(`├── Registering ${service.name} in network...`, 2);
 
       // First register locally (this gets IP and sets up DNS)
@@ -644,8 +790,9 @@ export class ContainerDeploymentService {
         service.name,
         this.config.project,
         server.id,
-        containerName,
+        containerId,
         this.engine,
+        instanceId,
       );
 
       if (!registered) {
@@ -659,7 +806,7 @@ export class ContainerDeploymentService {
       // Get container IP for cluster-wide registration
       const containerIp = await getContainerIp(
         ssh,
-        containerName,
+        containerId,
         this.engine,
       );
 
@@ -670,9 +817,10 @@ export class ContainerDeploymentService {
           service.name,
           this.config.project,
           server.id,
-          containerName,
+          containerId,
           containerIp,
           Date.now(),
+          instanceId,
         );
         log.say(
           `├── Registered ${service.name} cluster-wide for DNS resolution`,

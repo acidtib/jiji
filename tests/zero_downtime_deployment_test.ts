@@ -276,16 +276,33 @@ class IntegrationMockSSHManager {
 // Test configuration for zero-downtime deployment
 const ZERO_DOWNTIME_CONFIG = {
   project: "zero-downtime-test",
+  ssh: {
+    user: "root",
+  },
   builder: {
     engine: "docker",
     registry: {
       type: "local",
     },
   },
+  servers: {
+    "web-server-1": {
+      host: "web-server-1",
+      arch: "amd64",
+    },
+    "web-server-2": {
+      host: "web-server-2",
+      arch: "amd64",
+    },
+    "api-server-1": {
+      host: "api-server-1",
+      arch: "amd64",
+    },
+  },
   services: {
     web: {
       image: "nginx:latest",
-      servers: [{ host: "web-server-1" }, { host: "web-server-2" }],
+      hosts: ["web-server-1", "web-server-2"],
       ports: ["3000:80"],
       proxy: {
         enabled: true,
@@ -302,7 +319,7 @@ const ZERO_DOWNTIME_CONFIG = {
     },
     api: {
       image: "node:18",
-      servers: [{ host: "api-server-1" }],
+      hosts: ["api-server-1"],
       ports: ["4000:4000"],
       proxy: {
         enabled: true,
@@ -693,10 +710,20 @@ Deno.test("Zero-downtime deployment - concurrent deployment timing", async () =>
 Deno.test("Zero-downtime deployment - mixed service types (with and without proxy)", async () => {
   const mixedConfig = {
     ...ZERO_DOWNTIME_CONFIG,
+    servers: {
+      "web-server-1": {
+        host: "web-server-1",
+        arch: "amd64",
+      },
+      "worker-server": {
+        host: "worker-server",
+        arch: "amd64",
+      },
+    },
     services: {
       web: {
         image: "nginx:latest",
-        servers: [{ host: "web-server-1" }], // Only include available host
+        hosts: ["web-server-1"], // Only include available host
         ports: ["3000:80"],
         proxy: {
           enabled: true,
@@ -713,7 +740,7 @@ Deno.test("Zero-downtime deployment - mixed service types (with and without prox
       },
       worker: {
         image: "redis:latest",
-        servers: [{ host: "worker-server" }],
+        hosts: ["worker-server"],
         ports: ["6379:6379"],
         // No proxy configuration
         retain: 1,

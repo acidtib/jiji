@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS containers (
   server_id TEXT NOT NULL DEFAULT '',
   ip TEXT NOT NULL DEFAULT '',
   healthy INTEGER DEFAULT 1,
-  started_at INTEGER NOT NULL DEFAULT 0
+  started_at INTEGER NOT NULL DEFAULT 0,
+  instance_id TEXT DEFAULT NULL
 );
 
 -- Enable CRDT for all tables (disabled for compatibility)
@@ -366,15 +367,20 @@ export async function registerContainer(
   container: ContainerRegistration,
 ): Promise<void> {
   const healthy = container.healthy ? 1 : 0;
+  const instanceId = container.instanceId !== undefined
+    ? `'${escapeSql(container.instanceId)}'`
+    : "NULL";
 
   const sql = `
     INSERT OR REPLACE INTO containers
-    (id, service, server_id, ip, healthy, started_at)
+    (id, service, server_id, ip, healthy, started_at, instance_id)
     VALUES
     ('${escapeSql(container.id)}', '${escapeSql(container.service)}', '${
     escapeSql(container.serverId)
   }',
-     '${escapeSql(container.ip)}', ${healthy}, ${container.startedAt});
+     '${
+    escapeSql(container.ip)
+  }', ${healthy}, ${container.startedAt}, ${instanceId});
   `;
 
   const result = await ssh.executeCommand(
@@ -434,6 +440,79 @@ export async function queryServiceContainers(
 
   // Parse output (one IP per line)
   return result.stdout.trim().split("\n").filter((ip: string) => ip.length > 0);
+}
+
+/**
+ * Query containers for a service on a specific server
+ *
+ * @param ssh - SSH connection to the server
+ * @param serviceName - Service name to query
+ * @param serverId - Server ID to filter by
+ * @returns Array of container IPs on that server
+ */
+export async function queryServerServiceContainers(
+  ssh: SSHManager,
+  serviceName: string,
+  serverId: string,
+): Promise<string[]> {
+  const sql = `SELECT ip FROM containers WHERE service = '${
+    escapeSql(serviceName)
+  }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(
+      `Failed to query server service containers: ${result.stderr}`,
+    );
+  }
+
+  // Parse output (one IP per line)
+  return result.stdout.trim().split("\n").filter((ip: string) => ip.length > 0);
+}
+
+/**
+ * Query container details for a specific service on a specific server
+ *
+ * Returns container information including IP and instance_id (if set)
+ *
+ * @param ssh - SSH connection
+ * @param serviceName - Service name to query
+ * @param serverId - Server ID to filter by
+ * @returns Array of container details with IP and instance_id
+ */
+export async function queryServerServiceContainerDetails(
+  ssh: SSHManager,
+  serviceName: string,
+  serverId: string,
+): Promise<Array<{ ip: string; instanceId?: string }>> {
+  const sql = `SELECT ip, instance_id FROM containers WHERE service = '${
+    escapeSql(serviceName)
+  }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
+
+  const result = await ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(
+      `Failed to query server service containers: ${result.stderr}`,
+    );
+  }
+
+  // Parse output (format: "ip|instance_id" per line, instance_id may be empty)
+  const lines = result.stdout.trim().split("\n").filter((line: string) =>
+    line.length > 0
+  );
+  return lines.map((line: string) => {
+    const parts = line.split("|");
+    return {
+      ip: parts[0] || "",
+      instanceId: parts[1] && parts[1].trim() !== "" ? parts[1] : undefined,
+    };
+  });
 }
 
 /**

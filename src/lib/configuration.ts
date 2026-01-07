@@ -4,6 +4,10 @@ import { ServiceConfiguration } from "./configuration/service.ts";
 import { EnvironmentConfiguration } from "./configuration/environment.ts";
 import { BuilderConfiguration } from "./configuration/builder.ts";
 import { NetworkConfiguration } from "./configuration/network.ts";
+import {
+  type ResolvedServerConfig,
+  ServersConfiguration,
+} from "./configuration/servers.ts";
 import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
@@ -17,6 +21,7 @@ export type ContainerEngine = "docker" | "podman";
 export class Configuration extends BaseConfiguration {
   private _project?: string;
   private _ssh?: SSHConfiguration;
+  private _servers?: ServersConfiguration;
   private _services?: Map<string, ServiceConfiguration>;
   private _environment?: EnvironmentConfiguration;
   private _builder?: BuilderConfiguration; // Lazy-loaded, required field
@@ -56,6 +61,21 @@ export class Configuration extends BaseConfiguration {
       );
     }
     return this._ssh;
+  }
+
+  /**
+   * Servers configuration (top-level named servers)
+   */
+  get servers(): ServersConfiguration {
+    if (!this._servers) {
+      const serversConfig = this.getRequired<Record<string, unknown>>(
+        "servers",
+      );
+      this._servers = new ServersConfiguration(
+        this.validateObject(serversConfig, "servers"),
+      );
+    }
+    return this._servers;
   }
 
   /**
@@ -172,12 +192,130 @@ export class Configuration extends BaseConfiguration {
   }
 
   /**
-   * Gets services filtered by host
+   * Resolve a server name to full configuration with merged SSH settings
+   */
+  resolveServer(name: string): ResolvedServerConfig {
+    const serverConfig = this.servers.getServer(name);
+    if (!serverConfig) {
+      throw new ConfigurationError(
+        `Server '${name}' not found in servers section. ` +
+          `Available servers: ${this.servers.getAllServerNames().join(", ")}`,
+      );
+    }
+
+    const globalSSH = this.ssh;
+
+    return {
+      name,
+      host: serverConfig.host,
+      arch: serverConfig.arch || "amd64", // Default architecture
+      ssh: {
+        user: serverConfig.user || globalSSH.user,
+        port: serverConfig.port || globalSSH.port,
+        key_path: serverConfig.key_path || globalSSH.keyPath,
+        key_passphrase: serverConfig.key_passphrase ||
+          globalSSH.keyPassphrase,
+        keys: serverConfig.keys || globalSSH.keys,
+        key_data: serverConfig.key_data || globalSSH.keyData,
+      },
+    };
+  }
+
+  /**
+   * Get all defined servers from the servers section
+   * This returns ALL servers, even if not used by any service
+   * Used for network initialization where all servers need to peer
+   */
+  getAllDefinedServers(): ResolvedServerConfig[] {
+    const serverNames = Array.from(this.servers.servers.keys());
+    return serverNames.map((name: string) => this.resolveServer(name));
+  }
+
+  /**
+   * Get all resolved servers from all services (unique by name)
+   * This returns only servers that are referenced by at least one service
+   */
+  getAllResolvedServers(): ResolvedServerConfig[] {
+    const serverNames = new Set<string>();
+
+    // Collect all server names referenced by services
+    for (const service of this.services.values()) {
+      for (const serverName of service.hosts) {
+        serverNames.add(serverName);
+      }
+    }
+
+    // Resolve each unique server name
+    return Array.from(serverNames).map((name) => this.resolveServer(name));
+  }
+
+  /**
+   * Get resolved servers for a specific service
+   *
+   * @param serviceName Name of the service
+   * @returns Array of resolved server configurations for the service
+   */
+  getResolvedServersForService(
+    serviceName: string,
+  ): ResolvedServerConfig[] {
+    const service = this.services.get(serviceName);
+    if (!service) {
+      throw new ConfigurationError(`Service '${serviceName}' not found`);
+    }
+
+    return service.hosts.map((serverName) => this.resolveServer(serverName));
+  }
+
+  /**
+   * Get required architectures for a service
+   *
+   * @param serviceName Name of the service
+   * @returns Array of unique architectures required by the service's servers
+   */
+  getRequiredArchitecturesForService(serviceName: string): string[] {
+    const resolvedServers = this.getResolvedServersForService(serviceName);
+    const archs = new Set<string>();
+
+    for (const server of resolvedServers) {
+      archs.add(server.arch);
+    }
+
+    return Array.from(archs).sort();
+  }
+
+  /**
+   * Get servers grouped by architecture for a service
+   *
+   * @param serviceName Name of the service
+   * @returns Map of architecture to resolved server configs
+   */
+  getServersByArchitectureForService(
+    serviceName: string,
+  ): Map<string, ResolvedServerConfig[]> {
+    const resolvedServers = this.getResolvedServersForService(serviceName);
+    const byArch = new Map<string, ResolvedServerConfig[]>();
+
+    for (const server of resolvedServers) {
+      if (!byArch.has(server.arch)) {
+        byArch.set(server.arch, []);
+      }
+      byArch.get(server.arch)!.push(server);
+    }
+
+    return byArch;
+  }
+
+  /**
+   * Gets services filtered by hostname
    */
   getServicesForHost(hostname: string): ServiceConfiguration[] {
-    return Array.from(this.services.values()).filter((service) =>
-      service.servers.some((server) => server.host === hostname)
-    );
+    return Array.from(this.services.values()).filter((service) => {
+      // Check if any of the service's server names resolve to this hostname
+      return service.hosts.some((serverName) => {
+        const resolved = this.resolveServer(serverName);
+        return resolved.host === hostname;
+      });
+    });
   }
 
   /**
@@ -186,19 +324,20 @@ export class Configuration extends BaseConfiguration {
   getAllServerHosts(): string[] {
     const hosts = new Set<string>();
     for (const service of this.services.values()) {
-      for (const server of service.servers) {
-        hosts.add(server.host);
+      for (const serverName of service.hosts) {
+        const resolved = this.resolveServer(serverName);
+        hosts.add(resolved.host);
       }
     }
     return Array.from(hosts).sort();
   }
 
   /**
-   * Gets hosts from specific services
+   * Gets hostnames from specific services
    * Supports wildcards with * pattern matching
    *
    * @param serviceNames - Array of service names (supports wildcards)
-   * @returns Array of unique hosts from matching services
+   * @returns Array of unique hostnames from matching services
    */
   getHostsFromServices(serviceNames: string[]): string[] {
     const hosts = new Set<string>();
@@ -214,8 +353,9 @@ export class Configuration extends BaseConfiguration {
       for (const serviceName of matchingServices) {
         const service = this.services.get(serviceName);
         if (service) {
-          service.servers.forEach((server) => {
-            hosts.add(server.host);
+          service.hosts.forEach((serverName) => {
+            const resolved = this.resolveServer(serverName);
+            hosts.add(resolved.host);
           });
         }
       }
@@ -368,10 +508,63 @@ export class Configuration extends BaseConfiguration {
       }
     }
 
+    // Validate servers configuration (required)
+    try {
+      const serversResult = this.servers.validate();
+      if (!serversResult.valid) {
+        result.errors.push(...serversResult.errors);
+        result.valid = false;
+      }
+      result.warnings.push(...serversResult.warnings);
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        result.errors.push({
+          path: "servers",
+          message: error.message,
+          code: "SERVERS_VALIDATION",
+        });
+        result.valid = false;
+      }
+    }
+
     // Custom cross-service validations
+    this.validateServerReferences(result);
     this.validateHostConsistency(result);
 
     return result;
+  }
+
+  /**
+   * Validates server references in services
+   */
+  private validateServerReferences(result: ValidationResult): void {
+    const definedServers = this.servers.getAllServerNames();
+
+    for (const service of this.services.values()) {
+      // Check that service has at least one host
+      if (service.hosts.length === 0) {
+        result.errors.push({
+          path: `services.${service.name}.hosts`,
+          message:
+            `Service '${service.name}' must specify at least one server in 'hosts' array`,
+          code: "NO_HOSTS",
+        });
+        result.valid = false;
+      }
+
+      // Check that all referenced servers exist
+      for (const serverName of service.hosts) {
+        if (!definedServers.includes(serverName)) {
+          result.errors.push({
+            path: `services.${service.name}.hosts`,
+            message: `Server '${serverName}' not found in servers section. ` +
+              `Available servers: ${definedServers.join(", ")}`,
+            code: "UNDEFINED_SERVER",
+          });
+          result.valid = false;
+        }
+      }
+    }
   }
 
   /**
@@ -380,18 +573,7 @@ export class Configuration extends BaseConfiguration {
   private validateHostConsistency(result: ValidationResult): void {
     const allHosts = this.getAllServerHosts();
 
-    for (const service of this.services.values()) {
-      if (service.servers.length === 0) {
-        result.errors.push({
-          path: `services.${service.name}.servers`,
-          message: `Service '${service.name}' must specify at least one server`,
-          code: "NO_SERVERS",
-        });
-        result.valid = false;
-      }
-    }
-
-    // Warn about unused hosts in environment
+    // Warn about large number of hosts
     if (allHosts.length > 10) {
       result.warnings.push({
         path: "services",
@@ -399,6 +581,24 @@ export class Configuration extends BaseConfiguration {
           `Large number of hosts (${allHosts.length}) may impact deployment performance`,
         code: "MANY_HOSTS",
       });
+    }
+
+    // Warn about unused servers
+    const definedServers = this.servers.getAllServerNames();
+    const usedServers = new Set<string>();
+    for (const service of this.services.values()) {
+      service.hosts.forEach((name) => usedServers.add(name));
+    }
+
+    for (const serverName of definedServers) {
+      if (!usedServers.has(serverName)) {
+        result.warnings.push({
+          path: `servers.${serverName}`,
+          message:
+            `Server '${serverName}' is defined but not used by any service`,
+          code: "UNUSED_SERVER",
+        });
+      }
     }
   }
 
@@ -415,6 +615,13 @@ export class Configuration extends BaseConfiguration {
     if (Object.keys(sshObj).length > 0) {
       result.ssh = sshObj;
     }
+
+    // Add servers (required)
+    const serversObj: Record<string, unknown> = {};
+    for (const [name, server] of this.servers.servers) {
+      serversObj[name] = server;
+    }
+    result.servers = serversObj;
 
     // Add services
     const servicesObj: Record<string, unknown> = {};

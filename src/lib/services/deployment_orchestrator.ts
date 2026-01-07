@@ -188,6 +188,7 @@ export class DeploymentOrchestrator {
     targetHosts: string[],
   ): Promise<ProxyInstallResult[]> {
     const proxyHosts = ProxyService.getHostsNeedingProxy(
+      this.config,
       servicesWithProxy,
       targetHosts,
     );
@@ -334,6 +335,7 @@ export class DeploymentOrchestrator {
               oldContainerName,
               result.host,
               hostSsh,
+              this.sshManagers, // Pass all SSH managers for cluster-wide cleanup
             );
           } else {
             // Health checks failed - rollback
@@ -382,6 +384,7 @@ export class DeploymentOrchestrator {
           result.containerName,
           result.host,
           hostSsh,
+          this.sshManagers, // Pass all SSH managers for cluster-wide cleanup
         );
       }
 

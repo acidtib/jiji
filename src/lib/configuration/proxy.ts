@@ -46,8 +46,9 @@ export class ProxyConfiguration extends BaseConfiguration {
   private _targets?: ProxyTarget[];
 
   // Validation patterns
+  // Supports standard hostnames and wildcard domains (e.g., *.example.com)
   private static readonly HOST_PATTERN =
-    /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+    /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
   private static readonly INVALID_PATH_CHARS = /[<>"|?*]/;
   private static readonly INTERVAL_PATTERN = /^\d+[smh]$/;
 

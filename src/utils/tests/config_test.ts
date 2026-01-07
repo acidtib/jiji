@@ -22,18 +22,28 @@ ssh:
 builder:
   engine: docker
   local: true
+servers:
+  web1:
+    host: web1.example.com
+    arch: amd64
+  web2:
+    host: web2.example.com
+    arch: amd64
+  api1:
+    host: api1.example.com
+    arch: amd64
 services:
   web:
     image: nginx:latest
-    servers:
-      - host: web1.example.com
-      - host: web2.example.com
+    hosts:
+      - web1
+      - web2
     ports:
       - "80:80"
   api:
     image: node:18
-    servers:
-      - host: api1.example.com
+    hosts:
+      - api1
     ports:
       - "3000:3000"
     env:
@@ -47,10 +57,13 @@ engine: invalid_engine
 ssh:
   user: testuser
   port: "not_a_number"
+servers:
+  server1:
+    host: example.com
 services:
   web:
     # Missing required fields
-    servers: []
+    hosts: []
 `;
 
 // Helper function to create temporary config files

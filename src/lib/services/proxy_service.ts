@@ -338,7 +338,12 @@ export class ProxyService {
     for (const service of services) {
       log.say(`- Configuring proxy for ${service.name}`, 1);
 
-      for (const server of service.servers) {
+      // Get resolved servers for this service
+      const resolvedServers = this.config.getResolvedServersForService(
+        service.name,
+      );
+
+      for (const server of resolvedServers) {
         const host = server.host;
         const hostSsh = this.sshManagers.find((ssh) => ssh.getHost() === host);
 
@@ -496,11 +501,13 @@ export class ProxyService {
   /**
    * Get hosts that need proxy based on service configurations
    *
+   * @param config Configuration object
    * @param services Services to check
    * @param connectedHosts Hosts that are currently connected
    * @returns Set of hostnames that need proxy
    */
   static getHostsNeedingProxy(
+    config: Configuration,
     services: ServiceConfiguration[],
     connectedHosts: string[],
   ): Set<string> {
@@ -509,7 +516,8 @@ export class ProxyService {
     const servicesWithProxy = services.filter((s) => s.proxy?.enabled);
 
     for (const service of servicesWithProxy) {
-      for (const server of service.servers) {
+      const resolvedServers = config.getResolvedServersForService(service.name);
+      for (const server of resolvedServers) {
         const host = server.host;
         if (connectedHosts.includes(host)) {
           proxyHosts.add(host);

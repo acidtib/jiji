@@ -18,10 +18,12 @@ import { SubnetAllocator } from "./subnet_allocator.ts";
 import { compressIpv6, deriveManagementIp } from "./ipv6.ts";
 import {
   bringUpWireGuardInterface,
+  cleanupOrphanedInterfaces,
   enableWireGuardService,
   generateWireGuardKeypair,
   installWireGuard,
   restartWireGuardInterface,
+  verifyWireGuardConfig,
   writeWireGuardConfig,
 } from "./wireguard.ts";
 import {
@@ -51,9 +53,124 @@ import {
 } from "./topology.ts";
 import { setupServerRouting } from "./routes.ts";
 import { createControlLoopService } from "./control_loop.ts";
-import { discoverAllEndpoints } from "./ip_discovery.ts";
+import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 
 const WIREGUARD_PORT = 51820;
+
+/**
+ * Get network subnet and gateway from JSON inspection
+ * Works with both old and new podman versions, as well as docker
+ */
+interface NetworkInfo {
+  subnet?: string;
+  gateway?: string;
+}
+
+async function inspectNetworkJson(
+  ssh: SSHManager,
+  networkName: string,
+  engine: "docker" | "podman",
+): Promise<NetworkInfo> {
+  const inspectCmd = `${engine} network inspect ${networkName}`;
+  const result = await ssh.executeCommand(inspectCmd);
+
+  if (result.code !== 0) {
+    return {};
+  }
+
+  try {
+    const networkData = JSON.parse(result.stdout);
+    if (!networkData || !networkData[0]) {
+      return {};
+    }
+
+    const network = networkData[0];
+    const info: NetworkInfo = {};
+
+    // Try different JSON structures for subnet
+    // Podman (new): network.subnets[0].subnet
+    // Podman (old): network.plugins[0].ipam.ranges[0][0].subnet
+    // Docker: network.IPAM.Config[0].Subnet
+    if (network.subnets && network.subnets[0]) {
+      info.subnet = network.subnets[0].subnet;
+      info.gateway = network.subnets[0].gateway;
+    } else if (network.Subnets && network.Subnets[0]) {
+      info.subnet = network.Subnets[0].Subnet;
+      info.gateway = network.Subnets[0].Gateway;
+    } else if (
+      network.plugins && network.plugins[0] && network.plugins[0].ipam &&
+      network.plugins[0].ipam.ranges && network.plugins[0].ipam.ranges[0] &&
+      network.plugins[0].ipam.ranges[0][0]
+    ) {
+      // Old podman CNI format
+      info.subnet = network.plugins[0].ipam.ranges[0][0].subnet;
+      info.gateway = network.plugins[0].ipam.ranges[0][0].gateway;
+    } else if (network.IPAM && network.IPAM.Config && network.IPAM.Config[0]) {
+      // Docker format
+      info.subnet = network.IPAM.Config[0].Subnet;
+      info.gateway = network.IPAM.Config[0].Gateway;
+    }
+
+    return info;
+  } catch (e) {
+    log.debug(`Failed to parse network JSON: ${e}`, "network");
+    return {};
+  }
+}
+
+/**
+ * Wait for a container network to be fully initialized and ready
+ *
+ * Polls the network to verify it exists and has a valid gateway IP.
+ * This is more reliable than fixed delays.
+ *
+ * @param ssh - SSH connection to the server
+ * @param networkName - Name of the network to check
+ * @param engine - Container engine (docker or podman)
+ * @param expectedSubnet - Expected subnet for validation
+ * @param maxAttempts - Maximum number of polling attempts (default: 15)
+ * @param delayMs - Delay between attempts in milliseconds (default: 1000)
+ * @returns True if network is ready, throws error if timeout
+ */
+async function waitForNetworkReady(
+  ssh: SSHManager,
+  networkName: string,
+  engine: "docker" | "podman",
+  expectedSubnet: string,
+  maxAttempts = 15,
+  delayMs = 1000,
+): Promise<void> {
+  const host = ssh.getHost();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const info = await inspectNetworkJson(ssh, networkName, engine);
+
+    if (info.subnet === expectedSubnet && info.gateway) {
+      log.debug(
+        `Network ${networkName} is ready on ${host} (subnet: ${info.subnet}, gateway: ${info.gateway}, attempt ${attempt}/${maxAttempts})`,
+        "network",
+      );
+      return;
+    }
+
+    // Network not ready yet, wait before next attempt
+    if (attempt < maxAttempts) {
+      log.debug(
+        `Network ${networkName} not ready on ${host} (subnet: ${
+          info.subnet || "none"
+        }, gateway: ${
+          info.gateway || "none"
+        }), retrying in ${delayMs}ms (attempt ${attempt}/${maxAttempts})`,
+        "network",
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw new Error(
+    `Network ${networkName} did not become ready on ${host} after ${maxAttempts} attempts`,
+  );
+}
 
 /**
  * Setup private networking on servers
@@ -198,6 +315,13 @@ export async function setupNetwork(
 
             log.say(`├── Server already in topology, reusing configuration`, 2);
 
+            // Update endpoints (may have changed)
+            log.debug(
+              `Updating endpoints for ${host}: ${JSON.stringify(endpoints)}`,
+              "network",
+            );
+            server.endpoints = endpoints;
+
             // Update keypair check...
             const { privateKey, publicKey } = await generateWireGuardKeypair(
               ssh,
@@ -282,6 +406,12 @@ export async function setupNetwork(
               const peerContainerSubnet =
                 `${peerBaseNetwork}.${peerContainerThirdOctet}.0/24`;
 
+              // Select best endpoint based on network locality
+              const bestEndpoint = selectBestEndpoint(
+                server.endpoints,
+                peer.endpoints,
+              );
+
               return {
                 publicKey: peer.wireguardPublicKey,
                 allowedIps: [
@@ -289,7 +419,7 @@ export async function setupNetwork(
                   peerContainerSubnet,
                   `${peer.managementIp}/128`,
                 ],
-                endpoint: peer.endpoints[0],
+                endpoint: bestEndpoint,
                 persistentKeepalive: 25,
               };
             });
@@ -311,6 +441,9 @@ export async function setupNetwork(
             2,
           );
 
+          // Clean up any orphaned interfaces that might conflict
+          await cleanupOrphanedInterfaces(ssh, config.network.clusterCidr);
+
           const isExistingServer = existingServerHosts.has(host);
           const isNewServer = newServerHosts.has(host);
 
@@ -330,6 +463,79 @@ export async function setupNetwork(
           }
 
           log.say(`├── WireGuard interface jiji0 is up`, 2);
+
+          // Verify WireGuard configuration was properly loaded
+          log.debug(
+            `Verifying WireGuard configuration on ${host}`,
+            "network",
+          );
+          const verification = await verifyWireGuardConfig(ssh, peers);
+
+          if (!verification.success) {
+            const errorDetails: string[] = [
+              `WireGuard configuration verification failed on ${host}:`,
+            ];
+
+            if (!verification.peerCountMatch) {
+              errorDetails.push(
+                `  - Expected ${peers.length} peers, found ${verification.missingPeers.length} missing`,
+              );
+            }
+
+            if (verification.missingPeers.length > 0) {
+              errorDetails.push(
+                `  - Missing peers: ${
+                  verification.missingPeers.map((p) =>
+                    p.substring(0, 8) + "..."
+                  ).join(", ")
+                }`,
+              );
+            }
+
+            if (verification.incorrectAllowedIps.length > 0) {
+              errorDetails.push(`  - Incorrect AllowedIPs on peers:`);
+              for (const mismatch of verification.incorrectAllowedIps) {
+                errorDetails.push(`    Peer ${mismatch.peer}:`);
+                errorDetails.push(
+                  `      Expected: ${mismatch.expected.join(", ")}`,
+                );
+                errorDetails.push(
+                  `      Actual:   ${mismatch.actual.join(", ")}`,
+                );
+              }
+            }
+
+            if (verification.details) {
+              errorDetails.push(`  - Details: ${verification.details}`);
+            }
+
+            // Try reloading one more time
+            log.warn(
+              `First verification failed, attempting reload on ${host}`,
+              "network",
+            );
+            await restartWireGuardInterface(ssh);
+
+            // Verify again
+            const secondVerification = await verifyWireGuardConfig(ssh, peers);
+            if (!secondVerification.success) {
+              errorDetails.push(
+                `\nSecond reload also failed. This indicates a persistent issue.`,
+              );
+              throw new Error(errorDetails.join("\n"));
+            }
+
+            log.success(
+              `WireGuard configuration verified after retry on ${host}`,
+              "network",
+            );
+          } else {
+            log.debug(
+              `WireGuard configuration verified successfully on ${host}`,
+              "network",
+            );
+          }
+
           await enableWireGuardService(ssh);
           log.say(
             `└── WireGuard mesh configured with ${peers.length} peer(s)`,
@@ -388,17 +594,27 @@ export async function setupNetwork(
             await waitForCorrosionSync(ssh, topology!.servers.length);
             log.say("├── Corrosion database synchronized", 2);
 
-            await registerServer(ssh, {
-              id: server.id,
-              hostname: server.hostname,
-              subnet: server.subnet,
-              wireguardIp: server.wireguardIp,
-              wireguardPublicKey: server.wireguardPublicKey,
-              managementIp: server.managementIp,
-              endpoints: server.endpoints,
-              lastSeen: Date.now(),
-            });
-            log.say("└── Server registered in Corrosion", 2);
+            // Register ALL servers from topology into Corrosion on this node
+            // This ensures each server has the complete list even before gossip syncs
+            const now = Date.now();
+            for (const topologyServer of topology!.servers) {
+              await registerServer(ssh, {
+                id: topologyServer.id,
+                hostname: topologyServer.hostname,
+                subnet: topologyServer.subnet,
+                wireguardIp: topologyServer.wireguardIp,
+                wireguardPublicKey: topologyServer.wireguardPublicKey,
+                managementIp: topologyServer.managementIp,
+                endpoints: topologyServer.endpoints,
+                lastSeen: now,
+              });
+            }
+            log.say(
+              `└── Registered ${
+                topology!.servers.length
+              } server(s) in Corrosion`,
+              2,
+            );
           } catch (error) {
             results.push({ host, success: false, error: String(error) });
             throw error;
@@ -424,32 +640,95 @@ export async function setupNetwork(
           const containerSubnet = `${baseNetwork}.${containerThirdOctet}.0/24`;
           const containerGateway = `${baseNetwork}.${containerThirdOctet}.1`;
 
-          // Check if exists
-          const inspectCmd =
-            `${engine} network inspect ${networkName} --format '{{range .Subnets}}{{.Subnet}}{{end}}'`;
-          const inspectResult = await ssh.executeCommand(inspectCmd);
+          // Check if network exists and has correct configuration
+          const existingNetwork = await inspectNetworkJson(
+            ssh,
+            networkName,
+            engine,
+          );
 
-          if (inspectResult.code === 0) {
-            const existingSubnet = inspectResult.stdout.trim();
-            if (existingSubnet === containerSubnet) {
+          if (existingNetwork.subnet) {
+            if (existingNetwork.subnet === containerSubnet) {
               log.say(
                 `└── ${engine} network '${networkName}' already exists with correct configuration`,
                 2,
               );
             } else {
               log.say(
-                `└── ${engine} network '${networkName}' exists with incorrect subnet`,
+                `├── ${engine} network '${networkName}' exists with incorrect subnet (${existingNetwork.subnet}, expected ${containerSubnet})`,
                 2,
               );
-              // logic to recreate or warn... original code warned.
+
+              // Check if any containers are using the network
+              const containersCmd =
+                `${engine} ps -a --filter network=${networkName} --format '{{.Names}}'`;
+              const containersResult = await ssh.executeCommand(containersCmd);
+              const containers = containersResult.stdout.trim().split("\n")
+                .filter((c) => c);
+
+              if (containers.length > 0) {
+                log.say(
+                  `├── Stopping ${containers.length} container(s) using network: ${
+                    containers.join(", ")
+                  }`,
+                  2,
+                );
+                for (const container of containers) {
+                  await ssh.executeCommand(
+                    `${engine} stop ${container} || true`,
+                  );
+                  await ssh.executeCommand(`${engine} rm ${container} || true`);
+                }
+              }
+
+              // Remove the incorrect network
+              log.say(`├── Removing network with incorrect subnet`, 2);
+              const removeResult = await ssh.executeCommand(
+                `${engine} network rm ${networkName} || true`,
+              );
+              if (removeResult.code !== 0) {
+                log.warn(`Failed to remove network: ${removeResult.stderr}`);
+              }
+
+              // Recreate with correct configuration
+              const createNetworkCmd = engine === "podman"
+                ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns ${server.wireguardIp}`
+                : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
+
+              const networkResult = await ssh.executeCommand(createNetworkCmd);
+              if (networkResult.code !== 0) {
+                throw new Error(networkResult.stderr);
+              }
+
+              // Wait for network to be fully initialized and ready
+              await waitForNetworkReady(
+                ssh,
+                networkName,
+                engine,
+                containerSubnet,
+              );
+
+              log.say(
+                `└── ${engine} network '${networkName}' recreated: subnet=${containerSubnet}, gateway=${containerGateway}`,
+                2,
+              );
             }
           } else {
+            // Create network for podman or docker
             const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway}`
+              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --dns ${server.wireguardIp}`
               : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);
             if (networkResult.code !== 0) throw new Error(networkResult.stderr);
+
+            // Wait for network to be fully initialized and ready
+            await waitForNetworkReady(
+              ssh,
+              networkName,
+              engine,
+              containerSubnet,
+            );
 
             log.say(
               `└── ${engine} network '${networkName}' created: subnet=${containerSubnet}, gateway=${containerGateway}`,
@@ -472,28 +751,48 @@ export async function setupNetwork(
         if (!server) return;
 
         try {
+          // Calculate container subnet for this server
+          const serverIndex = parseInt(server.subnet.split(".")[2]);
+          const containerThirdOctet = 128 + serverIndex;
+          const baseNetwork = server.subnet.split(".").slice(0, 2).join(".");
+          const containerSubnet = `${baseNetwork}.${containerThirdOctet}.0/24`;
+
+          // Build peer list with their CONTAINER subnets (not WireGuard subnets)
+          // We need to route to peer container subnets, not their WireGuard subnets
           const peers = topology!.servers
             .filter((s: NetworkServer) => s.id !== server.id)
-            .map((peer: NetworkServer) => ({
-              subnet: peer.subnet,
-              hostname: peer.hostname,
-            }));
+            .map((peer: NetworkServer) => {
+              // Calculate peer's container subnet the same way we calculate ours
+              const peerIndex = parseInt(peer.subnet.split(".")[2]);
+              const peerContainerThirdOctet = 128 + peerIndex;
+              const peerBaseNetwork = peer.subnet.split(".").slice(0, 2).join(
+                ".",
+              );
+              const peerContainerSubnet =
+                `${peerBaseNetwork}.${peerContainerThirdOctet}.0/24`;
 
-          // Warn about bridges if needed (captured in original code logging)
-          // TODO:
-          if (config.builder.engine === "podman") {
-            // check bridge? setupServerRouting might log warnings.
-            // We can check if setupServerRouting returns warning messages or logs properly.
-            // It likely logs via `log`. Since we are in `hostBlock`, if it uses `log.info`, it might not be indented 2 levels unless we pass options.
-            // But `setupServerRouting` takes `ssh`.
-            // We will just let it run. If it logs, it logs.
-            // Ideally we should pass a logger.
-            // But for now, let's just proceed.
-          }
+              log.debug(
+                `Peer ${peer.hostname}: WireGuard subnet=${peer.subnet}, Container subnet=${peerContainerSubnet}`,
+                "network",
+              );
+
+              return {
+                subnet: peerContainerSubnet,
+                hostname: peer.hostname,
+              };
+            });
+
+          log.debug(
+            `Configuring routing for ${host}: own container=${containerSubnet}, peers=${
+              JSON.stringify(peers)
+            }`,
+            "network",
+          );
 
           await setupServerRouting(
             ssh,
             server.subnet,
+            containerSubnet,
             config.network.clusterCidr,
             peers,
             "jiji",
@@ -525,7 +824,6 @@ export async function setupNetwork(
             listenAddr: `${server.wireguardIp}:53`,
             serviceDomain: config.network.serviceDomain,
             corrosionApiAddr: "127.0.0.1:8080",
-            upstreamResolvers: ["8.8.8.8", "1.1.1.1"],
           });
           await createCoreDNSService(ssh, `${server.wireguardIp}:53`);
           await createHostsUpdateTimer(ssh, 30);
@@ -569,8 +867,13 @@ export async function setupNetwork(
             "└── Network state stored in Corrosion distributed database",
             2,
           );
-        } catch (_error) {
-          log.say("└── Continuing without control loop", 2);
+        } catch (error) {
+          log.error(
+            `Failed to setup network control loop on ${host}: ${error}`,
+            "network",
+          );
+          results.push({ host, success: false, error: String(error) });
+          throw error;
         }
       }, { indent: 1 });
     }

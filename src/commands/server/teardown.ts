@@ -109,7 +109,10 @@ export const teardownCommand = new Command()
       for (const service of services) {
         log.say(`- Removing ${service.name}`, 1);
 
-        for (const server of service.servers) {
+        const resolvedServers = config.getResolvedServersForService(
+          service.name,
+        );
+        for (const server of resolvedServers) {
           const host = server.host;
           if (!targetHosts.includes(host)) {
             continue;
