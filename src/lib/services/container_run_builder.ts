@@ -107,7 +107,26 @@ export class ContainerRunBuilder {
   build(): string {
     // Add image name at the end
     const finalArgs = [...this.args, this.imageName];
-    return `${this.engine} ${finalArgs.join(" ")}`;
+    // Properly escape arguments containing special shell characters
+    const escapedArgs = finalArgs.map((arg) => this.escapeShellArg(arg));
+    return `${this.engine} ${escapedArgs.join(" ")}`;
+  }
+
+  /**
+   * Escape a shell argument if it contains special characters
+   * Uses single quotes for safety with special chars like $, but handles embedded single quotes
+   * @param arg The argument to escape
+   * @returns The escaped argument
+   */
+  private escapeShellArg(arg: string): string {
+    // If the argument doesn't contain special characters, return as-is
+    if (!/[`$"\\!* (){}[\];'<>?&|~\n\t]/.test(arg)) {
+      return arg;
+    }
+
+    // Use single quotes and escape any embedded single quotes
+    // Single quotes preserve all special characters except single quote itself
+    return `'${arg.replace(/'/g, "'\\''")}'`;
   }
 
   /**

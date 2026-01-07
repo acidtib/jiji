@@ -543,3 +543,227 @@ Deno.test("ProxyConfiguration - enabled check with multi-target", () => {
 
   assertEquals(config.enabled, true);
 });
+
+// ============================================================================
+// Command-Based Health Check Tests
+// ============================================================================
+
+Deno.test("ProxyConfiguration - command health check with docker runtime", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "test -f /app/ready",
+      cmd_runtime: "docker",
+      interval: "10s",
+    },
+  });
+
+  assertEquals(config.targets[0].healthcheck?.cmd, "test -f /app/ready");
+  assertEquals(config.targets[0].healthcheck?.cmd_runtime, "docker");
+  assertEquals(config.targets[0].healthcheck?.interval, "10s");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - command health check with podman runtime", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "curl -f http://localhost:3000/health",
+      cmd_runtime: "podman",
+    },
+  });
+
+  assertEquals(
+    config.targets[0].healthcheck?.cmd,
+    "curl -f http://localhost:3000/health",
+  );
+  assertEquals(config.targets[0].healthcheck?.cmd_runtime, "podman");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - command health check without runtime (warning)", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "test -f /app/ready",
+    },
+  });
+
+  // Should validate successfully but will warn about missing runtime
+  config.validate();
+  assertEquals(config.targets[0].healthcheck?.cmd, "test -f /app/ready");
+  assertEquals(config.targets[0].healthcheck?.cmd_runtime, undefined);
+});
+
+Deno.test("ProxyConfiguration - multi-target with mixed health checks", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      {
+        app_port: 3900,
+        host: "s3.example.com",
+        healthcheck: {
+          path: "/health",
+          interval: "10s",
+        },
+      },
+      {
+        app_port: 3903,
+        host: "admin.example.com",
+        healthcheck: {
+          cmd: "test -f /ready",
+          cmd_runtime: "docker",
+          interval: "15s",
+        },
+      },
+    ],
+  });
+
+  assertEquals(config.targets[0].healthcheck?.path, "/health");
+  assertEquals(config.targets[0].healthcheck?.cmd, undefined);
+  assertEquals(config.targets[1].healthcheck?.cmd, "test -f /ready");
+  assertEquals(config.targets[1].healthcheck?.path, undefined);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - command health check with empty command", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "   ",
+      cmd_runtime: "docker",
+    },
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Health check command in proxy cannot be empty",
+  );
+});
+
+Deno.test("ProxyConfiguration - both path and cmd specified (mutual exclusivity)", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      path: "/health",
+      cmd: "test -f /ready",
+    },
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Health check in proxy cannot specify both 'path' (HTTP) and 'cmd' (command) - use only one",
+  );
+});
+
+Deno.test("ProxyConfiguration - cmd_runtime without cmd (warning)", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd_runtime: "docker",
+      interval: "10s",
+    },
+  });
+
+  // Should validate successfully but will warn about unused cmd_runtime
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - cmd_runtime with HTTP health check (warning)", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      path: "/health",
+      cmd_runtime: "docker",
+    },
+  });
+
+  // Should validate successfully but will warn about cmd_runtime with HTTP check
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - invalid cmd_runtime value", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: "test -f /ready",
+      cmd_runtime: "invalid" as "docker", // Type assertion to bypass TypeScript check
+    },
+  });
+
+  // Invalid runtime should be ignored during parsing, cmd_runtime will be undefined
+  assertEquals(config.targets[0].healthcheck?.cmd_runtime, undefined);
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - complex command with quotes", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    healthcheck: {
+      cmd: '/app/healthcheck --config "/etc/app.conf"',
+      cmd_runtime: "docker",
+      interval: "30s",
+      timeout: "5s",
+    },
+  });
+
+  assertEquals(
+    config.targets[0].healthcheck?.cmd,
+    '/app/healthcheck --config "/etc/app.conf"',
+  );
+  assertEquals(config.targets[0].healthcheck?.cmd_runtime, "docker");
+  config.validate();
+});
+
+Deno.test("ProxyConfiguration - multi-target command health check empty command", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      {
+        app_port: 3000,
+        host: "example.com",
+        healthcheck: {
+          cmd: "",
+          cmd_runtime: "docker",
+        },
+      },
+    ],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Health check command in target at index 0 cannot be empty",
+  );
+});
+
+Deno.test("ProxyConfiguration - multi-target both path and cmd", () => {
+  const config = new ProxyConfiguration({
+    targets: [
+      {
+        app_port: 3000,
+        host: "example.com",
+        healthcheck: {
+          path: "/health",
+          cmd: "test -f /ready",
+          cmd_runtime: "docker",
+        },
+      },
+    ],
+  });
+
+  assertThrows(
+    () => config.validate(),
+    ConfigurationError,
+    "Health check in target at index 0 cannot specify both 'path' (HTTP) and 'cmd' (command) - use only one",
+  );
+});

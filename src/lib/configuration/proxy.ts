@@ -5,8 +5,12 @@ import { log } from "../../utils/logger.ts";
  * Interface for proxy healthcheck configuration
  */
 export interface ProxyHealthcheckConfig {
-  /** HTTP path to check for health (e.g., "/health", "/up") */
+  /** HTTP path to check for health (e.g., "/health", "/up") - mutually exclusive with cmd */
   path?: string;
+  /** Command to execute for health check (e.g., "test -f /app/ready") - mutually exclusive with path */
+  cmd?: string;
+  /** Runtime for command execution (e.g., "docker", "podman") - only used with cmd */
+  cmd_runtime?: "docker" | "podman";
   /** Interval between health checks (e.g., "10s", "30s") */
   interval?: string;
   /** Timeout for each health check (e.g., "5s", "10s") */
@@ -134,6 +138,11 @@ export class ProxyConfiguration extends BaseConfiguration {
       const config = healthcheckConfig as Record<string, unknown>;
       healthcheck = {
         path: typeof config.path === "string" ? config.path : undefined,
+        cmd: typeof config.cmd === "string" ? config.cmd : undefined,
+        cmd_runtime: typeof config.cmd_runtime === "string" &&
+            (config.cmd_runtime === "docker" || config.cmd_runtime === "podman")
+          ? config.cmd_runtime
+          : undefined,
         interval: typeof config.interval === "string"
           ? config.interval
           : undefined,
@@ -250,6 +259,16 @@ export class ProxyConfiguration extends BaseConfiguration {
     if (target.healthcheck) {
       const hc = target.healthcheck;
 
+      // Check mutual exclusivity between HTTP and command health checks
+      if (hc.path && hc.cmd) {
+        errors.push(
+          new ConfigurationError(
+            `Health check in ${targetLabel} cannot specify both 'path' (HTTP) and 'cmd' (command) - use only one`,
+          ),
+        );
+      }
+
+      // Validate HTTP health check
       if (hc.path) {
         if (!hc.path.startsWith("/")) {
           errors.push(
@@ -265,6 +284,32 @@ export class ProxyConfiguration extends BaseConfiguration {
             ),
           );
         }
+        // Warn if cmd_runtime is specified with HTTP health check
+        if (hc.cmd_runtime) {
+          warnings.push(
+            `Health check in ${targetLabel} has 'cmd_runtime' but uses HTTP check (path). cmd_runtime is only used with command-based checks.`,
+          );
+        }
+      }
+
+      // Validate command health check
+      if (hc.cmd !== undefined) {
+        if (typeof hc.cmd === "string" && hc.cmd.trim().length === 0) {
+          errors.push(
+            new ConfigurationError(
+              `Health check command in ${targetLabel} cannot be empty`,
+            ),
+          );
+        }
+        // Note: cmd_runtime is optional and will auto-detect from builder.engine
+        // No warning needed since the default behavior is sensible
+      }
+
+      // Validate cmd_runtime only makes sense with cmd
+      if (hc.cmd_runtime && !hc.cmd) {
+        warnings.push(
+          `Health check in ${targetLabel} specifies 'cmd_runtime' but has no 'cmd'. cmd_runtime is ignored without a command.`,
+        );
       }
 
       if (hc.interval) {

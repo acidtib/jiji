@@ -445,6 +445,17 @@ services:
   #       interval: 15s
   #       timeout: 10s
   #       deploy_timeout: 60s
+  #   # Or with command-based health check (for containers without HTTP endpoints)
+  #   # proxy:
+  #   #   app_port: 3000
+  #   #   ssl: true
+  #   #   host: api.myproject.example.com
+  #   #   healthcheck:
+  #   #     cmd: "test -f /app/ready"     # Command health check (exit code 0 = healthy)
+  #   #     cmd_runtime: docker           # Optional: Runtime (docker/podman, defaults to builder.engine)
+  #   #     interval: 15s
+  #   #     timeout: 10s
+  #   #     deploy_timeout: 60s
   #   # Or path-based routing (same domain, different path)
   #   # proxy:
   #   #   app_port: 3000
@@ -502,9 +513,46 @@ services:
   #           deploy_timeout: 60s
   #   # Note: Each target is deployed as {project}-{service}-{app_port} in kamal-proxy
   #   # Example: myproject-garage-3900, myproject-garage-3903
-  #   # Health check option:
-  #   #   - path: HTTP endpoint to check (e.g., "/health", "/up")
-  #   #         Used for both initial deployment checks and ongoing monitoring by kamal-proxy
+  #
+  # Health Check Configuration:
+  # ==========================
+  # Jiji supports two types of health checks via kamal-proxy:
+  #
+  # 1. HTTP Health Checks (default)
+  #    - Uses HTTP GET requests to check container health
+  #    - Best for web services with HTTP endpoints
+  #    - Example:
+  #      healthcheck:
+  #        path: /health                  # HTTP endpoint to check (e.g., "/health", "/up")
+  #        interval: 10s                  # Check interval (default: 10s)
+  #        timeout: 5s                    # Request timeout (default: 5s)
+  #        deploy_timeout: 60s            # Max wait for initial deployment (default: 60s)
+  #
+  # 2. Command-based Health Checks (new in kamal-proxy)
+  #    - Executes commands via docker exec or podman exec
+  #    - Exit code 0 = healthy, any other exit code = unhealthy
+  #    - Best for non-HTTP services or custom health logic
+  #    - Compatible with distroless/scratch containers
+  #    - Example:
+  #      healthcheck:
+  #        cmd: "test -f /app/ready"      # Command to execute (exit 0 = healthy)
+  #        cmd_runtime: docker            # Optional: Runtime (docker/podman, auto-detects from builder.engine)
+  #        interval: 10s                  # Check interval (default: 10s)
+  #        timeout: 5s                    # Command timeout (default: 5s)
+  #        deploy_timeout: 60s            # Max wait for initial deployment (default: 60s)
+  #
+  # Command Health Check Examples:
+  # - File-based readiness: cmd: "test -f /app/ready"
+  # - Process check: cmd: "pgrep -f myapp"
+  # - Custom script: cmd: "/app/healthcheck.sh"
+  # - Internal HTTP check: cmd: "curl -f http://localhost:3000/health"
+  # - Complex check: cmd: '/app/healthcheck --config "/etc/app.conf"'
+  #
+  # Notes:
+  # - HTTP (path) and command (cmd) health checks are mutually exclusive
+  # - If neither is specified, no health checks are performed
+  # - Health checks are used for both initial deployment and ongoing monitoring
+  # - Failed health checks during deployment keep old containers running (zero-downtime)
 
   # Admin service with path-based routing
   # admin-panel:
