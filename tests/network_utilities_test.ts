@@ -233,6 +233,14 @@ Deno.test(
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
+    // Mock netavark --format command to fail (testing gateway IP fallback)
+    mockSSH.addMockResponse("--format '{{.NetworkInterface}}'", {
+      success: true,
+      stdout: "<no value>",
+      stderr: "",
+      code: 0,
+    });
+
     // Mock network inspect to return JSON (Netavark format)
     mockSSH.addMockResponse("podman network inspect jiji", {
       success: true,
@@ -269,6 +277,14 @@ Deno.test(
   "getDockerBridgeInterface - should discover bridge interface via gateway IP for Podman with CNI",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
+
+    // Mock netavark --format command to fail (testing CNI gateway IP fallback)
+    mockSSH.addMockResponse("--format '{{.NetworkInterface}}'", {
+      success: true,
+      stdout: "<no value>",
+      stderr: "",
+      code: 0,
+    });
 
     // Mock network inspect to return JSON (CNI format)
     mockSSH.addMockResponse("podman network inspect jiji", {
@@ -342,6 +358,73 @@ Deno.test(
     );
 
     assertEquals(bridge, "docker0");
+  },
+);
+
+Deno.test(
+  "getDockerBridgeInterface - should discover interface via netavark format for Podman",
+  async () => {
+    const mockSSH = new MockSSHManager("test-server");
+
+    // Mock netavark --format command returning the interface directly
+    mockSSH.addMockResponse("--format '{{.NetworkInterface}}'", {
+      success: true,
+      stdout: "podman5",
+      stderr: "",
+      code: 0,
+    });
+
+    const bridge = await getDockerBridgeInterface(
+      mockSSH as unknown as SSHManager,
+      "jiji",
+      "podman",
+    );
+
+    assertEquals(bridge, "podman5");
+  },
+);
+
+Deno.test(
+  "getDockerBridgeInterface - should fallback to podman0 for Podman if bridge cannot be found",
+  async () => {
+    const mockSSH = new MockSSHManager("test-server");
+
+    // Mock netavark --format command to fail
+    mockSSH.addMockResponse("--format '{{.NetworkInterface}}'", {
+      success: true,
+      stdout: "<no value>",
+      stderr: "",
+      code: 0,
+    });
+
+    // Mock network inspect to return JSON
+    mockSSH.addMockResponse("podman network inspect jiji", {
+      success: true,
+      stdout: JSON.stringify([{
+        subnets: [{
+          subnet: "10.89.0.0/24",
+          gateway: "10.89.0.1",
+        }],
+      }]),
+      stderr: "",
+      code: 0,
+    });
+
+    // Mock interface lookup failing
+    mockSSH.addMockResponse('grep -B 2 "inet 10.89.0.1"', {
+      success: false,
+      stdout: "",
+      stderr: "",
+      code: 1,
+    });
+
+    const bridge = await getDockerBridgeInterface(
+      mockSSH as unknown as SSHManager,
+      "jiji",
+      "podman",
+    );
+
+    assertEquals(bridge, "podman0");
   },
 );
 

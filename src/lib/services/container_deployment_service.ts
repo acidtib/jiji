@@ -558,6 +558,11 @@ export class ContainerDeploymentService {
       builder.capAdd(service.cap_add);
     }
 
+    // Add custom command if specified
+    if (service.command) {
+      builder.command(service.command);
+    }
+
     const runCommand = builder.build();
 
     log.say(`├── Starting container ${containerName} on ${host}`, 2);

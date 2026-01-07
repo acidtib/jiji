@@ -417,9 +417,6 @@ export async function registerServer(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(server.endpoints);
 
-  // Escape double quotes for shell command
-  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
-
   const sql =
     `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${
       escapeSql(server.id)
@@ -427,7 +424,7 @@ export async function registerServer(
       escapeSql(server.wireguardIp)
     }', '${escapeSql(server.wireguardPublicKey)}', '${
       escapeSql(server.managementIp)
-    }', '${escapedJsonForShell}', ${server.lastSeen});`;
+    }', '${endpointsJson}', ${server.lastSeen});`;
 
   const result = await corrosionExec(ssh, sql);
 
@@ -709,12 +706,9 @@ export async function updateServerEndpoints(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(endpoints);
 
-  // Escape double quotes for shell command
-  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
-
   const sql = `
     UPDATE servers
-    SET endpoints = '${escapedJsonForShell}'
+    SET endpoints = '${endpointsJson}'
     WHERE id = '${escapeSql(serverId)}';
   `;
 

@@ -99,14 +99,14 @@ export async function removePeerRoutes(
 }
 
 /**
- * Get Docker bridge interface name
+ * Get container network bridge interface name
  *
  * Dynamically discovers the bridge interface by querying the network's
  * gateway IP and finding which interface has that IP assigned. This works
  * for both Docker and Podman regardless of network backend (CNI/Netavark).
  *
  * @param ssh - SSH connection to the server
- * @param networkName - Docker network name
+ * @param networkName - Container network name
  * @param engine - Container engine (docker or podman)
  * @returns Bridge interface name (e.g., "br-abc123", "podman1", or "docker0")
  */
@@ -116,6 +116,25 @@ export async function getDockerBridgeInterface(
   engine: "docker" | "podman",
 ): Promise<string> {
   const host = ssh.getHost();
+
+  // For podman with netavark, try to get the interface name directly
+  if (engine === "podman") {
+    const netavarkCmd =
+      `podman network inspect ${networkName} --format '{{.NetworkInterface}}'`;
+    const netavarkResult = await ssh.executeCommand(netavarkCmd);
+
+    if (
+      netavarkResult.code === 0 && netavarkResult.stdout.trim() &&
+      netavarkResult.stdout.trim() !== "<no value>"
+    ) {
+      const bridgeName = netavarkResult.stdout.trim();
+      log.debug(
+        `Found bridge interface ${bridgeName} for network ${networkName} via netavark`,
+        "network",
+      );
+      return bridgeName;
+    }
+  }
 
   // Get network gateway IP using JSON inspection (works across all versions)
   const inspectCmd = `${engine} network inspect ${networkName}`;
@@ -187,12 +206,13 @@ export async function getDockerBridgeInterface(
     return bridgeName;
   }
 
-  // Fallback to docker0 if we can't find the bridge
+  // Use engine-appropriate fallback
+  const fallbackBridge = engine === "podman" ? "podman0" : "docker0";
   log.warn(
-    `Could not find bridge interface for network ${networkName} on ${host}, using docker0`,
+    `Could not find bridge interface for network ${networkName} on ${host}, using ${fallbackBridge}`,
     "network",
   );
-  return "docker0";
+  return fallbackBridge;
 }
 
 /**

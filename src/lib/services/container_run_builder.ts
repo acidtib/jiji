@@ -6,6 +6,7 @@ import type { ContainerEngine } from "../configuration/builder.ts";
  */
 export class ContainerRunBuilder {
   private args: string[] = [];
+  private commandArgs: string[] = [];
 
   constructor(
     private engine: ContainerEngine,
@@ -162,12 +163,28 @@ export class ContainerRunBuilder {
   }
 
   /**
+   * Set container command (overrides image CMD)
+   * @param cmd Command as string or array of arguments
+   * @returns This builder for chaining
+   */
+  command(cmd: string | string[]): this {
+    if (typeof cmd === "string") {
+      // String format: pass as single argument (shell interpretation)
+      this.commandArgs.push(cmd);
+    } else if (Array.isArray(cmd)) {
+      // Array format: each element is a separate argument
+      this.commandArgs.push(...cmd);
+    }
+    return this;
+  }
+
+  /**
    * Build the final command string
    * @returns Complete command string ready for execution
    */
   build(): string {
-    // Add image name at the end
-    const finalArgs = [...this.args, this.imageName];
+    // Add image name, then command args at the end
+    const finalArgs = [...this.args, this.imageName, ...this.commandArgs];
     // Properly escape arguments containing special shell characters
     const escapedArgs = finalArgs.map((arg) => this.escapeShellArg(arg));
     return `${this.engine} ${escapedArgs.join(" ")}`;
@@ -195,6 +212,6 @@ export class ContainerRunBuilder {
    * @returns Array of command arguments
    */
   buildArgs(): string[] {
-    return [...this.args, this.imageName];
+    return [...this.args, this.imageName, ...this.commandArgs];
   }
 }
