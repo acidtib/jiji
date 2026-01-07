@@ -77,12 +77,15 @@ Deno.test(
 
     // Mock interface lookups for each IP
     // 10.120.0.2 - private IP on eth0 (should be included)
-    mockSSH.addMockResponse('ip addr show | grep "inet 10.120.0.2" | awk \'{print $NF}\'', {
-      success: true,
-      stdout: "eth0",
-      stderr: "",
-      code: 0,
-    });
+    mockSSH.addMockResponse(
+      "ip addr show | grep \"inet 10.120.0.2\" | awk '{print $NF}'",
+      {
+        success: true,
+        stdout: "eth0",
+        stderr: "",
+        code: 0,
+      },
+    );
     mockSSH.addMockResponse("ip link show eth0", {
       success: true,
       stdout: "up",
@@ -94,12 +97,15 @@ Deno.test(
     // Mock won't be called because isPrivateIP returns false
 
     // 192.168.1.5 - private IP on eth1 (should be included)
-    mockSSH.addMockResponse('ip addr show | grep "inet 192.168.1.5" | awk \'{print $NF}\'', {
-      success: true,
-      stdout: "eth1",
-      stderr: "",
-      code: 0,
-    });
+    mockSSH.addMockResponse(
+      "ip addr show | grep \"inet 192.168.1.5\" | awk '{print $NF}'",
+      {
+        success: true,
+        stdout: "eth1",
+        stderr: "",
+        code: 0,
+      },
+    );
     mockSSH.addMockResponse("ip link show eth1", {
       success: true,
       stdout: "up",
@@ -134,28 +140,37 @@ Deno.test(
     });
 
     // Docker bridge IP
-    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.1" | awk \'{print $NF}\'', {
-      success: true,
-      stdout: "docker0",
-      stderr: "",
-      code: 0,
-    });
+    mockSSH.addMockResponse(
+      "ip addr show | grep \"inet 10.0.0.1\" | awk '{print $NF}'",
+      {
+        success: true,
+        stdout: "docker0",
+        stderr: "",
+        code: 0,
+      },
+    );
 
     // WireGuard interface IP
-    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.2" | awk \'{print $NF}\'', {
-      success: true,
-      stdout: "jiji0",
-      stderr: "",
-      code: 0,
-    });
+    mockSSH.addMockResponse(
+      "ip addr show | grep \"inet 10.0.0.2\" | awk '{print $NF}'",
+      {
+        success: true,
+        stdout: "jiji0",
+        stderr: "",
+        code: 0,
+      },
+    );
 
     // Regular private IP
-    mockSSH.addMockResponse('ip addr show | grep "inet 10.0.0.3" | awk \'{print $NF}\'', {
-      success: true,
-      stdout: "eth0",
-      stderr: "",
-      code: 0,
-    });
+    mockSSH.addMockResponse(
+      "ip addr show | grep \"inet 10.0.0.3\" | awk '{print $NF}'",
+      {
+        success: true,
+        stdout: "eth0",
+        stderr: "",
+        code: 0,
+      },
+    );
     mockSSH.addMockResponse("ip link show eth0", {
       success: true,
       stdout: "up",

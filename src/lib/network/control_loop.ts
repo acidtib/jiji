@@ -56,6 +56,34 @@ log_error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
 }
 
+# JSON logging for machine-parseable output
+# Set JIJI_JSON_LOGS=1 to enable JSON-only output
+log_json() {
+  local level="$1"
+  local message="$2"
+  local data="\${3:-}"
+
+  local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  if [ -n "$data" ]; then
+    echo "{\\"timestamp\\":\\"$timestamp\\",\\"level\\":\\"$level\\",\\"server_id\\":\\"$SERVER_ID\\",\\"message\\":\\"$message\\",\\"data\\":$data}"
+  else
+    echo "{\\"timestamp\\":\\"$timestamp\\",\\"level\\":\\"$level\\",\\"server_id\\":\\"$SERVER_ID\\",\\"message\\":\\"$message\\"}"
+  fi
+}
+
+log_info_json() {
+  log_json "info" "$1" "\${2:-}"
+}
+
+log_warn_json() {
+  log_json "warn" "$1" "\${2:-}"
+}
+
+log_error_json() {
+  log_json "error" "$1" "\${2:-}"
+}
+
 # Parse handshake time from wg show output
 parse_handshake() {
   local handshake="$1"
@@ -316,6 +344,53 @@ update_public_ip() {
   fi
 }
 
+# Check Corrosion service health (every 10 minutes)
+check_corrosion_health() {
+  # Only run every 20 iterations (20 * 30s = 10 minutes)
+  if [ $((ITERATION % 20)) -ne 0 ]; then
+    return
+  fi
+
+  log_info "Checking Corrosion health..."
+
+  # Check if Corrosion service is running
+  if ! systemctl is-active --quiet jiji-corrosion; then
+    log_error "Corrosion service is not running!"
+    log_error_json "Corrosion service not running" "{\\"action\\":\\"restart_attempted\\"}"
+    # Attempt restart
+    if systemctl restart jiji-corrosion 2>/dev/null; then
+      log_info "Corrosion service restarted successfully"
+      log_info_json "Corrosion service restarted" "{}"
+      sleep 5  # Give it time to start
+    else
+      log_error "Failed to restart Corrosion service"
+      log_error_json "Corrosion restart failed" "{}"
+      return
+    fi
+  fi
+
+  # Test database connectivity with simple query
+  local test_result=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT 1;" 2>&1)
+  if [ $? -ne 0 ]; then
+    log_error "Corrosion database query failed: $test_result"
+    log_error_json "Corrosion query failed" "{\\"error\\":\\"$test_result\\"}"
+    return
+  fi
+
+  # Check if heartbeat is being recorded (self-check)
+  local last_seen=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "SELECT last_seen FROM servers WHERE id = '$SERVER_ID';" 2>/dev/null || echo "0")
+  local now=$(date +%s)000
+  local age=$((now - last_seen))
+
+  # If heartbeat is older than 2 minutes, something is wrong
+  if [ $age -gt 120000 ]; then
+    log_warn "Heartbeat appears stale (age: \${age}ms)"
+    log_warn_json "Heartbeat stale" "{\\"age_ms\\":$age}"
+  fi
+
+  log_info "Corrosion health check passed"
+}
+
 # Main loop
 log_info "Starting Jiji control loop for server $SERVER_ID"
 log_info "Loop interval: ${LOOP_INTERVAL}s, Interface: $INTERFACE"
@@ -340,6 +415,9 @@ while true; do
 
   # 6. Update public IP (periodic)
   update_public_ip
+
+  # 7. Check Corrosion health (periodic)
+  check_corrosion_health
 
   # Sleep before next iteration
   sleep $LOOP_INTERVAL
