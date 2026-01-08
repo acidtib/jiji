@@ -285,18 +285,9 @@ Deno.test("control_loop includes TCP health check", async () => {
   );
 });
 
-// Test that DNS query uses health_status
-Deno.test("DNS update script uses health_status filter", async () => {
-  const content = await Deno.readTextFile(
-    "src/lib/network/dns.ts",
-  );
-
-  assertEquals(
-    content.includes("health_status = 'healthy'"),
-    true,
-    "Missing health_status filter in DNS query",
-  );
-});
+// Note: health_status filtering is now handled in jiji-dns via Corrosion subscription
+// The jiji-dns server subscribes to container changes and filters healthy containers
+// See: https://github.com/acidtib/jiji-dns
 
 // Test ContainerRegistration type has new fields
 Deno.test("ContainerRegistration type includes health fields", async () => {

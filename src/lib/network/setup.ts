@@ -37,11 +37,9 @@ import {
 } from "./corrosion.ts";
 import {
   configureContainerDNS,
-  createCoreDNSService,
-  createHostsUpdateTimer,
-  installCoreDNS,
-  startCoreDNSService,
-  writeCoreDNSConfig,
+  createJijiDnsService,
+  installJijiDns,
+  startJijiDnsService,
 } from "./dns.ts";
 import {
   addServer,
@@ -267,13 +265,13 @@ export async function setupNetwork(
             if (!corrInstalled) throw new Error("Failed to install Corrosion");
           }
 
-          // Install CoreDNS
+          // Install jiji-dns
           const prefix = config.network.discovery === "corrosion"
             ? "└──"
             : "└──";
-          log.say(`${prefix} Installing CoreDNS`, 2);
-          const dnsInstalled = await installCoreDNS(ssh);
-          if (!dnsInstalled) throw new Error("Failed to install CoreDNS");
+          log.say(`${prefix} Installing jiji-dns`, 2);
+          const dnsInstalled = await installJijiDns(ssh);
+          if (!dnsInstalled) throw new Error("Failed to install jiji-dns");
         } catch (error) {
           results.push({ host, success: false, error: String(error) });
           throw error;
@@ -824,15 +822,13 @@ export async function setupNetwork(
         if (!server) return;
 
         try {
-          await writeCoreDNSConfig(ssh, {
+          await createJijiDnsService(ssh, {
             listenAddr: `${server.wireguardIp}:53`,
             serviceDomain: config.network.serviceDomain,
-            corrosionApiAddr: "127.0.0.1:8080",
+            corrosionApiAddr: "http://127.0.0.1:8080",
           });
-          await createCoreDNSService(ssh, `${server.wireguardIp}:53`);
-          await createHostsUpdateTimer(ssh, 30);
-          await startCoreDNSService(ssh);
-          log.say("├── CoreDNS service started", 2);
+          await startJijiDnsService(ssh);
+          log.say("├── jiji-dns service started", 2);
 
           await configureContainerDNS(
             ssh,

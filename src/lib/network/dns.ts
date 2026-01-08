@@ -1,37 +1,43 @@
 /**
  * DNS server utilities for service discovery
  *
- * Manages CoreDNS or dnsmasq installation and configuration
- * for resolving service names via Corrosion database.
+ * Manages jiji-dns installation and configuration for resolving
+ * service names via Corrosion database subscriptions.
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import type { DNSConfig } from "../../types/network.ts";
 
-const COREDNS_INSTALL_DIR = "/opt/jiji/dns";
-const COREDNS_VERSION = "1.11.1";
+const JIJI_DNS_INSTALL_DIR = "/opt/jiji/dns";
+
+// jiji-dns GitHub releases URL
+const JIJI_DNS_REPO = "acidtib/jiji-dns";
+const JIJI_DNS_VERSION = "0.1.1";
 
 /**
- * Install CoreDNS on a remote server
+ * Install jiji-dns on a remote server
+ *
+ * Downloads pre-built binary from GitHub releases.
  *
  * @param ssh - SSH connection to the server
  * @returns True if installation was successful
  */
-export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
+export async function installJijiDns(ssh: SSHManager): Promise<boolean> {
   const host = ssh.getHost();
 
-  // Check if CoreDNS is already installed
+  // Check if jiji-dns is already installed
   const checkResult = await ssh.executeCommand(
-    `test -f ${COREDNS_INSTALL_DIR}/coredns && echo "exists"`,
+    `test -f ${JIJI_DNS_INSTALL_DIR}/jiji-dns && echo "exists"`,
   );
 
   if (checkResult.stdout.includes("exists")) {
+    log.debug(`jiji-dns already installed on ${host}`, "dns");
     return true;
   }
 
   // Create installation directory
-  await ssh.executeCommand(`mkdir -p ${COREDNS_INSTALL_DIR}`);
+  await ssh.executeCommand(`mkdir -p ${JIJI_DNS_INSTALL_DIR}`);
 
   // Detect architecture
   const archResult = await ssh.executeCommand("uname -m");
@@ -39,9 +45,9 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
 
   let downloadArch: string;
   if (arch === "x86_64" || arch === "amd64") {
-    downloadArch = "amd64";
+    downloadArch = "linux-x64";
   } else if (arch === "aarch64" || arch === "arm64") {
-    downloadArch = "arm64";
+    downloadArch = "linux-arm64";
   } else {
     log.error(`Unsupported architecture: ${arch}`, "dns");
     return false;
@@ -49,229 +55,51 @@ export async function installCoreDNS(ssh: SSHManager): Promise<boolean> {
 
   try {
     const downloadUrl =
-      `https://github.com/coredns/coredns/releases/download/v${COREDNS_VERSION}/coredns_${COREDNS_VERSION}_linux_${downloadArch}.tgz`;
+      `https://github.com/${JIJI_DNS_REPO}/releases/download/v${JIJI_DNS_VERSION}/jiji-dns-${downloadArch}`;
+
+    log.info(`Downloading jiji-dns from ${downloadUrl}...`, "dns");
 
     const downloadResult = await ssh.executeCommand(
-      `cd ${COREDNS_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o coredns.tgz`,
+      `cd ${JIJI_DNS_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o jiji-dns`,
     );
 
     if (downloadResult.code !== 0) {
-      throw new Error(`Failed to download CoreDNS: ${downloadResult.stderr}`);
-    }
-
-    // Extract
-    const extractResult = await ssh.executeCommand(
-      `cd ${COREDNS_INSTALL_DIR} && tar -xzf coredns.tgz && rm coredns.tgz`,
-    );
-
-    if (extractResult.code !== 0) {
-      throw new Error(`Failed to extract CoreDNS: ${extractResult.stderr}`);
+      throw new Error(`Failed to download jiji-dns: ${downloadResult.stderr}`);
     }
 
     // Make executable
-    await ssh.executeCommand(`chmod +x ${COREDNS_INSTALL_DIR}/coredns`);
+    await ssh.executeCommand(`chmod +x ${JIJI_DNS_INSTALL_DIR}/jiji-dns`);
 
+    log.success(`jiji-dns installed on ${host}`, "dns");
     return true;
   } catch (error) {
-    log.error(`Failed to install CoreDNS on ${host}: ${error}`, "dns");
+    log.error(`Failed to install jiji-dns on ${host}: ${error}`, "dns");
     return false;
   }
 }
 
 /**
- * Generate CoreDNS Corefile configuration
- *
- * Uses a simple hosts file approach that is regenerated periodically
- * from Corrosion database.
- *
- * @param config - DNS configuration
- * @returns Corefile content
- */
-export function generateCorefileConfig(config: DNSConfig): string {
-  return `# CoreDNS configuration for Jiji service discovery
-
-${config.serviceDomain} {
-    # Bind to specific address to avoid port conflicts
-    bind ${config.listenAddr.split(":")[0]}
-
-    # Serve service records from hosts file
-    hosts ${COREDNS_INSTALL_DIR}/hosts {
-        fallthrough
-    }
-
-    # Forward queries not in hosts file to system resolvers
-    forward . /etc/resolv.conf
-
-    # Cache DNS responses (5 minutes - balanced for distributed systems)
-    # Active health checks via control loop ensure stale entries are cleaned
-    cache 300
-
-    # Log queries
-    log
-
-    # Error handling
-    errors
-}
-
-# Handle system-wide container hostnames (fallback to system hosts)
-. {
-    # Bind to specific address to avoid port conflicts
-    bind ${config.listenAddr.split(":")[0]}
-
-    hosts /etc/hosts {
-        fallthrough
-    }
-
-    # Use system's default resolvers from /etc/resolv.conf
-    forward . /etc/resolv.conf
-    cache 300
-    log
-    errors
-}
-`;
-}
-
-/**
- * Generate a script to update DNS hosts file from Corrosion
- *
- * @param serviceDomain - Service domain (e.g., "jiji")
- * @param corrosionApiAddr - Corrosion API address
- * @returns Script content
- */
-export function generateHostsUpdateScript(
-  serviceDomain: string,
-  _corrosionApiAddr: string,
-): string {
-  return `#!/bin/bash
-# Update DNS hosts file from Corrosion database
-
-HOSTS_FILE="${COREDNS_INSTALL_DIR}/hosts"
-TEMP_FILE="\${HOSTS_FILE}.tmp"
-SYSTEM_HOSTS_FILE="/etc/hosts"
-SYSTEM_TEMP_FILE="/etc/hosts.jiji.tmp"
-
-# Clear temp files
-> "\$TEMP_FILE"
-cp "\$SYSTEM_HOSTS_FILE" "\$SYSTEM_TEMP_FILE"
-
-# Remove old Jiji entries from system hosts
-sed -i '/# Jiji container hostnames/,/# End Jiji container hostnames/d' "\$SYSTEM_TEMP_FILE"
-
-# Add header to system hosts
-echo "# Jiji container hostnames" >> "\$SYSTEM_TEMP_FILE"
-
-# Query Corrosion for healthy containers with service and project info
-# Only select the NEWEST container per (service, server_id) to avoid duplicate DNS entries
-# during zero-downtime deployments when old and new containers are both running
-/opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "
-  SELECT s.project || '|' || c.service || '|' || c.ip || '|' || c.id || '|' || COALESCE(c.instance_id, '')
-  FROM containers c
-  JOIN services s ON c.service = s.name
-  WHERE (c.health_status = 'healthy' OR (c.health_status IS NULL AND c.healthy = 1))
-  AND c.started_at = (
-    SELECT MAX(c2.started_at)
-    FROM containers c2
-    WHERE c2.service = c.service
-    AND c2.server_id = c.server_id
-    AND (c2.health_status = 'healthy' OR (c2.health_status IS NULL AND c2.healthy = 1))
-  );
-" 2>/dev/null | while IFS='|' read -r project service ip container_id instance_id; do
-  if [ -n "\$project" ] && [ -n "\$service" ] && [ -n "\$ip" ] && [ -n "\$container_id" ]; then
-    # For CoreDNS hosts plugin: use FQDNs with trailing dot
-    # e.g., "casa-s3-master.jiji." - trailing dot makes it absolute/FQDN
-    echo "\$ip \${project}-\${service}.${serviceDomain}." >> "\$TEMP_FILE"
-
-    # Also add instance-specific domain if instance_id is set
-    if [ -n "\$instance_id" ]; then
-      echo "\$ip \${project}-\${service}-\${instance_id}.${serviceDomain}." >> "\$TEMP_FILE"
-    fi
-  fi
-done
-
-# Add footer to system hosts
-echo "# End Jiji container hostnames" >> "\$SYSTEM_TEMP_FILE"
-
-# Atomic replace for both files
-if [ -s "\$TEMP_FILE" ]; then
-  mv "\$TEMP_FILE" "\$HOSTS_FILE"
-  mv "\$SYSTEM_TEMP_FILE" "\$SYSTEM_HOSTS_FILE"
-  echo "Updated DNS hosts: \$(wc -l < "\$HOSTS_FILE") entries"
-else
-  # Keep old files if query failed
-  rm -f "\$TEMP_FILE" "\$SYSTEM_TEMP_FILE"
-  echo "No containers found or query failed"
-fi
-`;
-}
-
-/**
- * Write CoreDNS configuration to a remote server
+ * Create systemd service for jiji-dns
  *
  * @param ssh - SSH connection to the server
  * @param config - DNS configuration
  */
-export async function writeCoreDNSConfig(
+export async function createJijiDnsService(
   ssh: SSHManager,
   config: DNSConfig,
 ): Promise<void> {
-  const corefileContent = generateCorefileConfig(config);
-  const corefilePath = `${COREDNS_INSTALL_DIR}/Corefile`;
-
-  // Ensure directory exists
-  await ssh.executeCommand(`mkdir -p ${COREDNS_INSTALL_DIR}`);
-
-  // Write Corefile
-  const writeResult = await ssh.executeCommand(
-    `cat > ${corefilePath} << 'EOFCORE'\n${corefileContent}\nEOFCORE`,
-  );
-
-  if (writeResult.code !== 0) {
-    throw new Error(`Failed to write CoreDNS config: ${writeResult.stderr}`);
-  }
-
-  // Create empty hosts file initially
-  await ssh.executeCommand(`touch ${COREDNS_INSTALL_DIR}/hosts`);
-
-  // Write hosts update script
-  const updateScript = generateHostsUpdateScript(
-    config.serviceDomain,
-    config.corrosionApiAddr,
-  );
-  const scriptPath = `${COREDNS_INSTALL_DIR}/update-hosts.sh`;
-
-  const scriptResult = await ssh.executeCommand(
-    `cat > ${scriptPath} << 'EOFSCRIPT'\n${updateScript}\nEOFSCRIPT`,
-  );
-
-  if (scriptResult.code !== 0) {
-    throw new Error(
-      `Failed to write hosts update script: ${scriptResult.stderr}`,
-    );
-  }
-
-  // Make script executable
-  await ssh.executeCommand(`chmod +x ${scriptPath}`);
-}
-
-/**
- * Create systemd service for CoreDNS
- *
- * @param ssh - SSH connection to the server
- * @param listenAddr - Address to listen on (e.g., "10.210.1.1:53")
- */
-export async function createCoreDNSService(
-  ssh: SSHManager,
-  _listenAddr: string,
-): Promise<void> {
   const serviceContent = `[Unit]
-Description=CoreDNS for Jiji service discovery
+Description=Jiji DNS Server with Corrosion Subscription
 After=network.target jiji-corrosion.service
 Requires=jiji-corrosion.service
 
 [Service]
 Type=simple
-ExecStart=${COREDNS_INSTALL_DIR}/coredns -conf ${COREDNS_INSTALL_DIR}/Corefile -dns.port 53
-Environment="COREFILE=${COREDNS_INSTALL_DIR}/Corefile"
+ExecStart=${JIJI_DNS_INSTALL_DIR}/jiji-dns
+Environment="CORROSION_API=${config.corrosionApiAddr}"
+Environment="LISTEN_ADDR=${config.listenAddr}"
+Environment="SERVICE_DOMAIN=${config.serviceDomain}"
+Environment="DNS_TTL=60"
 Restart=always
 RestartSec=5
 # Allow binding to port 53
@@ -287,7 +115,9 @@ WantedBy=multi-user.target
   );
 
   if (serviceResult.code !== 0) {
-    throw new Error(`Failed to create DNS service: ${serviceResult.stderr}`);
+    throw new Error(
+      `Failed to create jiji-dns service: ${serviceResult.stderr}`,
+    );
   }
 
   // Reload systemd
@@ -295,66 +125,16 @@ WantedBy=multi-user.target
 }
 
 /**
- * Create systemd timer for periodic hosts file updates
- *
- * @param ssh - SSH connection to the server
- * @param intervalSeconds - Update interval in seconds (default: 30)
- */
-export async function createHostsUpdateTimer(
-  ssh: SSHManager,
-  intervalSeconds = 30,
-): Promise<void> {
-  // Create service unit
-  const serviceContent = `[Unit]
-Description=Update DNS hosts from Corrosion
-
-[Service]
-Type=oneshot
-ExecStart=${COREDNS_INSTALL_DIR}/update-hosts.sh
-`;
-
-  await ssh.executeCommand(
-    `cat > /etc/systemd/system/jiji-dns-update.service << 'EOFSVC'\n${serviceContent}\nEOFSVC`,
-  );
-
-  // Create timer unit
-  const timerContent = `[Unit]
-Description=Periodic DNS hosts update from Corrosion
-
-[Timer]
-OnBootSec=10s
-OnUnitActiveSec=${intervalSeconds}s
-AccuracySec=1s
-
-[Install]
-WantedBy=timers.target
-`;
-
-  await ssh.executeCommand(
-    `cat > /etc/systemd/system/jiji-dns-update.timer << 'EOFTIMER'\n${timerContent}\nEOFTIMER`,
-  );
-
-  // Reload systemd
-  await ssh.executeCommand("systemctl daemon-reload");
-}
-
-/**
- * Start CoreDNS service
+ * Start jiji-dns service
  *
  * @param ssh - SSH connection to the server
  */
-export async function startCoreDNSService(ssh: SSHManager): Promise<void> {
-  // Start and enable the update timer first
-  await ssh.executeCommand("systemctl enable --now jiji-dns-update.timer");
-
-  // Run initial hosts update
-  await ssh.executeCommand(`${COREDNS_INSTALL_DIR}/update-hosts.sh || true`);
-
-  // Start and enable CoreDNS
+export async function startJijiDnsService(ssh: SSHManager): Promise<void> {
+  // Start and enable jiji-dns
   const result = await ssh.executeCommand("systemctl enable --now jiji-dns");
 
   if (result.code !== 0) {
-    throw new Error(`Failed to start CoreDNS service: ${result.stderr}`);
+    throw new Error(`Failed to start jiji-dns service: ${result.stderr}`);
   }
 
   // Wait a moment for service to start
@@ -362,47 +142,35 @@ export async function startCoreDNSService(ssh: SSHManager): Promise<void> {
 }
 
 /**
- * Stop CoreDNS service
+ * Stop jiji-dns service
  *
  * @param ssh - SSH connection to the server
  */
-export async function stopCoreDNSService(ssh: SSHManager): Promise<void> {
+export async function stopJijiDnsService(ssh: SSHManager): Promise<void> {
   await ssh.executeCommand("systemctl stop jiji-dns");
-  await ssh.executeCommand("systemctl stop jiji-dns-update.timer");
 }
 
 /**
- * Check if CoreDNS service is running
+ * Check if jiji-dns service is running
  *
  * @param ssh - SSH connection to the server
  * @returns True if service is active
  */
-export async function isCoreDNSRunning(ssh: SSHManager): Promise<boolean> {
+export async function isJijiDnsRunning(ssh: SSHManager): Promise<boolean> {
   const result = await ssh.executeCommand("systemctl is-active jiji-dns");
   return result.stdout.trim() === "active";
 }
 
 /**
- * Trigger immediate DNS hosts update
- *
- * @param ssh - SSH connection to the server
- */
-export async function triggerHostsUpdate(ssh: SSHManager): Promise<void> {
-  const result = await ssh.executeCommand(
-    `${COREDNS_INSTALL_DIR}/update-hosts.sh`,
-  );
-
-  if (result.code !== 0) {
-    throw new Error(`Failed to update DNS hosts: ${result.stderr}`);
-  }
-}
-
-/**
  * Register a container hostname in system DNS immediately
+ *
+ * Note: With jiji-dns, DNS updates happen automatically via Corrosion subscription.
+ * This function only logs the registration for visibility.
  *
  * @param serviceName - Service name
  * @param projectName - Project name
  * @param containerIp - Container IP address
+ * @param instanceId - Optional instance identifier
  */
 export function registerContainerHostname(
   serviceName: string,
@@ -414,16 +182,16 @@ export function registerContainerHostname(
   if (instanceId) {
     const instanceDomain = `${projectName}-${serviceName}-${instanceId}.jiji`;
     log.say(
-      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      `├── Registered ${baseDomain} -> ${containerIp} in jiji-dns`,
       2,
     );
     log.say(
-      `├── Registered ${instanceDomain} -> ${containerIp} in CoreDNS`,
+      `├── Registered ${instanceDomain} -> ${containerIp} in jiji-dns`,
       2,
     );
   } else {
     log.say(
-      `├── Registered ${baseDomain} -> ${containerIp} in CoreDNS`,
+      `├── Registered ${baseDomain} -> ${containerIp} in jiji-dns`,
       2,
     );
   }
@@ -432,6 +200,9 @@ export function registerContainerHostname(
 /**
  * Unregister a container hostname from system DNS
  *
+ * Note: With jiji-dns, DNS entries are automatically removed when containers
+ * are unregistered from Corrosion database via subscription.
+ *
  * @param serviceName - Service name
  * @param projectName - Project name
  */
@@ -439,8 +210,8 @@ export function unregisterContainerHostname(
   _serviceName: string,
   _projectName?: string,
 ): void {
-  // CoreDNS entries are automatically removed when containers are
-  // unregistered from Corrosion database
+  // jiji-dns entries are automatically removed when containers are
+  // unregistered from Corrosion database via real-time subscription
 }
 
 /**
