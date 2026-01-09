@@ -7,8 +7,6 @@
 Deploy containerized apps across servers with simplicity, speed, and
 portability.
 
-> **WIP**: Under heavy development, not production ready.
-
 ## Features
 
 - **Zero downtime deployments** with health checks and automatic rollback
