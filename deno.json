@@ -1,6 +1,6 @@
 {
   "name": "@jiji/cli",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "license": "MIT",
   "exports": "./src/main.ts",
   "nodeModulesDir": "auto",
