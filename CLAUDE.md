@@ -90,9 +90,9 @@ Three components work together in `src/lib/network/`:
 
 - No central coordinator - eventual consistency
 - Tables: `servers`, `containers`, `services`, `cluster_metadata`
-- Gossip on port 8787, API on port 8080
+- Gossip on port 9280, API on port 9220
 
-**CoreDNS** (`dns.ts`): DNS-based service discovery
+**jiji-dns** (`dns.ts`): DNS-based service discovery
 
 - Resolves `<project>-<service>.jiji` to container IPs
 - Queries Corrosion for healthy containers
