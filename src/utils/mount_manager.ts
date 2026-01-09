@@ -49,10 +49,11 @@ export async function prepareMountFiles(
   ssh: SSHManager,
   files: FileMountConfig[],
   project: string,
+  serviceName: string,
 ): Promise<void> {
   if (files.length === 0) return;
 
-  const filesDir = `.jiji/${project}/files`;
+  const filesDir = `.jiji/${project}/files/${serviceName}`;
 
   // Create files directory on remote host
   await ssh.executeCommand(`mkdir -p ${filesDir}`);
@@ -83,10 +84,11 @@ export async function prepareMountDirectories(
   ssh: SSHManager,
   directories: DirectoryMountConfig[],
   project: string,
+  serviceName: string,
 ): Promise<void> {
   if (directories.length === 0) return;
 
-  const directoriesBase = `.jiji/${project}/directories`;
+  const directoriesBase = `.jiji/${project}/directories/${serviceName}`;
 
   // Create base directories folder on remote host
   await ssh.executeCommand(`mkdir -p ${directoriesBase}`);
@@ -133,10 +135,13 @@ function buildMountArgs(
   mounts: FileMountConfig[] | DirectoryMountConfig[],
   project: string,
   type: "files" | "directories",
+  serviceName: string,
 ): string[] {
   return mounts.map((mount) => {
     const parsed = parseMountConfig(mount);
-    const remotePath = `.jiji/${project}/${type}/${parsed.local}`;
+    // Include service name in path to avoid collisions between services
+    const basePath = `.jiji/${project}/${type}/${serviceName}`;
+    const remotePath = `${basePath}/${parsed.local}`;
     let mountArg = `${remotePath}:${parsed.remote}`;
 
     // Add options if specified
@@ -154,8 +159,9 @@ function buildMountArgs(
 export function buildFileMountArgs(
   files: FileMountConfig[],
   project: string,
+  serviceName: string,
 ): string[] {
-  return buildMountArgs(files, project, "files");
+  return buildMountArgs(files, project, "files", serviceName);
 }
 
 /**
@@ -164,8 +170,9 @@ export function buildFileMountArgs(
 export function buildDirectoryMountArgs(
   directories: DirectoryMountConfig[],
   project: string,
+  serviceName: string,
 ): string[] {
-  return buildMountArgs(directories, project, "directories");
+  return buildMountArgs(directories, project, "directories", serviceName);
 }
 
 /**
@@ -176,9 +183,15 @@ export function buildAllMountArgs(
   directories: DirectoryMountConfig[],
   volumes: string[],
   project: string,
+  serviceName: string,
 ): string {
-  const fileArgs = buildMountArgs(files, project, "files");
-  const directoryArgs = buildMountArgs(directories, project, "directories");
+  const fileArgs = buildMountArgs(files, project, "files", serviceName);
+  const directoryArgs = buildMountArgs(
+    directories,
+    project,
+    "directories",
+    serviceName,
+  );
   const volumeArgs = volumes.map((v) => `-v ${v}`);
 
   return [...fileArgs, ...directoryArgs, ...volumeArgs].join(" ");

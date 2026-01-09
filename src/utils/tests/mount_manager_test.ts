@@ -46,14 +46,17 @@ Deno.test("MountManager - buildFileMountArgs with string format", () => {
     "config.yml:/app/config.yml",
   ];
 
-  const args = buildFileMountArgs(files, "myproject");
+  const args = buildFileMountArgs(files, "myproject", "web");
 
   assertEquals(args.length, 2);
   assertEquals(
     args[0],
-    "-v .jiji/myproject/files/nginx.conf:/etc/nginx/nginx.conf:ro",
+    "-v .jiji/myproject/files/web/nginx.conf:/etc/nginx/nginx.conf:ro",
   );
-  assertEquals(args[1], "-v .jiji/myproject/files/config.yml:/app/config.yml");
+  assertEquals(
+    args[1],
+    "-v .jiji/myproject/files/web/config.yml:/app/config.yml",
+  );
 });
 
 Deno.test("MountManager - buildFileMountArgs with hash format", () => {
@@ -67,12 +70,12 @@ Deno.test("MountManager - buildFileMountArgs with hash format", () => {
     },
   ];
 
-  const args = buildFileMountArgs(files, "myproject");
+  const args = buildFileMountArgs(files, "myproject", "api");
 
   assertEquals(args.length, 1);
   assertEquals(
     args[0],
-    "-v .jiji/myproject/files/secret.key:/etc/app/secret.key:ro",
+    "-v .jiji/myproject/files/api/secret.key:/etc/app/secret.key:ro",
   );
 });
 
@@ -82,16 +85,16 @@ Deno.test("MountManager - buildDirectoryMountArgs with string format", () => {
     "uploads:/var/uploads:z",
   ];
 
-  const args = buildDirectoryMountArgs(directories, "myproject");
+  const args = buildDirectoryMountArgs(directories, "myproject", "web");
 
   assertEquals(args.length, 2);
   assertEquals(
     args[0],
-    "-v .jiji/myproject/directories/html:/usr/share/nginx/html:ro",
+    "-v .jiji/myproject/directories/web/html:/usr/share/nginx/html:ro",
   );
   assertEquals(
     args[1],
-    "-v .jiji/myproject/directories/uploads:/var/uploads:z",
+    "-v .jiji/myproject/directories/web/uploads:/var/uploads:z",
   );
 });
 
@@ -106,12 +109,12 @@ Deno.test("MountManager - buildDirectoryMountArgs with hash format", () => {
     },
   ];
 
-  const args = buildDirectoryMountArgs(directories, "myproject");
+  const args = buildDirectoryMountArgs(directories, "myproject", "database");
 
   assertEquals(args.length, 1);
   assertEquals(
     args[0],
-    "-v .jiji/myproject/directories/mysql-data:/var/lib/mysql:Z",
+    "-v .jiji/myproject/directories/database/mysql-data:/var/lib/mysql:Z",
   );
 });
 
@@ -120,16 +123,22 @@ Deno.test("MountManager - buildAllMountArgs combines all mount types", () => {
   const directories = ["data:/var/data:z"];
   const volumes = ["/host/path:/container/path"];
 
-  const args = buildAllMountArgs(files, directories, volumes, "myproject");
+  const args = buildAllMountArgs(
+    files,
+    directories,
+    volumes,
+    "myproject",
+    "api",
+  );
 
   assertEquals(
     args,
-    "-v .jiji/myproject/files/config.yml:/app/config.yml:ro -v .jiji/myproject/directories/data:/var/data:z -v /host/path:/container/path",
+    "-v .jiji/myproject/files/api/config.yml:/app/config.yml:ro -v .jiji/myproject/directories/api/data:/var/data:z -v /host/path:/container/path",
   );
 });
 
 Deno.test("MountManager - buildAllMountArgs with empty arrays", () => {
-  const args = buildAllMountArgs([], [], [], "myproject");
+  const args = buildAllMountArgs([], [], [], "myproject", "web");
 
   assertEquals(args, "");
 });
@@ -137,10 +146,13 @@ Deno.test("MountManager - buildAllMountArgs with empty arrays", () => {
 Deno.test("MountManager - buildFileMountArgs without options", () => {
   const files = ["config.yml:/app/config.yml"];
 
-  const args = buildFileMountArgs(files, "myproject");
+  const args = buildFileMountArgs(files, "myproject", "app");
 
   assertEquals(args.length, 1);
-  assertEquals(args[0], "-v .jiji/myproject/files/config.yml:/app/config.yml");
+  assertEquals(
+    args[0],
+    "-v .jiji/myproject/files/app/config.yml:/app/config.yml",
+  );
 });
 
 Deno.test("MountManager - buildDirectoryMountArgs without options", () => {
@@ -152,10 +164,13 @@ Deno.test("MountManager - buildDirectoryMountArgs without options", () => {
     },
   ];
 
-  const args = buildDirectoryMountArgs(directories, "myproject");
+  const args = buildDirectoryMountArgs(directories, "myproject", "worker");
 
   assertEquals(args.length, 1);
-  assertEquals(args[0], "-v .jiji/myproject/directories/data:/var/data");
+  assertEquals(
+    args[0],
+    "-v .jiji/myproject/directories/worker/data:/var/data",
+  );
 });
 
 Deno.test("MountManager - parse hash format minimal", () => {

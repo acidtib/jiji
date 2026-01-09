@@ -24,7 +24,7 @@ export const DEFAULT_MAX_PREFIX_LENGTH = 25;
 /**
  * Registry configuration
  */
-export const DEFAULT_LOCAL_REGISTRY_PORT = 5000;
+export const DEFAULT_LOCAL_REGISTRY_PORT = 9270;
 
 /**
  * Network names
@@ -43,6 +43,8 @@ export const KAMAL_PROXY_CONFIG_VOLUME = "kamal-proxy-config";
 /**
  * Corrosion (distributed database) configuration
  */
+export const CORROSION_API_PORT = 9220;
+export const CORROSION_GOSSIP_PORT = 9280;
 export const CORROSION_SYNC_TIMEOUT_SECONDS = 300; // 5 minutes
 export const CORROSION_SYNC_POLL_INTERVAL_MS = 2000; // 2 seconds
 export const CORROSION_SYNC_LOG_INTERVAL_MS = 5000; // 5 seconds

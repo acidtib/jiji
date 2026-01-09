@@ -350,7 +350,7 @@ garbage_collect_containers() {
   local stale_containers=$(\${CORROSION_DIR}/corrosion query --config \${CORROSION_DIR}/config.toml "
     SELECT id, service
     FROM containers
-    WHERE healthy = 0
+    WHERE health_status != 'healthy'
     AND (started_at / 1000) < $stale_threshold
   " 2>/dev/null || echo "")
 

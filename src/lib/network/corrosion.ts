@@ -9,12 +9,14 @@ import type { SSHManager } from "../../utils/ssh.ts";
 import type { CommandResult } from "../../types/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import type {
+  ContainerHealthStatus,
   ContainerRegistration,
   CorrosionConfig,
   ServerRegistration,
   ServiceRegistration,
 } from "../../types/network.ts";
 import {
+  CORROSION_API_PORT,
   CORROSION_SYNC_LOG_INTERVAL_MS,
   CORROSION_SYNC_POLL_INTERVAL_MS,
   CORROSION_SYNC_TIMEOUT_SECONDS,
@@ -375,7 +377,7 @@ export async function startCorrosionService(ssh: SSHManager): Promise<void> {
 
     // Check if API is responding
     const checkResult = await ssh.executeCommand(
-      "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health || echo '000'",
+      `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CORROSION_API_PORT}/health || echo '000'`,
     );
 
     const statusCode = checkResult.stdout.trim();
@@ -462,21 +464,21 @@ export async function registerContainer(
   ssh: SSHManager,
   container: ContainerRegistration,
 ): Promise<void> {
-  const healthy = container.healthy ? 1 : 0;
+  const healthStatus = container.healthStatus ?? "healthy";
   const instanceId = container.instanceId !== undefined
     ? `'${escapeSql(container.instanceId)}'`
     : "NULL";
 
   const sql = `
     INSERT OR REPLACE INTO containers
-    (id, service, server_id, ip, healthy, started_at, instance_id)
+    (id, service, server_id, ip, started_at, instance_id, health_status)
     VALUES
     ('${escapeSql(container.id)}', '${escapeSql(container.service)}', '${
     escapeSql(container.serverId)
   }',
-     '${
-    escapeSql(container.ip)
-  }', ${healthy}, ${container.startedAt}, ${instanceId});
+     '${escapeSql(container.ip)}', ${container.startedAt}, ${instanceId}, '${
+    escapeSql(healthStatus)
+  }');
   `;
 
   const result = await corrosionExec(ssh, sql);
@@ -518,7 +520,7 @@ export async function queryServiceContainers(
 ): Promise<string[]> {
   const sql = `SELECT ip FROM containers WHERE service = '${
     escapeSql(serviceName)
-  }' AND healthy = 1;`;
+  }' AND health_status = 'healthy';`;
 
   const result = await corrosionQuery(ssh, sql);
 
@@ -545,7 +547,7 @@ export async function queryServerServiceContainers(
 ): Promise<string[]> {
   const sql = `SELECT ip FROM containers WHERE service = '${
     escapeSql(serviceName)
-  }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
+  }' AND server_id = '${escapeSql(serverId)}' AND health_status = 'healthy';`;
 
   const result = await corrosionQuery(ssh, sql);
 
@@ -576,7 +578,7 @@ export async function queryServerServiceContainerDetails(
 ): Promise<Array<{ ip: string; instanceId?: string }>> {
   const sql = `SELECT ip, instance_id FROM containers WHERE service = '${
     escapeSql(serviceName)
-  }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
+  }' AND server_id = '${escapeSql(serverId)}' AND health_status = 'healthy';`;
 
   const result = await corrosionQuery(ssh, sql);
 
