@@ -64,33 +64,6 @@ async function updateDenoConfig(version: string): Promise<void> {
   }
 }
 
-// Function to update version in README.md
-async function updateReadme(version: string): Promise<void> {
-  try {
-    const readmePath = "./README.md";
-    const content = await Deno.readTextFile(readmePath);
-
-    // Look for the pattern: VERSION=v<any_version> sh
-    const versionRegex = /VERSION=v\d+\.\d+\.\d+\s+sh/g;
-    let newContent = content.replace(versionRegex, `VERSION=v${version} sh`);
-
-    // Update PowerShell download URL
-    const powershellUrlRegex =
-      /https:\/\/github\.com\/acidtib\/jiji\/releases\/download\/v\d+\.\d+\.\d+\/jiji-windows-x86_64\.exe/g;
-    newContent = newContent.replace(
-      powershellUrlRegex,
-      `https://github.com/acidtib/jiji/releases/download/v${version}/jiji-windows-x86_64.exe`,
-    );
-
-    await Deno.writeTextFile(readmePath, newContent);
-    console.log(`Updated ${readmePath}`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Error updating README.md: ${message}`);
-    throw error;
-  }
-}
-
 // Main function
 async function main() {
   const args = Deno.args;
@@ -128,9 +101,6 @@ async function main() {
 
       await updateDenoConfig(newVersion);
       console.log(`Updated ${DENO_CONFIG}`);
-
-      await updateReadme(newVersion);
-      console.log(`Updated README.md`);
 
       console.log(`Version updated to ${newVersion}`);
     } catch (error) {
