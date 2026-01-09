@@ -13,7 +13,7 @@ const JIJI_DNS_INSTALL_DIR = "/opt/jiji/dns";
 
 // jiji-dns GitHub releases URL
 const JIJI_DNS_REPO = "acidtib/jiji-dns";
-const JIJI_DNS_VERSION = "0.1.1";
+const JIJI_DNS_VERSION = "0.2.1";
 
 /**
  * Install jiji-dns on a remote server

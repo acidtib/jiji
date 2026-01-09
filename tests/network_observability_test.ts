@@ -1,7 +1,7 @@
 /**
  * Network observability integration tests
  *
- * Tests the new observability functions for Phase 2:
+ * Tests the new observability functions:
  * - queryStaleContainers
  * - queryOfflineServers
  * - queryAllContainersWithDetails
@@ -103,11 +103,11 @@ Deno.test("queryOfflineServers returns servers with stale heartbeats", async () 
 Deno.test("queryAllContainersWithDetails returns container info with server hostname", async () => {
   const mockSsh = new MockSSHManager("test-server");
 
-  // Format: id|service|server_id|hostname|ip|healthy|started_at|instance_id
+  // Format: id|service|server_id|hostname|ip|health_status|started_at|instance_id
   mockSsh.addMockResponse("corrosion query", {
     success: true,
     stdout:
-      "abc123|web|srv-001|server1.example.com|10.210.1.5|1|1704067200000|primary\ndef456|api|srv-002|server2.example.com|10.210.2.6|0|1704067200000|",
+      "abc123|web|srv-001|server1.example.com|10.210.1.5|healthy|1704067200000|primary\ndef456|api|srv-002|server2.example.com|10.210.2.6|unhealthy|1704067200000|",
     stderr: "",
     code: 0,
   });
@@ -121,11 +121,11 @@ Deno.test("queryAllContainersWithDetails returns container info with server host
   assertEquals(result[0].service, "web");
   assertEquals(result[0].serverHostname, "server1.example.com");
   assertEquals(result[0].ip, "10.210.1.5");
-  assertEquals(result[0].healthy, true);
+  assertEquals(result[0].healthStatus, "healthy");
   assertEquals(result[0].instanceId, "primary");
 
   assertEquals(result[1].id, "def456");
-  assertEquals(result[1].healthy, false);
+  assertEquals(result[1].healthStatus, "unhealthy");
   assertEquals(result[1].instanceId, undefined);
 });
 
@@ -135,7 +135,7 @@ Deno.test("queryAllContainersWithDetails filters by service", async () => {
   mockSsh.addMockResponse("corrosion query", {
     success: true,
     stdout:
-      "abc123|web|srv-001|server1.example.com|10.210.1.5|1|1704067200000|",
+      "abc123|web|srv-001|server1.example.com|10.210.1.5|healthy|1704067200000|",
     stderr: "",
     code: 0,
   });
@@ -158,7 +158,7 @@ Deno.test("queryContainerById finds container by partial ID", async () => {
   mockSsh.addMockResponse("corrosion query", {
     success: true,
     stdout:
-      "abc123def456|web|srv-001|server1.example.com|10.210.1.5|1|1704067200000|primary",
+      "abc123def456|web|srv-001|server1.example.com|10.210.1.5|healthy|1704067200000|primary",
     stderr: "",
     code: 0,
   });

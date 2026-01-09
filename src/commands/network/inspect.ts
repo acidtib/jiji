@@ -104,8 +104,10 @@ export const inspectCommand = new Command()
       log.section(`Container: ${container.id}`);
       console.log();
 
-      const status = container.healthy ? "healthy" : "unhealthy";
-      const statusColor = container.healthy ? "\x1b[32m" : "\x1b[31m";
+      const status = container.healthStatus;
+      const statusColor = container.healthStatus === "healthy"
+        ? "\x1b[32m"
+        : "\x1b[31m";
       const resetColor = "\x1b[0m";
 
       // Build DNS names

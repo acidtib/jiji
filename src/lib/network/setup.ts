@@ -825,7 +825,7 @@ export async function setupNetwork(
           await createJijiDnsService(ssh, {
             listenAddr: `${server.wireguardIp}:53`,
             serviceDomain: config.network.serviceDomain,
-            corrosionApiAddr: "http://127.0.0.1:8080",
+            corrosionApiAddr: `http://127.0.0.1:${CORROSION_API_PORT}`,
           });
           await startJijiDnsService(ssh);
           log.say("├── jiji-dns service started", 2);

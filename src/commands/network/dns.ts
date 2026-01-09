@@ -92,7 +92,7 @@ export const dnsCommand = new Command()
         Array<{
           ip: string;
           serverHostname: string;
-          healthy: boolean;
+          healthStatus: string;
           instanceId?: string;
         }>
       >();
@@ -105,7 +105,7 @@ export const dnsCommand = new Command()
         byService.get(key)!.push({
           ip: container.ip,
           serverHostname: container.serverHostname,
-          healthy: container.healthy,
+          healthStatus: container.healthStatus,
           instanceId: container.instanceId,
         });
       }
@@ -120,7 +120,9 @@ export const dnsCommand = new Command()
         // Build DNS name
         const dnsName =
           `${config.project}-${serviceName}.${topology.serviceDomain}`;
-        const healthyCount = records.filter((r) => r.healthy).length;
+        const healthyCount = records.filter((r) =>
+          r.healthStatus === "healthy"
+        ).length;
 
         console.log();
         log.say(
@@ -130,8 +132,10 @@ export const dnsCommand = new Command()
 
         // Sort records: healthy first, then by server hostname
         records.sort((a, b) => {
-          if (a.healthy !== b.healthy) {
-            return a.healthy ? -1 : 1;
+          const aHealthy = a.healthStatus === "healthy";
+          const bHealthy = b.healthStatus === "healthy";
+          if (aHealthy !== bHealthy) {
+            return aHealthy ? -1 : 1;
           }
           return a.serverHostname.localeCompare(b.serverHostname);
         });
@@ -140,8 +144,10 @@ export const dnsCommand = new Command()
           const record = records[i];
           const isLast = i === records.length - 1;
           const prefix = isLast ? "└──" : "├──";
-          const status = record.healthy ? "healthy" : "unhealthy";
-          const statusColor = record.healthy ? "\x1b[32m" : "\x1b[31m";
+          const status = record.healthStatus;
+          const statusColor = record.healthStatus === "healthy"
+            ? "\x1b[32m"
+            : "\x1b[31m";
           const resetColor = "\x1b[0m";
 
           let line =

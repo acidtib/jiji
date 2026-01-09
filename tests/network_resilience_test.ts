@@ -1,7 +1,7 @@
 /**
  * Network resilience integration tests
  *
- * Tests the Phase 3 resilience features:
+ * Tests the resilience features:
  * - Database indexes
  * - Schema migrations for health_status columns
  * - applyMigrations function
@@ -166,11 +166,6 @@ Deno.test("CORROSION_SCHEMA includes performance indexes", async () => {
     "Missing idx_containers_service index",
   );
   assertEquals(
-    content.includes("idx_containers_healthy"),
-    true,
-    "Missing idx_containers_healthy index",
-  );
-  assertEquals(
     content.includes("idx_containers_health_status"),
     true,
     "Missing idx_containers_health_status index",
@@ -182,8 +177,8 @@ Deno.test("CORROSION_SCHEMA includes performance indexes", async () => {
   );
 });
 
-// Test that schema includes Phase 3 columns
-Deno.test("CORROSION_SCHEMA includes Phase 3 health columns", async () => {
+// Test that schema includes columns
+Deno.test("CORROSION_SCHEMA includes health columns", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/corrosion.ts",
   );
@@ -211,7 +206,6 @@ Deno.test("CORROSION_SCHEMA includes Phase 3 health columns", async () => {
   );
 });
 
-// Test that control loop includes Phase 3 features
 Deno.test("control_loop includes signal handlers", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/control_loop.ts",

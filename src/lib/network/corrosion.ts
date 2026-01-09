@@ -88,11 +88,9 @@ CREATE TABLE IF NOT EXISTS containers (
   service TEXT NOT NULL DEFAULT '',
   server_id TEXT NOT NULL DEFAULT '',
   ip TEXT NOT NULL DEFAULT '',
-  healthy INTEGER DEFAULT 1,
   started_at INTEGER NOT NULL DEFAULT 0,
   instance_id TEXT DEFAULT NULL,
-  -- Phase 3: Granular health tracking
-  health_status TEXT DEFAULT 'unknown',
+  health_status TEXT DEFAULT 'healthy',
   last_health_check INTEGER DEFAULT 0,
   consecutive_failures INTEGER DEFAULT 0,
   health_port INTEGER DEFAULT NULL
@@ -107,7 +105,6 @@ CREATE TABLE IF NOT EXISTS containers (
 -- Performance indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_containers_server_id ON containers(server_id);
 CREATE INDEX IF NOT EXISTS idx_containers_service ON containers(service);
-CREATE INDEX IF NOT EXISTS idx_containers_healthy ON containers(healthy);
 CREATE INDEX IF NOT EXISTS idx_containers_health_status ON containers(health_status);
 CREATE INDEX IF NOT EXISTS idx_servers_last_seen ON servers(last_seen);
 `;
@@ -140,7 +137,7 @@ export async function applyMigrations(ssh: SSHManager): Promise<boolean> {
     const hasHealthStatus = checkResult.stdout.trim() !== "0";
 
     if (!hasHealthStatus) {
-      log.info(`Applying Phase 3 migration on ${host}...`, "corrosion");
+      log.info(`Applying migration on ${host}...`, "corrosion");
 
       // Add columns one at a time (SQLite requires separate ALTER TABLE statements)
       const columns = [
@@ -167,13 +164,13 @@ export async function applyMigrations(ssh: SSHManager): Promise<boolean> {
         }
       }
 
-      // Initialize existing containers with 'healthy' status based on current healthy column
+      // Initialize existing containers with 'healthy' status if not set
       await corrosionExec(
         ssh,
-        "UPDATE containers SET health_status = CASE WHEN healthy = 1 THEN 'healthy' ELSE 'unhealthy' END WHERE health_status = 'unknown' OR health_status IS NULL;",
+        "UPDATE containers SET health_status = 'healthy' WHERE health_status = 'unknown' OR health_status IS NULL;",
       );
 
-      log.success(`Phase 3 migration complete on ${host}`, "corrosion");
+      log.success(`Migration complete on ${host}`, "corrosion");
     } else {
       log.debug(`Migration already applied on ${host}`, "corrosion");
     }
@@ -953,7 +950,7 @@ export async function initializeClusterMetadata(
 }
 
 // ============================================================================
-// Observability Functions (Phase 2)
+// Observability Functions
 // ============================================================================
 
 /**
@@ -965,7 +962,7 @@ export interface ContainerWithDetails {
   serverId: string;
   serverHostname: string;
   ip: string;
-  healthy: boolean;
+  healthStatus: ContainerHealthStatus;
   startedAt: number;
   instanceId?: string;
 }
@@ -1020,7 +1017,7 @@ export async function queryStaleContainers(
   const sql = `
     SELECT id, service, server_id, started_at
     FROM containers
-    WHERE healthy = 0
+    WHERE health_status = 'unhealthy'
     AND (started_at / 1000) < ${threshold}
     ORDER BY started_at;
   `;
@@ -1162,7 +1159,7 @@ export async function queryAllContainersWithDetails(
   serviceFilter?: string,
 ): Promise<ContainerWithDetails[]> {
   let sql = `
-    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.healthy, c.started_at, c.instance_id
+    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
     FROM containers c
     LEFT JOIN servers s ON c.server_id = s.id
   `;
@@ -1190,7 +1187,7 @@ export async function queryAllContainersWithDetails(
       serverId,
       serverHostname,
       ip,
-      healthyStr,
+      healthStatus,
       startedAtStr,
       instanceId,
     ] = line.split("|");
@@ -1200,7 +1197,7 @@ export async function queryAllContainersWithDetails(
       serverId,
       serverHostname: serverHostname || "unknown",
       ip,
-      healthy: healthyStr === "1",
+      healthStatus: (healthStatus || "unknown") as ContainerHealthStatus,
       startedAt: parseInt(startedAtStr, 10),
       instanceId: instanceId && instanceId.trim() !== ""
         ? instanceId
@@ -1221,7 +1218,7 @@ export async function queryContainerById(
   containerId: string,
 ): Promise<ContainerWithDetails | null> {
   const sql = `
-    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.healthy, c.started_at, c.instance_id
+    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
     FROM containers c
     LEFT JOIN servers s ON c.server_id = s.id
     WHERE c.id LIKE '${escapeSql(containerId)}%'
@@ -1243,7 +1240,7 @@ export async function queryContainerById(
     serverId,
     serverHostname,
     ip,
-    healthyStr,
+    healthStatus,
     startedAtStr,
     instanceId,
   ] = line.split("|");
@@ -1254,7 +1251,7 @@ export async function queryContainerById(
     serverId,
     serverHostname: serverHostname || "unknown",
     ip,
-    healthy: healthyStr === "1",
+    healthStatus: (healthStatus || "unknown") as ContainerHealthStatus,
     startedAt: parseInt(startedAtStr, 10),
     instanceId: instanceId && instanceId.trim() !== "" ? instanceId : undefined,
   };
@@ -1295,8 +1292,8 @@ export async function getDbStats(ssh: SSHManager): Promise<DbStats> {
       (SELECT COUNT(*) FROM servers) as server_count,
       (SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold}) as active_server_count,
       (SELECT COUNT(*) FROM containers) as container_count,
-      (SELECT COUNT(*) FROM containers WHERE healthy = 1) as healthy_container_count,
-      (SELECT COUNT(*) FROM containers WHERE healthy = 0) as unhealthy_container_count,
+      (SELECT COUNT(*) FROM containers WHERE health_status = 'healthy') as healthy_container_count,
+      (SELECT COUNT(*) FROM containers WHERE health_status != 'healthy') as unhealthy_container_count,
       (SELECT COUNT(*) FROM services) as service_count;
   `;
 

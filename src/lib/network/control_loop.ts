@@ -266,7 +266,7 @@ check_container_tcp_health() {
   fi
 }
 
-# Sync container health states with granular health tracking (Phase 3)
+# Sync container health states with granular health tracking
 # Supports TCP health checks when health_port is configured
 sync_container_health() {
   local changes=0
@@ -309,13 +309,9 @@ sync_container_health() {
 
     # Update database if status or failures changed
     if [ "\$new_status" != "\$current_status" ] || [ \$new_failures -ne \${consecutive_failures:-0} ]; then
-      local healthy_int=0
-      [ "\$new_status" = "healthy" ] && healthy_int=1
-
       \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "
         UPDATE containers
         SET health_status = '\$new_status',
-            healthy = \$healthy_int,
             last_health_check = \$now,
             consecutive_failures = \$new_failures
         WHERE id = '\$container_id';" 2>/dev/null || true
