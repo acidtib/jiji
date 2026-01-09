@@ -6,6 +6,7 @@
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";
+import type { CommandResult } from "../../types/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import type {
   ContainerRegistration,
@@ -28,6 +29,28 @@ const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
  */
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
+}
+
+/**
+ * Internal helper: Execute a Corrosion SELECT query
+ * Handles escaping and formatting consistently
+ */
+function corrosionQuery(ssh: SSHManager, sql: string): Promise<CommandResult> {
+  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, " ");
+  return ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${escapedSql}"`,
+  );
+}
+
+/**
+ * Internal helper: Execute a Corrosion write operation (INSERT/UPDATE/DELETE)
+ * Handles escaping and formatting consistently
+ */
+function corrosionExec(ssh: SSHManager, sql: string): Promise<CommandResult> {
+  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, " ");
+  return ssh.executeCommand(
+    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${escapedSql}"`,
+  );
 }
 
 /**
@@ -65,9 +88,12 @@ CREATE TABLE IF NOT EXISTS containers (
   service TEXT NOT NULL DEFAULT '',
   server_id TEXT NOT NULL DEFAULT '',
   ip TEXT NOT NULL DEFAULT '',
-  healthy INTEGER DEFAULT 1,
   started_at INTEGER NOT NULL DEFAULT 0,
-  instance_id TEXT DEFAULT NULL
+  instance_id TEXT DEFAULT NULL,
+  health_status TEXT DEFAULT 'healthy',
+  last_health_check INTEGER DEFAULT 0,
+  consecutive_failures INTEGER DEFAULT 0,
+  health_port INTEGER DEFAULT NULL
 );
 
 -- Enable CRDT for all tables (disabled for compatibility)
@@ -75,7 +101,86 @@ CREATE TABLE IF NOT EXISTS containers (
 -- SELECT crsql_as_crr('servers');
 -- SELECT crsql_as_crr('services');
 -- SELECT crsql_as_crr('containers');
+
+-- Performance indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_containers_server_id ON containers(server_id);
+CREATE INDEX IF NOT EXISTS idx_containers_service ON containers(service);
+CREATE INDEX IF NOT EXISTS idx_containers_health_status ON containers(health_status);
+CREATE INDEX IF NOT EXISTS idx_servers_last_seen ON servers(last_seen);
 `;
+
+/**
+ * Apply schema migrations for existing deployments
+ * Adds new columns if they don't exist (safe to run multiple times)
+ *
+ * @param ssh - SSH connection to a server in the cluster
+ * @returns True if migration was successful
+ */
+export async function applyMigrations(ssh: SSHManager): Promise<boolean> {
+  const host = ssh.getHost();
+
+  try {
+    // Check if containers table has health_status column
+    const checkResult = await corrosionQuery(
+      ssh,
+      "SELECT COUNT(*) FROM pragma_table_info('containers') WHERE name = 'health_status';",
+    );
+
+    if (checkResult.code !== 0) {
+      log.debug(
+        `Migration check failed on ${host}: ${checkResult.stderr}`,
+        "corrosion",
+      );
+      return false;
+    }
+
+    const hasHealthStatus = checkResult.stdout.trim() !== "0";
+
+    if (!hasHealthStatus) {
+      log.info(`Applying migration on ${host}...`, "corrosion");
+
+      // Add columns one at a time (SQLite requires separate ALTER TABLE statements)
+      const columns = [
+        "ALTER TABLE containers ADD COLUMN health_status TEXT DEFAULT 'unknown';",
+        "ALTER TABLE containers ADD COLUMN last_health_check INTEGER DEFAULT 0;",
+        "ALTER TABLE containers ADD COLUMN consecutive_failures INTEGER DEFAULT 0;",
+        "ALTER TABLE containers ADD COLUMN health_port INTEGER DEFAULT NULL;",
+        "CREATE INDEX IF NOT EXISTS idx_containers_health_status ON containers(health_status);",
+      ];
+
+      for (const sql of columns) {
+        const result = await corrosionExec(ssh, sql);
+
+        // Ignore "duplicate column" errors
+        if (
+          result.code !== 0 &&
+          !result.stderr.includes("duplicate column") &&
+          !result.stderr.includes("already exists")
+        ) {
+          log.warn(
+            `Migration statement failed: ${result.stderr}`,
+            "corrosion",
+          );
+        }
+      }
+
+      // Initialize existing containers with 'healthy' status if not set
+      await corrosionExec(
+        ssh,
+        "UPDATE containers SET health_status = 'healthy' WHERE health_status = 'unknown' OR health_status IS NULL;",
+      );
+
+      log.success(`Migration complete on ${host}`, "corrosion");
+    } else {
+      log.debug(`Migration already applied on ${host}`, "corrosion");
+    }
+
+    return true;
+  } catch (error) {
+    log.error(`Migration failed on ${host}: ${error}`, "corrosion");
+    return false;
+  }
+}
 
 /**
  * Install Corrosion on a remote server
@@ -309,9 +414,6 @@ export async function registerServer(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(server.endpoints);
 
-  // Escape double quotes for shell command
-  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
-
   const sql =
     `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${
       escapeSql(server.id)
@@ -319,11 +421,9 @@ export async function registerServer(
       escapeSql(server.wireguardIp)
     }', '${escapeSql(server.wireguardPublicKey)}', '${
       escapeSql(server.managementIp)
-    }', '${escapedJsonForShell}', ${server.lastSeen});`;
+    }', '${endpointsJson}', ${server.lastSeen});`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register server: ${result.stderr}`);
@@ -345,11 +445,7 @@ export async function registerService(
     VALUES ('${escapeSql(service.name)}', '${escapeSql(service.project)}');
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register service: ${result.stderr}`);
@@ -383,11 +479,7 @@ export async function registerContainer(
   }', ${healthy}, ${container.startedAt}, ${instanceId});
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register container: ${result.stderr}`);
@@ -406,9 +498,7 @@ export async function unregisterContainer(
 ): Promise<void> {
   const sql = `DELETE FROM containers WHERE id = '${escapeSql(containerId)}';`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to unregister container: ${result.stderr}`);
@@ -430,9 +520,7 @@ export async function queryServiceContainers(
     escapeSql(serviceName)
   }' AND healthy = 1;`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query service containers: ${result.stderr}`);
@@ -459,9 +547,7 @@ export async function queryServerServiceContainers(
     escapeSql(serviceName)
   }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(
@@ -492,9 +578,7 @@ export async function queryServerServiceContainerDetails(
     escapeSql(serviceName)
   }' AND server_id = '${escapeSql(serverId)}' AND healthy = 1;`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(
@@ -570,9 +654,7 @@ export async function waitForCorrosionSync(
       // Simple query to check if Corrosion is responsive
       const sql = `SELECT 1 as ready`;
 
-      const result = await ssh.executeCommand(
-        `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-      );
+      const result = await corrosionQuery(ssh, sql);
 
       if (result.code === 0 && result.stdout.trim() === "1") {
         return;
@@ -621,20 +703,13 @@ export async function updateServerEndpoints(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(endpoints);
 
-  // Escape double quotes for shell command
-  const escapedJsonForShell = endpointsJson.replace(/"/g, '\\"');
-
   const sql = `
     UPDATE servers
-    SET endpoints = '${escapedJsonForShell}'
+    SET endpoints = '${endpointsJson}'
     WHERE id = '${escapeSql(serverId)}';
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to update server endpoints: ${result.stderr}`);
@@ -665,11 +740,7 @@ export async function updateServerHeartbeat(
     WHERE id = '${escapeSql(serverId)}';
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to update server heartbeat: ${result.stderr}`);
@@ -695,11 +766,7 @@ export async function queryActiveServers(
     ORDER BY hostname;
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query active servers: ${result.stderr}`);
@@ -762,11 +829,7 @@ export async function queryAllServers(
     ORDER BY hostname;
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query all servers: ${result.stderr}`);
@@ -830,11 +893,7 @@ export async function setClusterMetadata(
     VALUES ('${escapeSql(key)}', '${escapeSql(value)}');
   `;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${
-      sql.replace(/\n/g, " ")
-    }"`,
-  );
+  const result = await corrosionExec(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to set cluster metadata: ${result.stderr}`);
@@ -858,9 +917,7 @@ export async function getClusterMetadata(
     escapeSql(key)
   }';`;
 
-  const result = await ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion query --config ${CORROSION_INSTALL_DIR}/config.toml "${sql}"`,
-  );
+  const result = await corrosionQuery(ssh, sql);
 
   if (result.code !== 0) {
     throw new Error(`Failed to get cluster metadata: ${result.stderr}`);
@@ -890,4 +947,378 @@ export async function initializeClusterMetadata(
   await setClusterMetadata(ssh, "service_domain", serviceDomain);
   await setClusterMetadata(ssh, "discovery", discovery);
   await setClusterMetadata(ssh, "created_at", new Date().toISOString());
+}
+
+// ============================================================================
+// Observability Functions
+// ============================================================================
+
+/**
+ * Container details with server information
+ */
+export interface ContainerWithDetails {
+  id: string;
+  service: string;
+  serverId: string;
+  serverHostname: string;
+  ip: string;
+  healthStatus: ContainerHealthStatus;
+  startedAt: number;
+  instanceId?: string;
+}
+
+/**
+ * Stale container record (unhealthy for longer than threshold)
+ */
+export interface StaleContainer {
+  id: string;
+  service: string;
+  serverId: string;
+  startedAt: number;
+  unhealthySince: number;
+}
+
+/**
+ * Offline server record
+ */
+export interface OfflineServer {
+  id: string;
+  hostname: string;
+  lastSeen: number;
+  containerCount: number;
+}
+
+/**
+ * Database statistics
+ */
+export interface DbStats {
+  serverCount: number;
+  activeServerCount: number;
+  containerCount: number;
+  healthyContainerCount: number;
+  unhealthyContainerCount: number;
+  serviceCount: number;
+}
+
+/**
+ * Query containers that have been unhealthy for longer than threshold
+ *
+ * @param ssh - SSH connection to the server
+ * @param thresholdSeconds - Seconds since container was marked unhealthy
+ * @returns Array of stale containers
+ */
+export async function queryStaleContainers(
+  ssh: SSHManager,
+  thresholdSeconds: number,
+): Promise<StaleContainer[]> {
+  const now = Math.floor(Date.now() / 1000);
+  const threshold = now - thresholdSeconds;
+
+  const sql = `
+    SELECT id, service, server_id, started_at
+    FROM containers
+    WHERE health_status = 'unhealthy'
+    AND (started_at / 1000) < ${threshold}
+    ORDER BY started_at;
+  `;
+
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query stale containers: ${result.stderr}`);
+  }
+
+  const lines = result.stdout.trim().split("\n").filter((line) =>
+    line.length > 0
+  );
+
+  return lines.map((line) => {
+    const [id, service, serverId, startedAtStr] = line.split("|");
+    const startedAt = parseInt(startedAtStr, 10);
+    return {
+      id,
+      service,
+      serverId,
+      startedAt,
+      unhealthySince: now - Math.floor(startedAt / 1000),
+    };
+  });
+}
+
+/**
+ * Query servers that have not sent a heartbeat within threshold
+ *
+ * @param ssh - SSH connection to the server
+ * @param thresholdMs - Milliseconds since last heartbeat
+ * @returns Array of offline servers with container counts
+ */
+export async function queryOfflineServers(
+  ssh: SSHManager,
+  thresholdMs: number,
+): Promise<OfflineServer[]> {
+  const threshold = Date.now() - thresholdMs;
+
+  const sql = `
+    SELECT s.id, s.hostname, s.last_seen,
+           (SELECT COUNT(*) FROM containers c WHERE c.server_id = s.id) as container_count
+    FROM servers s
+    WHERE s.last_seen < ${threshold}
+    ORDER BY s.last_seen;
+  `;
+
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query offline servers: ${result.stderr}`);
+  }
+
+  const lines = result.stdout.trim().split("\n").filter((line) =>
+    line.length > 0
+  );
+
+  return lines.map((line) => {
+    const [id, hostname, lastSeenStr, containerCountStr] = line.split("|");
+    return {
+      id,
+      hostname,
+      lastSeen: parseInt(lastSeenStr, 10),
+      containerCount: parseInt(containerCountStr, 10) || 0,
+    };
+  });
+}
+
+/**
+ * Delete containers by their IDs
+ *
+ * @param ssh - SSH connection to the server
+ * @param containerIds - Array of container IDs to delete
+ * @returns Number of deleted records
+ */
+export async function deleteContainersByIds(
+  ssh: SSHManager,
+  containerIds: string[],
+): Promise<number> {
+  if (containerIds.length === 0) return 0;
+
+  const escapedIds = containerIds.map((id) => `'${escapeSql(id)}'`).join(", ");
+  const sql = `DELETE FROM containers WHERE id IN (${escapedIds});`;
+
+  const result = await corrosionExec(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to delete containers: ${result.stderr}`);
+  }
+
+  return containerIds.length;
+}
+
+/**
+ * Delete all containers for a specific server
+ *
+ * @param ssh - SSH connection to the server
+ * @param serverId - Server ID whose containers should be deleted
+ * @returns Number of deleted records
+ */
+export async function deleteContainersByServer(
+  ssh: SSHManager,
+  serverId: string,
+): Promise<number> {
+  // First count how many will be deleted
+  const countSql = `SELECT COUNT(*) FROM containers WHERE server_id = '${
+    escapeSql(serverId)
+  }';`;
+
+  const countResult = await corrosionQuery(ssh, countSql);
+  const count = parseInt(countResult.stdout.trim(), 10) || 0;
+
+  if (count === 0) return 0;
+
+  // Delete the containers
+  const sql = `DELETE FROM containers WHERE server_id = '${
+    escapeSql(serverId)
+  }';`;
+
+  const result = await corrosionExec(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to delete containers for server: ${result.stderr}`);
+  }
+
+  return count;
+}
+
+/**
+ * Query all containers with full details including server hostname
+ *
+ * @param ssh - SSH connection to the server
+ * @param serviceFilter - Optional service name to filter by
+ * @returns Array of containers with details
+ */
+export async function queryAllContainersWithDetails(
+  ssh: SSHManager,
+  serviceFilter?: string,
+): Promise<ContainerWithDetails[]> {
+  let sql = `
+    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
+    FROM containers c
+    LEFT JOIN servers s ON c.server_id = s.id
+  `;
+
+  if (serviceFilter) {
+    sql += ` WHERE c.service = '${escapeSql(serviceFilter)}'`;
+  }
+
+  sql += " ORDER BY c.service, s.hostname;";
+
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query containers: ${result.stderr}`);
+  }
+
+  const lines = result.stdout.trim().split("\n").filter((line) =>
+    line.length > 0
+  );
+
+  return lines.map((line) => {
+    const [
+      id,
+      service,
+      serverId,
+      serverHostname,
+      ip,
+      healthStatus,
+      startedAtStr,
+      instanceId,
+    ] = line.split("|");
+    return {
+      id,
+      service,
+      serverId,
+      serverHostname: serverHostname || "unknown",
+      ip,
+      healthStatus: (healthStatus || "unknown") as ContainerHealthStatus,
+      startedAt: parseInt(startedAtStr, 10),
+      instanceId: instanceId && instanceId.trim() !== ""
+        ? instanceId
+        : undefined,
+    };
+  });
+}
+
+/**
+ * Query a specific container by ID (supports partial matching)
+ *
+ * @param ssh - SSH connection to the server
+ * @param containerId - Container ID (full or partial)
+ * @returns Container details or null if not found
+ */
+export async function queryContainerById(
+  ssh: SSHManager,
+  containerId: string,
+): Promise<ContainerWithDetails | null> {
+  const sql = `
+    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
+    FROM containers c
+    LEFT JOIN servers s ON c.server_id = s.id
+    WHERE c.id LIKE '${escapeSql(containerId)}%'
+    LIMIT 1;
+  `;
+
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to query container: ${result.stderr}`);
+  }
+
+  const line = result.stdout.trim();
+  if (!line) return null;
+
+  const [
+    id,
+    service,
+    serverId,
+    serverHostname,
+    ip,
+    healthStatus,
+    startedAtStr,
+    instanceId,
+  ] = line.split("|");
+
+  return {
+    id,
+    service,
+    serverId,
+    serverHostname: serverHostname || "unknown",
+    ip,
+    healthStatus: (healthStatus || "unknown") as ContainerHealthStatus,
+    startedAt: parseInt(startedAtStr, 10),
+    instanceId: instanceId && instanceId.trim() !== "" ? instanceId : undefined,
+  };
+}
+
+/**
+ * Execute arbitrary SQL query against Corrosion
+ *
+ * @param ssh - SSH connection to the server
+ * @param sql - SQL query to execute
+ * @returns Raw query output
+ */
+export async function executeSql(
+  ssh: SSHManager,
+  sql: string,
+): Promise<string> {
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`SQL query failed: ${result.stderr}`);
+  }
+
+  return result.stdout;
+}
+
+/**
+ * Get database statistics
+ *
+ * @param ssh - SSH connection to the server
+ * @returns Database statistics
+ */
+export async function getDbStats(ssh: SSHManager): Promise<DbStats> {
+  const now = Date.now();
+  const activeThreshold = now - 300000; // 5 minutes
+
+  const sql = `
+    SELECT
+      (SELECT COUNT(*) FROM servers) as server_count,
+      (SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold}) as active_server_count,
+      (SELECT COUNT(*) FROM containers) as container_count,
+      (SELECT COUNT(*) FROM containers WHERE health_status = 'healthy') as healthy_container_count,
+      (SELECT COUNT(*) FROM containers WHERE health_status != 'healthy') as unhealthy_container_count,
+      (SELECT COUNT(*) FROM services) as service_count;
+  `;
+
+  const result = await corrosionQuery(ssh, sql);
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to get database stats: ${result.stderr}`);
+  }
+
+  const line = result.stdout.trim();
+  const [
+    serverCount,
+    activeServerCount,
+    containerCount,
+    healthyContainerCount,
+    unhealthyContainerCount,
+    serviceCount,
+  ] = line.split("|").map((v) => parseInt(v, 10) || 0);
+
+  return {
+    serverCount,
+    activeServerCount,
+    containerCount,
+    healthyContainerCount,
+    unhealthyContainerCount,
+    serviceCount,
+  };
 }

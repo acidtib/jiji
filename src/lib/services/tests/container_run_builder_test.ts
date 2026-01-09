@@ -412,3 +412,80 @@ Deno.test("ContainerRunBuilder - complete FUSE configuration", () => {
   assertStringIncludes(command, "--detach");
   assertStringIncludes(command, "rclone:latest");
 });
+
+// Command feature tests
+Deno.test("ContainerRunBuilder - with string command", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "redis:latest")
+    .command("redis-server --appendonly yes");
+  const command = builder.build();
+
+  // String command with spaces gets shell-escaped as single argument
+  assertStringIncludes(command, "redis:latest 'redis-server --appendonly yes'");
+});
+
+Deno.test("ContainerRunBuilder - with array command", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "node:latest")
+    .command(["npm", "run", "dev"]);
+  const command = builder.build();
+
+  // Each array element should be a separate argument after image
+  assertStringIncludes(command, "node:latest npm run dev");
+});
+
+Deno.test("ContainerRunBuilder - command with special characters", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "alpine:latest")
+    .command(["sh", "-c", "echo $HOME"]);
+  const command = builder.build();
+
+  // Special characters should be properly escaped
+  assertStringIncludes(command, "alpine:latest sh -c 'echo $HOME'");
+});
+
+Deno.test("ContainerRunBuilder - command with single quotes", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
+    .command(["nginx", "-g", "daemon off;"]);
+  const command = builder.build();
+
+  // Semicolon should be escaped
+  assertStringIncludes(command, "nginx:latest nginx -g 'daemon off;'");
+});
+
+Deno.test("ContainerRunBuilder - command appears after image in full command", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "redis:latest")
+    .network("jiji")
+    .ports(["6379:6379"])
+    .detached()
+    .command(["redis-server", "--appendonly", "yes"]);
+  const command = builder.build();
+
+  // Verify command structure: options, then image, then command args
+  assertStringIncludes(command, "podman run");
+  assertStringIncludes(command, "--name test-app");
+  assertStringIncludes(command, "--network jiji");
+  assertStringIncludes(command, "-p 6379:6379");
+  assertStringIncludes(command, "--detach");
+  // Image and command should be at the end
+  assertStringIncludes(command, "redis:latest redis-server --appendonly yes");
+});
+
+Deno.test("ContainerRunBuilder - buildArgs includes command", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "node:latest")
+    .network("jiji")
+    .command(["npm", "start"]);
+
+  const args = builder.buildArgs();
+
+  // Verify command args are at the end after image
+  const imageIndex = args.indexOf("node:latest");
+  assertEquals(args[imageIndex + 1], "npm");
+  assertEquals(args[imageIndex + 2], "start");
+});
+
+Deno.test("ContainerRunBuilder - no command does not add extra args", () => {
+  const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
+    .network("jiji");
+  const command = builder.build();
+
+  // Should end with just the image name
+  assertEquals(command.endsWith("nginx:latest"), true);
+});

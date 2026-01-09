@@ -80,6 +80,15 @@ export interface DNSConfig {
 }
 
 /**
+ * Health status for granular container health tracking
+ */
+export type ContainerHealthStatus =
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "unknown";
+
+/**
  * Container registration info for Corrosion
  */
 export interface ContainerRegistration {
@@ -87,9 +96,12 @@ export interface ContainerRegistration {
   service: string;
   serverId: string;
   ip: string;
-  healthy: boolean;
   startedAt: number;
   instanceId?: string; // Identifier for multi-server deployments (e.g., "primary", "157-230-162-210")
+  healthStatus?: ContainerHealthStatus; // Defaults to "healthy" when not specified
+  lastHealthCheck?: number;
+  consecutiveFailures?: number;
+  healthPort?: number; // Port to check for TCP health (from proxy app_port)
 }
 
 /**

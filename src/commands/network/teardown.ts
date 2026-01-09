@@ -18,7 +18,7 @@ import {
   disableWireGuardService,
 } from "../../lib/network/wireguard.ts";
 import { stopCorrosionService } from "../../lib/network/corrosion.ts";
-import { stopCoreDNSService } from "../../lib/network/dns.ts";
+import { stopJijiDnsService } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
 
@@ -72,7 +72,7 @@ export const teardownCommand = new Command()
         await log.hostBlock(server.hostname, async () => {
           try {
             log.say("├── Stopping DNS service", 2);
-            await stopCoreDNSService(ssh);
+            await stopJijiDnsService(ssh);
 
             if (topology.discovery === "corrosion") {
               log.say("├── Stopping Corrosion service", 2);

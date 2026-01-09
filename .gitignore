@@ -56,9 +56,3 @@ temp/
 .jiji/
 
 .jiji/*.*
-
-# llm files
-.rules
-CLAUDE.md
-GEMINI.md
-QWEN.md

@@ -18,7 +18,7 @@ import {
   isCorrosionRunning,
   queryServerServiceContainerDetails,
 } from "../../lib/network/corrosion.ts";
-import { isCoreDNSRunning } from "../../lib/network/dns.ts";
+import { isJijiDnsRunning } from "../../lib/network/dns.ts";
 import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
@@ -119,7 +119,7 @@ export const statusCommand = new Command()
             }
 
             // Check DNS status
-            const dnsRunning = await isCoreDNSRunning(ssh);
+            const dnsRunning = await isJijiDnsRunning(ssh);
             log.say(`├── DNS: ${dnsRunning ? "RUNNING" : "NOT RUNNING"}`, 2);
 
             // Query containers on this server (if Corrosion is running)

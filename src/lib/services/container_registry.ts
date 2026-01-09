@@ -14,7 +14,6 @@ import {
 } from "../network/corrosion.ts";
 import {
   registerContainerHostname,
-  triggerHostsUpdate,
   unregisterContainerHostname,
 } from "../network/dns.ts";
 import { log } from "../../utils/logger.ts";
@@ -147,17 +146,6 @@ export async function registerContainerInNetwork(
       log.warn(`Failed to register container hostname: ${error}`, "network");
     }
 
-    // Trigger immediate DNS hosts update
-    try {
-      await triggerHostsUpdate(ssh);
-      log.debug(
-        "Triggered DNS hosts update after container registration",
-        "network",
-      );
-    } catch (error) {
-      log.warn(`Failed to trigger DNS update: ${error}`, "network");
-    }
-
     log.say(
       `├── Registered container ${serviceName} (${ip}) in network`,
       2,
@@ -205,17 +193,6 @@ export async function unregisterContainerFromNetwork(
       }
     }
 
-    // Trigger immediate DNS hosts update after unregistration
-    try {
-      await triggerHostsUpdate(ssh);
-      log.debug(
-        "Triggered DNS hosts update after container unregistration",
-        "network",
-      );
-    } catch (error) {
-      log.warn(`Failed to trigger DNS update: ${error}`, "network");
-    }
-
     log.say(
       `├── Unregistered container ${containerId} from network`,
       2,
@@ -250,7 +227,7 @@ export async function updateContainerHealth(
     } WHERE id = '${containerId}';`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec "${sql}"`,
+      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code !== 0) {
@@ -287,7 +264,7 @@ export async function getServiceContainers(
       `SELECT ip FROM containers WHERE service = '${serviceName}' AND healthy = 1;`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec "${sql}"`,
+      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code !== 0) {
@@ -378,16 +355,6 @@ export async function cleanupServiceContainers(
     } catch (error) {
       log.warn(
         `Failed to clean up DNS entries for ${serviceName}: ${error}`,
-        "network",
-      );
-    }
-
-    // Trigger DNS update after cleanup
-    try {
-      await triggerHostsUpdate(ssh);
-    } catch (error) {
-      log.warn(
-        `Failed to trigger DNS update after cleanup: ${error}`,
         "network",
       );
     }
