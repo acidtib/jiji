@@ -34,7 +34,7 @@ across multiple servers using a command line interface.
 - **CLI Framework**: Cliffy
 - **SSH**: SSH2/node-ssh
 - **Container Runtime**: Docker or Podman
-- **Networking**: WireGuard, CoreDNS, Corrosion (CRDT database)
+- **Networking**: WireGuard, jiji-dns, Corrosion (CRDT database)
 
 ### Architecture Principles
 
@@ -48,16 +48,16 @@ across multiple servers using a command line interface.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Jiji CLI (Deno/TypeScript)                │
+│                    Jiji CLI (Deno/TypeScript)               │
 ├─────────────────────────────────────────────────────────────┤
-│                                                               │
+│                                                             │
 │  ┌────────────────┐  ┌──────────────┐  ┌─────────────────┐  │
 │  │   Commands     │  │ Config System│  │  SSH Manager    │  │
 │  │  - init        │  │  - YAML      │  │  - Connection   │  │
 │  │  - build       │  │  - Validation│  │  - Pooling      │  │
 │  │  - deploy      │  │  - Env vars  │  │  - Proxy        │  │
 │  │  - services    │  └──────────────┘  └─────────────────┘  │
-│  │  - proxy       │                                          │
+│  │  - proxy       │                                         │
 │  │  - server      │  ┌──────────────┐  ┌─────────────────┐  │
 │  │  - registry    │  │   Services   │  │    Utilities    │  │
 │  │  - network     │  │  - Deploy    │  │  - Logger       │  │
@@ -70,21 +70,21 @@ across multiple servers using a command line interface.
                               │
                          SSH Connection
                               │
-┌─────────────────────────────▼─────────────────────────────┐
-│                    Remote Servers                          │
+┌─────────────────────────────V─────────────────────────────┐
+│                    Remote Servers                         │
 ├───────────────────────────────────────────────────────────┤
-│                                                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐│
-│  │  Docker/     │  │  WireGuard   │  │  kamal-proxy     ││
-│  │  Podman      │  │  Mesh VPN    │  │  HTTP/HTTPS      ││
-│  │  Containers  │  │  (jiji0)     │  │  Routing         ││
-│  └──────────────┘  └──────────────┘  └──────────────────┘│
-│                                                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐│
-│  │  CoreDNS     │  │  Corrosion   │  │  Service         ││
-│  │  DNS         │  │  Distributed │  │  Monitoring      ││
-│  │  Resolution  │  │  KV Store    │  │  & Logs          ││
-│  └──────────────┘  └──────────────┘  └──────────────────┘│
+│                                                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│  │  Docker/     │  │  WireGuard   │  │  kamal-proxy     │ │
+│  │  Podman      │  │  Mesh VPN    │  │  HTTP/HTTPS      │ │
+│  │  Containers  │  │  (jiji0)     │  │  Routing         │ │
+│  └──────────────┘  └──────────────┘  └──────────────────┘ │
+│                                                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│  │  jiji-dns    │  │  Corrosion   │  │  Service         │ │
+│  │  DNS         │  │  Distributed │  │  Monitoring      │ │
+│  │  Resolution  │  │  CRDT DB     │  │  & Logs          │ │
+│  └──────────────┘  └──────────────┘  └──────────────────┘ │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -101,7 +101,7 @@ across multiple servers using a command line interface.
    │ - Acquire deployment lock                  │
    └────────────────────────────────────────────┘
                       │
-                      ▼
+                      V
 2. Proxy Installation
    ┌────────────────────────────────────────────┐
    │ - Install kamal-proxy (if services use it) │
@@ -109,32 +109,32 @@ across multiple servers using a command line interface.
    │ - Setup health check endpoints             │
    └────────────────────────────────────────────┘
                       │
-                      ▼
+                      V
 3. Container Deployment
    ┌────────────────────────────────────────────┐
    │ OLD CONTAINER        NEW CONTAINER         │
    │ (Still running)      (Being deployed)      │
-   │                                             │
+   │                                            │
    │ ┌──────────┐         ┌──────────┐          │
    │ │ web:abc  │         │ web:def  │          │
    │ │ Healthy  │         │ Starting │          │
    │ └──────────┘         └──────────┘          │
-   │      │                     │                │
-   │      │                     ▼                │
+   │      │                     │               │
+   │      │                     V               │
    │      │           Health check runs         │
-   │      │                     │                │
-   │      │               ┌─────▼─────┐         │
+   │      │                     │               │
+   │      │               ┌─────V─────┐         │
    │      │               │ Healthy?  │         │
    │      │               └─────┬─────┘         │
-   │      │                     │ Yes            │
-   │      │                     ▼                │
+   │      │                     │ Yes           │
+   │      │                     V               │
    │      │           Proxy routes to new       │
-   │      │                     │                │
-   │      ▼                     ▼                │
+   │      │                     │               │
+   │      V                     V               │
    │ Stop & Remove      Now serving traffic     │
    └────────────────────────────────────────────┘
                       │
-                      ▼
+                      V
 4. Post Deployment
    ┌────────────────────────────────────────────┐
    │ - Clean up old images (keep N versions)    │
@@ -154,7 +154,7 @@ across multiple servers using a command line interface.
        │ Health check request
        │ GET /health every 10s
        │
-       ▼
+       V
 ┌──────────────┐
 │  Container   │
 │  web:latest  │
@@ -165,7 +165,7 @@ across multiple servers using a command line interface.
        │
        │ Status: healthy
        │
-       ▼
+       V
 ┌──────────────┐
 │ Traffic      │
 │ routing      │
@@ -177,22 +177,22 @@ across multiple servers using a command line interface.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   Registry                           │
-│                                                      │
-│  myproject/service:abc1234 ◄── Current deployment  │
-│  myproject/service:def5678 ◄── Previous version    │
-│  myproject/service:ghi9012 ◄── Old version         │
-│  ...                                                 │
+│                   Registry                          │
+│                                                     │
+│  myproject/service:abc1234 <── Current deployment   │
+│  myproject/service:def5678 <── Previous version     │
+│  myproject/service:ghi9012 <── Old version          │
+│  ...                                                │
 │  (Older versions cleaned by prune)                  │
 └─────────────────────────────────────────────────────┘
                       │
                       │ Pull image
-                      ▼
+                      V
 ┌─────────────────────────────────────────────────────┐
-│                 Local Server                         │
-│                                                      │
-│  myproject/service:abc1234 ◄── Running container   │
-│  myproject/service:def5678 ◄── Cached image        │
+│                 Local Server                        │
+│                                                     │
+│  myproject/service:abc1234 <── Running container    │
+│  myproject/service:def5678 <── Cached image         │
 │  (Older images removed by prune)                    │
 └─────────────────────────────────────────────────────┘
 ```
@@ -203,22 +203,22 @@ across multiple servers using a command line interface.
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│                   WireGuard Mesh VPN                    │
-│                                                         │
+│                   WireGuard Mesh VPN                   │
+│                                                        │
 │  Server 0 (10.210.0.1)                                 │
-│      │                                                  │
-│      ├─────────┐                                        │
-│      │         │                                        │
-│      │         │                                        │
+│      │                                                 │
+│      ├─────────┐                                       │
+│      │         │                                       │
+│      │         │                                       │
 │  Server 1  Server 2                                    │
 │ (10.210.1.1) (10.210.2.1)                              │
-│      │         │                                        │
-│      └────┬────┘                                        │
-│           │                                             │
-│       Server 3                                          │
+│      │         │                                       │
+│      └────┬────┘                                       │
+│           │                                            │
+│       Server 3                                         │
 │     (10.210.3.1)                                       │
-│                                                         │
-│  Each server:                                           │
+│                                                        │
+│  Each server:                                          │
 │  - Gets /24 subnet (254 IPs)                           │
 │  - Establishes peer connections to all other servers   │
 │  - Routes traffic through WireGuard interface          │
@@ -230,85 +230,89 @@ across multiple servers using a command line interface.
 ```
 Server 1 (192.168.1.100)
 ┌─────────────────────────────────────────────┐
-│                                              │
-│  ┌────────────┐  ┌────────────┐            │
-│  │ Web        │  │ API        │            │
-│  │ 10.210.0.2 │  │ 10.210.0.3 │            │
-│  └────────────┘  └────────────┘            │
-│         │              │                     │
-│         └──────┬───────┘                     │
-│                │                             │
-│         ┌──────▼──────┐                      │
-│         │  docker0    │                      │
-│         │  bridge     │                      │
-│         └──────┬──────┘                      │
-│                │                             │
-│         ┌──────▼──────┐                      │
-│         │  jiji0      │                      │
-│         │  WireGuard  │  ◄───────────┐       │
-│         │  10.210.0.1 │              │       │
-│         └─────────────┘              │       │
-│                                      │       │
-└──────────────────────────────────────┼───────┘
+│                                             │
+│  ┌────────────┐  ┌────────────┐             │
+│  │ Web        │  │ API        │             │
+│  │ 10.210.0.2 │  │ 10.210.0.3 │             │
+│  └────────────┘  └────────────┘             │
+│         │              │                    │
+│         └──────┬───────┘                    │
+│                │                            │
+│         ┌──────V──────┐                     │
+│         │  docker0    │                     │
+│         │  bridge     │                     │
+│         └──────┬──────┘                     │
+│                │                            │
+│         ┌──────V──────┐                     │
+│         │  jiji0      │                     │
+│         │  WireGuard  │  <───────────┐      │
+│         │  10.210.0.1 │              │      │
+│         └─────────────┘              │      │
+│                                      │      │
+└──────────────────────────────────────┼──────┘
                                        │
                     WireGuard Tunnel   │
                                        │
-Server 2 (192.168.1.101)              │
-┌──────────────────────────────────────┼───────┐
-│                                      │       │
-│  ┌────────────┐  ┌────────────┐     │       │
-│  │ Database   │  │ Cache      │     │       │
-│  │ 10.210.1.2 │  │ 10.210.1.3 │     │       │
-│  └────────────┘  └────────────┘     │       │
-│         │              │             │       │
-│         └──────┬───────┘             │       │
-│                │                     │       │
-│         ┌──────▼──────┐              │       │
-│         │  docker0    │              │       │
-│         │  bridge     │              │       │
-│         └──────┬──────┘              │       │
-│                │                     │       │
-│         ┌──────▼──────┐              │       │
-│         │  jiji0      │  ◄───────────┘       │
-│         │  WireGuard  │                      │
-│         │  10.210.1.1 │                      │
-│         └─────────────┘                      │
-│                                              │
+Server 2 (192.168.1.101)               │
+┌──────────────────────────────────────┼──────┐
+│                                      │      │
+│  ┌────────────┐  ┌────────────┐      │      │
+│  │ Database   │  │ Cache      │      │      │
+│  │ 10.210.1.2 │  │ 10.210.1.3 │      │      │
+│  └────────────┘  └────────────┘      │      │
+│         │              │             │      │
+│         └──────┬───────┘             │      │
+│                │                     │      │
+│         ┌──────V──────┐              │      │
+│         │  docker0    │              │      │
+│         │  bridge     │              │      │
+│         └──────┬──────┘              │      │
+│                │                     │      │
+│         ┌──────V──────┐              │      │
+│         │  jiji0      │  <───────────┘      │
+│         │  WireGuard  │                     │
+│         │  10.210.1.1 │                     │
+│         └─────────────┘                     │
+│                                             │
 └─────────────────────────────────────────────┘
 ```
 
 ### Service Discovery Flow
 
 ```
-Container Query: "api.jiji"
+Container Query: "myapp-api.jiji"
          │
-         ▼
+         V
+┌──────────────────┐
+│ Container DNS    │ Configured via daemon.json
+│ /etc/resolv.conf │ nameserver 10.210.0.1
+└────────┬─────────┘
+         │
+         V
 ┌────────────────┐
-│ Container DNS  │  Configured to use CoreDNS
-│ /etc/resolv.conf│ nameserver 10.210.0.1
+│   jiji-dns     │  Listens on 10.210.0.1:53
+│   10.210.0.1   │  In-memory DNS cache
 └────────┬───────┘
          │
-         ▼
-┌────────────────┐
-│    CoreDNS     │  Listens on 10.210.0.1:53
-│   10.210.0.1   │
-└────────┬───────┘
-         │
-         │ Query Corrosion
-         ▼
+         │ Real-time subscription (NDJSON stream)
+         V
 ┌────────────────┐
 │   Corrosion    │  CRDT database
 │  Distributed   │  Synced across all servers
-│   KV Store     │
+│   SQLite       │  Containers + health status
 └────────┬───────┘
          │
-         │ Returns: ["10.210.0.3", "10.210.1.2", "10.210.2.5"]
-         ▼
+         │ Returns: ["10.210.0.3", "10.210.1.2"] (healthy only)
+         V
 ┌────────────────┐
-│  DNS Response  │  All healthy API container IPs
-│  Round robin   │  Client side load balancing
+│  DNS Response  │  Healthy container IPs
+│  A records     │  Client side load balancing
 └────────────────┘
 ```
+
+jiji-dns maintains a streaming HTTP connection to Corrosion's
+`/v1/subscriptions` endpoint. Container changes (add/remove/health updates) are
+pushed in real-time, eliminating polling delays.
 
 ### IPv4 vs IPv6 Usage
 
@@ -361,7 +365,7 @@ BaseConfiguration
    │ jiji.<env>.yml      │
    └──────────┬──────────┘
               │
-              ▼
+              V
 2. Parse & Validate
    ┌─────────────────────┐
    │ YAML → TypeScript   │
@@ -369,7 +373,7 @@ BaseConfiguration
    │ Type checking       │
    └──────────┬──────────┘
               │
-              ▼
+              V
 3. Environment Substitution
    ┌─────────────────────┐
    │ ${VAR} → value      │
@@ -377,7 +381,7 @@ BaseConfiguration
    │ Load SSH config     │
    └──────────┬──────────┘
               │
-              ▼
+              V
 4. Create Configuration Objects
    ┌─────────────────────┐
    │ Configuration       │
@@ -393,25 +397,25 @@ BaseConfiguration
 
 ```
 ┌────────────────────────────────────────────┐
-│              SSH Manager                    │
+│              SSH Manager                   │
 ├────────────────────────────────────────────┤
-│                                             │
+│                                            │
 │  ┌──────────────────────────────────────┐  │
 │  │       Connection Pool (LRU)          │  │
 │  ├──────────────────────────────────────┤  │
 │  │ server1.example.com → SSH Connection │  │
 │  │ server2.example.com → SSH Connection │  │
 │  │ server3.example.com → SSH Connection │  │
-│  │ ...                                   │  │
+│  │ ...                                  │  │
 │  └──────────────────────────────────────┘  │
-│                                             │
-│  Features:                                  │
-│  - Connection reuse                         │
+│                                            │
+│  Features:                                 │
+│  - Connection reuse                        │
 │  - LRU eviction                            │
-│  - Parallel execution                       │
+│  - Parallel execution                      │
 │  - ProxyJump support                       │
-│  - Key management                           │
-│  - Timeout handling                         │
+│  - Key management                          │
+│  - Timeout handling                        │
 └────────────────────────────────────────────┘
 ```
 
@@ -424,14 +428,14 @@ BaseConfiguration
    │ "docker ps"         │
    └──────────┬──────────┘
               │
-              ▼
+              V
 2. SSH Connection
    ┌─────────────────────┐
    │ Get from pool       │
    │ or create new       │
    └──────────┬──────────┘
               │
-              ▼
+              V
 3. Execute
    ┌─────────────────────┐
    │ Run command         │
@@ -439,7 +443,7 @@ BaseConfiguration
    │ Handle errors       │
    └──────────┬──────────┘
               │
-              ▼
+              V
 4. Return Results
    ┌─────────────────────┐
    │ stdout/stderr       │
@@ -455,23 +459,23 @@ BaseConfiguration
 ```
 DeploymentOrchestrator
     │
-    ├─► ProxyService
+    ├─> ProxyService
     │   ├── Install kamal-proxy
     │   ├── Configure routes
     │   └── Setup health checks
     │
-    ├─► ContainerDeploymentService
+    ├─> ContainerDeploymentService
     │   ├── Pull images
     │   ├── Create containers
     │   ├── Wait for health
     │   └── Stop old containers
     │
-    ├─► ContainerRegistry
+    ├─> ContainerRegistry
     │   ├── Register in network
     │   ├── Update DNS
     │   └── Track health
     │
-    └─► ImagePruneService
+    └─> ImagePruneService
         ├── List old images
         ├── Keep N versions
         └── Remove old images
@@ -522,49 +526,49 @@ DeploymentOrchestrator
 ```
 User Command
     │
-    ▼
+    V
 ┌─────────────────┐
-│ Configuration   │ ◄── Load from YAML
+│ Configuration   │ <── Load from YAML
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ SSH Connections │ ◄── Establish to all hosts
+│ SSH Connections │ <── Establish to all hosts
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Build Images    │ ◄── Local or remote
+│ Build Images    │ <── Local or remote
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Push to Registry│ ◄── Docker Hub, GHCR, local
+│ Push to Registry│ <── Docker Hub, GHCR, local
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Deploy Proxy    │ ◄── kamal-proxy installation
+│ Deploy Proxy    │ <── kamal-proxy installation
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Deploy Container│ ◄── Pull, create, health check
+│ Deploy Container│ <── Pull, create, health check
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Configure Proxy │ ◄── Route traffic to new container
+│ Configure Proxy │ <── Route traffic to new container
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Cleanup         │ ◄── Remove old containers & images
+│ Cleanup         │ <── Remove old containers & images
 └────────┬────────┘
          │
-         ▼
+         V
 ┌─────────────────┐
-│ Audit Log       │ ◄── Record operation
+│ Audit Log       │ <── Record operation
 └─────────────────┘
 ```
 
@@ -603,7 +607,7 @@ User Command
 
 - Only required ports opened
 - WireGuard: UDP 51820
-- Corrosion: TCP 8787
+- Corrosion: TCP 9280
 - HTTP/HTTPS: TCP 80/443
 
 **Container Isolation**:

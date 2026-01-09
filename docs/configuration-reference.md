@@ -45,19 +45,21 @@ builder:
   local: true
   registry:
     type: local
-    port: 6767
+    port: 9270
 
 ssh:
   user: deploy
 
+servers:
+  server1:
+    host: server1.example.com
+
 services:
   web:
     image: nginx:latest
-    servers:
-      - host: server1.example.com
-        arch: amd64
+    hosts: [server1]
     ports:
-      - "80:80"
+      - "80"
 ```
 
 ## Project Configuration
@@ -147,14 +149,14 @@ for development.
 builder:
   registry:
     type: local
-    port: 6767 # Optional, defaults to 6767
+    port: 9270 # Optional, defaults to 9270
 ```
 
 **How it works:**
 
-1. Local registry runs on `localhost:6767`
+1. Local registry runs on `localhost:9270`
 2. Jiji automatically creates SSH reverse tunnels to remote servers
-3. Remote servers pull from `localhost:6767` via the tunnel
+3. Remote servers pull from `localhost:9270` via the tunnel
 4. Tunnel torn down after deployment
 
 ### Remote Registry
@@ -219,8 +221,9 @@ builder:
 Registry passwords support environment variable substitution for security:
 
 ```yaml
-registry:
-  password: "${GITHUB_TOKEN}" # Substituted at runtime
+builder:
+  registry:
+    password: "${GITHUB_TOKEN}" # Substituted at runtime
 ```
 
 Common environment variables:
@@ -301,7 +304,7 @@ ssh:
 ```yaml
 ssh:
   user: deploy
-  proxy_jump: bastion.example.com
+  proxy: bastion.example.com
   # Or with user: deploy@bastion.example.com
   # Or with port: bastion.example.com:2222
 ```
@@ -395,16 +398,17 @@ network:
   `<service>.jiji`)
 - **Service discovery method**: Always `corrosion` (distributed CRDT based)
 - **WireGuard port**: Always `51820`
-- **Corrosion gossip port**: Always `8787`
-- **Corrosion API port**: Always `8080`
+- **Corrosion gossip port**: Always `9280`
+- **Corrosion API port**: Always `9220`
 
 ### Network Architecture
 
 - **WireGuard**: Encrypted mesh VPN between all servers
 - **Corrosion**: Distributed CRDT database for service registry (gossip
   protocol)
-- **CoreDNS**: DNS server for service discovery (resolves `<service>.jiji` to
-  container IPs)
+- **jiji-dns**: DNS server for service discovery (resolves
+  `<project>-<service>.jiji` to container IPs via real-time Corrosion
+  subscriptions)
 - **Dual stack**: IPv4 (10.210.0.0/16) for containers, IPv6 (fdcc::/16) for
   management
 - **Automatic**: Containers auto registered on deploy, auto unregistered on
@@ -430,27 +434,29 @@ Cluster CIDR: 10.210.0.0/16 (configurable)
 Given these services:
 
 ```yaml
+servers:
+  server1:
+    host: server1.example.com
+  server2:
+    host: server2.example.com
+  server3:
+    host: server3.example.com
+
 services:
   api:
-    servers:
-      - host: server1.example.com
-        arch: amd64
-      - host: server2.example.com
-        arch: amd64
+    hosts: [server1, server2]
   database:
-    servers:
-      - host: server3.example.com
-        arch: amd64
+    hosts: [server3]
 ```
 
-Containers can communicate via DNS:
+Containers can communicate via DNS (format: `{project}-{service}.jiji`):
 
 ```bash
 # From api container, connect to database
-DATABASE_URL: postgresql://user:pass@database.jiji:5432/myapp
+DATABASE_URL: postgresql://user:pass@myapp-database.jiji:5432/myapp
 
 # From database container, connect to api
-API_URL: http://api.jiji:3000
+API_URL: http://myapp-api.jiji:3000
 ```
 
 DNS automatically resolves to all healthy container IPs for that service,
@@ -481,22 +487,24 @@ containerized application.
 ### Basic Service
 
 ```yaml
+servers:
+  server1:
+    host: server1.example.com
+  server2:
+    host: server2.example.com
+
 services:
   web:
     # Use pre built image
     image: nginx:latest
 
     # Target servers (required)
-    servers:
-      - host: server1.example.com
-        arch: amd64
-      - host: server2.example.com
-        arch: amd64
+    hosts: [server1, server2]
 
     # Port mappings (optional)
     ports:
-      - "80:80"
-      - "443:443"
+      - "80"
+      - "443"
 ```
 
 ### Build Configuration
@@ -504,6 +512,10 @@ services:
 Instead of using a pre built image, build from source:
 
 ```yaml
+servers:
+  server1:
+    host: server1.example.com
+
 services:
   web:
     build:
@@ -513,31 +525,49 @@ services:
         - NODE_ENV=production
         - VERSION=1.2.3
 
-    servers:
-      - host: server1.example.com
-        arch: amd64
+    hosts: [server1]
 ```
 
 **Note:** Use either `image` or `build`, not both.
 
 ### Port Mapping Formats
 
-Jiji supports multiple port mapping formats:
+Jiji supports multiple port mapping formats.
 
-**Simple format:**
+**Recommended format for zero-downtime deployments:**
+
+For services using the proxy, specify only the container port. This allows
+multiple container instances to run simultaneously during deployment (old and
+new containers can coexist without port conflicts):
 
 ```yaml
 ports:
-  - "80:80"
-  - "443:443"
+  - "80"
+  - "3000"
 ```
+
+The proxy handles external traffic routing, so host port binding is not needed.
+
+**Host:Container format (not recommended for proxy services):**
+
+Binding to host ports prevents zero-downtime deployments because only one
+container can bind to a host port at a time:
+
+```yaml
+ports:
+  - "80:80" # Binds host port 80 to container port 80
+  - "3000:3000" # Binds host port 3000 to container port 3000
+```
+
+Use this format only for services that need direct host port access without a
+proxy (e.g., databases, non-HTTP services).
 
 **With protocol:**
 
 ```yaml
 ports:
-  - "80:80/tcp"
-  - "53:53/udp"
+  - "53/udp" # Container port only
+  - "53:53/udp" # Host:Container
 ```
 
 **Host IP binding:**
@@ -546,17 +576,6 @@ ports:
 ports:
   - "127.0.0.1:8080:80" # Bind to localhost only
 ```
-
-**Multi line array format:**
-
-```yaml
-ports:
-  - "3000:3000"
-  - "8080:80"
-```
-
-See [docs/port-mapping-examples.yaml](port-mapping-examples.yaml) for more
-examples.
 
 ### Volume Mounts
 
@@ -753,6 +772,12 @@ proxy:
 ### Complete Service Example
 
 ```yaml
+servers:
+  server1:
+    host: server1.example.com
+  server2:
+    host: server2.example.com
+
 services:
   api:
     # Build from source
@@ -763,15 +788,11 @@ services:
         - BUILD_ENV=production
 
     # Target servers
-    servers:
-      - host: server1.example.com
-        arch: amd64
-      - host: server2.example.com
-        arch: amd64
+    hosts: [server1, server2]
 
     # Port mappings
     ports:
-      - "3000:3000"
+      - "3000"
 
     # Volume mounts
     volumes:
@@ -791,22 +812,22 @@ services:
       clear:
         NODE_ENV: production
         PORT: 3000
-        DATABASE_URL: "postgresql://user:pass@database.jiji:5432/myapp"
+        DATABASE_URL: "postgresql://user:pass@myapp-database.jiji:5432/myapp"
       secrets:
         - API_KEY
 
     # Proxy configuration
     proxy:
-      enabled: true
+      app_port: 3000
       hosts:
         - api.example.com
         - www.api.example.com
       ssl: true
-      health_check:
+      healthcheck:
         path: /health
-        interval: "10s"
-        timeout: "5s"
-        deploy_timeout: "60s"
+        interval: 10s
+        timeout: 5s
+        deploy_timeout: 60s
 ```
 
 ## Environment Variables
@@ -842,20 +863,22 @@ builder:
   local: true
   registry:
     type: local
-    port: 6767
+    port: 9270
 
 ssh:
   user: deploy
+
+servers:
+  local:
+    host: localhost
 
 services:
   web:
     build:
       context: .
-    servers:
-      - host: localhost
-        arch: amd64
+    hosts: [local]
     ports:
-      - "3000:3000"
+      - "3000"
 ```
 
 ### Production Multi Service Deployment
@@ -877,7 +900,7 @@ ssh:
   user: deploy
   private_keys:
     - ~/.ssh/production_key
-  proxy_jump: bastion.example.com
+  proxy: bastion.example.com
 
 network:
   enabled: true
@@ -887,57 +910,61 @@ environment:
   APP_ENV: production
   LOG_LEVEL: warn
 
+servers:
+  web1:
+    host: web1.example.com
+  web2:
+    host: web2.example.com
+  api1:
+    host: api1.example.com
+  api2:
+    host: api2.example.com
+  db1:
+    host: db1.example.com
+
 services:
   web:
     build:
       context: ./web
       dockerfile: Dockerfile.production
-    servers:
-      - host: web1.example.com
-        arch: amd64
-      - host: web2.example.com
-        arch: amd64
+    hosts: [web1, web2]
     ports:
-      - "3000:3000"
+      - "3000"
     environment:
       clear:
         PORT: 3000
     proxy:
-      enabled: true
+      app_port: 3000
       hosts:
         - app.example.com
         - www.app.example.com
       ssl: true
-      health_check:
+      healthcheck:
         path: /health
-        interval: "10s"
+        interval: 10s
 
   api:
     build:
       context: ./api
-    servers:
-      - host: api1.example.com
-        arch: amd64
-      - host: api2.example.com
-        arch: amd64
+    hosts: [api1, api2]
+    ports:
+      - "4000"
     environment:
       clear:
         PORT: 4000
       secrets:
         - DB_PASSWORD
     proxy:
-      enabled: true
+      app_port: 4000
       host: api.example.com
       ssl: true
-      path: /api
-      health_check:
+      path_prefix: /api
+      healthcheck:
         path: /api/health
 
   database:
     image: postgres:15
-    servers:
-      - host: db1.example.com
-        arch: amd64
+    hosts: [db1]
     volumes:
       - "/data/postgres:/var/lib/postgresql/data"
     environment:
@@ -967,15 +994,19 @@ ssh:
 network:
   enabled: true
 
+servers:
+  staging:
+    host: staging.example.com
+
 services:
   web:
     build:
       context: .
-    servers:
-      - host: staging.example.com
-        arch: amd64
+    hosts: [staging]
+    ports:
+      - "3000"
     proxy:
-      enabled: true
+      app_port: 3000
       host: staging.myapp.example.com
 ```
 

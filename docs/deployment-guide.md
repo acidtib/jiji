@@ -13,6 +13,8 @@ advanced deployment patterns.
 - [Common Workflows](#common-workflows)
 - [Best Practices](#best-practices)
 - [Troubleshooting Deployments](#troubleshooting-deployments)
+- [Audit Trail](#audit-trail)
+- [Deployment Locks](#deployment-locks)
 
 ## Initial Setup
 
@@ -55,26 +57,27 @@ builder:
   local: true
   registry:
     type: local
-    port: 6767
+    port: 9270
 
 ssh:
   user: root
+
+servers:
+  server1:
+    host: server1.example.com
 
 services:
   web:
     build:
       context: .
       dockerfile: Dockerfile
-    servers:
-      - host: server1.example.com
-        arch: amd64
+    hosts: [server1]
     ports:
-      - "3000:3000"
+      - "3000"
     proxy:
-      enabled: true
-      hosts:
-        - myapp.example.com
-      health_check:
+      app_port: 3000
+      host: myapp.example.com
+      healthcheck:
         path: /health
 ```
 
@@ -95,7 +98,7 @@ ssh-add ~/.ssh/id_rsa
 ```yaml
 ssh:
   user: deploy
-  proxy_jump: bastion.example.com
+  proxy: bastion.example.com
 ```
 
 ### 5. Setup Registry
@@ -132,7 +135,7 @@ jiji registry login
 builder:
   registry:
     type: local
-    port: 6767 # Jiji handles port forwarding automatically
+    port: 9270 # Jiji handles port forwarding automatically
 ```
 
 ### 6. Initialize Servers
@@ -144,7 +147,7 @@ jiji server init
 # This will:
 # - Install Docker/Podman
 # - Setup private networking (WireGuard)
-# - Install service discovery (Corrosion, CoreDNS)
+# - Install service discovery (Corrosion, jiji-dns)
 # - Configure firewall rules
 ```
 
@@ -240,10 +243,9 @@ jiji audit
 services:
   web:
     proxy:
-      enabled: true
-      hosts:
-        - myapp.example.com
-      health_check:
+      app_port: 3000
+      host: myapp.example.com
+      healthcheck:
         path: /health # Health endpoint
         interval: "10s" # Check every 10 seconds
         timeout: "5s" # Timeout after 5 seconds
@@ -322,21 +324,25 @@ ssh:
   user: deploy
   config: true
 
+servers:
+  staging:
+    host: staging.example.com
+
 services:
   web:
     build:
       context: .
       args:
         - BUILD_ENV=staging
-    servers:
-      - host: staging.example.com
-        arch: amd64
+    hosts: [staging]
+    ports:
+      - "3000"
     environment:
       clear:
         APP_ENV: staging
         LOG_LEVEL: debug
     proxy:
-      enabled: true
+      app_port: 3000
       host: staging.myapp.example.com
 ```
 
@@ -359,7 +365,13 @@ ssh:
   user: deploy
   private_keys:
     - ~/.ssh/production_key
-  proxy_jump: bastion.example.com
+  proxy: bastion.example.com
+
+servers:
+  web1:
+    host: web1.example.com
+  web2:
+    host: web2.example.com
 
 services:
   web:
@@ -367,22 +379,20 @@ services:
       context: .
       args:
         - BUILD_ENV=production
-    servers:
-      - host: web1.example.com
-        arch: amd64
-      - host: web2.example.com
-        arch: amd64
+    hosts: [web1, web2]
+    ports:
+      - "3000"
     environment:
       clear:
         APP_ENV: production
         LOG_LEVEL: warn
     proxy:
-      enabled: true
+      app_port: 3000
       hosts:
         - myapp.example.com
         - www.myapp.example.com
       ssl: true
-      health_check:
+      healthcheck:
         path: /health
         interval: "10s"
 ```
@@ -621,7 +631,9 @@ Always implement health check endpoints:
 
 ```yaml
 proxy:
-  health_check:
+  app_port: 3000
+  host: myapp.example.com
+  healthcheck:
     path: /health
     interval: "10s"
     timeout: "5s"
@@ -797,9 +809,108 @@ jiji server exec "ip route show | grep jiji0"
 jiji network status
 ```
 
-### Get Help
+## Audit Trail
 
-- **Verbose logging**: `jiji --verbose <command>`
-- **Audit trail**: `jiji audit`
-- **GitHub Issues**: https://github.com/acidtib/jiji/issues
-- **Discussions**: https://github.com/acidtib/jiji/discussions
+Jiji maintains an audit log of all deployments and operations on each server.
+
+### View Recent Entries
+
+```bash
+# Show last 20 entries (default)
+jiji audit
+
+# Show more entries
+jiji audit --lines 50
+
+# Follow in real-time
+jiji audit --follow
+```
+
+### Filter Entries
+
+```bash
+# Filter by action type
+jiji audit --filter deploy
+jiji audit --filter lock
+
+# Filter by status
+jiji audit --status success
+jiji audit --status failed
+
+# Filter by date range
+jiji audit --since 2024-01-01
+jiji audit --until 2024-01-31
+```
+
+### Output Formats
+
+```bash
+# Raw log format
+jiji audit --raw
+
+# JSON output for scripts
+jiji audit --json
+
+# Target specific hosts
+jiji audit -H server1.example.com
+```
+
+### Audit Entry Types
+
+| Action              | Description           |
+| ------------------- | --------------------- |
+| `deploy`            | Container deployment  |
+| `deployment_lock`   | Lock acquired         |
+| `deployment_unlock` | Lock released         |
+| `init`              | Server initialization |
+| `remove`            | Service removal       |
+
+## Deployment Locks
+
+Prevent concurrent deployments with deployment locks. Useful for CI/CD pipelines
+and team coordination.
+
+### Acquire Lock
+
+```bash
+# Acquire lock with message
+jiji lock acquire "Deploying v1.2.3 - @username"
+
+# Force acquire (override existing lock)
+jiji lock acquire "Emergency fix" --force
+```
+
+### Release Lock
+
+```bash
+jiji lock release
+```
+
+### Check Lock Status
+
+```bash
+# Quick status
+jiji lock status
+
+# Detailed info
+jiji lock show
+
+# JSON output
+jiji lock status --json
+```
+
+### CI/CD Usage
+
+```bash
+# In CI pipeline
+jiji lock acquire "CI deploy: $CI_COMMIT_SHA"
+jiji deploy
+jiji lock release
+```
+
+Locks are stored in `.jiji/deploy.lock` on each server and contain:
+
+- Lock message
+- Timestamp
+- User who acquired it
+- Process ID
