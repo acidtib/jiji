@@ -122,11 +122,11 @@ Error: Could not establish proxy connection through bastion.example.com
    ssh -J deploy@bastion.example.com deploy@server1.example.com
    ```
 
-3. **Verify ProxyJump configuration:**
+3. **Verify proxy configuration:**
    ```yaml
    ssh:
      user: deploy
-     proxy_jump: deploy@bastion.example.com
+     proxy: deploy@bastion.example.com
    ```
 
 4. **Use ProxyCommand for advanced scenarios:**
@@ -251,25 +251,25 @@ Error: Failed to push image: requested access to the resource is denied
 **Symptoms:**
 
 ```
-Error: Failed to connect to localhost:6767
+Error: Failed to connect to localhost:9270
 ```
 
 **Solutions:**
 
 1. **Verify local registry is running:**
    ```bash
-   curl http://localhost:6767/v2/
+   curl http://localhost:9270/v2/
    ```
 
 2. **Start local registry:**
    ```bash
-   docker run -d -p 6767:5000 --name jiji-registry registry:2
+   docker run -d -p 9270:5000 --name jiji-registry registry:2
    ```
 
 3. **Check port forwarding:**
    ```bash
    # On remote server during deployment
-   netstat -tlnp | grep 6767
+   netstat -tlnp | grep 9270
    ```
 
 4. **Verify SSH allows port forwarding:**
@@ -464,14 +464,14 @@ ping: api.jiji: Name or service not known
 
 **Solutions:**
 
-1. **Check CoreDNS status:**
+1. **Check jiji-dns status:**
    ```bash
-   jiji server exec "sudo systemctl status jiji-coredns"
+   jiji server exec "sudo systemctl status jiji-dns"
    ```
 
-2. **Restart CoreDNS:**
+2. **Restart jiji-dns:**
    ```bash
-   jiji server exec "sudo systemctl restart jiji-coredns"
+   jiji server exec "sudo systemctl restart jiji-dns"
    ```
 
 3. **Verify DNS configuration:**
@@ -832,9 +832,10 @@ OOM (Out of Memory) errors
 
 2. **Add memory limits:**
    ```yaml
-   # In future Jiji versions
-   resources:
-     memory: 512M
+   services:
+     web:
+       memory: "512m"
+       cpus: 1
    ```
 
 3. **Clean up old images:**
@@ -937,7 +938,7 @@ jiji --verbose deploy
 
 ```bash
 # Remove existing project
-jiji remove --confirmed
+jiji services remove --confirmed
 
 # Or use different project name
 ```
@@ -985,7 +986,7 @@ jiji build
 jiji server exec "docker rm -f <container-name>"
 
 # Or remove service
-jiji remove --services <service-name>
+jiji services remove --services <service-name>
 ```
 
 ## Getting Help
@@ -1005,8 +1006,8 @@ If you're still experiencing issues:
 3. **Search existing issues:**
    - https://github.com/acidtib/jiji/issues
 
-4. **Ask in discussions:**
-   - https://github.com/acidtib/jiji/discussions
+4. **Ask in Discord:**
+   - https://discord.gg/BMdKJzkknE
 
 5. **Report a bug:**
    - https://github.com/acidtib/jiji/issues/new

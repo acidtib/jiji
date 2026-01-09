@@ -51,9 +51,10 @@ export interface DeploymentOptions {
    */
   allSshManagers?: SSHManager[];
   /**
-   * Server configuration
+   * Server configuration including name for instance identification
    */
   serverConfig?: {
+    name: string;
     host: string;
     arch?: string;
   };

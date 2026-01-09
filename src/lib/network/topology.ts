@@ -2,7 +2,6 @@
  * Network topology manager
  *
  * Manages network topology through Corrosion distributed database.
- * No longer uses local .jiji/network.json file.
  */
 
 import type { SSHManager } from "../../utils/ssh.ts";

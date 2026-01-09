@@ -46,10 +46,10 @@ Type: `local` No namespace required
 builder:
   registry:
     type: local
-    port: 6767 # optional, defaults to 6767
+    port: 9270 # optional, defaults to 9270
 ```
 
-Result: Images are stored at `localhost:6767/project-service:version`
+Result: Images are stored at `localhost:9270/project-service:version`
 
 ## Environment Setup
 
@@ -136,10 +136,11 @@ Registry passwords support environment variable substitution for security:
 Use `${VARIABLE_NAME}` in your configuration:
 
 ```yaml
-registry:
-  server: ghcr.io
-  username: myuser
-  password: "${GITHUB_TOKEN}" # Substituted at runtime
+builder:
+  registry:
+    server: ghcr.io
+    username: myuser
+    password: "${GITHUB_TOKEN}" # Substituted at runtime
 ```
 
 ### Supported Variables
@@ -183,14 +184,14 @@ to allow remote servers to access the registry on your local machine.
 ### How It Works
 
 ```
-Local Machine (localhost:6767)
+Local Machine (localhost:9270)
   |
   | SSH Reverse Tunnel
   |
-Remote Server (localhost:6767)
+Remote Server (localhost:9270)
   |
   | Pull image
-  v
+  V
 Container Deployment
 ```
 
@@ -208,8 +209,8 @@ jiji deploy
 
 # Jiji automatically:
 # 1. Establishes SSH connection to remote servers
-# 2. Creates reverse tunnel: remote:6767 -> local:6767
-# 3. Remote servers pull from localhost:6767
+# 2. Creates reverse tunnel: remote:9270 -> local:9270
+# 3. Remote servers pull from localhost:9270
 # 4. Tunnel is torn down after deployment
 ```
 
@@ -219,10 +220,10 @@ You can also manually set up port forwarding:
 
 ```bash
 # Forward local registry to remote server
-ssh -R 6767:localhost:6767 user@server1.example.com
+ssh -R 9270:localhost:9270 user@server1.example.com
 
-# On remote server, pull from localhost:6767
-docker pull localhost:6767/myapp/service:latest
+# On remote server, pull from localhost:9270
+docker pull localhost:9270/myapp/service:latest
 ```
 
 ### Configuration
@@ -230,23 +231,22 @@ docker pull localhost:6767/myapp/service:latest
 Local registry configuration:
 
 ```yaml
-registry:
-  type: local
-  port: 6767 # Default port (customizable)
-
 builder:
   local: true # Build locally, push to local registry
+  registry:
+    type: local
+    port: 9270 # Default port (customizable)
 ```
 
 ### Troubleshooting Port Forwarding
 
-**Issue**: Remote server can't connect to localhost:6767
+**Issue**: Remote server can't connect to localhost:9270
 
 **Solutions**:
 
 1. Verify local registry is running:
    ```bash
-   curl http://localhost:6767/v2/
+   curl http://localhost:9270/v2/
    ```
 2. Check SSH allows port forwarding:
    ```bash
@@ -257,7 +257,7 @@ builder:
 3. Verify tunnel is established:
    ```bash
    # On remote server
-   netstat -tlnp | grep 6767
+   netstat -tlnp | grep 9270
    ```
 
 **Issue**: Permission denied for port forwarding

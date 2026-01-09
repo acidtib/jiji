@@ -1,5 +1,6 @@
 import { log } from "./logger.ts";
 import type { ContainerEngine } from "../lib/configuration/builder.ts";
+import { DEFAULT_LOCAL_REGISTRY_PORT } from "../constants.ts";
 
 /**
  * Local registry container status information
@@ -21,7 +22,7 @@ export class RegistryManager {
 
   constructor(
     private engine: ContainerEngine,
-    private port: number = 6767,
+    private port: number = DEFAULT_LOCAL_REGISTRY_PORT,
   ) {}
 
   /**
@@ -351,7 +352,7 @@ export class RegistryManager {
 
   /**
    * Get registry URL for image naming
-   * @returns Registry URL (e.g., "localhost:6767")
+   * @returns Registry URL (e.g., "localhost:9270")
    */
   getRegistryUrl(): string {
     return `localhost:${this.port}`;

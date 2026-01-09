@@ -12,6 +12,7 @@ import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
 import { log } from "../utils/logger.ts";
+import { DEFAULT_LOCAL_REGISTRY_PORT } from "../constants.ts";
 
 export type ContainerEngine = "docker" | "podman";
 
@@ -704,7 +705,7 @@ export class Configuration extends BaseConfiguration {
         local: true,
         registry: {
           type: "local",
-          port: 6767,
+          port: DEFAULT_LOCAL_REGISTRY_PORT,
         },
       },
       services: {

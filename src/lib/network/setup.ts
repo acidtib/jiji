@@ -52,6 +52,7 @@ import {
 import { setupServerRouting } from "./routes.ts";
 import { createControlLoopService } from "./control_loop.ts";
 import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
+import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
 
 const WIREGUARD_PORT = 51820;
 
@@ -191,7 +192,7 @@ export async function setupNetwork(
       return [];
     }
 
-    // 1. Private Network Setup Phase
+    // 1. Private Network Setup
 
     let topology: NetworkTopology | null = null;
     let isNewNetwork = true;
@@ -560,14 +561,16 @@ export async function setupNetwork(
             const initialPeers = topology!.servers
               .filter((s: NetworkServer) => s.id !== server.id)
               .map((peer: NetworkServer) =>
-                `[${compressIpv6(peer.managementIp)}]:8787`
+                `[${compressIpv6(peer.managementIp)}]:${CORROSION_GOSSIP_PORT}`
               );
 
             await writeCorrosionConfig(ssh, {
               dbPath: "/opt/jiji/corrosion/state.db",
               schemaPath: "/opt/jiji/corrosion/schemas/jiji.sql",
-              gossipAddr: `[${compressIpv6(server.managementIp)}]:8787`,
-              apiAddr: "127.0.0.1:8080",
+              gossipAddr: `[${
+                compressIpv6(server.managementIp)
+              }]:${CORROSION_GOSSIP_PORT}`,
+              apiAddr: `127.0.0.1:${CORROSION_API_PORT}`,
               adminPath: "/var/run/jiji/corrosion-admin.sock",
               bootstrap: initialPeers,
               plaintext: true,

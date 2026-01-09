@@ -41,7 +41,7 @@ if (engine) {
   Deno.test({
     name: "RegistryManager - check if registry is running",
     async fn() {
-      const manager = new RegistryManager(engine, 6767);
+      const manager = new RegistryManager(engine, 9270);
 
       const isRunning = await manager.isRunning();
       assertEquals(typeof isRunning, "boolean");
@@ -51,13 +51,13 @@ if (engine) {
   Deno.test({
     name: "RegistryManager - get registry status",
     async fn() {
-      const manager = new RegistryManager(engine, 6767);
+      const manager = new RegistryManager(engine, 9270);
 
       const status = await manager.getStatus();
 
       assertEquals(typeof status.running, "boolean");
       assertEquals(typeof status.port, "number");
-      assertEquals(status.port, 6767);
+      assertEquals(status.port, 9270);
 
       if (status.running) {
         assertEquals(typeof status.containerId, "string");
@@ -249,7 +249,7 @@ if (engine) {
     name: "RegistryManager - different engines use same container name",
     async fn() {
       // This test verifies that the container name is consistent
-      const manager = new RegistryManager(engine, 6767);
+      const manager = new RegistryManager(engine, 9270);
 
       // The container name should always be 'jiji-registry'
       // We can't directly access private static fields, but we can verify
@@ -260,7 +260,7 @@ if (engine) {
         const running1 = await manager.isRunning();
 
         // Create another manager instance with same engine
-        const manager2 = new RegistryManager(engine, 6767);
+        const manager2 = new RegistryManager(engine, 9270);
         const running2 = await manager2.isRunning();
 
         // Both should see the same container

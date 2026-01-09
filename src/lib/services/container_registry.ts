@@ -125,9 +125,9 @@ export async function registerContainerInNetwork(
       service: serviceName,
       serverId,
       ip,
-      healthy: true,
       startedAt: Date.now(),
       instanceId,
+      healthStatus: "healthy",
     };
 
     await registerContainer(ssh, registration);
@@ -140,8 +140,6 @@ export async function registerContainerInNetwork(
         ip,
         instanceId,
       );
-
-      // CoreDNS will handle all resolution via project-service.jiji format
     } catch (error) {
       log.warn(`Failed to register container hostname: ${error}`, "network");
     }
@@ -222,9 +220,9 @@ export async function updateContainerHealth(
 ): Promise<boolean> {
   try {
     // Update health status in Corrosion
-    const sql = `UPDATE containers SET healthy = ${
-      healthy ? 1 : 0
-    } WHERE id = '${containerId}';`;
+    const healthStatus = healthy ? "healthy" : "unhealthy";
+    const sql =
+      `UPDATE containers SET health_status = '${healthStatus}' WHERE id = '${containerId}';`;
 
     const result = await ssh.executeCommand(
       `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
@@ -261,7 +259,7 @@ export async function getServiceContainers(
 ): Promise<string[]> {
   try {
     const sql =
-      `SELECT ip FROM containers WHERE service = '${serviceName}' AND healthy = 1;`;
+      `SELECT ip FROM containers WHERE service = '${serviceName}' AND health_status = 'healthy';`;
 
     const result = await ssh.executeCommand(
       `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
@@ -399,9 +397,9 @@ export async function registerContainerClusterWide(
     service: serviceName,
     serverId,
     ip: containerIp,
-    healthy: true,
     startedAt,
     instanceId,
+    healthStatus: "healthy",
   };
 
   // Register this container on all servers in the cluster

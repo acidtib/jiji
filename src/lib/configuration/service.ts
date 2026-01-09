@@ -727,7 +727,7 @@ export class ServiceConfiguration extends BaseConfiguration
 
   /**
    * Returns the image name to use (either from image or generated from build)
-   * @param registry Optional registry prefix (e.g., "localhost:6767")
+   * @param registry Optional registry prefix (e.g., "localhost:9270")
    * @param version Optional version tag (e.g., "a1b2c3d" or "latest")
    */
   getImageName(registry?: string, version?: string): string {

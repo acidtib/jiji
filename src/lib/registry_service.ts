@@ -10,6 +10,7 @@ import {
   getErrorMessage,
   RegistryErrorCodes,
 } from "../utils/error_handling.ts";
+import { DEFAULT_LOCAL_REGISTRY_PORT } from "../constants.ts";
 import type {
   AuthenticationResult,
   RegistryCredentials,
@@ -370,7 +371,8 @@ export class RegistryService {
     url: string,
     options: RegistrySetupOptions,
   ): Promise<RegistryOperationResult> {
-    const port = options.port || this.extractPort(url) || 6767;
+    const port = options.port || this.extractPort(url) ||
+      DEFAULT_LOCAL_REGISTRY_PORT;
 
     try {
       // Initialize registry manager if needed
@@ -447,7 +449,7 @@ export class RegistryService {
     // config removed as arg since we deduce from URL or manager
     _config?: unknown,
   ): Promise<void> {
-    const port = this.extractPort(url) || 6767;
+    const port = this.extractPort(url) || DEFAULT_LOCAL_REGISTRY_PORT;
 
     if (
       !this.registryManager ||
@@ -469,7 +471,7 @@ export class RegistryService {
   ): Promise<RegistryStatus> {
     try {
       if (type === "local") {
-        const port = this.extractPort(url) || 6767;
+        const port = this.extractPort(url) || DEFAULT_LOCAL_REGISTRY_PORT;
 
         if (
           !this.registryManager ||

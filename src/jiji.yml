@@ -1,5 +1,5 @@
-# Project name (required) used for organizing services
-# All audit logs and deployment locks will be stored under .jiji/{project}/ on remote hosts
+# Project name (required)
+# All audit logs, deployment locks, directories and files will be stored under .jiji/{project}/ on remote hosts
 project: myproject
 
 # Builder Configuration
@@ -10,15 +10,9 @@ project: myproject
 # Note: Build-specific options like context, dockerfile, and args are configured per-service
 # in the services section under the 'build' option. The builder section contains global
 # settings that apply to all builds.
-#
-# Builder Use Cases:
-# 1. Local Development: Build images locally and use local registry with SSH port forwarding
-# 2. Remote Building: Offload builds to powerful remote servers for faster compilation
-# 3. CI/CD Integration: Push to remote registries for production deployment
-# 4. Multi-architecture: Use remote builders for cross-platform image builds
 
 builder:
-  # Container engine for building (docker or podman)
+  # Container engine for building
   # Options: docker, podman
   engine: podman
 
@@ -34,7 +28,7 @@ builder:
   # remote: ssh://ubuntu@build-arm64.local:2222
 
   # Enable build cache (default: true)
-  # Set to false to force clean builds (useful for CI/CD or debugging)
+  # Set to false to force clean builds everytime (useful for CI/CD or debugging)
   cache: true
 
   # Container Registry Configuration
@@ -46,12 +40,10 @@ builder:
 
     # Local Registry Settings (type: local)
     # Creates a local registry with SSH port forwarding to deployment hosts
-    # Perfect for development and small deployments
-    port: 6767
+    port: 9270
 
     # Remote Registry Settings (type: remote)
-    # Use when deploying to production or sharing images across teams
-    # Examples: Docker Hub, GitHub Container Registry
+    # Supported: Docker Hub, GitHub Container Registry
     # server: registry.example.com:5000
     # server: ghcr.io
     # server: docker.io
@@ -68,7 +60,7 @@ builder:
 #   cache: true
 #   registry:
 #     type: local
-#     port: 6767
+#     port: 9270
 #
 # Example 2: Remote Building with Local Registry
 # builder:
@@ -78,13 +70,13 @@ builder:
 #   cache: true
 #   registry:
 #     type: local
-#     port: 6767
+#     port: 9270
 #
-# Example 3: Production with Remote Registry (Docker Hub)
+# Example 3: Remote Registry (Docker Hub)
 # builder:
 #   engine: docker
 #   local: true
-#   cache: false  # Always fresh builds in CI
+#   cache: false  # Always fresh builds
 #   registry:
 #     type: remote
 #     server: docker.io
@@ -116,13 +108,6 @@ builder:
 # Define all servers once by name, then reference them in services using hosts: [name]
 # This eliminates duplication and allows per-server SSH configuration overrides
 #
-# Benefits:
-# - Define servers once, reference by name in multiple services
-# - Per-server SSH credentials (different users, ports, keys per server)
-# - Clear deployment targets - explicit server names in service configs
-# - Foundation for future features (server groups, tags, health monitoring)
-# - WireGuard peering works between ALL defined servers (not just those with services)
-#
 # Each server must have:
 # - Unique name (DNS-safe: alphanumeric + hyphens, no start/end hyphen, max 63 chars)
 # - Unique hostname/IP address (no duplicate hosts across servers)
@@ -131,6 +116,7 @@ builder:
 # - user: SSH username for this specific server
 # - port: SSH port for this specific server
 # - key_path: Path to SSH private key for this server
+# - key_passphrase: SSH key passphrase for this server
 # - keys: Array of SSH key paths for this server
 # - key_data: Array of inline SSH key data from environment variables
 #
@@ -140,7 +126,7 @@ builder:
 # - Used for multi-architecture image builds
 
 servers:
-  # Production VPS (default settings)
+  # VPS
   vps-prod:
     host: 15.204.224.81
     arch: amd64 # Optional, defaults to amd64
@@ -185,32 +171,6 @@ servers:
 #   centos-box:
 #     host: 192.168.1.20
 #     user: centos
-#
-# Example 4: CI/CD with Build Server
-# servers:
-#   build-server:
-#     host: builder.example.com
-#     user: buildbot
-#     port: 2222
-#   prod-server:
-#     host: prod.example.com
-#     user: deploy
-#
-# Migration from Old Format:
-# ==========================
-# OLD (deprecated):
-# services:
-#   web:
-#     servers:
-#       - host: 192.168.1.100
-#
-# NEW (current):
-# servers:
-#   server1:
-#     host: 192.168.1.100
-# services:
-#   web:
-#     hosts: [server1]
 
 # SSH configuration for remote connections
 ssh:
@@ -314,7 +274,7 @@ ssh:
 # Network Architecture:
 # - WireGuard: Creates encrypted mesh VPN between all servers
 # - Corrosion: Distributed CRDT database for service registry (gossip protocol)
-# - CoreDNS: DNS server for service discovery (resolves <service>.jiji to container IPs)
+# - jiji-dns: DNS server for service discovery (resolves <project>-<service>.jiji to container IPs)
 # - Dual-stack: IPv4 (10.210.0.0/16) for containers, IPv6 (fdcc::/16) for management
 # - Automatic: Containers are auto-registered on deploy, auto-unregistered on remove
 #
@@ -334,9 +294,9 @@ ssh:
 #   # Default: 10.210.0.0/16 (supports 256 servers)
 #   cluster_cidr: "10.210.0.0/16"
 #
-#   # Note: Service domain is always 'jiji' - containers reach each other via <service>.jiji
+#   # Note: Service domain is always 'jiji' - containers reach each other via <project>-<service>.jiji
 #   # Note: Service discovery method is always 'corrosion' (distributed CRDT-based)
-#   # Note: Corrosion gossip port (8787) and API port (8080) are not configurable
+#   # Note: Corrosion gossip port (9280) and API port (9220) are not configurable
 #
 # Network Configuration Examples:
 # ==============================
@@ -354,30 +314,6 @@ ssh:
 # Example 3: Disable Networking
 # network:
 #   enabled: false
-#
-# How It Works:
-# ============
-# 1. Initialization: Run 'jiji server init' to set up network infrastructure
-#    - Installs WireGuard on all servers
-#    - Generates keypairs and establishes mesh VPN
-#    - Installs Corrosion for distributed service registry
-#    - Installs CoreDNS for DNS-based service discovery
-#
-# 2. Deploy: Run 'jiji deploy' to deploy containers
-#    - Containers automatically join the private network
-#    - Registered in Corrosion with service name and IP
-#    - DNS automatically updated to resolve <service>.jiji
-#
-# 3. Service Discovery: Containers communicate via DNS
-#    - Example: curl http://api-backend.jiji:3000/health
-#    - DNS resolves to all healthy container IPs for that service
-#    - Load balanced automatically by DNS round-robin
-#
-# 4. Network Status: Check network health
-#    - Run 'jiji network status' to see topology and server status
-#
-# 5. Teardown: Clean up network (if needed)
-#    - Run 'jiji network teardown' to remove all network infrastructure
 #
 # Service Communication Example:
 # ============================
@@ -398,11 +334,11 @@ ssh:
 #   database:
 #     hosts: [server3]
 #
-# The api-backend containers can connect to database via:
-#   DATABASE_URL: postgresql://user:pass@database.jiji:5432/myapp
+# The api-backend containers can connect to database via (assuming project: myapp):
+#   DATABASE_URL: postgresql://user:pass@myapp-database.jiji:5432/myapp
 #
 # And database can connect back to api via:
-#   API_URL: http://api-backend.jiji:3000
+#   API_URL: http://myapp-api-backend.jiji:3000
 
 # Shared Environment Configuration
 # Applied to all services, can be overridden per-service
@@ -446,16 +382,9 @@ ssh:
 # - retain: 5        # Keep last 5 images for critical services
 # - retain: 1        # Keep only the latest image for non-critical services
 #
-# How It Works:
-# 1. After each deployment, Jiji identifies all images for each service
-# 2. Sorts images by creation time (newest first)
-# 3. Keeps the N most recent images (based on retain setting)
-# 4. Removes older images that are not currently in use
-# 5. Also removes dangling (untagged) images
-#
 # Manual Pruning:
-# Run 'jiji prune' to manually clean up images outside of deployment
-# Use 'jiji prune --retain 5' to override the default retention setting
+# Run 'jiji services prune' to manually clean up images outside of deployment
+# Use 'jiji services prune --retain 5' to override the default retention setting
 #
 services:
   # Example: Web frontend service using pre-built image
@@ -516,7 +445,12 @@ services:
     # proxy:
     #   app_port: 80                           # Required: container port to proxy
     #   ssl: false
-    #   host: web.myproject.example.com
+    #   host: web.myproject.example.com        # Single host domain
+    #   # Or use hosts (plural) for multiple domains pointing to the same target:
+    #   # hosts:
+    #   #   - web.myproject.example.com
+    #   #   - www.myproject.example.com
+    #   #   - myproject.example.com
     #   path_prefix: /api                      # Optional: Path-based routing
     #   healthcheck:
     #     path: /health              # HTTP health check endpoint
@@ -527,6 +461,7 @@ services:
   #   build:
   #     context: ./api                    # Build context (relative to project root)
   #     dockerfile: Dockerfile           # Dockerfile path (relative to context)
+  #     target: production               # Build target for multi-stage Dockerfiles
   #     args:                            # Build arguments for this service
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
@@ -593,9 +528,7 @@ services:
   # Useful for services like Garage that expose multiple APIs
   # garage:
   #   image: dxflrs/garage:v2.1.0
-  #   servers:
-  #     - host: 192.168.1.104
-  #       arch: amd64
+  #   hosts: [storage-server]
   #   ports:
   #     - "127.0.0.1:3900:3900"           # S3 API
   #     - "127.0.0.1:3903:3903"           # Admin API
@@ -638,7 +571,7 @@ services:
   #        timeout: 5s                    # Request timeout (default: 5s)
   #        deploy_timeout: 60s            # Max wait for initial deployment (default: 60s)
   #
-  # 2. Command-based Health Checks (new in kamal-proxy)
+  # 2. Command-based Health Checks
   #    - Executes commands via docker exec or podman exec
   #    - Exit code 0 = healthy, any other exit code = unhealthy
   #    - Best for non-HTTP services or custom health logic
@@ -660,7 +593,6 @@ services:
   #
   # Notes:
   # - HTTP (path) and command (cmd) health checks are mutually exclusive
-  # - If neither is specified, no health checks are performed
   # - Health checks are used for both initial deployment and ongoing monitoring
   # - Failed health checks during deployment keep old containers running (zero-downtime)
 
@@ -669,11 +601,9 @@ services:
   #   build:
   #     context: ./admin
   #     dockerfile: Dockerfile
-  #   servers:
-  #     - host: 192.168.1.100
-  #       arch: amd64
+  #   hosts: [web-server]
   #   ports:
-  #     - "3001:3000"
+  #     - "3000"
   #   environment:
   #     clear:
   #       NODE_ENV: production
@@ -684,44 +614,45 @@ services:
 
 # Server Architecture Configuration Examples:
 #
-# 1. Single architecture deployment:
+# 1. Single architecture deployment (in top-level servers section):
 #   servers:
-#     - host: 192.168.1.100
+#     server1:
+#       host: 192.168.1.100
 #       arch: amd64
-#     - host: 192.168.1.101
+#     server2:
+#       host: 192.168.1.101
 #       arch: amd64
 #
 # 2. Mixed architecture deployment:
 #   servers:
-#     - host: 192.168.1.100
+#     amd-server:
+#       host: 192.168.1.100
 #       arch: amd64
-#     - host: 192.168.1.101
+#     arm-server:
+#       host: 192.168.1.101
 #       arch: arm64
 #
 # 3. ARM-only deployment:
 #   servers:
-#     - host: 192.168.1.200
+#     arm1:
+#       host: 192.168.1.200
 #       arch: arm64
-#     - host: 192.168.1.201
+#     arm2:
+#       host: 192.168.1.201
 #       arch: arm64
 #
 # Notes:
-# - Each server must specify host and optionally arch
+# - Servers are defined at root level, services reference them via hosts: []
 # - Supported architectures: amd64, arm64
 # - If no arch specified, defaults to amd64
 # - Jiji automatically builds multi-architecture images when needed
-#     healthcheck:
-#       path: /admin/health
-#       interval: 10s
 
 # GraphQL API with path-based routing
 # graphql-api:
 #   build:
 #     context: ./graphql
 #     dockerfile: Dockerfile
-#   servers:
-#     - host: 192.168.1.101
-#       arch: amd64
+#   hosts: [api-server]
 #   ports:
 #     - "4000:4000"
 #   environment:
@@ -740,9 +671,7 @@ services:
 #   build:
 #     context: ./worker
 #     dockerfile: Dockerfile
-#   servers:
-#     - host: 192.168.1.103
-#       arch: amd64
+#   hosts: [worker-server]
 #   environment:
 #     clear:
 #       QUEUE_URL: "redis://192.168.1.104:6379"
@@ -754,9 +683,7 @@ services:
 # Example: Database service
 # database:
 #   image: postgres:15-alpine
-#   servers:
-#     - host: 192.168.1.103
-#       arch: amd64
+#   hosts: [db-server]
 #   ports:
 #     - "127.0.0.1:5432:5432"
 #   environment:
@@ -770,9 +697,7 @@ services:
 # Example: Cache service
 # cache:
 #   image: redis:7-alpine
-#   servers:
-#     - host: 192.168.1.104
-#       arch: amd64
+#   hosts: [cache-server]
 #   ports:
 #     - "127.0.0.1:6379:6379"
 #   volumes:
@@ -782,9 +707,7 @@ services:
 # # Example: DNS server with UDP ports
 # dns-server:
 #   image: coredns/coredns:latest
-#   servers:
-#     - host: 192.168.1.105
-#       arch: amd64
+#   hosts: [dns-server]
 #   ports:
 #     - "53:53/udp"              # DNS queries over UDP
 #     - "53:53/tcp"              # DNS zone transfers over TCP
@@ -795,9 +718,7 @@ services:
 # # Example: Service with mixed TCP/UDP ports
 # game-server:
 #   image: game-server:latest
-#   servers:
-#     - host: 192.168.1.106
-#       arch: amd64
+#   hosts: [game-server]
 #   ports:
 #     - "8080:8080/tcp"          # HTTP API
 #     - "7777:7777/udp"          # Game protocol
@@ -807,9 +728,7 @@ services:
 # # Example: ML service with GPU and resource constraints
 # ml-trainer:
 #   image: tensorflow/tensorflow:latest-gpu
-#   servers:
-#     - host: 192.168.1.107
-#       arch: amd64
+#   hosts: [gpu-server]
 #   ports:
 #     - "8888:8888"              # Jupyter notebook
 #   # Resource Constraints:
@@ -826,9 +745,7 @@ services:
 # # Example: Media server with device access
 # media-processor:
 #   image: ffmpeg:latest
-#   servers:
-#     - host: 192.168.1.108
-#       arch: amd64
+#   hosts: [media-server]
 #   ports:
 #     - "8080:8080"
 #   # Device Mappings: Grant access to host devices
@@ -845,9 +762,7 @@ services:
 # # Example: FUSE filesystem with privileged mode
 # rclone-mount:
 #   image: rclone/rclone:latest
-#   servers:
-#     - host: 192.168.1.109
-#       arch: amd64
+#   hosts: [storage-server]
 #   ports:
 #     - "5572:5572"              # WebUI
 #   # Privileged mode: Grants extended privileges to container
@@ -863,9 +778,7 @@ services:
 # # Example: Network service with specific capabilities
 # vpn-server:
 #   image: linuxserver/wireguard:latest
-#   servers:
-#     - host: 192.168.1.110
-#       arch: amd64
+#   hosts: [vpn-server]
 #   ports:
 #     - "51820:51820/udp"        # WireGuard
 #   # Linux Capabilities: Add specific capabilities instead of full privileged mode
@@ -901,6 +814,19 @@ services:
 #     - "0,1" - Access to GPU devices 0 and 1
 #     - "device=0" - Specific device notation
 #   - Note: Requires NVIDIA Container Toolkit (Docker) or equivalent (Podman)
+#
+# network_mode: Container network mode
+#   - Type: string
+#   - Default: "bridge"
+#   - Examples: "bridge", "host", "none", "container:<name|id>"
+#   - Options:
+#     - "bridge" - Default Docker/Podman bridge network (isolated)
+#     - "host" - Use host's network stack directly (no isolation)
+#     - "none" - No networking
+#     - "container:<name>" - Share network namespace with another container
+#   - Use Cases:
+#     - "host" for services needing low-latency or full network access
+#     - "none" for security-sensitive containers with no network needs
 #
 # devices: Device mappings for hardware access
 #   - Type: array of strings
@@ -1015,105 +941,12 @@ services:
 # - Longer path prefixes match first (/api/v2 before /api)
 # - Services without path_prefix are catch-all for their host
 
-# Service Build Architecture Configuration:
-# ========================================
-# The 'arch' field in service build configurations specifies the target architecture(s)
-# for container builds. This enables multi-platform deployments and cross-architecture builds.
-#
-# Key Features:
-# - Single architecture: arch: "amd64" (default if not specified)
-# - Multi-architecture: arch: ["amd64", "arm64"]
-# - Automatic platform detection: Uses Docker/Podman --platform flags
-# - Cross-compilation support: Build ARM images on Intel machines (and vice versa)
-#
-# Supported Architectures:
-# - amd64: Intel/AMD 64-bit (most common server architecture)
-# - arm64: ARM 64-bit (Apple Silicon, AWS Graviton, Raspberry Pi 4+)
-#
-# Docker/Podman Requirements:
-# - Docker: Requires Docker Desktop with buildx or Docker CE with buildx plugin
-# - Podman: Native multi-arch support in recent versions
-# - For multi-arch builds, the base images must support the target architectures
-#
-# Use Cases:
-# 1. Consistent amd64 builds for Intel/AMD servers
-# 2. ARM64 builds for Apple Silicon development and ARM servers
-# 3. Multi-arch builds for hybrid cloud deployments
-# 4. Cross-platform container distribution
-
-# Service Build Architecture Examples:
-# ===================================
-# Single architecture build (amd64 is default):
-# services:
-#   web-app:
-#     build:
-#       context: .
-#       # arch: amd64  # Optional - amd64 is default
-#
-# Multi-architecture build:
-# services:
-#   web-app:
-#     build:
-#       context: .
-#       arch:
-#         - amd64
-#         - arm64
-#
-# Mixed architecture deployments:
-# services:
-#   web-frontend:
-#     build:
-#       context: ./frontend
-#       # arch: amd64            # Default architecture (Intel servers)
-#     hosts:
-#       - web1.example.com
-#
-#   api-backend:
-#     build:
-#       context: ./backend
-#       arch:
-#         - amd64
-#         - arm64              # Support both Intel and ARM servers
-#     hosts:
-#       - api1.example.com    # Intel server
-#       - api2.example.com    # ARM server
-#
-# Architecture-specific optimization example:
-# services:
-#   ml-service:
-#     build:
-#       context: ./ml-service
-#       dockerfile: Dockerfile.gpu
-#       arch: amd64           # GPU workloads typically require Intel/AMD
-#     hosts:
-#       - gpu-server.example.com
-#
-#   iot-gateway:
-#     build:
-#       context: ./iot-gateway
-#       dockerfile: Dockerfile.arm
-#       arch: arm64           # IoT deployments often use ARM
-#     hosts:
-#       - iot-hub.example.com
-#
-# Cross-platform development example:
-# services:
-#   web-app:
-#     build:
-#       context: .
-#       arch:
-#         - amd64             # Production Intel servers
-#         - arm64             # Local Apple Silicon development
-#     hosts:
-#       - prod-web1.example.com   # Intel production
-#       - prod-web2.example.com   # Intel production
-
 # Service Deployment Filtering Examples:
 # =====================================
-# Deploy specific services:           jiji deploy --services web-frontend,api-backend
-# Deploy by pattern:                  jiji deploy --patterns "web-*,*-backend"
-# Deploy build-only services:         jiji deploy --build-only
-# Deploy image-only services:         jiji deploy --image-only
-# Deploy to specific hosts:           jiji deploy --target-hosts 192.168.1.100,192.168.1.101
-# Exclude services:                   jiji deploy --exclude worker-queue,cache
-# Combine filters:                    jiji deploy --patterns "web-*" --exclude web-admin --target-hosts 192.168.1.100
+# Deploy specific services:           jiji deploy -S web-frontend,api-backend
+# Deploy by pattern:                  jiji deploy -S "web-*,*-backend"
+# Deploy to specific hosts:           jiji deploy -H 192.168.1.100,192.168.1.101
+# Build and deploy:                   jiji deploy --build
+# Build without cache:                jiji deploy --build --no-cache
+# Skip confirmation:                  jiji deploy -y
+# Combine filters:                    jiji deploy -S "web-*" -H 192.168.1.100 --build

@@ -2,22 +2,6 @@
 
 This guide covers how to test your Jiji deployments in different environments.
 
-## Running Tests
-
-```bash
-# Run all tests
-deno task test
-
-# Run a specific test file
-deno test --allow-all src/lib/configuration/tests/configuration_test.ts
-
-# Run tests matching a pattern
-deno test --allow-all --filter "Configuration" src/lib/configuration/tests/
-
-# Run all checks (format, lint, test)
-deno task check
-```
-
 ## Testing Proxy Deployments
 
 ### Local Testing Without DNS
@@ -170,7 +154,7 @@ jiji deploy --services "web,api,worker"
 jiji server exec "docker ps | grep myproject"
 
 # Remove only one service
-jiji remove --services "worker"
+jiji services remove --services "worker"
 
 # Verify worker is removed but web and api still running
 jiji server exec "docker ps | grep myproject"
@@ -196,10 +180,10 @@ jiji server exec "ls -la .jiji/"
 
 ```bash
 # Without confirmation (prompts)
-jiji remove --services "worker"
+jiji services remove --services "worker"
 
 # With confirmation flag (no prompt)
-jiji remove --services "worker" --confirmed
+jiji services remove --services "worker" --confirmed
 ```
 
 ## Testing Port Forwarding for Local Registry
@@ -210,10 +194,10 @@ Port forwarding enables remote servers to pull from your local registry:
 
 ```bash
 # Start local registry
-docker run -d -p 6767:5000 --name test-registry registry:2
+docker run -d -p 9270:5000 --name test-registry registry:2
 
 # Verify it's running
-curl http://localhost:6767/v2/
+curl http://localhost:9270/v2/
 # Expected: {}
 ```
 
@@ -221,10 +205,10 @@ curl http://localhost:6767/v2/
 
 ```bash
 # Manually create SSH reverse tunnel
-ssh -R 6767:localhost:6767 user@server1.example.com
+ssh -R 9270:localhost:9270 user@server1.example.com
 
 # On remote server, verify tunnel
-curl http://localhost:6767/v2/
+curl http://localhost:9270/v2/
 # Expected: {} (same as local)
 
 # Exit SSH session to close tunnel
@@ -238,7 +222,7 @@ exit
 builder:
   registry:
     type: local
-    port: 6767
+    port: 9270
 ```
 
 ```bash
@@ -249,21 +233,21 @@ jiji deploy --build
 # Check Jiji output for port forwarding messages
 
 # On remote server during deployment
-ssh user@server1.example.com "netstat -tlnp | grep 6767"
-# Expected: Listen on 127.0.0.1:6767
+ssh user@server1.example.com "netstat -tlnp | grep 9270"
+# Expected: Listen on 127.0.0.1:9270
 ```
 
 **What to verify:**
 
 - Local registry is accessible
 - SSH tunnel established automatically
-- Remote server can pull from localhost:6767
+- Remote server can pull from localhost:9270
 - Tunnel torn down after deployment
 - Deployment completes successfully
 
 ### Troubleshooting Port Forwarding
 
-**Issue: Remote can't connect to localhost:6767**
+**Issue: Remote can't connect to localhost:9270**
 
 ```bash
 # On remote server /etc/ssh/sshd_config
@@ -322,17 +306,18 @@ builder:
   local: true
   registry:
     type: local
-    port: 6767
+    port: 9270
 ssh:
   user: deploy
+servers:
+  test-server:
+    host: test-server.example.com
 services:
   test-web:
     image: nginx:latest
-    servers:
-      - host: test-server.example.com
-        arch: amd64
+    hosts: [test-server]
     ports:
-      - "80:80"
+      - "80"
 EOF
 
 # 2. Test SSH connection
@@ -348,7 +333,7 @@ jiji server exec "docker ps | grep test-web"
 jiji services logs --services test-web --lines 10
 
 # 6. Test partial removal
-jiji remove --services test-web --confirmed
+jiji services remove --services test-web --confirmed
 
 # 7. Verify removed
 ! jiji server exec "docker ps | grep test-web"

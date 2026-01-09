@@ -328,11 +328,12 @@ export class ContainerDeploymentService {
 
       await log.hostBlock(host, async () => {
         // Pass server config and deployment options
-        // Instance ID will be calculated during network registration using server.id
+        // Instance ID will use the server name for readable DNS hostnames
         const deployOptions = {
           ...options,
           allSshManagers: sshManagers,
           serverConfig: {
+            name: server.name,
             host: server.host,
             arch: server.arch,
           },
@@ -401,7 +402,12 @@ export class ContainerDeploymentService {
     );
 
     try {
-      await prepareMountFiles(ssh, service.files, this.config.project);
+      await prepareMountFiles(
+        ssh,
+        service.files,
+        this.config.project,
+        service.name,
+      );
       log.say(`├── Files uploaded for ${service.name} on ${host}`, 2);
     } catch (error) {
       const errorMessage = error instanceof Error
@@ -434,6 +440,7 @@ export class ContainerDeploymentService {
         ssh,
         service.directories,
         this.config.project,
+        service.name,
       );
       log.say(
         `├── Directories created for ${service.name} on ${host}`,
@@ -562,6 +569,7 @@ export class ContainerDeploymentService {
       service.directories,
       service.volumes,
       this.config.project,
+      service.name,
     );
     const mergedEnv = service.getMergedEnvironment();
     const envArray = mergedEnv.toEnvArray();
@@ -814,7 +822,7 @@ export class ContainerDeploymentService {
     host: string,
     ssh: SSHManager,
     allSshManagers?: SSHManager[],
-    serverConfig?: { host: string; arch?: string; alias?: string },
+    serverConfig?: { name: string; host: string; arch?: string },
     hasMultipleServers?: boolean,
   ): Promise<string | undefined> {
     try {
@@ -834,26 +842,9 @@ export class ContainerDeploymentService {
         return undefined;
       }
 
-      // Calculate instance ID: use alias if provided, otherwise generate a random short hash
+      // Use server name as instance ID for readable DNS hostnames
       // Only set instance ID if service has multiple servers
-      let instanceId: string | undefined;
-      if (hasMultipleServers) {
-        if (serverConfig?.alias) {
-          instanceId = serverConfig.alias;
-        } else {
-          // Generate a stable, short identifier based on project + service + host
-          // This avoids exposing the public IP while remaining stable across deployments
-          const input = `${this.config.project}-${service.name}-${host}`;
-          const hashBuffer = await crypto.subtle.digest(
-            "SHA-256",
-            new TextEncoder().encode(input),
-          );
-          const hashArray = Array.from(new Uint8Array(hashBuffer));
-          const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
-          instanceId = hashHex.substring(0, 8);
-        }
-      }
+      const instanceId = hasMultipleServers ? serverConfig?.name : undefined;
 
       log.say(`├── Registering ${service.name} in network...`, 2);
 

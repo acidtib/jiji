@@ -9,7 +9,7 @@
 export type NetworkDiscovery = "corrosion";
 
 /**
- * Network server information stored in network.json
+ * Network server information stored in Corrosion distributed database
  */
 export interface NetworkServer {
   id: string;
@@ -24,7 +24,7 @@ export interface NetworkServer {
 }
 
 /**
- * Network topology stored in .jiji/network.json
+ * Network topology stored in Corrosion distributed database
  */
 export interface NetworkTopology {
   clusterCidr: string;
@@ -160,7 +160,7 @@ export interface NetworkStatus {
       id: string;
       service: string;
       ip: string;
-      healthy: boolean;
+      healthStatus: ContainerHealthStatus;
     }>;
   }>;
 }
