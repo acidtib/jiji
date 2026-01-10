@@ -13,7 +13,7 @@ const JIJI_DNS_INSTALL_DIR = "/opt/jiji/dns";
 
 // jiji-dns GitHub releases URL
 const JIJI_DNS_REPO = "acidtib/jiji-dns";
-const JIJI_DNS_VERSION = "0.2.1";
+const JIJI_DNS_VERSION = "0.3.2";
 
 /**
  * Install jiji-dns on a remote server
@@ -221,7 +221,7 @@ export function unregisterContainerHostname(
  * can use service discovery, not just containers on the jiji network.
  *
  * @param ssh - SSH connection to the server
- * @param dnsServer - DNS server IP (WireGuard IP)
+ * @param dnsServer - DNS server IP (container gateway IP, e.g., 10.210.128.1)
  * @param serviceDomain - Service domain for DNS search (default: "jiji")
  * @param engine - Container engine (docker or podman)
  */

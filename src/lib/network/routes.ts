@@ -110,7 +110,7 @@ export async function removePeerRoutes(
  * @param engine - Container engine (docker or podman)
  * @returns Bridge interface name (e.g., "br-abc123", "podman1", or "docker0")
  */
-export async function getDockerBridgeInterface(
+export async function getContainerBridgeInterface(
   ssh: SSHManager,
   networkName: string,
   engine: "docker" | "podman",
@@ -218,20 +218,25 @@ export async function getDockerBridgeInterface(
 /**
  * Configure iptables rules for container-to-container communication
  *
+ * For Docker: Uses DOCKER-USER chain which Docker doesn't modify.
+ * For Podman: Uses FORWARD chain directly.
+ *
  * @param ssh - SSH connection to the server
  * @param localSubnet - Local WireGuard subnet CIDR
  * @param containerSubnet - Local container subnet CIDR
  * @param clusterCidr - Cluster-wide CIDR for all containers
- * @param dockerBridge - Docker bridge interface name
+ * @param containerBridge - Container bridge interface name
  * @param wireguardInterface - WireGuard interface name (default: jiji0)
+ * @param engine - Container engine (docker or podman)
  */
 export async function setupIPTablesRules(
   ssh: SSHManager,
   localSubnet: string,
   containerSubnet: string,
   clusterCidr: string,
-  dockerBridge: string,
+  containerBridge: string,
   wireguardInterface = "jiji0",
+  engine: "docker" | "podman" = "docker",
 ): Promise<void> {
   const host = ssh.getHost();
 
@@ -240,24 +245,28 @@ export async function setupIPTablesRules(
     "command -v iptables-save >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent 2>/dev/null || true",
   );
 
-  // Allow forwarding from Docker to WireGuard
-  const forwardDockerToWg =
-    `iptables -C FORWARD -i ${dockerBridge} -o ${wireguardInterface} -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${dockerBridge} -o ${wireguardInterface} -j ACCEPT`;
-  const result1 = await ssh.executeCommand(forwardDockerToWg);
+  // For Docker, use DOCKER-USER chain which Docker doesn't modify
+  // For Podman, use FORWARD chain directly
+  const forwardChain = engine === "docker" ? "DOCKER-USER" : "FORWARD";
+
+  // Allow forwarding from container bridge to WireGuard
+  const forwardBridgeToWg =
+    `iptables -C ${forwardChain} -i ${containerBridge} -o ${wireguardInterface} -j ACCEPT 2>/dev/null || iptables -I ${forwardChain} 1 -i ${containerBridge} -o ${wireguardInterface} -j ACCEPT`;
+  const result1 = await ssh.executeCommand(forwardBridgeToWg);
   if (result1.code !== 0 && !result1.stderr.includes("Bad rule")) {
     log.warn(
-      `Failed to add forward rule (docker->wg) on ${host}`,
+      `Failed to add forward rule (bridge->wg) on ${host}`,
       "network",
     );
   }
 
-  // Allow forwarding from WireGuard to Docker
-  const forwardWgToDocker =
-    `iptables -C FORWARD -i ${wireguardInterface} -o ${dockerBridge} -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${wireguardInterface} -o ${dockerBridge} -j ACCEPT`;
-  const result2 = await ssh.executeCommand(forwardWgToDocker);
+  // Allow forwarding from WireGuard to container bridge
+  const forwardWgToBridge =
+    `iptables -C ${forwardChain} -i ${wireguardInterface} -o ${containerBridge} -j ACCEPT 2>/dev/null || iptables -I ${forwardChain} 1 -i ${wireguardInterface} -o ${containerBridge} -j ACCEPT`;
+  const result2 = await ssh.executeCommand(forwardWgToBridge);
   if (result2.code !== 0 && !result2.stderr.includes("Bad rule")) {
     log.warn(
-      `Failed to add forward rule (wg->docker) on ${host}`,
+      `Failed to add forward rule (wg->bridge) on ${host}`,
       "network",
     );
   }
@@ -265,7 +274,7 @@ export async function setupIPTablesRules(
   // Skip NAT for WireGuard-to-cluster traffic
   // This preserves source IPs for WireGuard subnet traffic within the cluster
   const skipNatWireGuardRule =
-    `iptables -t nat -C POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -A POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN`;
+    `iptables -t nat -C POSTROUTING -s ${localSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${localSubnet} -d ${clusterCidr} -j RETURN`;
   const result3 = await ssh.executeCommand(skipNatWireGuardRule);
   if (result3.code !== 0 && !result3.stderr.includes("Bad rule")) {
     log.warn(
@@ -277,7 +286,6 @@ export async function setupIPTablesRules(
   // Skip NAT for container-to-cluster traffic
   // This is critical - prevents container source IPs from being masqueraded to host IP
   // Without this, containers can't communicate across servers (handshake failures)
-  // IMPORTANT: Must INSERT (not APPEND) to ensure this rule comes BEFORE any MASQUERADE rules
   const skipNatContainerRule =
     `iptables -t nat -C POSTROUTING -s ${containerSubnet} -d ${clusterCidr} -j RETURN 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${containerSubnet} -d ${clusterCidr} -j RETURN`;
   const result3b = await ssh.executeCommand(skipNatContainerRule);
@@ -300,7 +308,7 @@ export async function setupIPTablesRules(
     );
   }
 
-  // Allow established connections
+  // Allow established connections (always in FORWARD chain)
   const establishedRule =
     `iptables -C FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`;
   await ssh.executeCommand(establishedRule);
@@ -355,8 +363,8 @@ export async function setupServerRouting(
       await addPeerRoutes(ssh, peers, wireguardInterface);
     }
 
-    // Get Docker bridge interface name
-    const dockerBridge = await getDockerBridgeInterface(
+    // Get container bridge interface name
+    const containerBridge = await getContainerBridgeInterface(
       ssh,
       networkName,
       engine,
@@ -368,8 +376,9 @@ export async function setupServerRouting(
       localSubnet,
       containerSubnet,
       clusterCidr,
-      dockerBridge,
+      containerBridge,
       wireguardInterface,
+      engine,
     );
   } catch (error) {
     throw new Error(`Failed to setup routing on ${host}: ${error}`);

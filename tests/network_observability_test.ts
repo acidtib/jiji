@@ -189,9 +189,10 @@ Deno.test("queryContainerById returns null when not found", async () => {
 Deno.test("deleteContainersByIds executes delete with correct IDs", async () => {
   const mockSsh = new MockSSHManager("test-server");
 
-  mockSsh.addMockResponse("corrosion exec", {
+  // Mock response for curl HTTP API call (corrosionExec now uses HTTP API)
+  mockSsh.addMockResponse("curl", {
     success: true,
-    stdout: "",
+    stdout: '{"results":[{"rows_affected":2,"time":0.0001}],"time":0.001}',
     stderr: "",
     code: 0,
   });
@@ -204,11 +205,14 @@ Deno.test("deleteContainersByIds executes delete with correct IDs", async () => 
   assertEquals(count, 2);
 
   const commands = mockSsh.getAllCommands();
-  const execCmd = commands.find((c) => c.includes("corrosion exec"));
-  assertExists(execCmd);
-  assertEquals(execCmd.includes("DELETE FROM containers WHERE id IN"), true);
-  assertEquals(execCmd.includes("'abc123'"), true);
-  assertEquals(execCmd.includes("'def456'"), true);
+  // Now uses curl to POST to Corrosion HTTP API
+  const curlCmd = commands.find((c) =>
+    c.includes("curl") && c.includes("/v1/transactions")
+  );
+  assertExists(curlCmd);
+  assertEquals(curlCmd.includes("DELETE FROM containers WHERE id IN"), true);
+  assertEquals(curlCmd.includes("abc123"), true);
+  assertEquals(curlCmd.includes("def456"), true);
 });
 
 Deno.test("deleteContainersByIds returns 0 for empty array", async () => {

@@ -263,8 +263,6 @@ export async function bringUpWireGuardInterface(
   ssh: SSHManager,
   interfaceName = "jiji0",
 ): Promise<void> {
-  const _host = ssh.getHost();
-
   // Check if interface is already up
   const checkResult = await ssh.executeCommand(`ip link show ${interfaceName}`);
   if (checkResult.code === 0) {
@@ -301,13 +299,50 @@ export async function bringUpWireGuardInterface(
 /**
  * Enable WireGuard interface to start on boot
  *
+ * Creates a systemd override to ensure WireGuard starts after the container
+ * engine, so the container network is ready when routing is set up.
+ *
  * @param ssh - SSH connection to the server
  * @param interfaceName - Interface name (default: jiji0)
+ * @param engine - Container engine (docker or podman, default: docker)
  */
 export async function enableWireGuardService(
   ssh: SSHManager,
   interfaceName = "jiji0",
+  engine: "docker" | "podman" = "docker",
 ): Promise<void> {
+  // Create systemd override directory
+  const overrideDir = `/etc/systemd/system/wg-quick@${interfaceName}.service.d`;
+  await ssh.executeCommand(`mkdir -p ${overrideDir}`);
+
+  // Container engine service dependency
+  // Docker uses docker.service, Podman uses podman.socket for rootless or podman.service for rootful
+  const engineService = engine === "docker"
+    ? "docker.service"
+    : "podman.socket";
+
+  // Create override to ensure WireGuard starts after container engine
+  // This ensures container networks are ready when WireGuard configures routing
+  const overrideContent = `[Unit]
+After=${engineService}
+Wants=${engineService}
+`;
+
+  const writeResult = await ssh.executeCommand(
+    `cat > ${overrideDir}/jiji.conf << 'EOF'\n${overrideContent}EOF`,
+  );
+
+  if (writeResult.code !== 0) {
+    log.warn(
+      `Could not create systemd override for WireGuard: ${writeResult.stderr}`,
+      "wireguard",
+    );
+  }
+
+  // Reload systemd to pick up the override
+  await ssh.executeCommand("systemctl daemon-reload");
+
+  // Enable the service
   const result = await ssh.executeCommand(
     `systemctl enable wg-quick@${interfaceName}`,
   );

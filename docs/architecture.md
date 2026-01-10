@@ -333,27 +333,52 @@ pushed in real-time, eliminating polling delays.
 
 ### Class Hierarchy
 
+All configuration classes extend `BaseConfiguration` and use lazy-loaded, cached
+properties. Validation happens at property access time, not construction.
+
 ```
-BaseConfiguration
+BaseConfiguration (abstract)
     │
-    ├── Configuration (Main)
-    │   ├── ProjectConfiguration
-    │   ├── BuilderConfiguration
-    │   ├── RegistryConfiguration
-    │   ├── SSHConfiguration
-    │   ├── NetworkConfiguration
-    │   ├── EnvironmentConfiguration
-    │   └── Map<string, ServiceConfiguration>
+    ├── Configuration (main entry point)
+    │   └── Accesses via getters:
+    │       ├── BuilderConfiguration
+    │       ├── SSHConfiguration
+    │       ├── NetworkConfiguration
+    │       ├── ServersConfiguration
+    │       ├── EnvironmentConfiguration (shared)
+    │       └── Map<string, ServiceConfiguration>
+    │
+    ├── BuilderConfiguration
+    │   └── Accesses via getter:
+    │       └── RegistryConfiguration
+    │
+    ├── RegistryConfiguration
+    │
+    ├── SSHConfiguration
+    │
+    ├── NetworkConfiguration
+    │
+    ├── ServersConfiguration
+    │
+    ├── EnvironmentConfiguration
     │
     ├── ServiceConfiguration
-    │   ├── BuildConfiguration
-    │   ├── ProxyConfiguration
-    │   ├── HealthCheckConfiguration
-    │   └── EnvironmentVariables
+    │   └── Accesses via getters:
+    │       ├── ProxyConfiguration
+    │       └── EnvironmentConfiguration (service-specific)
+    │   └── Uses interface:
+    │       └── BuildConfig (context, dockerfile, args, target)
     │
     └── ProxyConfiguration
-        └── HealthCheckConfiguration
+        └── Uses interface:
+            └── ProxyHealthcheckConfig (path/cmd, interval, timeout)
 ```
+
+**Note:** Health checks are defined as part of `ProxyTarget` structures within
+`ProxyConfiguration`, not as a separate class. Health checks support two modes:
+
+- HTTP mode: Uses `path` field for HTTP health check endpoint
+- Command mode: Uses `cmd` field to execute a command (exit 0 = healthy)
 
 ### Configuration Loading Flow
 

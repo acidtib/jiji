@@ -8,6 +8,7 @@
 import type { SSHManager } from "../../utils/ssh.ts";
 import type { ContainerRegistration } from "../../types/network.ts";
 import {
+  corrosionExec,
   registerContainer,
   registerService,
   unregisterContainer,
@@ -45,7 +46,7 @@ export async function getContainerIp(
   }
 
   const ip = result.stdout.trim();
-  if (!ip || ip === "") {
+  if (!ip) {
     log.warn(`No IP address found for container ${containerId}`, "container");
     return null;
   }
@@ -219,14 +220,12 @@ export async function updateContainerHealth(
   healthy: boolean,
 ): Promise<boolean> {
   try {
-    // Update health status in Corrosion
+    // Update health status in Corrosion via HTTP API for real-time subscription updates
     const healthStatus = healthy ? "healthy" : "unhealthy";
     const sql =
       `UPDATE containers SET health_status = '${healthStatus}' WHERE id = '${containerId}';`;
 
-    const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
-    );
+    const result = await corrosionExec(ssh, sql);
 
     if (result.code !== 0) {
       throw new Error(`Failed to update health: ${result.stderr}`);
@@ -262,7 +261,7 @@ export async function getServiceContainers(
       `SELECT ip FROM containers WHERE service = '${serviceName}' AND health_status = 'healthy';`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
+      `/opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code !== 0) {
@@ -282,14 +281,17 @@ export async function getServiceContainers(
 }
 
 /**
- * Clean up all container references for a service
+ * Clean up all container references for a service on this server
  *
  * This function removes containers from both Corrosion database and system DNS.
- * Useful when stopping or redeploying services.
+ * Only cleans up containers that belong to the specified server to avoid
+ * accidentally removing containers from other servers in the cluster.
  *
  * @param ssh - SSH connection to the server
  * @param serviceName - Service name
  * @param engine - Container engine (docker or podman)
+ * @param projectName - Project name
+ * @param serverId - Server ID to filter by (only clean up containers on this server)
  * @returns Number of containers cleaned up
  */
 export async function cleanupServiceContainers(
@@ -297,15 +299,18 @@ export async function cleanupServiceContainers(
   serviceName: string,
   engine: "docker" | "podman",
   projectName: string,
+  serverId: string,
 ): Promise<number> {
   let cleanedCount = 0;
 
   try {
-    // Get all containers for this service from Corrosion
-    const sql = `SELECT id FROM containers WHERE service = '${serviceName}';`;
+    // Get containers for this service on THIS server only
+    // This prevents accidentally cleaning up containers from other servers
+    const sql =
+      `SELECT id FROM containers WHERE service = '${serviceName}' AND server_id = '${serverId}';`;
 
     const result = await ssh.executeCommand(
-      `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "${sql}"`,
+      `/opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "${sql}"`,
     );
 
     if (result.code === 0) {

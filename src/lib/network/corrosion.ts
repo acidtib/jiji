@@ -46,12 +46,21 @@ function corrosionQuery(ssh: SSHManager, sql: string): Promise<CommandResult> {
 
 /**
  * Internal helper: Execute a Corrosion write operation (INSERT/UPDATE/DELETE)
- * Handles escaping and formatting consistently
+ * Uses HTTP API to ensure subscription events are triggered for real-time updates
  */
-function corrosionExec(ssh: SSHManager, sql: string): Promise<CommandResult> {
-  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, " ");
+export function corrosionExec(
+  ssh: SSHManager,
+  sql: string,
+): Promise<CommandResult> {
+  // Build JSON payload - escape for JSON, then for shell
+  const jsonPayload = JSON.stringify([sql]);
+  // Escape single quotes for shell by replacing ' with '\''
+  const shellSafePayload = jsonPayload.replace(/'/g, "'\\''");
+
+  // Use curl to POST to Corrosion HTTP API
+  // -s: silent, -f: fail on HTTP errors (4xx/5xx return non-zero exit code)
   return ssh.executeCommand(
-    `${CORROSION_INSTALL_DIR}/corrosion exec --config ${CORROSION_INSTALL_DIR}/config.toml "${escapedSql}"`,
+    `curl -sf -X POST -H "Content-Type: application/json" -d '${shellSafePayload}' http://127.0.0.1:${CORROSION_API_PORT}/v1/transactions`,
   );
 }
 
@@ -750,6 +759,44 @@ export async function updateServerHeartbeat(
 }
 
 /**
+ * Parse a pipe-delimited server row into a ServerRegistration object
+ */
+function parseServerRow(line: string): ServerRegistration {
+  const [
+    id,
+    hostname,
+    subnet,
+    wireguardIp,
+    wireguardPublicKey,
+    managementIp,
+    endpoints,
+    lastSeenStr,
+  ] = line.split("|");
+
+  let parsedEndpoints: string[];
+  try {
+    parsedEndpoints = JSON.parse(endpoints);
+  } catch {
+    log.warn(
+      `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
+      "corrosion",
+    );
+    parsedEndpoints = [];
+  }
+
+  return {
+    id,
+    hostname,
+    subnet,
+    wireguardIp,
+    wireguardPublicKey,
+    managementIp,
+    endpoints: parsedEndpoints,
+    lastSeen: parseInt(lastSeenStr, 10),
+  };
+}
+
+/**
  * Query active servers from Corrosion
  *
  * Returns servers that have sent a heartbeat within the last 5 minutes
@@ -774,45 +821,11 @@ export async function queryActiveServers(
     throw new Error(`Failed to query active servers: ${result.stderr}`);
   }
 
-  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
   const lines = result.stdout.trim().split("\n").filter((line) =>
     line.length > 0
   );
 
-  return lines.map((line) => {
-    const [
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints,
-      lastSeenStr,
-    ] = line.split("|");
-
-    let parsedEndpoints: string[];
-    try {
-      parsedEndpoints = JSON.parse(endpoints);
-    } catch (_error) {
-      log.warn(
-        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
-        "corrosion",
-      );
-      parsedEndpoints = [];
-    }
-
-    return {
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints: parsedEndpoints,
-      lastSeen: parseInt(lastSeenStr, 10),
-    };
-  });
+  return lines.map(parseServerRow);
 }
 
 /**
@@ -837,45 +850,11 @@ export async function queryAllServers(
     throw new Error(`Failed to query all servers: ${result.stderr}`);
   }
 
-  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
   const lines = result.stdout.trim().split("\n").filter((line) =>
     line.length > 0
   );
 
-  return lines.map((line) => {
-    const [
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints,
-      lastSeenStr,
-    ] = line.split("|");
-
-    let parsedEndpoints: string[];
-    try {
-      parsedEndpoints = JSON.parse(endpoints);
-    } catch (_error) {
-      log.warn(
-        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
-        "corrosion",
-      );
-      parsedEndpoints = [];
-    }
-
-    return {
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints: parsedEndpoints,
-      lastSeen: parseInt(lastSeenStr, 10),
-    };
-  });
+  return lines.map(parseServerRow);
 }
 
 /**

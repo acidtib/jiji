@@ -21,7 +21,12 @@ import {
   prepareMountFiles,
 } from "../../utils/mount_manager.ts";
 import { getDnsServerForHost } from "../../utils/network_helpers.ts";
-import { getServerByHostname, loadTopology } from "../network/topology.ts";
+import {
+  generateServerId,
+  getServerByHostname,
+  loadTopology,
+} from "../network/topology.ts";
+import { corrosionExec } from "../network/corrosion.ts";
 import { RegistryAuthService } from "./registry_auth_service.ts";
 import { log } from "../../utils/logger.ts";
 import { executeBestEffort } from "../../utils/command_helpers.ts";
@@ -137,11 +142,12 @@ export class ContainerDeploymentService {
             this.config.network.enabled && oldContainerId &&
             options.allSshManagers
           ) {
-            // Delete from Corrosion on all servers
+            // Delete from Corrosion on all servers via HTTP API for real-time subscription updates
             for (const remoteSsh of options.allSshManagers) {
               try {
-                await remoteSsh.executeCommand(
-                  `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "DELETE FROM containers WHERE id = '${oldContainerId}';" 2>/dev/null || true`,
+                await corrosionExec(
+                  remoteSsh,
+                  `DELETE FROM containers WHERE id = '${oldContainerId}';`,
                 );
               } catch {
                 // Ignore errors
@@ -493,18 +499,21 @@ export class ContainerDeploymentService {
   }
 
   /**
-   * Clean up old service containers
+   * Clean up old service containers on this server only
    */
   private async cleanupOldContainers(
     service: ServiceConfiguration,
     ssh: SSHManager,
   ): Promise<void> {
     try {
+      // Generate serverId from hostname to only clean up containers on this server
+      const serverId = generateServerId(ssh.getHost());
       const cleanedCount = await cleanupServiceContainers(
         ssh,
         service.name,
         this.engine,
         this.config.project,
+        serverId,
       );
       if (cleanedCount > 0) {
         log.say(
@@ -770,12 +779,13 @@ export class ContainerDeploymentService {
           "deploy",
         );
 
-        // Delete container record from Corrosion on all servers
-        // This ensures immediate propagation instead of waiting for eventual consistency
+        // Delete container record from Corrosion on all servers via HTTP API
+        // This triggers real-time subscription updates for DNS
         const deletePromises = allSshManagers.map(async (remoteSsh) => {
           try {
-            await remoteSsh.executeCommand(
-              `/opt/jiji/corrosion/corrosion exec --config /opt/jiji/corrosion/config.toml "DELETE FROM containers WHERE id = '${oldContainerId}';" 2>/dev/null || true`,
+            await corrosionExec(
+              remoteSsh,
+              `DELETE FROM containers WHERE id = '${oldContainerId}';`,
             );
           } catch (error) {
             log.debug(

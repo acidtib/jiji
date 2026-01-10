@@ -73,6 +73,7 @@ export interface CorrosionConfig {
  * DNS server configuration
  */
 export interface DNSConfig {
+  /** Comma-separated listen addresses (e.g., "10.210.0.1:53,10.210.128.1:53") */
   listenAddr: string;
   serviceDomain: string;
   corrosionApiAddr: string;
