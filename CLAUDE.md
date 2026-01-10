@@ -54,12 +54,17 @@ properties**. Validation happens at property access time, not construction. This
 prevents errors for unused config sections but means errors surface later in
 execution.
 
-Hierarchy:
+All configuration classes extend `BaseConfiguration`. The main classes are:
 
-- `Configuration` (main) contains `SSHConfiguration`, `BuilderConfiguration`,
-  `NetworkConfiguration`
-- `ServiceConfiguration` (per-service) contains `BuildConfiguration`,
-  `ProxyConfiguration`, `EnvironmentConfiguration`
+- `Configuration` - Main entry point, accesses other configs via getters
+- `BuilderConfiguration` - Build settings, accesses `RegistryConfiguration`
+- `RegistryConfiguration` - Registry authentication and server settings
+- `SSHConfiguration` - SSH connection settings
+- `NetworkConfiguration` - WireGuard mesh network settings
+- `ServersConfiguration` - Server definitions
+- `ServiceConfiguration` - Per-service config, accesses `ProxyConfiguration`
+- `ProxyConfiguration` - kamal-proxy routing and health checks
+- `EnvironmentConfiguration` - Environment variables (shared and per-service)
 
 Config loader searches upward from cwd for `.jiji/deploy.yml` or
 `jiji.{environment}.yml`.
@@ -129,6 +134,34 @@ service (e.g., S3 API + Admin API)
 
 Each target's `app_port` must exist in the service's `ports` array.
 
+### Service Runtime Options
+
+Services support these container runtime options (in `ServiceConfiguration`):
+
+- `command` - Override container entrypoint
+- `network_mode` - Container network mode (bridge/host/none)
+- `cpus`, `memory` - Resource limits
+- `gpus`, `devices` - Hardware access
+- `privileged`, `cap_add` - Security capabilities
+- `stop_first` - Stop old container before starting new (for stateful services)
+
+### Environment Variable Resolution
+
+Secrets use ALL_CAPS pattern and are resolved from:
+
+1. `.env` or `.env.{environment}` files in project root
+2. Host environment (with `--host-env` flag)
+
+Registry passwords also support this pattern (e.g., `password: GITHUB_TOKEN`).
+
+### Naming Conventions
+
+- **Images**: `{registry}/{project}-{service}:{version}`
+- **Containers**: `{project}-{service}` (old containers get `_old_{timestamp}`
+  suffix)
+- **Proxy targets**: `{project}-{service}-{app_port}`
+- **DNS records**: `{project}-{service}.jiji`
+
 ## Key Files
 
 - `src/jiji.yml` - Authoritative configuration reference with all options
@@ -138,9 +171,15 @@ Each target's `app_port` must exist in the service's `ports` array.
 
 ## Testing
 
-Tests use mock SSH managers from `tests/mocks.ts` that simulate SSH operations.
-Integration tests in `tests/` cover deployment workflows, proxy configuration,
-and service filtering.
+Tests use `MockSSHManager` from `tests/mocks.ts` which simulates SSH operations
+via `MockServerState`. Commands are parsed and state is mutated to simulate
+container operations without real SSH connections.
+
+Pattern for adding new tests:
+
+1. Create mock SSH manager with `createMockSSHManager()`
+2. Initialize `MockServerState` for each host
+3. Use services normally - they'll interact with mock state
 
 Run specific test with:
 

@@ -32,8 +32,21 @@ jiji --environment staging deploy  # Uses jiji.staging.yml
 jiji --environment production deploy  # Uses jiji.production.yml
 
 # Use custom config file
+jiji -c /path/to/custom.yml deploy
 jiji --config-file /path/to/custom.yml deploy
 ```
+
+**Configuration file search behavior:**
+
+When no config file is specified, Jiji searches upward from the current working
+directory for configuration files in this order:
+
+1. `.jiji/deploy.yml` - Default configuration
+2. `jiji.{environment}.yml` - Environment-specific configuration (when
+   `--environment` is used)
+
+The search continues up the directory tree until a configuration file is found
+or the filesystem root is reached.
 
 ### Minimal Configuration
 
@@ -385,14 +398,21 @@ network:
   cluster_cidr: "10.210.0.0/16"
 ```
 
-**Note:** The following are not configurable (hardcoded):
+**Hardcoded values (not configurable):**
 
-- **Service domain**: Always `jiji` (containers reach each other via
-  `<service>.jiji`)
-- **Service discovery method**: Always `corrosion` (distributed CRDT based)
-- **WireGuard port**: Always `51820`
-- **Corrosion gossip port**: Always `9280`
-- **Corrosion API port**: Always `9220`
+The following network settings are hardcoded and cannot be changed:
+
+| Setting               | Value       | Description                                                |
+| --------------------- | ----------- | ---------------------------------------------------------- |
+| Service domain        | `jiji`      | Containers reach each other via `{project}-{service}.jiji` |
+| Discovery method      | `corrosion` | Distributed CRDT-based service discovery                   |
+| WireGuard port        | `51820`     | UDP port for WireGuard VPN                                 |
+| Corrosion gossip port | `9280`      | TCP port for CRDT gossip protocol                          |
+| Corrosion API port    | `9220`      | TCP port for Corrosion HTTP API                            |
+| DNS port              | `53`        | jiji-dns listens on standard DNS port                      |
+
+**Note:** The `.jiji` domain is internal only and not customizable. All service
+discovery uses this domain (e.g., `myapp-api.jiji`, `myapp-database.jiji`).
 
 ### Network Architecture
 
@@ -767,6 +787,134 @@ proxy:
 ```
 
 **Note:** SSL requires host configuration (kamal-proxy handles SSL termination).
+
+### Container Runtime Options
+
+Advanced container configuration options for resource limits, capabilities, and
+special runtime modes.
+
+**Custom command:**
+
+```yaml
+services:
+  worker:
+    image: myapp:latest
+    hosts:
+      - server1
+    command: ["./run-worker.sh", "--queue", "high"]
+    # Or as a string:
+    # command: "./run-worker.sh --queue high"
+```
+
+**Network mode:**
+
+```yaml
+services:
+  monitoring:
+    image: prometheus:latest
+    hosts:
+      - server1
+    network_mode: host # Use host networking (bypasses container network)
+```
+
+Valid values: `bridge` (default), `host`, `none`, or a container name/ID for
+shared networking.
+
+**CPU limits:**
+
+```yaml
+services:
+  api:
+    image: myapp:latest
+    hosts:
+      - server1
+    cpus: 2 # Limit to 2 CPU cores
+    # Or as a string: cpus: "1.5"
+```
+
+**Memory limits:**
+
+```yaml
+services:
+  api:
+    image: myapp:latest
+    hosts:
+      - server1
+    memory: "512m" # Limit to 512 megabytes
+    # Formats: "512m", "1g", "2gb"
+```
+
+**GPU access:**
+
+```yaml
+services:
+  ml-worker:
+    image: pytorch:latest
+    hosts:
+      - gpu-server
+    gpus: "all" # Access all GPUs
+    # Other options: "0", "0,1", "device=0"
+```
+
+**Device mappings:**
+
+```yaml
+services:
+  video-processor:
+    image: ffmpeg:latest
+    hosts:
+      - server1
+    devices:
+      - "/dev/video0"
+      - "/dev/snd"
+```
+
+**Privileged mode:**
+
+```yaml
+services:
+  system-tool:
+    image: debug-tools:latest
+    hosts:
+      - server1
+    privileged: true # Grants extended privileges (use with caution)
+```
+
+**Linux capabilities:**
+
+```yaml
+services:
+  network-tool:
+    image: nettools:latest
+    hosts:
+      - server1
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+```
+
+Common capabilities: `SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_TIME`,
+`IPC_LOCK`.
+
+**Stop-first deployment (for stateful services):**
+
+```yaml
+services:
+  database:
+    image: postgres:15
+    hosts:
+      - db-server
+    stop_first: true # Stop old container before starting new one
+```
+
+Use `stop_first: true` for services that:
+
+- Use file-based locks (e.g., LevelDB, SQLite)
+- Register unique IDs with a coordinator
+- Cannot have two instances running simultaneously
+
+**Note:** This causes brief downtime during deployment. Default is `false`
+(zero-downtime deployment).
 
 ### Complete Service Example
 
