@@ -20,11 +20,11 @@ const REMOTE_REGISTRY_DATA = {
   password: "secret123",
 };
 
-const REMOTE_REGISTRY_WITH_ENV_PASSWORD_DATA = {
+const _REMOTE_REGISTRY_WITH_ENV_PASSWORD_DATA = {
   type: "remote",
   server: "gcr.io:443",
   username: "oauth2accesstoken",
-  password: "${GCR_TOKEN}",
+  password: "GCR_TOKEN",
 };
 
 const REMOTE_REGISTRY_NO_PORT_DATA = {
@@ -182,37 +182,74 @@ Deno.test("RegistryConfiguration - Docker Hub missing username throws error", ()
   );
 });
 
-Deno.test("RegistryConfiguration - environment variable substitution", () => {
-  // Set environment variable for testing
-  Deno.env.set("GCR_TOKEN", "test-token-value");
+Deno.test("RegistryConfiguration - password getter returns raw value", () => {
+  // Password getter should return raw value without resolving
+  const registry = new RegistryConfiguration({
+    type: "remote",
+    server: "registry.example.com:5000",
+    username: "user",
+    password: "GCR_TOKEN",
+  });
+
+  // Raw value should be returned
+  assertEquals(registry.password, "GCR_TOKEN");
+});
+
+Deno.test("RegistryConfiguration - resolvePassword with bare VAR_NAME syntax", () => {
+  const registry = new RegistryConfiguration({
+    type: "remote",
+    server: "registry.example.com:5000",
+    username: "user",
+    password: "REGISTRY_PASSWORD",
+  });
+
+  // Resolve using envVars
+  const envVars = { REGISTRY_PASSWORD: "my-secret-password" };
+  assertEquals(registry.resolvePassword(envVars), "my-secret-password");
+});
+
+Deno.test("RegistryConfiguration - resolvePassword with host env fallback", () => {
+  Deno.env.set("HOST_REGISTRY_TOKEN", "host-token-value");
 
   try {
-    const registry = new RegistryConfiguration(
-      REMOTE_REGISTRY_WITH_ENV_PASSWORD_DATA,
-    );
+    const registry = new RegistryConfiguration({
+      type: "remote",
+      server: "registry.example.com:5000",
+      username: "user",
+      password: "HOST_REGISTRY_TOKEN",
+    });
 
-    assertEquals(registry.password, "test-token-value");
+    // Resolve with allowHostEnv=true
+    assertEquals(registry.resolvePassword({}, true), "host-token-value");
   } finally {
-    // Clean up
-    Deno.env.delete("GCR_TOKEN");
+    Deno.env.delete("HOST_REGISTRY_TOKEN");
   }
 });
 
-Deno.test("RegistryConfiguration - environment variable not found", () => {
-  // Ensure the env var doesn't exist
+Deno.test("RegistryConfiguration - resolvePassword with literal value", () => {
+  const registry = new RegistryConfiguration({
+    type: "remote",
+    server: "registry.example.com:5000",
+    username: "user",
+    password: "my-literal-password",
+  });
+
+  // Literal passwords (not ALL_CAPS) should be returned as-is
+  assertEquals(registry.resolvePassword({}), "my-literal-password");
+});
+
+Deno.test("RegistryConfiguration - resolvePassword throws on missing secret", () => {
   Deno.env.delete("MISSING_TOKEN");
 
+  const registry = new RegistryConfiguration({
+    type: "remote",
+    server: "registry.example.com:5000",
+    username: "user",
+    password: "MISSING_TOKEN",
+  });
+
   assertThrows(
-    () => {
-      const registry = new RegistryConfiguration({
-        type: "remote",
-        server: "registry.example.com:5000",
-        username: "user",
-        password: "${MISSING_TOKEN}",
-      });
-      // Access password to trigger validation
-      registry.password;
-    },
+    () => registry.resolvePassword({}),
     ConfigurationError,
     "Environment variable 'MISSING_TOKEN' not found",
   );

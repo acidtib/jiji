@@ -98,8 +98,7 @@ builder:
     type: remote
     server: ghcr.io
     username: yourname
-    password: ${GITHUB_TOKEN}
-
+    password: GITHUB_TOKEN
 servers:
   server1:
     host: server1.example.com
@@ -111,7 +110,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    hosts: [server1, server2]
+    hosts:
+      - server1
+      - server2
     ports:
       - "3000"
     proxy:

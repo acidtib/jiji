@@ -11,6 +11,7 @@ import { servicesCommand } from "./commands/services/index.ts";
 import { proxyCommand } from "./commands/proxy/index.ts";
 import { registryCommand } from "./commands/registry/index.ts";
 import { networkCommand } from "./commands/network.ts";
+import { secretsCommand } from "./commands/secrets/index.ts";
 import { setGlobalLogLevel, setGlobalQuietMode } from "./utils/logger.ts";
 
 const command = new Command()
@@ -44,6 +45,10 @@ const command = new Command()
     "-S, --services=<SERVICES:string>",
     "Run commands on these services instead of all (separate by comma, supports wildcards with *)",
   )
+  .globalOption(
+    "--host-env",
+    "Fallback to host environment variables when secrets are not found in .env files",
+  )
   .action(() => {
     command.showHelp();
     Deno.exit(0);
@@ -56,6 +61,7 @@ const command = new Command()
   .command("server", serverCommand)
   .command("registry", registryCommand)
   .command("network", networkCommand)
+  .command("secrets", secretsCommand)
   .command("audit", auditCommand)
   .command("lock", lockCommand)
   .command("version", versionCommand)

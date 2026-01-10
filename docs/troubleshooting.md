@@ -186,12 +186,13 @@ Error: Failed to push image to ghcr.io: 403 Forbidden
    registry:
      server: ghcr.io
      username: your-github-username # Must match GitHub username
-     password: "${GITHUB_TOKEN}"
+     password: GITHUB_TOKEN
    ```
 
 3. **Re login to registry:**
    ```bash
-   export GITHUB_TOKEN=ghp_new_token
+   # Add to your .env file:
+   # GITHUB_TOKEN=ghp_new_token
    jiji registry login
    ```
 

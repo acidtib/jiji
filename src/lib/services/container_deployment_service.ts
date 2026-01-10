@@ -184,6 +184,7 @@ export class ContainerDeploymentService {
           containerName,
           ssh,
           host,
+          options,
         );
 
         // Wait for container to be running
@@ -562,6 +563,7 @@ export class ContainerDeploymentService {
     containerName: string,
     ssh: SSHManager,
     host: string,
+    options: DeploymentOptions = {},
   ): Promise<string> {
     // Build container run command
     const mountArgs = buildAllMountArgs(
@@ -572,7 +574,10 @@ export class ContainerDeploymentService {
       service.name,
     );
     const mergedEnv = service.getMergedEnvironment();
-    const envArray = mergedEnv.toEnvArray();
+    const envArray = mergedEnv.toEnvArray(
+      options.envVars ?? {},
+      options.allowHostEnv ?? false,
+    );
 
     // Get DNS server from network topology
     const dnsServer = await getDnsServerForHost(

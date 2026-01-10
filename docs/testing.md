@@ -315,7 +315,8 @@ servers:
 services:
   test-web:
     image: nginx:latest
-    hosts: [test-server]
+    hosts:
+      - test-server
     ports:
       - "80"
 EOF

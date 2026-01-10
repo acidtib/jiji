@@ -42,24 +42,59 @@ export class RegistryConfiguration extends BaseConfiguration {
     return value;
   }
 
+  /**
+   * Get the raw password value from config
+   * This may be a literal password or an env var name (ALL_CAPS format)
+   */
   get password(): string | undefined {
-    const rawPassword = this.get<string>("password");
+    return this.get<string>("password");
+  }
+
+  /**
+   * Check if a value looks like an environment variable reference
+   * (ALL_CAPS_WITH_UNDERSCORES pattern)
+   */
+  private isEnvVarReference(value: string): boolean {
+    return /^[A-Z][A-Z0-9_]*$/.test(value);
+  }
+
+  /**
+   * Resolve the password using environment variables
+   * Supports:
+   * - Bare VAR_NAME: password: REGISTRY_PASSWORD (resolved from .env)
+   * - Literal values: password: "my-literal-password"
+   *
+   * @param envVars Pre-loaded environment variables from .env file
+   * @param allowHostEnv Whether to fallback to host environment variables
+   * @throws ConfigurationError if password is a var reference that cannot be resolved
+   */
+  resolvePassword(
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): string | undefined {
+    const rawPassword = this.password;
     if (!rawPassword) {
       return undefined;
     }
 
-    // Support environment variable substitution
-    if (rawPassword.startsWith("${") && rawPassword.endsWith("}")) {
-      const envVar = rawPassword.slice(2, -1);
-      const envValue = Deno.env.get(envVar);
-      if (!envValue) {
-        throw new ConfigurationError(
-          `Environment variable '${envVar}' not found for registry password`,
-        );
+    // Bare VAR_NAME (ALL_CAPS pattern) - resolve from env
+    if (this.isEnvVarReference(rawPassword)) {
+      if (envVars[rawPassword] !== undefined) {
+        return envVars[rawPassword];
       }
-      return envValue;
+      if (allowHostEnv) {
+        const hostValue = Deno.env.get(rawPassword);
+        if (hostValue !== undefined) {
+          return hostValue;
+        }
+      }
+      throw new ConfigurationError(
+        `Environment variable '${rawPassword}' not found for registry password. ` +
+          `Create a .env file with this secret, or use --host-env flag.`,
+      );
     }
 
+    // Literal password value
     return rawPassword;
   }
 

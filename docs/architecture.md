@@ -374,10 +374,10 @@ BaseConfiguration
    └──────────┬──────────┘
               │
               V
-3. Environment Substitution
+3. Secrets Resolution
    ┌─────────────────────┐
-   │ ${VAR} → value      │
-   │ Expand paths        │
+   │ Load .env files     │
+   │ VAR_NAME → value    │
    │ Load SSH config     │
    └──────────┬──────────┘
               │
@@ -620,9 +620,11 @@ User Command
 
 **Environment Variables**:
 
-- Secrets loaded from environment at runtime
+- Secrets loaded from `.env` files in project root
 - Never stored in plain text in config files
-- Variable substitution: `${SECRET_NAME}`
+- Variable syntax: `VAR_NAME` (ALL_CAPS pattern)
+- File priority: `.env.{environment}` > `.env`
+- Optional host env fallback with `--host-env` flag
 
 **SSH Keys**:
 
@@ -633,5 +635,5 @@ User Command
 **Registry Credentials**:
 
 - Configured in `.jiji/deploy.yml` under `builder.registry`
-- Environment variable substitution supported
+- Password can be a secret name (ALL_CAPS) or literal value
 - Registry authentication performed locally and on remote servers

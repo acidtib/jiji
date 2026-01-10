@@ -1,3 +1,4 @@
+import { dirname } from "@std/path";
 import { ConfigurationLoader } from "./configuration/loader.ts";
 import { SSHConfiguration } from "./configuration/ssh.ts";
 import { ServiceConfiguration } from "./configuration/service.ts";
@@ -29,6 +30,7 @@ export class Configuration extends BaseConfiguration {
   private _network?: NetworkConfiguration;
   private _configPath?: string;
   private _environmentName?: string;
+  private _secretsPath?: string;
 
   constructor(
     config: Record<string, unknown> = {},
@@ -165,6 +167,33 @@ export class Configuration extends BaseConfiguration {
    */
   get environmentName(): string | undefined {
     return this._environmentName;
+  }
+
+  /**
+   * Custom path to secrets .env file (relative to project root)
+   * If not specified, defaults to .env.{environment} or .env
+   */
+  get secretsPath(): string | undefined {
+    if (!this._secretsPath) {
+      if (this.has("secrets_path")) {
+        this._secretsPath = this.validateString(
+          this.get("secrets_path"),
+          "secrets_path",
+        );
+      }
+    }
+    return this._secretsPath;
+  }
+
+  /**
+   * Gets the project root directory (parent of .jiji folder)
+   */
+  getProjectRoot(): string {
+    if (this._configPath) {
+      // Config is at .jiji/deploy.yml, so go up two levels
+      return dirname(dirname(this._configPath));
+    }
+    return Deno.cwd();
   }
 
   /**

@@ -48,7 +48,7 @@ builder:
     # server: ghcr.io
     # server: docker.io
     # username: myuser
-    # password: "${REGISTRY_PASSWORD}"  # Environment variable substitution supported
+    # password: REGISTRY_PASSWORD
 
 # Builder Configuration Examples:
 # ===============================
@@ -81,7 +81,7 @@ builder:
 #     type: remote
 #     server: docker.io
 #     username: myusername
-#     password: "${DOCKER_HUB_TOKEN}"
+#     password: DOCKER_HUB_TOKEN
 #
 # Example 4: AWS ECR Registry
 # builder:
@@ -91,7 +91,7 @@ builder:
 #     type: remote
 #     server: 123456789012.dkr.ecr.us-west-2.amazonaws.com
 #     username: AWS
-#     password: "${ECR_TOKEN}"
+#     password: ECR_TOKEN
 #
 # Example 5: Remote Building with Custom Registry Port
 # builder:
@@ -105,7 +105,7 @@ builder:
 
 # Server Definitions (required)
 # ===============================
-# Define all servers once by name, then reference them in services using hosts: [name]
+# Define all servers once by name, then reference them in services under hosts:
 # This eliminates duplication and allows per-server SSH configuration overrides
 #
 # Each server must have:
@@ -329,10 +329,13 @@ ssh:
 #
 # services:
 #   api-backend:
-#     hosts: [server1, server2]
+#     hosts:
+#       - server1
+#       - server2
 #
 #   database:
-#     hosts: [server3]
+#     hosts:
+#       - server3
 #
 # The api-backend containers can connect to database via (assuming project: myapp):
 #   DATABASE_URL: postgresql://user:pass@myapp-database.jiji:5432/myapp
@@ -340,18 +343,44 @@ ssh:
 # And database can connect back to api via:
 #   API_URL: http://myapp-api-backend.jiji:3000
 
+# Secrets Configuration
+# ====================
+# Secrets are loaded from .env files in your project root.
+#
+# File Loading Priority:
+# 1. .env.{environment} - When using -e/--environment flag (e.g., .env.staging)
+# 2. .env - Fallback when no environment specific file exists
+#
+# Optional: Custom path to .env file (relative to project root)
+# secrets_path: .secrets  # Will load .secrets.{environment} or .secrets
+#
+# Host Environment Fallback:
+# By default, jiji ONLY reads from .env files. Use --host-env flag to allow
+# fallback to host environment variables when secrets are not found in .env files.
+#
+# Example: jiji -e production --host-env deploy
+#
+# Debug Secrets:
+# Use 'jiji secrets print' to see which secrets are configured and their status.
+# Use 'jiji secrets print --show-values' to reveal actual secret values (use with caution).
+#
+# Error Handling:
+# If secrets are defined but cannot be resolved (not in .env or host env),
+# the command will fail with an error listing the missing secrets.
+
 # Shared Environment Configuration
 # Applied to all services, can be overridden per-service
-# environment:
-#   # Clear text environment variables
-#   clear:
-#     APP_ENV: production
-#     LOG_LEVEL: info
-#     DEBUG: "false"
-#   # Secrets loaded from host environment variables
-#   secrets:
-#     - DATABASE_PASSWORD
-#     - API_SECRET_KEY
+environment:
+  # Clear text environment variables
+  clear:
+    APP_ENV: production
+    LOG_LEVEL: info
+    DEBUG: "false"
+  # Secrets loaded from .env files (or host environment with --host-env)
+  # List secret names that must be provided in .env.{environment} or .env file
+  secrets:
+    - DATABASE_PASSWORD
+    - API_SECRET_KEY
 
 # Services Configuration
 # Services are the deployable units in Jiji - each service represents a containerized application
@@ -391,7 +420,9 @@ services:
   web-frontend:
     image: nginx:latest
     # Server targets: Reference servers by name from the servers section
-    hosts: [vps-prod, home-server]
+    hosts:
+      - vps-prod
+      - home-server
     # Port Mappings: Map host ports to container ports
     # Supported formats:
     #   - "8000"                           # Container port only (host port auto-assigned)
@@ -465,8 +496,10 @@ services:
   #     args:                            # Build arguments for this service
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
-  #       BUILD_DATE: "${BUILD_DATE}"    # Environment variable substitution
-  #   hosts: [vps-prod, arm-builder]     # Deploy to both amd64 and arm64 servers
+  #       BUILD_DATE: BUILD_DATE
+  #   hosts:                              # Deploy to both amd64 and arm64 servers
+  #     - vps-prod
+  #     - arm-builder
   #   ports:
   #     - "3000:3000"
   #   environment:
@@ -528,7 +561,8 @@ services:
   # Useful for services like Garage that expose multiple APIs
   # garage:
   #   image: dxflrs/garage:v2.1.0
-  #   hosts: [storage-server]
+  #   hosts:
+  #     - storage-server
   #   ports:
   #     - "127.0.0.1:3900:3900"           # S3 API
   #     - "127.0.0.1:3903:3903"           # Admin API
@@ -601,7 +635,8 @@ services:
   #   build:
   #     context: ./admin
   #     dockerfile: Dockerfile
-  #   hosts: [web-server]
+  #   hosts:
+  #     - web-server
   #   ports:
   #     - "3000"
   #   environment:
@@ -642,7 +677,7 @@ services:
 #       arch: arm64
 #
 # Notes:
-# - Servers are defined at root level, services reference them via hosts: []
+# - Servers are defined at root level, services reference them under hosts:
 # - Supported architectures: amd64, arm64
 # - If no arch specified, defaults to amd64
 # - Jiji automatically builds multi-architecture images when needed
@@ -652,7 +687,8 @@ services:
 #   build:
 #     context: ./graphql
 #     dockerfile: Dockerfile
-#   hosts: [api-server]
+#   hosts:
+#     - api-server
 #   ports:
 #     - "4000:4000"
 #   environment:
@@ -671,7 +707,8 @@ services:
 #   build:
 #     context: ./worker
 #     dockerfile: Dockerfile
-#   hosts: [worker-server]
+#   hosts:
+#     - worker-server
 #   environment:
 #     clear:
 #       QUEUE_URL: "redis://192.168.1.104:6379"
@@ -683,7 +720,8 @@ services:
 # Example: Database service
 # database:
 #   image: postgres:15-alpine
-#   hosts: [db-server]
+#   hosts:
+#     - db-server
 #   ports:
 #     - "127.0.0.1:5432:5432"
 #   environment:
@@ -697,7 +735,8 @@ services:
 # Example: Cache service
 # cache:
 #   image: redis:7-alpine
-#   hosts: [cache-server]
+#   hosts:
+#     - cache-server
 #   ports:
 #     - "127.0.0.1:6379:6379"
 #   volumes:
@@ -707,7 +746,8 @@ services:
 # # Example: DNS server with UDP ports
 # dns-server:
 #   image: coredns/coredns:latest
-#   hosts: [dns-server]
+#   hosts:
+#     - dns-server
 #   ports:
 #     - "53:53/udp"              # DNS queries over UDP
 #     - "53:53/tcp"              # DNS zone transfers over TCP
@@ -718,7 +758,8 @@ services:
 # # Example: Service with mixed TCP/UDP ports
 # game-server:
 #   image: game-server:latest
-#   hosts: [game-server]
+#   hosts:
+#     - game-server
 #   ports:
 #     - "8080:8080/tcp"          # HTTP API
 #     - "7777:7777/udp"          # Game protocol
@@ -728,7 +769,8 @@ services:
 # # Example: ML service with GPU and resource constraints
 # ml-trainer:
 #   image: tensorflow/tensorflow:latest-gpu
-#   hosts: [gpu-server]
+#   hosts:
+#     - gpu-server
 #   ports:
 #     - "8888:8888"              # Jupyter notebook
 #   # Resource Constraints:
@@ -745,7 +787,8 @@ services:
 # # Example: Media server with device access
 # media-processor:
 #   image: ffmpeg:latest
-#   hosts: [media-server]
+#   hosts:
+#     - media-server
 #   ports:
 #     - "8080:8080"
 #   # Device Mappings: Grant access to host devices
@@ -762,7 +805,8 @@ services:
 # # Example: FUSE filesystem with privileged mode
 # rclone-mount:
 #   image: rclone/rclone:latest
-#   hosts: [storage-server]
+#   hosts:
+#     - storage-server
 #   ports:
 #     - "5572:5572"              # WebUI
 #   # Privileged mode: Grants extended privileges to container
@@ -778,7 +822,8 @@ services:
 # # Example: Network service with specific capabilities
 # vpn-server:
 #   image: linuxserver/wireguard:latest
-#   hosts: [vpn-server]
+#   hosts:
+#     - vpn-server
 #   ports:
 #     - "51820:51820/udp"        # WireGuard
 #   # Linux Capabilities: Add specific capabilities instead of full privileged mode

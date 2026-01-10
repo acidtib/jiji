@@ -14,6 +14,7 @@ export interface GlobalOptions {
   configFile?: string;
   hosts?: string;
   services?: string;
+  hostEnv?: boolean;
 }
 
 // ============================================================================

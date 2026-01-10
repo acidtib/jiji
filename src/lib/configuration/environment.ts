@@ -105,6 +105,14 @@ export class EnvironmentConfiguration extends BaseConfiguration
   }
 
   /**
+   * Check if a value looks like an environment variable reference
+   * (ALL_CAPS_WITH_UNDERSCORES pattern)
+   */
+  isEnvVarReference(value: string): boolean {
+    return /^[A-Z][A-Z0-9_]*$/.test(value);
+  }
+
+  /**
    * Returns the environment configuration as a plain object
    */
   toObject(): Record<string, unknown> {
@@ -137,15 +145,59 @@ export class EnvironmentConfiguration extends BaseConfiguration
 
   /**
    * Gets all environment variables including resolved secrets
+   * @param envVars Pre-loaded environment variables from .env file
+   * @param allowHostEnv Whether to fallback to host environment variables
+   * @throws ConfigurationError if any secrets cannot be resolved
    */
-  resolveVariables(): Record<string, string> {
-    const resolved = { ...this.clear };
+  resolveVariables(
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): Record<string, string> {
+    const resolved: Record<string, string> = {};
+    const missingSecrets: string[] = [];
 
-    for (const secret of this.secrets) {
-      const value = Deno.env.get(secret);
-      if (value !== undefined) {
-        resolved[secret] = value;
+    for (const [key, value] of Object.entries(this.clear)) {
+      if (this.isEnvVarReference(value)) {
+        if (envVars[value] !== undefined) {
+          resolved[key] = envVars[value];
+        } else if (allowHostEnv) {
+          const hostValue = Deno.env.get(value);
+          if (hostValue !== undefined) {
+            resolved[key] = hostValue;
+          } else {
+            missingSecrets.push(value);
+          }
+        } else {
+          missingSecrets.push(value);
+        }
+      } else {
+        // Use literal value
+        resolved[key] = value;
       }
+    }
+
+    // Process secrets - all must be resolved or throw error
+    for (const secret of this.secrets) {
+      if (envVars[secret] !== undefined) {
+        resolved[secret] = envVars[secret];
+      } else if (allowHostEnv) {
+        const hostValue = Deno.env.get(secret);
+        if (hostValue !== undefined) {
+          resolved[secret] = hostValue;
+        } else {
+          missingSecrets.push(secret);
+        }
+      } else {
+        missingSecrets.push(secret);
+      }
+    }
+
+    if (missingSecrets.length > 0) {
+      const uniqueMissing = [...new Set(missingSecrets)];
+      throw new ConfigurationError(
+        `Missing required secrets: ${uniqueMissing.join(", ")}. ` +
+          `Create a .env file with these secrets, or use --host-env flag to read from host environment.`,
+      );
     }
 
     return resolved;
@@ -153,10 +205,68 @@ export class EnvironmentConfiguration extends BaseConfiguration
 
   /**
    * Converts environment variables to array format for container execution
+   * @param envVars Pre-loaded environment variables from .env file
+   * @param allowHostEnv Whether to fallback to host environment variables
    */
-  toEnvArray(): string[] {
-    const vars = this.resolveVariables();
+  toEnvArray(
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): string[] {
+    const vars = this.resolveVariables(envVars, allowHostEnv);
     return Object.entries(vars).map(([key, value]) => `${key}=${value}`);
+  }
+
+  /**
+   * Check which secrets are defined but not resolvable
+   * Used for debugging/reporting without throwing errors
+   * @param envVars Pre-loaded environment variables from .env file
+   * @param allowHostEnv Whether to check host environment as fallback
+   */
+  getMissingSecrets(
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): string[] {
+    const missing: string[] = [];
+
+    for (const [_key, value] of Object.entries(this.clear)) {
+      if (this.isEnvVarReference(value)) {
+        if (envVars[value] === undefined) {
+          if (!allowHostEnv || Deno.env.get(value) === undefined) {
+            missing.push(value);
+          }
+        }
+      }
+    }
+
+    for (const secret of this.secrets) {
+      if (envVars[secret] === undefined) {
+        if (!allowHostEnv || Deno.env.get(secret) === undefined) {
+          missing.push(secret);
+        }
+      }
+    }
+
+    return [...new Set(missing)];
+  }
+
+  /**
+   * Check if a secret is resolvable
+   * @param name The secret name to check
+   * @param envVars Pre-loaded environment variables from .env file
+   * @param allowHostEnv Whether to check host environment as fallback
+   */
+  isSecretResolvable(
+    name: string,
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): boolean {
+    if (envVars[name] !== undefined) {
+      return true;
+    }
+    if (allowHostEnv && Deno.env.get(name) !== undefined) {
+      return true;
+    }
+    return false;
   }
 
   /**
