@@ -263,8 +263,6 @@ export async function bringUpWireGuardInterface(
   ssh: SSHManager,
   interfaceName = "jiji0",
 ): Promise<void> {
-  const _host = ssh.getHost();
-
   // Check if interface is already up
   const checkResult = await ssh.executeCommand(`ip link show ${interfaceName}`);
   if (checkResult.code === 0) {

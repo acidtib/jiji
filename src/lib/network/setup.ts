@@ -291,10 +291,7 @@ export async function setupNetwork(
           }
 
           // Install jiji-dns
-          const prefix = config.network.discovery === "corrosion"
-            ? "└──"
-            : "└──";
-          log.say(`${prefix} Installing jiji-dns`, 2);
+          log.say(`└── Installing jiji-dns`, 2);
           const dnsInstalled = await installJijiDns(ssh);
           if (!dnsInstalled) throw new Error("Failed to install jiji-dns");
         } catch (error) {

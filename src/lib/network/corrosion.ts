@@ -759,6 +759,44 @@ export async function updateServerHeartbeat(
 }
 
 /**
+ * Parse a pipe-delimited server row into a ServerRegistration object
+ */
+function parseServerRow(line: string): ServerRegistration {
+  const [
+    id,
+    hostname,
+    subnet,
+    wireguardIp,
+    wireguardPublicKey,
+    managementIp,
+    endpoints,
+    lastSeenStr,
+  ] = line.split("|");
+
+  let parsedEndpoints: string[];
+  try {
+    parsedEndpoints = JSON.parse(endpoints);
+  } catch {
+    log.warn(
+      `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
+      "corrosion",
+    );
+    parsedEndpoints = [];
+  }
+
+  return {
+    id,
+    hostname,
+    subnet,
+    wireguardIp,
+    wireguardPublicKey,
+    managementIp,
+    endpoints: parsedEndpoints,
+    lastSeen: parseInt(lastSeenStr, 10),
+  };
+}
+
+/**
  * Query active servers from Corrosion
  *
  * Returns servers that have sent a heartbeat within the last 5 minutes
@@ -783,45 +821,11 @@ export async function queryActiveServers(
     throw new Error(`Failed to query active servers: ${result.stderr}`);
   }
 
-  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
   const lines = result.stdout.trim().split("\n").filter((line) =>
     line.length > 0
   );
 
-  return lines.map((line) => {
-    const [
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints,
-      lastSeenStr,
-    ] = line.split("|");
-
-    let parsedEndpoints: string[];
-    try {
-      parsedEndpoints = JSON.parse(endpoints);
-    } catch (_error) {
-      log.warn(
-        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
-        "corrosion",
-      );
-      parsedEndpoints = [];
-    }
-
-    return {
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints: parsedEndpoints,
-      lastSeen: parseInt(lastSeenStr, 10),
-    };
-  });
+  return lines.map(parseServerRow);
 }
 
 /**
@@ -846,45 +850,11 @@ export async function queryAllServers(
     throw new Error(`Failed to query all servers: ${result.stderr}`);
   }
 
-  // Parse output - format: id|hostname|subnet|wireguard_ip|wireguard_pubkey|management_ip|endpoints|last_seen
   const lines = result.stdout.trim().split("\n").filter((line) =>
     line.length > 0
   );
 
-  return lines.map((line) => {
-    const [
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints,
-      lastSeenStr,
-    ] = line.split("|");
-
-    let parsedEndpoints: string[];
-    try {
-      parsedEndpoints = JSON.parse(endpoints);
-    } catch (_error) {
-      log.warn(
-        `Failed to parse endpoints JSON for server ${id}: ${endpoints}`,
-        "corrosion",
-      );
-      parsedEndpoints = [];
-    }
-
-    return {
-      id,
-      hostname,
-      subnet,
-      wireguardIp,
-      wireguardPublicKey,
-      managementIp,
-      endpoints: parsedEndpoints,
-      lastSeen: parseInt(lastSeenStr, 10),
-    };
-  });
+  return lines.map(parseServerRow);
 }
 
 /**

@@ -46,7 +46,7 @@ export async function getContainerIp(
   }
 
   const ip = result.stdout.trim();
-  if (!ip || ip === "") {
+  if (!ip) {
     log.warn(`No IP address found for container ${containerId}`, "container");
     return null;
   }

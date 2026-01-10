@@ -110,7 +110,7 @@ export async function removePeerRoutes(
  * @param engine - Container engine (docker or podman)
  * @returns Bridge interface name (e.g., "br-abc123", "podman1", or "docker0")
  */
-export async function getDockerBridgeInterface(
+export async function getContainerBridgeInterface(
   ssh: SSHManager,
   networkName: string,
   engine: "docker" | "podman",
@@ -363,8 +363,8 @@ export async function setupServerRouting(
       await addPeerRoutes(ssh, peers, wireguardInterface);
     }
 
-    // Get Docker bridge interface name
-    const dockerBridge = await getDockerBridgeInterface(
+    // Get container bridge interface name
+    const containerBridge = await getContainerBridgeInterface(
       ssh,
       networkName,
       engine,
@@ -376,7 +376,7 @@ export async function setupServerRouting(
       localSubnet,
       containerSubnet,
       clusterCidr,
-      dockerBridge,
+      containerBridge,
       wireguardInterface,
       engine,
     );

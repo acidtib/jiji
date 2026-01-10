@@ -10,7 +10,7 @@ import {
   isPrivateIP,
   selectBestEndpoint,
 } from "../src/lib/network/ip_discovery.ts";
-import { getDockerBridgeInterface } from "../src/lib/network/routes.ts";
+import { getContainerBridgeInterface } from "../src/lib/network/routes.ts";
 import { MockSSHManager } from "./mocks.ts";
 
 Deno.test("isPrivateIP - should return true for 10.0.0.0/8 range", () => {
@@ -190,7 +190,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should discover bridge interface via gateway IP for Docker",
+  "getContainerBridgeInterface - should discover bridge interface via gateway IP for Docker",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -218,7 +218,7 @@ Deno.test(
       code: 0,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "docker",
@@ -229,7 +229,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should discover bridge interface via gateway IP for Podman with Netavark",
+  "getContainerBridgeInterface - should discover bridge interface via gateway IP for Podman with Netavark",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -263,7 +263,7 @@ Deno.test(
       code: 0,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "podman",
@@ -274,7 +274,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should discover bridge interface via gateway IP for Podman with CNI",
+  "getContainerBridgeInterface - should discover bridge interface via gateway IP for Podman with CNI",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -313,7 +313,7 @@ Deno.test(
       code: 0,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "podman",
@@ -324,7 +324,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should fallback to docker0 if bridge cannot be found",
+  "getContainerBridgeInterface - should fallback to docker0 if bridge cannot be found",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -351,7 +351,7 @@ Deno.test(
       code: 1,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "docker",
@@ -362,7 +362,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should discover interface via netavark format for Podman",
+  "getContainerBridgeInterface - should discover interface via netavark format for Podman",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -374,7 +374,7 @@ Deno.test(
       code: 0,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "podman",
@@ -385,7 +385,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should fallback to podman0 for Podman if bridge cannot be found",
+  "getContainerBridgeInterface - should fallback to podman0 for Podman if bridge cannot be found",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -418,7 +418,7 @@ Deno.test(
       code: 1,
     });
 
-    const bridge = await getDockerBridgeInterface(
+    const bridge = await getContainerBridgeInterface(
       mockSSH as unknown as SSHManager,
       "jiji",
       "podman",
@@ -429,7 +429,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should throw error if network inspect fails",
+  "getContainerBridgeInterface - should throw error if network inspect fails",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -443,7 +443,7 @@ Deno.test(
 
     await assertRejects(
       async () => {
-        await getDockerBridgeInterface(
+        await getContainerBridgeInterface(
           mockSSH as unknown as SSHManager,
           "nonexistent",
           "docker",
@@ -456,7 +456,7 @@ Deno.test(
 );
 
 Deno.test(
-  "getDockerBridgeInterface - should throw error if gateway IP is empty",
+  "getContainerBridgeInterface - should throw error if gateway IP is empty",
   async () => {
     const mockSSH = new MockSSHManager("test-server");
 
@@ -476,7 +476,7 @@ Deno.test(
 
     await assertRejects(
       async () => {
-        await getDockerBridgeInterface(
+        await getContainerBridgeInterface(
           mockSSH as unknown as SSHManager,
           "jiji",
           "docker",

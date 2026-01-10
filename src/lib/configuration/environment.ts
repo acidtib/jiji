@@ -260,13 +260,8 @@ export class EnvironmentConfiguration extends BaseConfiguration
     envVars: Record<string, string> = {},
     allowHostEnv: boolean = false,
   ): boolean {
-    if (envVars[name] !== undefined) {
-      return true;
-    }
-    if (allowHostEnv && Deno.env.get(name) !== undefined) {
-      return true;
-    }
-    return false;
+    return envVars[name] !== undefined ||
+      (allowHostEnv && Deno.env.get(name) !== undefined);
   }
 
   /**

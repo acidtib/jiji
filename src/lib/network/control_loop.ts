@@ -593,8 +593,6 @@ export async function createControlLoopService(
   engine: "docker" | "podman",
   interfaceName: string = "jiji0",
 ): Promise<void> {
-  const _host = ssh.getHost();
-
   // Generate bash script
   const script = generateControlLoopScript(serverId, engine, interfaceName);
   const scriptPath = "/opt/jiji/bin/jiji-control-loop.sh";
