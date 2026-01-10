@@ -10,6 +10,16 @@ export const DEFAULT_CLUSTER_CIDR = "10.210.0.0/16";
 export const DEFAULT_SERVICE_DOMAIN = "jiji";
 
 /**
+ * Container engine versions
+ * These are the supported versions that jiji installs and tests against.
+ * Bump these after verifying compatibility with newer versions.
+ */
+export const DOCKER_VERSION = "28.2.0";
+export const DOCKER_MIN_VERSION = "28.2.0";
+export const PODMAN_VERSION = "4.9.3";
+export const PODMAN_MIN_VERSION = "4.9.3";
+
+/**
  * Container and deployment configuration
  */
 export const CONTAINER_START_MAX_ATTEMPTS = 10;

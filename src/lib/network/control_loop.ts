@@ -111,6 +111,16 @@ log_error_json() {
   log_json "error" "$1" "\${2:-}"
 }
 
+# Execute SQL via Corrosion HTTP API
+# Using HTTP API ensures subscription events are triggered for real-time DNS updates
+corrosion_exec() {
+  local sql="$1"
+  # Escape double quotes in SQL for JSON, then POST to Corrosion API
+  curl -sf -X POST -H "Content-Type: application/json" \\
+    -d "[\\"$(echo "$sql" | sed 's/"/\\\\"/g')\\"]" \\
+    http://127.0.0.1:9220/v1/transactions
+}
+
 # Parse handshake time from wg show output
 parse_handshake() {
   local handshake="$1"
@@ -148,7 +158,7 @@ update_heartbeat() {
   local now=$(date +%s)000  # milliseconds
   local sql="UPDATE servers SET last_seen = $now WHERE id = '$SERVER_ID';"
 
-  \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "$sql" 2>/dev/null || log_error "Failed to update heartbeat"
+  corrosion_exec "$sql" 2>/dev/null || log_error "Failed to update heartbeat"
 }
 
 # Reconcile WireGuard peers with Corrosion state
@@ -309,12 +319,7 @@ sync_container_health() {
 
     # Update database if status or failures changed
     if [ "\$new_status" != "\$current_status" ] || [ \$new_failures -ne \${consecutive_failures:-0} ]; then
-      \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "
-        UPDATE containers
-        SET health_status = '\$new_status',
-            last_health_check = \$now,
-            consecutive_failures = \$new_failures
-        WHERE id = '\$container_id';" 2>/dev/null || true
+      corrosion_exec "UPDATE containers SET health_status = '\$new_status', last_health_check = \$now, consecutive_failures = \$new_failures WHERE id = '\$container_id';" 2>/dev/null || true
 
       if [ "\$new_status" != "\$current_status" ]; then
         log_info "Container \$container_id health: \$current_status -> \$new_status"
@@ -324,10 +329,9 @@ sync_container_health() {
     fi
   done <<< "\$registered"
 
-  # Trigger DNS update if any status changes
+  # Log health changes (DNS updates happen automatically via Corrosion HTTP API subscriptions)
   if [ \$changes -gt 0 ]; then
-    log_info "Container health changed, triggering DNS update"
-    systemctl restart jiji-dns-update.service 2>/dev/null || true
+    log_info "Container health changed (\$changes updates via HTTP API)"
   fi
 }
 
@@ -358,7 +362,7 @@ garbage_collect_containers() {
     [ -z "$container_id" ] && continue
 
     log_info "Deleting stale container: $container_id (service: $service)"
-    \${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "DELETE FROM containers WHERE id = '$container_id';" 2>/dev/null || log_error "Failed to delete container $container_id"
+    corrosion_exec "DELETE FROM containers WHERE id = '$container_id';" 2>/dev/null || log_error "Failed to delete container $container_id"
     deleted=$((deleted + 1))
   done <<< "$stale_containers"
 
@@ -375,14 +379,14 @@ garbage_collect_containers() {
     [ -z "$server_id" ] && continue
 
     log_warn "Server $server_id appears offline, cleaning up its containers"
-    local count=$(\${CORROSION_DIR}/corrosion exec --config \${CORROSION_DIR}/config.toml "DELETE FROM containers WHERE server_id = '$server_id';" 2>/dev/null | grep -oP 'Rows affected: \\K[0-9]+' || echo "0")
+    # Parse rows_affected from JSON response: {"results":[{"rows_affected":N,...}],...}
+    local result=$(corrosion_exec "DELETE FROM containers WHERE server_id = '$server_id';" 2>/dev/null || echo "{}")
+    local count=$(echo "$result" | grep -oP '"rows_affected":\\K[0-9]+' || echo "0")
     deleted=$((deleted + count))
   done <<< "$offline_servers"
 
   if [ $deleted -gt 0 ]; then
-    log_info "Garbage collection complete: removed $deleted stale container record(s)"
-    # Trigger DNS update after cleanup
-    systemctl restart jiji-dns-update.service 2>/dev/null || true
+    log_info "Garbage collection complete: removed $deleted stale container record(s) (DNS updates via HTTP API subscriptions)"
   fi
 }
 
@@ -423,7 +427,7 @@ update_public_ip() {
     # Update endpoints in Corrosion (this is simplified - real implementation would merge with existing)
     local new_endpoint="$new_ip:51820"
     local endpoints_json="[\\"$new_endpoint\\"]"
-    $CORROSION_DIR/corrosion exec --config $CORROSION_DIR/config.toml "UPDATE servers SET endpoints = '$endpoints_json' WHERE id = '$SERVER_ID';" 2>/dev/null || log_error "Failed to update endpoints"
+    corrosion_exec "UPDATE servers SET endpoints = '$endpoints_json' WHERE id = '$SERVER_ID';" 2>/dev/null || log_error "Failed to update endpoints"
   fi
 }
 

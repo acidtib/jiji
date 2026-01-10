@@ -50,7 +50,12 @@ export async function getDnsServerForHost(
       return undefined;
     }
 
-    return server.wireguardIp;
+    // Calculate container gateway IP from server subnet
+    // Server subnet: 10.210.X.0/24 -> Container gateway: 10.210.(128+X).1
+    const serverIndex = parseInt(server.subnet.split(".")[2]);
+    const containerThirdOctet = 128 + serverIndex;
+    const baseNetwork = server.subnet.split(".").slice(0, 2).join(".");
+    return `${baseNetwork}.${containerThirdOctet}.1`;
   } catch (error) {
     log.debug(
       `Failed to get DNS server for ${hostname}: ${error}`,

@@ -55,6 +55,30 @@ import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
 
 const WIREGUARD_PORT = 51820;
+const WIREGUARD_INTERFACE = "jiji0";
+
+/**
+ * Build the network create command with appropriate options
+ * Docker 28.2.0+ is required (enforced in engine.ts), so we always use trusted_host_interfaces
+ */
+function buildNetworkCreateCmd(
+  engine: "docker" | "podman",
+  networkName: string,
+  containerSubnet: string,
+  containerGateway: string,
+): string {
+  if (engine === "podman") {
+    // Podman: --disable-dns prevents aardvark-dns from intercepting queries
+    // Containers will use daemon-level DNS from /etc/containers/containers.conf
+    return `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --disable-dns`;
+  }
+
+  // Docker 28.2.0+: use trusted_host_interfaces for explicit WireGuard routing
+  // This prevents routing issues with newer Docker versions
+  return `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} ` +
+    `--opt com.docker.network.bridge.name=jiji-br0 ` +
+    `--opt com.docker.network.bridge.trusted_host_interfaces="${WIREGUARD_INTERFACE}"`;
+}
 
 /**
  * Get network subnet and gateway from JSON inspection
@@ -535,7 +559,7 @@ export async function setupNetwork(
             );
           }
 
-          await enableWireGuardService(ssh);
+          await enableWireGuardService(ssh, "jiji0", config.builder.engine);
           log.say(
             `└── WireGuard mesh configured with ${peers.length} peer(s)`,
             2,
@@ -692,11 +716,12 @@ export async function setupNetwork(
               }
 
               // Recreate with correct configuration
-              // For podman: --disable-dns prevents aardvark-dns from intercepting queries
-              // Containers will use daemon-level DNS from /etc/containers/containers.conf
-              const createNetworkCmd = engine === "podman"
-                ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --disable-dns`
-                : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
+              const createNetworkCmd = buildNetworkCreateCmd(
+                engine,
+                networkName,
+                containerSubnet,
+                containerGateway,
+              );
 
               const networkResult = await ssh.executeCommand(createNetworkCmd);
               if (networkResult.code !== 0) {
@@ -717,12 +742,13 @@ export async function setupNetwork(
               );
             }
           } else {
-            // Create network for podman or docker
-            // For podman: --disable-dns prevents aardvark-dns from intercepting queries
-            // Containers will use daemon-level DNS from /etc/containers/containers.conf
-            const createNetworkCmd = engine === "podman"
-              ? `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --disable-dns`
-              : `${engine} network create ${networkName} --subnet=${containerSubnet} --gateway=${containerGateway} --opt com.docker.network.bridge.name=jiji-br0`;
+            // Create network
+            const createNetworkCmd = buildNetworkCreateCmd(
+              engine,
+              networkName,
+              containerSubnet,
+              containerGateway,
+            );
 
             const networkResult = await ssh.executeCommand(createNetworkCmd);
             if (networkResult.code !== 0) throw new Error(networkResult.stderr);
@@ -825,8 +851,16 @@ export async function setupNetwork(
         if (!server) return;
 
         try {
+          // Calculate container gateway IP for DNS to also listen on
+          // This allows containers to reach the DNS server directly
+          const serverIndex = parseInt(server.subnet.split(".")[2]);
+          const containerThirdOctet = 128 + serverIndex;
+          const baseNetwork = server.subnet.split(".").slice(0, 2).join(".");
+          const containerGateway = `${baseNetwork}.${containerThirdOctet}.1`;
+
+          // jiji-dns listens on both WireGuard IP and container gateway
           await createJijiDnsService(ssh, {
-            listenAddr: `${server.wireguardIp}:53`,
+            listenAddr: `${server.wireguardIp}:53,${containerGateway}:53`,
             serviceDomain: config.network.serviceDomain,
             corrosionApiAddr: `http://127.0.0.1:${CORROSION_API_PORT}`,
           });
@@ -835,12 +869,12 @@ export async function setupNetwork(
 
           await configureContainerDNS(
             ssh,
-            server.wireguardIp,
+            containerGateway,
             config.network.serviceDomain,
             config.builder.engine,
           );
           log.say(
-            `└── ${config.builder.engine} configured: DNS=${server.wireguardIp}, search=${config.network.serviceDomain}`,
+            `└── ${config.builder.engine} configured: DNS=${containerGateway}, search=${config.network.serviceDomain}`,
             2,
           );
         } catch (error) {

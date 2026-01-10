@@ -20,10 +20,10 @@ Deno.test("ContainerRunBuilder - with network", () => {
 
 Deno.test("ContainerRunBuilder - with DNS configuration", () => {
   const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
-    .dns("10.210.0.1", "jiji");
+    .dns("10.210.128.1", "jiji");
   const command = builder.build();
 
-  assertStringIncludes(command, "--dns 10.210.0.1");
+  assertStringIncludes(command, "--dns 10.210.128.1");
   assertStringIncludes(command, "--dns-search jiji");
   assertStringIncludes(command, "--dns-option ndots:1");
 });
@@ -168,7 +168,7 @@ Deno.test("ContainerRunBuilder - with detached mode", () => {
 Deno.test("ContainerRunBuilder - complete command with all options", () => {
   const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest")
     .network("jiji")
-    .dns("10.210.0.1", "jiji")
+    .dns("10.210.128.1", "jiji")
     .ports(["80:80"])
     .volumes("-v /host:/container")
     .environment([
@@ -184,7 +184,7 @@ Deno.test("ContainerRunBuilder - complete command with all options", () => {
   assertStringIncludes(command, "podman run");
   assertStringIncludes(command, "--name test-app");
   assertStringIncludes(command, "--network jiji");
-  assertStringIncludes(command, "--dns 10.210.0.1");
+  assertStringIncludes(command, "--dns 10.210.128.1");
   assertStringIncludes(command, "-p 80:80");
   assertStringIncludes(command, "-v /host:/container");
   assertStringIncludes(command, "-e NODE_ENV=production");
