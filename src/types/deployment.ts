@@ -62,6 +62,14 @@ export interface DeploymentOptions {
    * Whether this service has multiple servers (determines if instance ID should be set)
    */
   hasMultipleServers?: boolean;
+  /**
+   * Pre-loaded environment variables from .env file
+   */
+  envVars?: Record<string, string>;
+  /**
+   * Whether to allow host environment fallback for secrets
+   */
+  allowHostEnv?: boolean;
 }
 
 /**
@@ -140,6 +148,10 @@ export interface DeploymentMetrics {
 export interface OrchestrationOptions {
   version?: string;
   allSshManagers?: SSHManager[];
+  /** Pre-loaded environment variables from .env file */
+  envVars?: Record<string, string>;
+  /** Whether to allow host environment fallback for secrets */
+  allowHostEnv?: boolean;
 }
 
 /**

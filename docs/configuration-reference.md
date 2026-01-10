@@ -57,7 +57,8 @@ servers:
 services:
   web:
     image: nginx:latest
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "80"
 ```
@@ -169,7 +170,7 @@ builder:
     type: remote
     server: ghcr.io # Registry server URL
     username: myuser
-    password: "${GITHUB_TOKEN}" # Environment variable substitution
+    password: GITHUB_TOKEN
 ```
 
 ### Supported Registries
@@ -182,7 +183,7 @@ builder:
     type: remote
     server: ghcr.io
     username: your-github-username
-    password: "${GITHUB_TOKEN}"
+    password: GITHUB_TOKEN
 ```
 
 - Auto namespace: `username/project-name`
@@ -196,7 +197,7 @@ builder:
     type: remote
     server: docker.io
     username: your-dockerhub-username
-    password: "${DOCKER_PASSWORD}"
+    password: DOCKER_PASSWORD
 ```
 
 - Auto namespace: `username`
@@ -210,33 +211,25 @@ builder:
     type: remote
     server: registry.example.com:5000
     username: myuser
-    password: "${REGISTRY_PASSWORD}"
+    password: REGISTRY_PASSWORD
 ```
 
 - No auto namespace
 - Result: `registry.example.com:5000/project-service:version`
 
-### Environment Variable Substitution
+### Registry Password
 
-Registry passwords support environment variable substitution for security:
+Registry passwords can reference a secret name (ALL_CAPS pattern):
 
 ```yaml
 builder:
   registry:
-    password: "${GITHUB_TOKEN}" # Substituted at runtime
+    password: GITHUB_TOKEN
 ```
 
-Common environment variables:
-
-- `${GITHUB_TOKEN}` - GitHub Personal Access Token
-- `${DOCKER_PASSWORD}` - Docker Hub password or token
-- `${REGISTRY_PASSWORD}` - Generic registry password
-
-**Best practices:**
-
-- Never commit passwords to configuration files
-- Set environment variables before deployment
-- Use secrets management in CI/CD (e.g., GitHub Actions secrets)
+When the password is an ALL_CAPS name, it will be resolved from the secrets
+system (see [Environment Configuration](#environment-configuration) for details
+on how secrets work).
 
 ## SSH Configuration
 
@@ -444,9 +437,12 @@ servers:
 
 services:
   api:
-    hosts: [server1, server2]
+    hosts:
+      - server1
+      - server2
   database:
-    hosts: [server3]
+    hosts:
+      - server3
 ```
 
 Containers can communicate via DNS (format: `{project}-{service}.jiji`):
@@ -499,7 +495,9 @@ services:
     image: nginx:latest
 
     # Target servers (required)
-    hosts: [server1, server2]
+    hosts:
+      - server1
+      - server2
 
     # Port mappings (optional)
     ports:
@@ -525,7 +523,8 @@ services:
         - NODE_ENV=production
         - VERSION=1.2.3
 
-    hosts: [server1]
+    hosts:
+      - server1
 ```
 
 **Note:** Use either `image` or `build`, not both.
@@ -788,7 +787,9 @@ services:
         - BUILD_ENV=production
 
     # Target servers
-    hosts: [server1, server2]
+    hosts:
+      - server1
+      - server2
 
     # Port mappings
     ports:
@@ -876,7 +877,8 @@ services:
   web:
     build:
       context: .
-    hosts: [local]
+    hosts:
+      - local
     ports:
       - "3000"
 ```
@@ -894,7 +896,7 @@ builder:
     type: remote
     server: ghcr.io
     username: myorg
-    password: "${GITHUB_TOKEN}"
+    password: GITHUB_TOKEN
 
 ssh:
   user: deploy
@@ -927,7 +929,9 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile.production
-    hosts: [web1, web2]
+    hosts:
+      - web1
+      - web2
     ports:
       - "3000"
     environment:
@@ -946,7 +950,9 @@ services:
   api:
     build:
       context: ./api
-    hosts: [api1, api2]
+    hosts:
+      - api1
+      - api2
     ports:
       - "4000"
     environment:
@@ -964,12 +970,13 @@ services:
 
   database:
     image: postgres:15
-    hosts: [db1]
+    hosts:
+      - db1
     volumes:
       - "/data/postgres:/var/lib/postgresql/data"
     environment:
       clear:
-        POSTGRES_PASSWORD: "${DB_PASSWORD}"
+        POSTGRES_PASSWORD: DB_PASSWORD
 ```
 
 ### Staging with Remote Builder
@@ -985,7 +992,7 @@ builder:
     type: remote
     server: docker.io
     username: myuser
-    password: "${DOCKER_PASSWORD}"
+    password: DOCKER_PASSWORD
 
 ssh:
   user: deploy
@@ -1002,7 +1009,8 @@ services:
   web:
     build:
       context: .
-    hosts: [staging]
+    hosts:
+      - staging
     ports:
       - "3000"
     proxy:

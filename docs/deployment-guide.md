@@ -71,7 +71,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "3000"
     proxy:
@@ -121,7 +122,7 @@ builder:
     type: remote
     server: ghcr.io
     username: your-github-username
-    password: "${GITHUB_TOKEN}"
+    password: GITHUB_TOKEN
 ```
 
 ```bash
@@ -318,8 +319,7 @@ builder:
     type: remote
     server: ghcr.io
     username: myorg
-    password: "${GITHUB_TOKEN}"
-
+    password: GITHUB_TOKEN
 ssh:
   user: deploy
   config: true
@@ -334,7 +334,8 @@ services:
       context: .
       args:
         - BUILD_ENV=staging
-    hosts: [staging]
+    hosts:
+      - staging
     ports:
       - "3000"
     environment:
@@ -359,8 +360,7 @@ builder:
     type: remote
     server: ghcr.io
     username: myorg
-    password: "${GITHUB_TOKEN}"
-
+    password: GITHUB_TOKEN
 ssh:
   user: deploy
   private_keys:
@@ -379,7 +379,9 @@ services:
       context: .
       args:
         - BUILD_ENV=production
-    hosts: [web1, web2]
+    hosts:
+      - web1
+      - web2
     ports:
       - "3000"
     environment:

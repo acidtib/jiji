@@ -192,34 +192,53 @@ Deno.test("EnvironmentConfiguration - validation fails with empty secret", () =>
   );
 });
 
-Deno.test("EnvironmentConfiguration - resolveVariables with secrets", () => {
+Deno.test("EnvironmentConfiguration - resolveVariables with secrets from envVars", () => {
+  const env = new EnvironmentConfiguration({
+    clear: {
+      VAR1: "value1",
+      VAR2: "value2",
+    },
+    secrets: ["TEST_SECRET_1", "TEST_SECRET_2"],
+  });
+
+  // Pass secrets via envVars parameter (simulating .env file)
+  const envVars = {
+    TEST_SECRET_1: "secret_value_1",
+    TEST_SECRET_2: "secret_value_2",
+  };
+
+  const resolved = env.resolveVariables(envVars);
+
+  assertEquals(resolved.VAR1, "value1");
+  assertEquals(resolved.VAR2, "value2");
+  assertEquals(resolved.TEST_SECRET_1, "secret_value_1");
+  assertEquals(resolved.TEST_SECRET_2, "secret_value_2");
+  assertEquals(Object.keys(resolved).length, 4);
+});
+
+Deno.test("EnvironmentConfiguration - resolveVariables with host env fallback", () => {
   // Set environment variables for testing
-  Deno.env.set("TEST_SECRET_1", "secret_value_1");
-  Deno.env.set("TEST_SECRET_2", "secret_value_2");
+  Deno.env.set("TEST_HOST_SECRET", "host_secret_value");
 
   try {
     const env = new EnvironmentConfiguration({
       clear: {
         VAR1: "value1",
-        VAR2: "value2",
       },
-      secrets: ["TEST_SECRET_1", "TEST_SECRET_2"],
+      secrets: ["TEST_HOST_SECRET"],
     });
 
-    const resolved = env.resolveVariables();
+    // Use allowHostEnv=true to read from host environment
+    const resolved = env.resolveVariables({}, true);
 
     assertEquals(resolved.VAR1, "value1");
-    assertEquals(resolved.VAR2, "value2");
-    assertEquals(resolved.TEST_SECRET_1, "secret_value_1");
-    assertEquals(resolved.TEST_SECRET_2, "secret_value_2");
-    assertEquals(Object.keys(resolved).length, 4);
+    assertEquals(resolved.TEST_HOST_SECRET, "host_secret_value");
   } finally {
-    Deno.env.delete("TEST_SECRET_1");
-    Deno.env.delete("TEST_SECRET_2");
+    Deno.env.delete("TEST_HOST_SECRET");
   }
 });
 
-Deno.test("EnvironmentConfiguration - resolveVariables skips undefined secrets", () => {
+Deno.test("EnvironmentConfiguration - resolveVariables throws on missing secrets", () => {
   const env = new EnvironmentConfiguration({
     clear: {
       VAR1: "value1",
@@ -227,9 +246,44 @@ Deno.test("EnvironmentConfiguration - resolveVariables skips undefined secrets",
     secrets: ["NONEXISTENT_SECRET"],
   });
 
-  const resolved = env.resolveVariables();
+  // Should throw when secret cannot be resolved
+  assertThrows(
+    () => env.resolveVariables(),
+    ConfigurationError,
+    "Missing required secrets: NONEXISTENT_SECRET",
+  );
+});
 
-  assertEquals(resolved.VAR1, "value1");
-  assertEquals(resolved.NONEXISTENT_SECRET, undefined);
-  assertEquals(Object.keys(resolved).length, 1);
+Deno.test("EnvironmentConfiguration - getMissingSecrets returns missing secrets", () => {
+  const env = new EnvironmentConfiguration({
+    clear: {
+      VAR1: "value1",
+    },
+    secrets: ["MISSING_SECRET_1", "MISSING_SECRET_2"],
+  });
+
+  const missing = env.getMissingSecrets({});
+
+  assertEquals(missing.length, 2);
+  assertEquals(missing.includes("MISSING_SECRET_1"), true);
+  assertEquals(missing.includes("MISSING_SECRET_2"), true);
+});
+
+Deno.test("EnvironmentConfiguration - isEnvVarReference detection", () => {
+  const env = new EnvironmentConfiguration({});
+
+  // Should match ALL_CAPS patterns
+  assertEquals(env.isEnvVarReference("DATABASE_URL"), true);
+  assertEquals(env.isEnvVarReference("API_KEY"), true);
+  assertEquals(env.isEnvVarReference("TEST123"), true);
+
+  // Should not match lowercase or mixed case
+  assertEquals(env.isEnvVarReference("database_url"), false);
+  assertEquals(env.isEnvVarReference("Database_Url"), false);
+  assertEquals(env.isEnvVarReference("myvalue"), false);
+  assertEquals(env.isEnvVarReference("production"), false);
+
+  // Should not match values with special characters
+  assertEquals(env.isEnvVarReference("https://example.com"), false);
+  assertEquals(env.isEnvVarReference("user@host"), false);
 });

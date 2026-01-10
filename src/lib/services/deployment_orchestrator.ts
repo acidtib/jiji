@@ -221,6 +221,8 @@ export class DeploymentOrchestrator {
       {
         version: options.version,
         allSshManagers: options.allSshManagers,
+        envVars: options.envVars,
+        allowHostEnv: options.allowHostEnv,
       },
     );
 

@@ -14,6 +14,7 @@ import { filterServicesByPatterns } from "../utils/config.ts";
 import { BuildService } from "../lib/services/build_service.ts";
 import { ImagePruneService } from "../lib/services/image_prune_service.ts";
 import { DeploymentOrchestrator } from "../lib/services/deployment_orchestrator.ts";
+import { EnvLoader } from "../utils/env_loader.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -314,6 +315,16 @@ export const deployCommand = new Command()
         );
       }
 
+      // Load environment variables from .env file
+      const projectRoot = config.getProjectRoot();
+      const allowHostEnv = globalOptions.hostEnv ?? false;
+      const envResult = await EnvLoader.loadEnvFile({
+        envPath: config.secretsPath,
+        environment: config.environmentName,
+        projectRoot,
+        allowHostEnv,
+      });
+
       // Use DeploymentOrchestrator for complex deployment workflow
       const orchestrator = new DeploymentOrchestrator(config, sshManagers);
 
@@ -323,6 +334,8 @@ export const deployCommand = new Command()
         {
           version: globalOptions.version,
           allSshManagers: sshManagers,
+          envVars: envResult.variables,
+          allowHostEnv,
         },
       );
 

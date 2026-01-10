@@ -10,7 +10,8 @@ services:
   # When you specify just a port number, it maps to the same port on the host
   web:
     image: nginx:latest
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "8000" # Maps to random:8000
 
@@ -18,7 +19,8 @@ services:
   # Specify both host and container ports explicitly
   api:
     image: node:18-alpine
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "8080:3000" # Host port 8080 -> Container port 3000
       - "8443:3443" # Host port 8443 -> Container port 3443
@@ -27,7 +29,8 @@ services:
   # Complete Docker-style port mapping with all options
   database:
     image: postgres:15
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "192.168.1.87:5432:5432/tcp" # Bind to specific IP
       - "127.0.0.1:3306:3306/tcp" # Localhost only
@@ -35,7 +38,8 @@ services:
   # Example 4: Container ports with protocol specification
   cache:
     image: redis:7-alpine
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "6379/tcp" # TCP protocol (default)
       - "6380/udp" # UDP protocol
@@ -44,7 +48,8 @@ services:
   # You can use different formats in the same service
   mixed:
     image: my-app:latest
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "8000" # Container port only
       - "8080:3000" # Host:container mapping
@@ -55,7 +60,8 @@ services:
   # Your original failing configuration is now supported
   original_api:
     image: my-api:latest
-    hosts: [server1]
+    hosts:
+      - server1
     ports:
       - "8000" # This now works! (was failing before)
 

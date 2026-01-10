@@ -15,7 +15,7 @@ builder:
     type: remote
     server: ghcr.io
     username: your-github-username
-    password: "${GITHUB_TOKEN}"
+    password: GITHUB_TOKEN
 ```
 
 Result: Images are pushed to
@@ -32,7 +32,7 @@ builder:
     type: remote
     server: docker.io
     username: your-dockerhub-username
-    password: "${DOCKER_PASSWORD}"
+    password: DOCKER_PASSWORD
 ```
 
 Result: Images are pushed to
@@ -82,7 +82,7 @@ builder:
     type: remote # or "local"
     server: ghcr.io
     username: your-github-username
-    password: "${GITHUB_TOKEN}"
+    password: GITHUB_TOKEN
 ```
 
 ### Registry Commands
@@ -122,45 +122,30 @@ happens.
 - **Configuration as code**: Registry settings versioned with your project
 - **Environment specific configs**: Use different registries per environment
   (staging, production)
-- **Secure secrets**: Environment variable substitution keeps credentials out of
-  version control
+- **Secure secrets**: Passwords can reference secret names for secure handling
 - **Consistent deployments**: Same registry configuration across all team
   members
 
-## Environment Variable Substitution
+## Registry Password
 
-Registry passwords support environment variable substitution for security:
-
-### Syntax
-
-Use `${VARIABLE_NAME}` in your configuration:
+Registry passwords can use a secret name:
 
 ```yaml
 builder:
   registry:
     server: ghcr.io
     username: myuser
-    password: "${GITHUB_TOKEN}" # Substituted at runtime
+    password: GITHUB_TOKEN
 ```
 
-### Supported Variables
-
-Common environment variables:
-
-- `${GITHUB_TOKEN}` - GitHub Personal Access Token
-- `${DOCKER_PASSWORD}` - Docker Hub password or token
-- `${REGISTRY_PASSWORD}` - Generic registry password
-- Any custom environment variable
+When the password is an ALL_CAPS name like `GITHUB_TOKEN`, it will be resolved
+from the secrets system. See the Environment Configuration documentation for
+details on how secrets and `.env` files work.
 
 ### Best Practices
 
-1. **Never commit passwords**: Always use environment variables for sensitive
-   data
-2. **Set before deployment**:
-   ```bash
-   export GITHUB_TOKEN=ghp_xxxxxxxxxxxxx
-   jiji deploy
-   ```
+1. **Never commit `.env` files**: Add `.env*` to your `.gitignore`
+2. **Use environment-specific files**: `.env.staging`, `.env.production`
 3. **CI/CD integration**: Use secrets management:
    ```yaml
    # GitHub Actions example
