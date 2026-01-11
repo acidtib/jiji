@@ -40,7 +40,10 @@ export const teardownCommand = new Command()
 
     try {
       // Setup command context (load config and establish SSH connections)
-      ctx = await setupCommandContext(globalOptions);
+      // Use all defined servers for teardown, not just those with services
+      ctx = await setupCommandContext(globalOptions, {
+        useAllDefinedServers: true,
+      });
       const { config, sshManagers, targetHosts } = ctx;
 
       // Display standardized command header
