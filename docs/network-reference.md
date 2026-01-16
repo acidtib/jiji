@@ -159,8 +159,10 @@ In `.jiji/deploy.yml`:
 network:
   enabled: true
   cluster_cidr: "10.210.0.0/16" # Optional, this is default
-  service_domain: "jiji" # Optional, this is default
 ```
+
+**Note:** The service domain is always `jiji` and cannot be changed. All
+services are accessible via `{project}-{service}.jiji` DNS names.
 
 ## Limits
 

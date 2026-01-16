@@ -426,6 +426,51 @@ export GITHUB_TOKEN=ghp_production_token
 export DATABASE_PASSWORD=production_db_pass
 ```
 
+### Debugging Secrets
+
+Use `jiji secrets print` to verify secrets are correctly configured before
+deployment:
+
+```bash
+# Show which secrets are configured (values hidden)
+jiji secrets print
+
+# Show actual secret values (use with caution)
+jiji secrets print --show-values
+
+# Check secrets for specific services
+jiji secrets print --services api,worker
+
+# With environment flag
+jiji --environment production secrets print
+```
+
+The command shows:
+
+- Which secrets are `[SET]` vs `[MISSING]`
+- Source of secrets (`.env` file location)
+- Registry password status
+- Warnings about missing values
+
+**Using host environment fallback:**
+
+If secrets are set as environment variables on your machine (common in CI/CD),
+use the `--host-env` flag:
+
+```bash
+# Check secrets using host environment variables as fallback
+jiji --host-env secrets print
+
+# Deploy with host env fallback
+jiji --host-env deploy
+```
+
+This is useful when:
+
+- Running in CI/CD where secrets are injected as environment variables
+- Testing locally without a `.env` file
+- Debugging secret resolution issues
+
 ## CI/CD Integration
 
 Integrate Jiji with your CI/CD pipeline for automated deployments.
