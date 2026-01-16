@@ -157,6 +157,17 @@ export class DeploymentOrchestrator {
         result.warnings.push(...healthCheckResult.warnings);
       }
 
+      // Step 4: Clean up old containers for services without proxy
+      // Services without proxy have no health checks, so cleanup happens immediately
+      const servicesWithoutProxy = services.filter((s) => !s.proxy?.enabled);
+      if (servicesWithoutProxy.length > 0) {
+        await this.cleanupOldContainersForNonProxyServices(
+          servicesWithoutProxy,
+          result.deploymentResults,
+          result.warnings,
+        );
+      }
+
       // Determine overall success
       result.success = result.errors.length === 0;
 
@@ -435,6 +446,56 @@ export class DeploymentOrchestrator {
         false,
         rollbackErrorMessage,
       );
+    }
+  }
+
+  /**
+   * Clean up old containers for services without proxy
+   *
+   * Services without proxy have no health checks to wait for, so old containers
+   * can be cleaned up immediately after successful deployment.
+   */
+  private async cleanupOldContainersForNonProxyServices(
+    servicesWithoutProxy: ServiceConfiguration[],
+    deploymentResults: DeploymentResult[],
+    warnings: string[],
+  ): Promise<void> {
+    const serviceNames = new Set(servicesWithoutProxy.map((s) => s.name));
+
+    for (const result of deploymentResults) {
+      if (!result.success || !result.oldContainerName) {
+        continue;
+      }
+
+      if (!serviceNames.has(result.service)) {
+        continue;
+      }
+
+      const hostSsh = this.sshManagers.find((ssh) =>
+        ssh.getHost() === result.host
+      );
+      if (!hostSsh) {
+        warnings.push(
+          `Could not find SSH connection for ${result.service}@${result.host} cleanup`,
+        );
+        continue;
+      }
+
+      try {
+        await this.deploymentService.cleanupOldContainer(
+          result.oldContainerName,
+          result.host,
+          hostSsh,
+          this.sshManagers,
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error
+          ? error.message
+          : String(error);
+        warnings.push(
+          `Failed to clean up old container for ${result.service}@${result.host}: ${errorMessage}`,
+        );
+      }
     }
   }
 

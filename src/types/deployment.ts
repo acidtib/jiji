@@ -59,10 +59,6 @@ export interface DeploymentOptions {
     arch?: string;
   };
   /**
-   * Whether this service has multiple servers (determines if instance ID should be set)
-   */
-  hasMultipleServers?: boolean;
-  /**
    * Pre-loaded environment variables from .env file
    */
   envVars?: Record<string, string>;
