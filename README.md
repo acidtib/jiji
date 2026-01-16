@@ -70,6 +70,7 @@ jiji deploy --build
 | `jiji network gc`       | Garbage collect stale records             |
 | `jiji audit`            | Show deployment audit trail               |
 | `jiji lock`             | Manage deployment locks                   |
+| `jiji secrets print`    | Print resolved secrets for debugging      |
 
 ### Global Options
 
@@ -79,6 +80,7 @@ jiji deploy --build
 -e, --environment      # Use jiji.<env>.yml config
 -H, --hosts            # Target specific hosts (supports wildcards)
 -S, --services         # Target specific services (supports wildcards)
+--host-env             # Fallback to host env vars when secrets not in .env
 ```
 
 ## Configuration
