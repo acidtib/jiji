@@ -206,7 +206,6 @@ export class ContainerDeploymentService {
             ssh,
             options.allSshManagers,
             options.serverConfig,
-            options.hasMultipleServers,
           );
         }
 
@@ -334,24 +333,19 @@ export class ContainerDeploymentService {
       }
 
       await log.hostBlock(host, async () => {
-        // Pass server config and deployment options
-        // Instance ID will use the server name for readable DNS hostnames
-        const deployOptions = {
-          ...options,
-          allSshManagers: sshManagers,
-          serverConfig: {
-            name: server.name,
-            host: server.host,
-            arch: server.arch,
-          },
-          hasMultipleServers: resolvedServers.length > 1,
-        };
-
         const result = await this.deployService(
           service,
           host,
           hostSsh,
-          deployOptions,
+          {
+            ...options,
+            allSshManagers: sshManagers,
+            serverConfig: {
+              name: server.name,
+              host: server.host,
+              arch: server.arch,
+            },
+          },
         );
         results.push(result);
       }, { indent: 1 });
@@ -829,7 +823,7 @@ export class ContainerDeploymentService {
   }
 
   /**
-   * Register container in network
+   * Register container in network for DNS resolution
    */
   private async registerInNetwork(
     service: ServiceConfiguration,
@@ -838,7 +832,6 @@ export class ContainerDeploymentService {
     ssh: SSHManager,
     allSshManagers?: SSHManager[],
     serverConfig?: { name: string; host: string; arch?: string },
-    hasMultipleServers?: boolean,
   ): Promise<string | undefined> {
     try {
       // Load topology from Corrosion via SSH
@@ -858,8 +851,8 @@ export class ContainerDeploymentService {
       }
 
       // Use server name as instance ID for readable DNS hostnames
-      // Only set instance ID if service has multiple servers
-      const instanceId = hasMultipleServers ? serverConfig?.name : undefined;
+      // Always set so containers can be addressed by server (e.g., casa-api-caja03.jiji)
+      const instanceId = serverConfig?.name;
 
       log.say(`├── Registering ${service.name} in network...`, 2);
 
