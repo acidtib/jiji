@@ -238,6 +238,16 @@ Deno.test("MountManager - buildVolumeArgs does not prefix host path mounts", () 
   assertEquals(args[1], "-v /var/log:/app/log:ro");
 });
 
+Deno.test("MountManager - buildVolumeArgs does not prefix relative path mounts", () => {
+  const volumes = ["./data:/var/data", "../shared:/opt/shared:ro"];
+
+  const args = buildVolumeArgs(volumes, "web");
+
+  assertEquals(args.length, 2);
+  assertEquals(args[0], "-v ./data:/var/data");
+  assertEquals(args[1], "-v ../shared:/opt/shared:ro");
+});
+
 Deno.test("MountManager - buildVolumeArgs handles mixed volumes", () => {
   const volumes = [
     "named_vol:/var/data",

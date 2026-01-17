@@ -607,6 +607,12 @@ volumes:
   - "./data:/opt/extra_data:ro" # Read only
 ```
 
+> **Note:** Named volumes (those not starting with `/` or `./`) are automatically
+> prefixed with the service name to prevent conflicts between services. For
+> example, if a service named `web` defines `web_storage:/opt/uploads`, the
+> actual volume created will be `web-web_storage`. Host path mounts (starting
+> with `/` or `./`) are not modified.
+
 **File mounts:**
 
 ```yaml

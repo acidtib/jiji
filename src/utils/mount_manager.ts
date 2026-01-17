@@ -195,8 +195,8 @@ export function buildVolumeArgs(
     const source = volume.substring(0, colonIndex);
     const targetAndOptions = volume.substring(colonIndex);
 
-    // Host path mounts start with / - pass through unchanged
-    if (source.startsWith("/")) {
+    // Host path mounts (absolute or relative) - pass through unchanged
+    if (source.startsWith("/") || source.startsWith(".")) {
       return `-v ${volume}`;
     }
 
