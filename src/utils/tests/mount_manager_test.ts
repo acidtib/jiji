@@ -3,6 +3,7 @@ import {
   buildAllMountArgs,
   buildDirectoryMountArgs,
   buildFileMountArgs,
+  buildVolumeArgs,
   parseMountConfig,
 } from "../mount_manager.ts";
 
@@ -143,6 +144,28 @@ Deno.test("MountManager - buildAllMountArgs with empty arrays", () => {
   assertEquals(args, "");
 });
 
+Deno.test("MountManager - buildAllMountArgs prefixes named volumes", () => {
+  const files = ["config.yml:/app/config.yml:ro"];
+  const directories = ["data:/var/data:z"];
+  const volumes = [
+    "garage_meta:/var/lib/garage/meta",
+    "/host/path:/container/path",
+  ];
+
+  const args = buildAllMountArgs(
+    files,
+    directories,
+    volumes,
+    "myproject",
+    "garage3",
+  );
+
+  assertEquals(
+    args,
+    "-v .jiji/myproject/files/garage3/config.yml:/app/config.yml:ro -v .jiji/myproject/directories/garage3/data:/var/data:z -v garage3-garage_meta:/var/lib/garage/meta -v /host/path:/container/path",
+  );
+});
+
 Deno.test("MountManager - buildFileMountArgs without options", () => {
   const files = ["config.yml:/app/config.yml"];
 
@@ -184,4 +207,64 @@ Deno.test("MountManager - parse hash format minimal", () => {
   assertEquals(result.mode, undefined);
   assertEquals(result.owner, undefined);
   assertEquals(result.options, undefined);
+});
+
+Deno.test("MountManager - buildVolumeArgs prefixes named volumes with service name", () => {
+  const volumes = ["garage_meta:/var/lib/garage/meta"];
+
+  const args = buildVolumeArgs(volumes, "garage3");
+
+  assertEquals(args.length, 1);
+  assertEquals(args[0], "-v garage3-garage_meta:/var/lib/garage/meta");
+});
+
+Deno.test("MountManager - buildVolumeArgs preserves options on named volumes", () => {
+  const volumes = ["data:/var/data:ro", "cache:/var/cache:z"];
+
+  const args = buildVolumeArgs(volumes, "web");
+
+  assertEquals(args.length, 2);
+  assertEquals(args[0], "-v web-data:/var/data:ro");
+  assertEquals(args[1], "-v web-cache:/var/cache:z");
+});
+
+Deno.test("MountManager - buildVolumeArgs does not prefix host path mounts", () => {
+  const volumes = ["/host/path:/container/path", "/var/log:/app/log:ro"];
+
+  const args = buildVolumeArgs(volumes, "api");
+
+  assertEquals(args.length, 2);
+  assertEquals(args[0], "-v /host/path:/container/path");
+  assertEquals(args[1], "-v /var/log:/app/log:ro");
+});
+
+Deno.test("MountManager - buildVolumeArgs does not prefix relative path mounts", () => {
+  const volumes = ["./data:/var/data", "../shared:/opt/shared:ro"];
+
+  const args = buildVolumeArgs(volumes, "web");
+
+  assertEquals(args.length, 2);
+  assertEquals(args[0], "-v ./data:/var/data");
+  assertEquals(args[1], "-v ../shared:/opt/shared:ro");
+});
+
+Deno.test("MountManager - buildVolumeArgs handles mixed volumes", () => {
+  const volumes = [
+    "named_vol:/var/data",
+    "/host/path:/container/path",
+    "another_vol:/var/cache:ro",
+  ];
+
+  const args = buildVolumeArgs(volumes, "myservice");
+
+  assertEquals(args.length, 3);
+  assertEquals(args[0], "-v myservice-named_vol:/var/data");
+  assertEquals(args[1], "-v /host/path:/container/path");
+  assertEquals(args[2], "-v myservice-another_vol:/var/cache:ro");
+});
+
+Deno.test("MountManager - buildVolumeArgs handles empty array", () => {
+  const args = buildVolumeArgs([], "web");
+
+  assertEquals(args.length, 0);
 });

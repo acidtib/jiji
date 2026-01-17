@@ -176,6 +176,36 @@ export function buildDirectoryMountArgs(
 }
 
 /**
+ * Build volume mount arguments with service name prefix for named volumes.
+ * Named volumes are prefixed with service name to prevent conflicts between services.
+ * Host path mounts (starting with /) are passed through unchanged.
+ */
+export function buildVolumeArgs(
+  volumes: string[],
+  serviceName: string,
+): string[] {
+  return volumes.map((volume) => {
+    const colonIndex = volume.indexOf(":");
+
+    // Invalid format (no colon) - pass through as-is
+    if (colonIndex === -1) {
+      return `-v ${volume}`;
+    }
+
+    const source = volume.substring(0, colonIndex);
+    const targetAndOptions = volume.substring(colonIndex);
+
+    // Host path mounts (absolute or relative) - pass through unchanged
+    if (source.startsWith("/") || source.startsWith(".")) {
+      return `-v ${volume}`;
+    }
+
+    // Named volume - prefix with service name to prevent conflicts
+    return `-v ${serviceName}-${source}${targetAndOptions}`;
+  });
+}
+
+/**
  * Build all mount arguments for a service
  */
 export function buildAllMountArgs(
@@ -192,7 +222,7 @@ export function buildAllMountArgs(
     "directories",
     serviceName,
   );
-  const volumeArgs = volumes.map((v) => `-v ${v}`);
+  const volumeArgs = buildVolumeArgs(volumes, serviceName);
 
   return [...fileArgs, ...directoryArgs, ...volumeArgs].join(" ");
 }
