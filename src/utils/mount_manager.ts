@@ -185,23 +185,23 @@ export function buildVolumeArgs(
   serviceName: string,
 ): string[] {
   return volumes.map((volume) => {
-    // Parse volume format: "name:path" or "name:path:options"
     const colonIndex = volume.indexOf(":");
+
+    // Invalid format (no colon) - pass through as-is
     if (colonIndex === -1) {
-      // Invalid format, pass through as-is
       return `-v ${volume}`;
     }
 
-    const volumeName = volume.substring(0, colonIndex);
-    const rest = volume.substring(colonIndex); // includes the leading colon
+    const source = volume.substring(0, colonIndex);
+    const targetAndOptions = volume.substring(colonIndex);
 
-    // If it starts with /, it's a host path mount - don't prefix
-    if (volumeName.startsWith("/")) {
+    // Host path mounts start with / - pass through unchanged
+    if (source.startsWith("/")) {
       return `-v ${volume}`;
     }
 
-    // Named volume - prefix with service name
-    return `-v ${serviceName}-${volumeName}${rest}`;
+    // Named volume - prefix with service name to prevent conflicts
+    return `-v ${serviceName}-${source}${targetAndOptions}`;
   });
 }
 
