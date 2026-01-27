@@ -156,24 +156,9 @@ export class EnvironmentConfiguration extends BaseConfiguration
     const resolved: Record<string, string> = {};
     const missingSecrets: string[] = [];
 
+    // Clear values are always literal - use them as-is
     for (const [key, value] of Object.entries(this.clear)) {
-      if (this.isEnvVarReference(value)) {
-        if (envVars[value] !== undefined) {
-          resolved[key] = envVars[value];
-        } else if (allowHostEnv) {
-          const hostValue = Deno.env.get(value);
-          if (hostValue !== undefined) {
-            resolved[key] = hostValue;
-          } else {
-            missingSecrets.push(value);
-          }
-        } else {
-          missingSecrets.push(value);
-        }
-      } else {
-        // Use literal value
-        resolved[key] = value;
-      }
+      resolved[key] = value;
     }
 
     // Process secrets - all must be resolved or throw error
@@ -228,16 +213,8 @@ export class EnvironmentConfiguration extends BaseConfiguration
   ): string[] {
     const missing: string[] = [];
 
-    for (const [_key, value] of Object.entries(this.clear)) {
-      if (this.isEnvVarReference(value)) {
-        if (envVars[value] === undefined) {
-          if (!allowHostEnv || Deno.env.get(value) === undefined) {
-            missing.push(value);
-          }
-        }
-      }
-    }
-
+    // Clear values are always literal, so they never have missing secrets
+    // Only check explicit secrets
     for (const secret of this.secrets) {
       if (envVars[secret] === undefined) {
         if (!allowHostEnv || Deno.env.get(secret) === undefined) {

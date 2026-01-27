@@ -69,15 +69,6 @@ export const printCommand = new Command()
       const globalEnv = config.environment;
       const globalSecrets = [...globalEnv.secrets];
 
-      // Also collect env var references from clear values
-      for (const [_key, value] of Object.entries(globalEnv.clear)) {
-        if (globalEnv.isEnvVarReference(value)) {
-          if (!globalSecrets.includes(value)) {
-            globalSecrets.push(value);
-          }
-        }
-      }
-
       if (globalSecrets.length > 0) {
         log.section("Global Secrets:");
         printSecretsList(
@@ -100,15 +91,6 @@ export const printCommand = new Command()
         const service = config.getService(serviceName);
         const serviceEnv = service.environment;
         const serviceSecrets = [...serviceEnv.secrets];
-
-        // Also collect env var references from service clear values
-        for (const [_key, value] of Object.entries(serviceEnv.clear)) {
-          if (serviceEnv.isEnvVarReference(value)) {
-            if (!serviceSecrets.includes(value)) {
-              serviceSecrets.push(value);
-            }
-          }
-        }
 
         if (serviceSecrets.length > 0) {
           console.log("");
@@ -219,8 +201,6 @@ function collectAllSecrets(
   config: Configuration,
   globalEnv: {
     secrets: string[];
-    clear: Record<string, string>;
-    isEnvVarReference: (v: string) => boolean;
   },
 ): string[] {
   const allSecrets = new Set<string>();
@@ -229,22 +209,12 @@ function collectAllSecrets(
   for (const secret of globalEnv.secrets) {
     allSecrets.add(secret);
   }
-  for (const value of Object.values(globalEnv.clear)) {
-    if (globalEnv.isEnvVarReference(value)) {
-      allSecrets.add(value);
-    }
-  }
 
   // Service secrets
   for (const serviceName of config.getServiceNames()) {
     const service = config.getService(serviceName);
     for (const secret of service.environment.secrets) {
       allSecrets.add(secret);
-    }
-    for (const value of Object.values(service.environment.clear)) {
-      if (service.environment.isEnvVarReference(value)) {
-        allSecrets.add(value);
-      }
     }
   }
 
