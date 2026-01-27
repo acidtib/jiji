@@ -287,3 +287,38 @@ Deno.test("EnvironmentConfiguration - isEnvVarReference detection", () => {
   assertEquals(env.isEnvVarReference("https://example.com"), false);
   assertEquals(env.isEnvVarReference("user@host"), false);
 });
+
+Deno.test("EnvironmentConfiguration - clear values are always literal (even ALL_CAPS)", () => {
+  // This tests the fix for the bug where ALL_CAPS values in clear section
+  // were incorrectly treated as env var references that needed to be resolved
+  const env = new EnvironmentConfiguration({
+    clear: {
+      UPDATE_STRATEGY: "PARALLEL",
+      REGION: "planet",
+      MODE: "DEBUG",
+    },
+  });
+
+  // Should use the literal value even though it matches the ALL_CAPS pattern
+  const resolved = env.resolveVariables({});
+
+  assertEquals(resolved.UPDATE_STRATEGY, "PARALLEL");
+  assertEquals(resolved.REGION, "planet");
+  assertEquals(resolved.MODE, "DEBUG");
+});
+
+Deno.test("EnvironmentConfiguration - getMissingSecrets ignores clear values", () => {
+  // Clear values should never contribute to missing secrets
+  // even if they match the ALL_CAPS pattern
+  const env = new EnvironmentConfiguration({
+    clear: {
+      UPDATE_STRATEGY: "PARALLEL",
+      MODE: "DEBUG",
+    },
+  });
+
+  const missing = env.getMissingSecrets({});
+
+  // Should be empty - clear values are literal, not references
+  assertEquals(missing.length, 0);
+});
