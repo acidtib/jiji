@@ -15,6 +15,9 @@ import type { GlobalOptions } from "../../types.ts";
 export const removeCommand = new Command()
   .description("Remove services from servers")
   .option("-y, --confirmed", "Skip confirmation prompt", { default: false })
+  .option("--volume", "Also remove named volumes associated with services", {
+    default: false,
+  })
   .action(async (options) => {
     const globalOptions = options as unknown as GlobalOptions;
     let ctx: Awaited<ReturnType<typeof setupCommandContext>> | undefined;
@@ -139,8 +142,9 @@ export const removeCommand = new Command()
             try {
               const containerName = service.getContainerName();
               const namedVolumes = service.getNamedVolumes();
-              const hasNamedVolumes = namedVolumes.length > 0;
-              const isLastItem = !hasNamedVolumes; // If no named volumes, this is the last item
+              const shouldRemoveVolumes = options.volume as boolean &&
+                namedVolumes.length > 0;
+              const isLastItem = !shouldRemoveVolumes; // If not removing volumes, container is the last item
 
               // Remove service from proxy if proxy is configured
               if (service.proxy?.enabled) {
@@ -211,17 +215,21 @@ export const removeCommand = new Command()
                 }
               }
 
-              // Remove named volumes
-              for (let i = 0; i < namedVolumes.length; i++) {
-                const volumeName = namedVolumes[i];
-                const prefix = getTreePrefix(i, namedVolumes.length);
+              // Remove named volumes (only if --volume flag is passed)
+              if (shouldRemoveVolumes) {
+                for (let i = 0; i < namedVolumes.length; i++) {
+                  const volumeName = namedVolumes[i];
+                  // Volume names are prefixed with service name during deployment
+                  const prefixedVolumeName = `${service.name}-${volumeName}`;
+                  const prefix = getTreePrefix(i, namedVolumes.length);
 
-                await executeBestEffort(
-                  hostSsh,
-                  `${ctxConfig.builder.engine} volume rm ${volumeName}`,
-                  `removing volume ${volumeName}`,
-                );
-                log.say(`${prefix} Removed volume ${volumeName}`, 2);
+                  await executeBestEffort(
+                    hostSsh,
+                    `${ctxConfig.builder.engine} volume rm ${prefixedVolumeName}`,
+                    `removing volume ${prefixedVolumeName}`,
+                  );
+                  log.say(`${prefix} Removed volume ${prefixedVolumeName}`, 2);
+                }
               }
             } catch (error) {
               log.say(`└── Failed to remove ${service.name}: ${error}`, 2);
