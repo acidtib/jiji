@@ -475,7 +475,11 @@ services:
     # Single Target Proxy Configuration
     # proxy:
     #   app_port: 80                           # Required: container port to proxy
-    #   ssl: false
+    #   ssl: false                             # Option A: no TLS
+    #   # ssl: true                            # Option B: Let's Encrypt auto-provisioning
+    #   # ssl:                                 # Option C: Custom certificates from secrets
+    #   #   certificate_pem: CERTIFICATE_PEM  #   env var name containing the certificate PEM
+    #   #   private_key_pem: PRIVATE_KEY_PEM  #   env var name containing the private key PEM
     #   host: web.myproject.example.com        # Single host domain
     #   # Or use hosts (plural) for multiple domains pointing to the same target:
     #   # hosts:

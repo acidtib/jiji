@@ -145,6 +145,7 @@ export class DeploymentOrchestrator {
           servicesWithProxy,
           result.deploymentResults,
           deploymentId,
+          options.envVars ?? {},
         );
         deploymentMetrics.finishStep(deploymentId, "proxy_configuration", true);
         deploymentMetrics.recordProxyConfigs(
@@ -247,6 +248,7 @@ export class DeploymentOrchestrator {
     servicesWithProxy: ServiceConfiguration[],
     deploymentResults: DeploymentResult[],
     deploymentId: string,
+    envVars: Record<string, string> = {},
   ): Promise<{
     proxyConfigResults: ProxyConfigResult[];
     errors: string[];
@@ -262,6 +264,7 @@ export class DeploymentOrchestrator {
     const proxyConfigResults = await this.proxyService
       .configureProxyForServices(
         servicesWithProxy,
+        envVars,
       );
     configResults.push(...proxyConfigResults);
 
