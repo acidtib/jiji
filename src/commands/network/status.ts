@@ -19,6 +19,10 @@ import {
   queryServerServiceContainerDetails,
 } from "../../lib/network/corrosion.ts";
 import { isJijiDnsRunning } from "../../lib/network/dns.ts";
+import {
+  hasContainerForwardRules,
+  isUfwActive,
+} from "../../lib/network/firewall.ts";
 import { log } from "../../utils/logger.ts";
 import type { GlobalOptions } from "../../types.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
@@ -121,6 +125,29 @@ export const statusCommand = new Command()
             // Check DNS status
             const dnsRunning = await isJijiDnsRunning(ssh);
             log.say(`├── DNS: ${dnsRunning ? "RUNNING" : "NOT RUNNING"}`, 2);
+
+            // Check UFW status and forward rules
+            const ufwActive = await isUfwActive(ssh);
+            if (ufwActive) {
+              const serverIndex = parseInt(server.subnet.split(".")[2]);
+              const containerThirdOctet = 128 + serverIndex;
+              const baseNetwork = server.subnet.split(".").slice(0, 2)
+                .join(".");
+              const containerSubnet =
+                `${baseNetwork}.${containerThirdOctet}.0/24`;
+              const hasRules = await hasContainerForwardRules(
+                ssh,
+                containerSubnet,
+              );
+              log.say(
+                `├── UFW: ACTIVE (forward rules ${
+                  hasRules ? "configured" : "missing!"
+                })`,
+                2,
+              );
+            } else {
+              log.say(`├── UFW: INACTIVE`, 2);
+            }
 
             // Query containers on this server (if Corrosion is running)
             if (topology.discovery === "corrosion") {

@@ -15,6 +15,7 @@ import { BuildService } from "../lib/services/build_service.ts";
 import { ImagePruneService } from "../lib/services/image_prune_service.ts";
 import { DeploymentOrchestrator } from "../lib/services/deployment_orchestrator.ts";
 import { EnvLoader } from "../utils/env_loader.ts";
+import { extractHostPorts, isUfwActive } from "../lib/network/firewall.ts";
 
 import type { GlobalOptions } from "../types.ts";
 
@@ -384,6 +385,64 @@ export const deployCommand = new Command()
         }
       } else if (allServices.length === 0) {
         log.say("No services found to deploy");
+      }
+
+      // Check if deployed services have host ports and UFW is active
+      if (
+        orchestrationResult.deploymentResults.some((r) => r.success) &&
+        sshManagers.length > 0
+      ) {
+        // Collect unique host ports from all deployed services
+        const hostPorts = new Map<string, Set<string>>();
+        for (const service of allServices) {
+          const ports = extractHostPorts(service.ports);
+          for (const { port, protocol } of ports) {
+            const key = `${port}/${protocol}`;
+            for (const host of service.hosts) {
+              if (!hostPorts.has(host)) hostPorts.set(host, new Set());
+              hostPorts.get(host)!.add(key);
+            }
+          }
+        }
+
+        if (hostPorts.size > 0) {
+          // Check UFW on each host that has exposed ports
+          const ufwHosts: Array<{ host: string; ports: string[] }> = [];
+          for (const ssh of sshManagers) {
+            const host = ssh.getHost();
+            const ports = hostPorts.get(host);
+            if (!ports || ports.size === 0) continue;
+            try {
+              if (await isUfwActive(ssh)) {
+                ufwHosts.push({
+                  host,
+                  ports: [...ports].sort(),
+                });
+              }
+            } catch {
+              // Skip UFW check failures silently
+            }
+          }
+
+          if (ufwHosts.length > 0) {
+            log.section("UFW Firewall Notice:");
+            log.say(
+              "The following hosts have UFW active with services using host ports.",
+              1,
+            );
+            log.say(
+              "Ensure these ports are allowed in UFW for external access:\n",
+              1,
+            );
+
+            for (const { host, ports } of ufwHosts) {
+              log.say(`${host}:`, 1);
+              for (const port of ports) {
+                log.say(`  ufw allow ${port}`, 1);
+              }
+            }
+          }
+        }
       }
 
       log.say("\nDeployment completed successfully", 0);

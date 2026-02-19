@@ -50,6 +50,7 @@ import {
   validateTopology,
 } from "./topology.ts";
 import { setupServerRouting } from "./routes.ts";
+import { ensureUfwForwardRules } from "./firewall.ts";
 import { createControlLoopService } from "./control_loop.ts";
 import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
@@ -827,6 +828,9 @@ export async function setupNetwork(
             config.builder.engine,
             "jiji0",
           );
+
+          // Ensure UFW forward rules if UFW is active
+          await ensureUfwForwardRules(ssh, containerSubnet);
 
           log.say(
             `└── Routing configured for ${peers.length} peer subnet(s)`,
