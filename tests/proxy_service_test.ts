@@ -56,6 +56,20 @@ class MockSSHManager {
   > {
     this.commands.push(command);
 
+    // hasCertsMount() check — must be handled before user patterns since
+    // patterns like "docker inspect kamal-proxy" would otherwise intercept it
+    if (
+      command.includes("docker inspect kamal-proxy") &&
+      command.includes("HostConfig.Binds")
+    ) {
+      return Promise.resolve({
+        success: true,
+        stdout: '["$HOME/.jiji/certs:/jiji-certs:ro"]',
+        stderr: "",
+        code: 0,
+      });
+    }
+
     // Find matching mock response
     for (const [pattern, response] of this.mockResponses) {
       if (command.includes(pattern)) {

@@ -238,12 +238,14 @@ Deno.test("buildDeployCommandArgs - with tlsCertificatePath and tlsPrivateKeyPat
     serviceName: "web",
     target: "container:3000",
     hosts: ["example.com"],
+    tls: true,
     tlsCertificatePath: "/jiji-certs/myproject/web-3000/cert.pem",
     tlsPrivateKeyPath: "/jiji-certs/myproject/web-3000/key.pem",
   };
 
   const args = buildDeployCommandArgs(options);
 
+  assertEquals(args.includes("--tls"), true); // --tls required even with custom certs
   assertEquals(
     args.includes(
       "--tls-certificate-path=/jiji-certs/myproject/web-3000/cert.pem",
@@ -256,7 +258,6 @@ Deno.test("buildDeployCommandArgs - with tlsCertificatePath and tlsPrivateKeyPat
     ),
     true,
   );
-  assertEquals(args.includes("--tls"), false); // Custom certs don't use --tls
 });
 
 Deno.test("buildDeployCommandArgs - tls:true uses --tls, not cert paths", () => {

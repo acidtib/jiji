@@ -85,7 +85,10 @@ export function buildKamalProxyOptionsFromTarget(
     target: targetAddr,
     hosts,
     pathPrefix: target.path_prefix,
-    tls: target.ssl === true ? true : undefined,
+    // TLS is negotiated at the host level before HTTP routing — kamal-proxy only
+    // accepts --tls on the root path ("/") service. Path-prefix services inherit
+    // TLS automatically and must not receive --tls or cert path flags.
+    tls: target.ssl && !target.path_prefix ? true : undefined,
     healthCheckPath: target.healthcheck?.path,
     healthCheckCmd: target.healthcheck?.cmd,
     healthCheckCmdRuntime: cmdRuntime,
@@ -307,7 +310,7 @@ export class ProxyCommands {
     await this.waitForReady();
   }
 
-  private async waitForReady(maxAttempts = 30, delayMs = 1000): Promise<void> {
+  async waitForReady(maxAttempts = 30, delayMs = 1000): Promise<void> {
     for (let i = 0; i < maxAttempts; i++) {
       const command =
         `${this.engine} inspect ${this.containerName} --format '{{.State.Status}}'`;

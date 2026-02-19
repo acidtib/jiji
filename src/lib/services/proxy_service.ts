@@ -298,9 +298,13 @@ export class ProxyService {
         );
 
         try {
-          // Resolve custom TLS cert paths if configured
+          // Resolve custom TLS cert paths if configured.
+          // Only the root path service ("/") gets cert flags — path-prefix services
+          // inherit TLS from the root and must not receive --tls-certificate-path.
           let certPaths: { cert: string; key: string } | undefined;
-          if (target.ssl && typeof target.ssl === "object") {
+          if (
+            target.ssl && typeof target.ssl === "object" && !target.path_prefix
+          ) {
             const certs = target.ssl as ProxySslCerts;
             const certPem = envVars[certs.certificate_pem];
             const keyPem = envVars[certs.private_key_pem];
@@ -321,7 +325,7 @@ export class ProxyService {
             certPaths = await writeCertFiles(
               ssh,
               this.config.project,
-              `${service.name}-${appPort}`,
+              service.name,
               certPem,
               keyPem,
             );
