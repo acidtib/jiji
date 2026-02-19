@@ -40,6 +40,30 @@ import type { DeploymentOptions, DeploymentResult } from "../../types.ts";
 import { normalizeImageName } from "../../utils/image.ts";
 
 /**
+ * Interpolate ${VAR_NAME} references in command strings/arrays
+ * using resolved environment variables.
+ */
+export function interpolateCommand(
+  cmd: string | string[],
+  resolvedEnv: Record<string, string>,
+): string | string[] {
+  const interpolate = (value: string): string =>
+    value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => {
+      if (resolvedEnv[name] !== undefined) {
+        return resolvedEnv[name];
+      }
+      throw new Error(
+        `Command references undefined environment variable: ${name}`,
+      );
+    });
+
+  if (typeof cmd === "string") {
+    return interpolate(cmd);
+  }
+  return cmd.map(interpolate);
+}
+
+/**
  * Service for deploying containers to remote servers
  */
 export class ContainerDeploymentService {
@@ -577,10 +601,11 @@ export class ContainerDeploymentService {
       service.name,
     );
     const mergedEnv = service.getMergedEnvironment();
-    const envArray = mergedEnv.toEnvArray(
+    const resolvedEnv = mergedEnv.resolveVariables(
       options.envVars ?? {},
       options.allowHostEnv ?? false,
     );
+    const envArray = Object.entries(resolvedEnv).map(([k, v]) => `${k}=${v}`);
 
     // Get DNS server from network topology
     const dnsServer = await getDnsServerForHost(
@@ -642,9 +667,9 @@ export class ContainerDeploymentService {
       builder.capAdd(service.cap_add);
     }
 
-    // Add custom command if specified
+    // Add custom command if specified, with env var interpolation
     if (service.command) {
-      builder.command(service.command);
+      builder.command(interpolateCommand(service.command, resolvedEnv));
     }
 
     const runCommand = builder.build();

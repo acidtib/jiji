@@ -1,5 +1,6 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { ContainerRunBuilder } from "../container_run_builder.ts";
+import { interpolateCommand } from "../container_deployment_service.ts";
 
 Deno.test("ContainerRunBuilder - basic command construction", () => {
   const builder = new ContainerRunBuilder("podman", "test-app", "nginx:latest");
@@ -488,4 +489,64 @@ Deno.test("ContainerRunBuilder - no command does not add extra args", () => {
 
   // Should end with just the image name
   assertEquals(command.endsWith("nginx:latest"), true);
+});
+
+// interpolateCommand tests
+Deno.test("interpolateCommand - string command with variable substitution", () => {
+  const result = interpolateCommand(
+    "valkey-server --requirepass ${REDIS_PASSWORD}",
+    { REDIS_PASSWORD: "s3cret" },
+  );
+  assertEquals(result, "valkey-server --requirepass s3cret");
+});
+
+Deno.test("interpolateCommand - array command with variable substitution", () => {
+  const result = interpolateCommand(
+    ["valkey-server", "--requirepass", "${REDIS_PASSWORD}"],
+    { REDIS_PASSWORD: "s3cret" },
+  );
+  assertEquals(result, ["valkey-server", "--requirepass", "s3cret"]);
+});
+
+Deno.test("interpolateCommand - multiple variables in one command", () => {
+  const result = interpolateCommand(
+    "server --user ${DB_USER} --pass ${DB_PASS}",
+    { DB_USER: "admin", DB_PASS: "hunter2" },
+  );
+  assertEquals(result, "server --user admin --pass hunter2");
+});
+
+Deno.test("interpolateCommand - mixed literal and interpolated args", () => {
+  const result = interpolateCommand(
+    ["redis-server", "--port", "6379", "--requirepass", "${REDIS_PASSWORD}"],
+    { REDIS_PASSWORD: "s3cret" },
+  );
+  assertEquals(result, [
+    "redis-server",
+    "--port",
+    "6379",
+    "--requirepass",
+    "s3cret",
+  ]);
+});
+
+Deno.test("interpolateCommand - undefined variable throws error", () => {
+  assertThrows(
+    () => interpolateCommand("server --pass ${MISSING_VAR}", {}),
+    Error,
+    "Command references undefined environment variable: MISSING_VAR",
+  );
+});
+
+Deno.test("interpolateCommand - no interpolation patterns passes through unchanged", () => {
+  const strResult = interpolateCommand("redis-server --appendonly yes", {});
+  assertEquals(strResult, "redis-server --appendonly yes");
+
+  const arrResult = interpolateCommand(["npm", "run", "dev"], {});
+  assertEquals(arrResult, ["npm", "run", "dev"]);
+});
+
+Deno.test("interpolateCommand - does not match bare $VAR syntax", () => {
+  const result = interpolateCommand("echo $HOME", { HOME: "/root" });
+  assertEquals(result, "echo $HOME");
 });
