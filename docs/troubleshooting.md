@@ -432,11 +432,11 @@ No recent handshake times
 
 2. **Verify firewall allows WireGuard:**
    ```bash
-   # Allow UDP 51820
-   jiji server exec "sudo ufw allow 51820/udp"
+   # Allow UDP 31820
+   jiji server exec "sudo ufw allow 31820/udp"
 
    # Verify rule
-   jiji server exec "sudo ufw status | grep 51820"
+   jiji server exec "sudo ufw status | grep 31820"
    ```
 
 3. **Check network status:**

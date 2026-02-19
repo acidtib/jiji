@@ -5,7 +5,7 @@
 /**
  * Network and WireGuard configuration
  */
-export const WIREGUARD_PORT = 51820;
+export const WIREGUARD_PORT = 31820;
 export const DEFAULT_CLUSTER_CIDR = "10.210.0.0/16";
 export const DEFAULT_SERVICE_DOMAIN = "jiji";
 

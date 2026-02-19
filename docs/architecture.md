@@ -631,7 +631,7 @@ User Command
 **Firewall Rules**:
 
 - Only required ports opened
-- WireGuard: UDP 51820
+- WireGuard: UDP 31820
 - Corrosion: TCP 9280
 - HTTP/HTTPS: TCP 80/443
 

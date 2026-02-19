@@ -829,7 +829,7 @@ services:
 #   hosts:
 #     - vpn-server
 #   ports:
-#     - "51820:51820/udp"        # WireGuard
+#     - "31820:31820/udp"        # WireGuard
 #   # Linux Capabilities: Add specific capabilities instead of full privileged mode
 #   cap_add:
 #     - NET_ADMIN                # Network administration operations

@@ -54,7 +54,7 @@ import { createControlLoopService } from "./control_loop.ts";
 import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
 
-const WIREGUARD_PORT = 51820;
+const WIREGUARD_PORT = 31820;
 const WIREGUARD_INTERFACE = "jiji0";
 
 /**

@@ -132,12 +132,12 @@ Required ports:
 
 | Port  | Protocol | Purpose          |
 | ----- | -------- | ---------------- |
-| 51820 | UDP      | WireGuard tunnel |
+| 31820 | UDP      | WireGuard tunnel |
 | 9280  | TCP      | Corrosion gossip |
 
 ```bash
 # UFW examples
-ufw allow 51820/udp
+ufw allow 31820/udp
 ufw allow 9280/tcp
 ```
 
@@ -145,7 +145,7 @@ ufw allow 9280/tcp
 
 | Issue                      | Solution                                |
 | -------------------------- | --------------------------------------- |
-| No peer handshakes         | Check firewall allows UDP 51820         |
+| No peer handshakes         | Check firewall allows UDP 31820         |
 | DNS not resolving          | Check `systemctl status jiji-dns`       |
 | Service names not working  | Check daemon DNS config                 |
 | Stale DNS records          | Run `jiji network gc --force`           |

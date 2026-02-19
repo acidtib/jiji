@@ -425,7 +425,7 @@ update_public_ip() {
     log_info "Public IP changed to $new_ip, updating endpoints"
 
     # Update endpoints in Corrosion (this is simplified - real implementation would merge with existing)
-    local new_endpoint="$new_ip:51820"
+    local new_endpoint="$new_ip:31820"
     local endpoints_json="[\\"$new_endpoint\\"]"
     corrosion_exec "UPDATE servers SET endpoints = '$endpoints_json' WHERE id = '$SERVER_ID';" 2>/dev/null || log_error "Failed to update endpoints"
   fi

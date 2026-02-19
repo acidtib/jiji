@@ -158,12 +158,12 @@ export async function discoverPrivateIPs(
  * establishing WireGuard connections.
  *
  * @param ssh - SSH connection to the server
- * @param port - WireGuard listen port (default: 51820)
+ * @param port - WireGuard listen port (default: 31820)
  * @returns Array of endpoints in "IP:PORT" format
  */
 export async function discoverAllEndpoints(
   ssh: SSHManager,
-  port: number = 51820,
+  port: number = 31820,
 ): Promise<string[]> {
   const endpoints: string[] = [];
 

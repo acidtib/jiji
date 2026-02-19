@@ -492,21 +492,21 @@ Deno.test(
   "selectBestEndpoint - should use local IP when servers are on same subnet",
   () => {
     const sourceEndpoints = [
-      "184.96.186.116:51820", // Public IP
-      "192.168.1.220:51820", // Local IP
-      "10.210.0.1:51820", // WireGuard IP
+      "184.96.186.116:31820", // Public IP
+      "192.168.1.220:31820", // Local IP
+      "10.210.0.1:31820", // WireGuard IP
     ];
 
     const targetEndpoints = [
-      "184.96.186.116:51820", // Public IP
-      "192.168.1.222:51820", // Local IP (same subnet as source)
-      "10.210.3.1:51820", // WireGuard IP
+      "184.96.186.116:31820", // Public IP
+      "192.168.1.222:31820", // Local IP (same subnet as source)
+      "10.210.3.1:31820", // WireGuard IP
     ];
 
     const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
 
     // Should select the local IP since both are on 192.168.1.x
-    assertEquals(bestEndpoint, "192.168.1.222:51820");
+    assertEquals(bestEndpoint, "192.168.1.222:31820");
   },
 );
 
@@ -514,19 +514,19 @@ Deno.test(
   "selectBestEndpoint - should use public IP when servers are on different subnets",
   () => {
     const sourceEndpoints = [
-      "184.96.186.116:51820", // Public IP
-      "192.168.1.220:51820", // Local IP on subnet 192.168.1.x
+      "184.96.186.116:31820", // Public IP
+      "192.168.1.220:31820", // Local IP on subnet 192.168.1.x
     ];
 
     const targetEndpoints = [
-      "15.204.224.81:51820", // Public IP
-      "10.120.0.5:51820", // Local IP on different subnet 10.120.0.x
+      "15.204.224.81:31820", // Public IP
+      "10.120.0.5:31820", // Local IP on different subnet 10.120.0.x
     ];
 
     const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
 
     // Should select the public IP since subnets don't match
-    assertEquals(bestEndpoint, "15.204.224.81:51820");
+    assertEquals(bestEndpoint, "15.204.224.81:31820");
   },
 );
 
@@ -534,17 +534,17 @@ Deno.test(
   "selectBestEndpoint - should use public IP when no private IPs available",
   () => {
     const sourceEndpoints = [
-      "184.96.186.116:51820", // Public IP only
+      "184.96.186.116:31820", // Public IP only
     ];
 
     const targetEndpoints = [
-      "15.204.224.81:51820", // Public IP only
+      "15.204.224.81:31820", // Public IP only
     ];
 
     const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
 
     // Should select the first (public) endpoint
-    assertEquals(bestEndpoint, "15.204.224.81:51820");
+    assertEquals(bestEndpoint, "15.204.224.81:31820");
   },
 );
 
@@ -552,18 +552,18 @@ Deno.test(
   "selectBestEndpoint - should match partial subnet for local network",
   () => {
     const sourceEndpoints = [
-      "184.96.186.116:51820",
-      "192.168.1.100:51820", // Different host on 192.168.1.x
+      "184.96.186.116:31820",
+      "192.168.1.100:31820", // Different host on 192.168.1.x
     ];
 
     const targetEndpoints = [
-      "184.96.186.116:51820",
-      "192.168.1.200:51820", // Different host but same /24 subnet
+      "184.96.186.116:31820",
+      "192.168.1.200:31820", // Different host but same /24 subnet
     ];
 
     const bestEndpoint = selectBestEndpoint(sourceEndpoints, targetEndpoints);
 
     // Should match on 192.168.1.x subnet
-    assertEquals(bestEndpoint, "192.168.1.200:51820");
+    assertEquals(bestEndpoint, "192.168.1.200:31820");
   },
 );

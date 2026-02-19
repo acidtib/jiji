@@ -406,7 +406,7 @@ The following network settings are hardcoded and cannot be changed:
 | --------------------- | ----------- | ---------------------------------------------------------- |
 | Service domain        | `jiji`      | Containers reach each other via `{project}-{service}.jiji` |
 | Discovery method      | `corrosion` | Distributed CRDT-based service discovery                   |
-| WireGuard port        | `51820`     | UDP port for WireGuard VPN                                 |
+| WireGuard port        | `31820`     | UDP port for WireGuard VPN                                 |
 | Corrosion gossip port | `9280`      | TCP port for CRDT gossip protocol                          |
 | Corrosion API port    | `9220`      | TCP port for Corrosion HTTP API                            |
 | DNS port              | `53`        | jiji-dns listens on standard DNS port                      |
