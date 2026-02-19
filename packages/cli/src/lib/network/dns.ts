@@ -8,12 +8,13 @@
 import type { SSHManager } from "../../utils/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import type { DNSConfig } from "../../types/network.ts";
+import { VERSION } from "../../version.ts";
 
 const JIJI_DNS_INSTALL_DIR = "/opt/jiji/dns";
 
 // jiji-dns GitHub releases URL
-const JIJI_DNS_REPO = "acidtib/jiji-dns";
-const JIJI_DNS_VERSION = "0.3.3";
+const JIJI_DNS_REPO = "acidtib/jiji";
+const JIJI_DNS_VERSION = VERSION;
 
 /**
  * Install jiji-dns on a remote server
@@ -96,10 +97,10 @@ Requires=jiji-corrosion.service
 [Service]
 Type=simple
 ExecStart=${JIJI_DNS_INSTALL_DIR}/jiji-dns
-Environment="CORROSION_API=${config.corrosionApiAddr}"
-Environment="LISTEN_ADDR=${config.listenAddr}"
-Environment="SERVICE_DOMAIN=${config.serviceDomain}"
-Environment="DNS_TTL=60"
+Environment="JIJI_CORROSION_API=${config.corrosionApiAddr}"
+Environment="JIJI_LISTEN_ADDR=${config.listenAddr}"
+Environment="JIJI_SERVICE_DOMAIN=${config.serviceDomain}"
+Environment="JIJI_DNS_TTL=60"
 Restart=always
 RestartSec=5
 # Allow binding to port 53

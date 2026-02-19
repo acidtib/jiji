@@ -3,39 +3,61 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
+## Monorepo Structure
+
+This is a Deno workspace monorepo with three packages:
+
+```
+packages/
+├── cli/       # @jiji/cli — Main CLI tool (Cliffy, SSH, deployment)
+├── dns/       # @jiji/dns — DNS server for service discovery
+└── daemon/    # @jiji/daemon — Network reconciliation daemon
+```
+
+All packages share a unified version number managed by `./bin/version`.
+
+## Workspace Conventions
+
+- `nodeModulesDir` and `unstable` must be in root `deno.json` (Deno workspace
+  requirement) — member configs cannot override these
+- `@std/assert` is declared in root `deno.json` and inherited by all members —
+  don't re-declare it in package configs
+- `allowScripts` for npm packages with native builds lives in root config
+- Tests run from the package directory (`cd packages/cli && deno task check`),
+  so relative paths in tests resolve from there
+
 ## Quick Start Commands
 
 ```bash
-# Run CLI directly (requires all permissions)
-deno task run
+# Install dependencies (run from repo root)
+deno install --allow-scripts=npm:cpu-features,npm:ssh2
 
-# Run all checks (format, lint, tests)
-deno task check
-
-# Run tests (parallel execution)
-deno task test
+# Run checks for a specific package
+cd packages/cli && deno task check
+cd packages/dns && deno task check
+cd packages/daemon && deno task check
 
 # Run a single test file
-deno test --allow-all tests/deploy_plan_test.ts
+deno test --allow-all packages/cli/tests/deploy_plan_test.ts
 
-# Format and lint
-deno task fmt
-deno task lint
+# Build binaries
+cd packages/cli && deno task build       # → build/jiji
+cd packages/dns && deno task build       # → build/jiji-dns
+cd packages/daemon && deno task build    # → build/jiji-daemon
 
-# Build compiled binary (outputs to build/jiji)
-deno task build
+# CLI-specific
+cd packages/cli && deno task run         # Run CLI directly
+cd packages/cli && deno task install     # Build and install to /usr/local/bin/jiji
 
-# Build and install to /usr/local/bin/jiji
-deno task install
-
-# Version management
-./bin/version          # Show current version
-./bin/version 1.2.3    # Update to specific version
+# Version management (run from repo root)
+./bin/version              # Show current version
+./bin/version --bump       # Auto-increment patch version
+./bin/version --bump 1.0.0 # Set specific version (updates all 3 packages)
 ```
 
 ## High-Level Architecture
 
-### Command Flow
+### Command Flow (CLI)
 
 The CLI uses Cliffy for command routing. Each command follows this pattern:
 
@@ -43,16 +65,15 @@ The CLI uses Cliffy for command routing. Each command follows this pattern:
 Command → setupCommandContext() → Load Config → Filter Hosts/Services → SSH Setup → Execute → Cleanup
 ```
 
-Commands are defined in `src/main.ts` and handlers live in `src/commands/`. The
-`setupCommandContext()` helper in `src/commands/command_helpers.ts` handles
-common setup.
+Commands are defined in `packages/cli/src/main.ts` and handlers live in
+`packages/cli/src/commands/`. The `setupCommandContext()` helper in
+`packages/cli/src/utils/command_helpers.ts` handles common setup.
 
 ### Configuration System
 
-Configuration classes in `src/lib/configuration/` use **lazy-loaded, cached
-properties**. Validation happens at property access time, not construction. This
-prevents errors for unused config sections but means errors surface later in
-execution.
+Configuration classes in `packages/cli/src/lib/configuration/` use
+**lazy-loaded, cached properties**. Validation happens at property access time,
+not construction.
 
 All configuration classes extend `BaseConfiguration`. The main classes are:
 
@@ -84,7 +105,7 @@ If health checks fail, old container continues serving traffic.
 
 ### Distributed Networking Stack
 
-Three components work together in `src/lib/network/`:
+Three components work together in `packages/cli/src/lib/network/`:
 
 **WireGuard** (`wireguard.ts`): Encrypted mesh VPN
 
@@ -105,8 +126,8 @@ Three components work together in `src/lib/network/`:
 
 ### SSH Connection Management
 
-`SSHConnectionPool` in `src/utils/ssh_pool.ts` uses a semaphore for concurrency
-control (default: 30 concurrent connections).
+`SSHConnectionPool` in `packages/cli/src/utils/ssh_pool.ts` uses a semaphore
+for concurrency control (default: 30 concurrent connections).
 
 **Patterns:**
 
@@ -117,7 +138,7 @@ control (default: 30 concurrent connections).
 
 ### Service Orchestration
 
-Key services in `src/lib/services/`:
+Key services in `packages/cli/src/lib/services/`:
 
 - `DeploymentOrchestrator` - High-level deployment coordination
 - `ContainerDeploymentService` - Container lifecycle with zero-downtime
@@ -164,25 +185,79 @@ Registry passwords also support this pattern (e.g., `password: GITHUB_TOKEN`).
 
 ## Key Files
 
-- `src/jiji.yml` - Authoritative configuration reference with all options
-- `src/constants.ts` - System constants (ports, timeouts, defaults)
-- `src/types/` - TypeScript interfaces for all major types
-- `tests/mocks.ts` - Mock SSH manager for testing without real connections
+- `packages/cli/src/jiji.yml` - Authoritative configuration reference with all
+  options
+- `packages/cli/src/constants.ts` - System constants (ports, timeouts, defaults)
+- `packages/cli/src/types/` - TypeScript interfaces for all major types
+- `packages/cli/tests/mocks.ts` - Mock SSH manager for testing without real
+  connections
 
 ## Testing
 
-Tests use `MockSSHManager` from `tests/mocks.ts` which simulates SSH operations
-via `MockServerState`. Commands are parsed and state is mutated to simulate
-container operations without real SSH connections.
+Tests use `MockSSHManager` from `packages/cli/tests/mocks.ts` which simulates
+SSH operations via `MockServerState`. Commands are parsed and state is mutated to
+simulate container operations without real SSH connections.
 
 Pattern for adding new tests:
 
-1. Create mock SSH manager with `createMockSSHManager()`
-2. Initialize `MockServerState` for each host
-3. Use services normally - they'll interact with mock state
+1. Create `new MockSSHManager("hostname")` for each host
+2. Use `addMockResponse(commandPattern, response)` to stub SSH commands
+3. Cast with `mock as any` when passing to functions expecting `SSHManager`
 
 Run specific test with:
 
 ```bash
-deno test --allow-all tests/zero_downtime_deployment_test.ts
+deno test --allow-all packages/cli/tests/zero_downtime_deployment_test.ts
 ```
+
+## DNS Package
+
+jiji-dns is a lightweight DNS server for service discovery. It subscribes to
+Corrosion's real-time streaming API and maintains an in-memory DNS cache.
+
+### Component Flow
+
+```
+Corrosion DB ─HTTP Stream─► CorrosionSubscriber ─► DnsCache ◄── DnsServer ◄── UDP Queries
+                           (NDJSON events)        (in-memory)   (port 53)
+```
+
+### Key Components
+
+- `packages/dns/src/corrosion_subscriber.ts` - HTTP streaming connection to
+  Corrosion `/v1/subscriptions`. Auto-reconnects with exponential backoff.
+- `packages/dns/src/dns_cache.ts` - In-memory cache. Newest-container-wins per
+  service/server. Only healthy containers returned.
+- `packages/dns/src/dns_server.ts` - UDP DNS server (RFC 1035). Routes
+  `*.{serviceDomain}` to cache, forwards others to system resolvers.
+- `packages/dns/src/dns_protocol.ts` - DNS packet parsing and building.
+
+### DNS Resolution Patterns
+
+| Pattern                                   | Example                 | Description                        |
+| ----------------------------------------- | ----------------------- | ---------------------------------- |
+| `{project}-{service}.{domain}`            | `casa-api.jiji`         | All healthy containers for service |
+| `{project}-{service}-{instance}.{domain}` | `casa-api-primary.jiji` | Specific instance                  |
+
+## Daemon Package
+
+The daemon (formerly jiji-control-loop) runs continuously on each server and
+handles network reconciliation:
+
+1. Topology reconciliation - Add/remove WireGuard peers based on Corrosion state
+2. Endpoint health monitoring - Check handshake times and rotate endpoints
+3. Container health tracking - Validate containers and update Corrosion
+4. Heartbeat updates - Keep server alive in Corrosion
+5. Garbage collection - Clean up stale records
+6. Public IP discovery - Periodically refresh endpoints
+7. Corrosion health checks - Monitor database health
+8. Split-brain detection - Detect cluster partitions
+
+Key source files in `packages/daemon/src/`:
+
+- `main.ts` - Entry point, main loop
+- `peer_reconciler.ts` - WireGuard peer sync
+- `peer_monitor.ts` - Peer health monitoring
+- `container_health.ts` - Container health checks
+- `corrosion_client.ts` - HTTP client for Corrosion API
+- `corrosion_cli.ts` - CLI wrapper for Corrosion queries

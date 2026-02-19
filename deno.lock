@@ -17,12 +17,13 @@
     "jsr:@std/encoding@~1.0.5": "1.0.10",
     "jsr:@std/fmt@1": "1.0.8",
     "jsr:@std/fmt@~1.0.2": "1.0.8",
-    "jsr:@std/fs@1": "1.0.20",
-    "jsr:@std/fs@^1.0.20": "1.0.20",
+    "jsr:@std/fs@1": "1.0.22",
+    "jsr:@std/fs@^1.0.20": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/io@~0.224.9": "0.224.9",
-    "jsr:@std/path@1": "1.1.3",
-    "jsr:@std/path@^1.1.3": "1.1.3",
+    "jsr:@std/path@1": "1.1.4",
+    "jsr:@std/path@^1.1.3": "1.1.4",
+    "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/path@~1.0.6": "1.0.9",
     "jsr:@std/text@~1.0.7": "1.0.16",
     "jsr:@std/ulid@1": "1.0.0",
@@ -112,11 +113,11 @@
     "@std/fmt@1.0.8": {
       "integrity": "71e1fc498787e4434d213647a6e43e794af4fd393ef8f52062246e06f7e372b7"
     },
-    "@std/fs@1.0.20": {
-      "integrity": "e953206aae48d46ee65e8783ded459f23bec7dd1f3879512911c35e5484ea187",
+    "@std/fs@1.0.22": {
+      "integrity": "de0f277a58a867147a8a01bc1b181d0dfa80bfddba8c9cf2bacd6747bcec9308",
       "dependencies": [
         "jsr:@std/internal",
-        "jsr:@std/path@^1.1.3"
+        "jsr:@std/path@^1.1.4"
       ]
     },
     "@std/internal@1.0.12": {
@@ -128,8 +129,8 @@
     "@std/path@1.0.9": {
       "integrity": "260a49f11edd3db93dd38350bf9cd1b4d1366afa98e81b86167b4e3dd750129e"
     },
-    "@std/path@1.1.3": {
-      "integrity": "b015962d82a5e6daea980c32b82d2c40142149639968549c649031a230b1afb3",
+    "@std/path@1.1.4": {
+      "integrity": "1d2d43f39efb1b42f0b1882a25486647cb851481862dc7313390b2bb044314b5",
       "dependencies": [
         "jsr:@std/internal"
       ]
@@ -241,19 +242,25 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@cliffy/ansi@^1.0.0-rc.8",
-      "jsr:@cliffy/command@^1.0.0-rc.8",
-      "jsr:@cliffy/prompt@^1.0.0-rc.8",
-      "jsr:@deno/dnt@~0.42.3",
-      "jsr:@std/assert@^1.0.8",
-      "jsr:@std/crypto@^1.0.5",
-      "jsr:@std/fs@^1.0.20",
-      "jsr:@std/path@^1.1.3",
-      "jsr:@std/ulid@1",
-      "jsr:@std/yaml@^1.0.10",
-      "npm:cpu-features@^0.0.10",
-      "npm:node-ssh@^13.2.1",
-      "npm:ssh2@^1.17.0"
-    ]
+      "jsr:@std/assert@^1.0.8"
+    ],
+    "members": {
+      "packages/cli": {
+        "dependencies": [
+          "jsr:@cliffy/ansi@^1.0.0-rc.8",
+          "jsr:@cliffy/command@^1.0.0-rc.8",
+          "jsr:@cliffy/prompt@^1.0.0-rc.8",
+          "jsr:@deno/dnt@~0.42.3",
+          "jsr:@std/crypto@^1.0.5",
+          "jsr:@std/fs@^1.0.20",
+          "jsr:@std/path@^1.1.3",
+          "jsr:@std/ulid@1",
+          "jsr:@std/yaml@^1.0.10",
+          "npm:cpu-features@^0.0.10",
+          "npm:node-ssh@^13.2.1",
+          "npm:ssh2@^1.17.0"
+        ]
+      }
+    }
   }
 }

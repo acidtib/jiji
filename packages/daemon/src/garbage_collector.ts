@@ -1,0 +1,99 @@
+/**
+ * Cluster-wide garbage collection.
+ *
+ * Removes stale container records that have been unhealthy too long,
+ * and cleans up containers from offline servers.
+ */
+
+import type { Config } from "./types.ts";
+import {
+  OFFLINE_SERVER_THRESHOLD,
+  STALE_CONTAINER_THRESHOLD,
+} from "./types.ts";
+import type { CorrosionClient } from "./corrosion_client.ts";
+import type { CorrosionCli } from "./corrosion_cli.ts";
+import * as log from "./logger.ts";
+
+/**
+ * Run garbage collection (called every 5 minutes).
+ */
+export async function garbageCollect(
+  config: Config,
+  client: CorrosionClient,
+  cli: CorrosionCli,
+): Promise<void> {
+  log.info("Running cluster-wide container garbage collection...");
+
+  let deleted = 0;
+
+  // Delete containers that have been unhealthy for more than 3 minutes
+  deleted += await deleteStaleContainers(client, cli);
+
+  // Delete containers from offline servers (no heartbeat in 10 minutes)
+  deleted += await deleteOfflineServerContainers(config, client, cli);
+
+  if (deleted > 0) {
+    log.info(
+      "Garbage collection complete",
+      { removed: deleted },
+    );
+  }
+}
+
+async function deleteStaleContainers(
+  client: CorrosionClient,
+  cli: CorrosionCli,
+): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const threshold = now - STALE_CONTAINER_THRESHOLD;
+
+  const rows = await cli.query(
+    `SELECT id, service FROM containers WHERE health_status != 'healthy' AND (started_at / 1000) < ${threshold};`,
+  );
+
+  let deleted = 0;
+  for (const [containerId, service] of rows) {
+    if (!containerId) continue;
+
+    log.info("Deleting stale container", {
+      container_id: containerId,
+      service,
+    });
+
+    const affected = await client.execGetRowsAffected(
+      `DELETE FROM containers WHERE id = '${containerId}';`,
+    );
+    deleted += affected > 0 ? 1 : 0;
+  }
+
+  return deleted;
+}
+
+async function deleteOfflineServerContainers(
+  config: Config,
+  client: CorrosionClient,
+  cli: CorrosionCli,
+): Promise<number> {
+  const now = Date.now();
+  const threshold = now - OFFLINE_SERVER_THRESHOLD;
+
+  const rows = await cli.query(
+    `SELECT id FROM servers WHERE last_seen < ${threshold} AND id != '${config.serverId}';`,
+  );
+
+  let deleted = 0;
+  for (const [serverId] of rows) {
+    if (!serverId) continue;
+
+    log.warn("Server appears offline, cleaning up containers", {
+      server_id: serverId,
+    });
+
+    const affected = await client.execGetRowsAffected(
+      `DELETE FROM containers WHERE server_id = '${serverId}';`,
+    );
+    deleted += affected;
+  }
+
+  return deleted;
+}

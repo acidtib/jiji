@@ -1,0 +1,31 @@
+{
+  "name": "@jiji/dns",
+  "version": "0.4.0",
+  "exports": "./src/main.ts",
+  "tasks": {
+    "dev": "deno run --allow-net --allow-read --allow-env --watch src/main.ts",
+    "run": "deno run --allow-net --allow-read --allow-env src/main.ts",
+    "test": "deno test --allow-net --allow-read --allow-env tests/",
+    "check": "deno fmt --check && deno lint && deno test --allow-net --allow-read --allow-env tests/",
+    "fmt": "deno fmt",
+    "lint": "deno lint",
+    "build": "deno compile --unstable-net --allow-net --allow-read --allow-env --output build/jiji-dns src/main.ts",
+    "build:linux-x64": "deno compile --unstable-net --allow-net --allow-read --allow-env --target x86_64-unknown-linux-gnu --output build/jiji-dns-linux-x64 src/main.ts",
+    "build:linux-arm64": "deno compile --unstable-net --allow-net --allow-read --allow-env --target aarch64-unknown-linux-gnu --output build/jiji-dns-linux-arm64 src/main.ts"
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  },
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "singleQuote": false
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true
+  }
+}

@@ -388,6 +388,9 @@ export const teardownCommand = new Command()
                   "rm -f /etc/systemd/system/jiji-dns-update.timer",
                 );
                 await ssh.executeCommand(
+                  "rm -f /etc/systemd/system/jiji-daemon.service",
+                );
+                await ssh.executeCommand(
                   "rm -f /etc/systemd/system/jiji-control-loop.service",
                 );
                 await ssh.executeCommand("systemctl daemon-reload");

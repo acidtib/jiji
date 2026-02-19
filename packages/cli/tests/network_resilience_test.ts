@@ -206,53 +206,53 @@ Deno.test("CORROSION_SCHEMA includes health columns", async () => {
   );
 });
 
-Deno.test("control_loop installs binary from GitHub releases", async () => {
+Deno.test("daemon installs binary from GitHub releases", async () => {
   const content = await Deno.readTextFile(
-    "src/lib/network/control_loop.ts",
+    "src/lib/network/daemon.ts",
   );
 
   assertEquals(
-    content.includes("installControlLoop"),
+    content.includes("installDaemon"),
     true,
-    "Missing installControlLoop function",
+    "Missing installDaemon function",
   );
   assertEquals(
-    content.includes("jiji-control-loop"),
+    content.includes("jiji-daemon"),
     true,
     "Missing binary name reference",
   );
 });
 
-Deno.test("control_loop configures systemd service with environment variables", async () => {
+Deno.test("daemon configures systemd service with environment variables", async () => {
   const content = await Deno.readTextFile(
-    "src/lib/network/control_loop.ts",
+    "src/lib/network/daemon.ts",
   );
 
   assertEquals(
-    content.includes('Environment="SERVER_ID='),
+    content.includes('Environment="JIJI_SERVER_ID='),
     true,
-    "Missing SERVER_ID environment variable",
+    "Missing JIJI_SERVER_ID environment variable",
   );
   assertEquals(
-    content.includes('Environment="ENGINE='),
+    content.includes('Environment="JIJI_ENGINE='),
     true,
-    "Missing ENGINE environment variable",
+    "Missing JIJI_ENGINE environment variable",
   );
   assertEquals(
-    content.includes('Environment="CORROSION_API='),
+    content.includes('Environment="JIJI_CORROSION_API='),
     true,
-    "Missing CORROSION_API environment variable",
+    "Missing JIJI_CORROSION_API environment variable",
   );
   assertEquals(
-    content.includes('Environment="CORROSION_DIR='),
+    content.includes('Environment="JIJI_CORROSION_DIR='),
     true,
-    "Missing CORROSION_DIR environment variable",
+    "Missing JIJI_CORROSION_DIR environment variable",
   );
 });
 
-Deno.test("control_loop supports multi-architecture download", async () => {
+Deno.test("daemon supports multi-architecture download", async () => {
   const content = await Deno.readTextFile(
-    "src/lib/network/control_loop.ts",
+    "src/lib/network/daemon.ts",
   );
 
   assertEquals(
@@ -267,15 +267,15 @@ Deno.test("control_loop supports multi-architecture download", async () => {
   );
 });
 
-Deno.test("control_loop cleans up old bash script", async () => {
+Deno.test("daemon cleans up old control-loop files", async () => {
   const content = await Deno.readTextFile(
-    "src/lib/network/control_loop.ts",
+    "src/lib/network/daemon.ts",
   );
 
   assertEquals(
-    content.includes("jiji-control-loop.sh"),
+    content.includes("jiji-control-loop"),
     true,
-    "Missing cleanup of old bash script",
+    "Missing cleanup of old control-loop files",
   );
 });
 

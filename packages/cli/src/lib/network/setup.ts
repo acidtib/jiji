@@ -51,7 +51,7 @@ import {
 } from "./topology.ts";
 import { setupServerRouting } from "./routes.ts";
 import { ensureUfwForwardRules } from "./firewall.ts";
-import { createControlLoopService } from "./control_loop.ts";
+import { createDaemonService } from "./daemon.ts";
 import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
 
@@ -885,8 +885,8 @@ export async function setupNetwork(
       }, { indent: 1 });
     }
 
-    // 9. Setup Network Control Loop
-    log.section("Setting Up Network Control Loop:");
+    // 9. Setup Network Daemon
+    log.section("Setting Up Network Daemon:");
     for (const ssh of sshManagers) {
       await log.hostBlock(ssh.getHost(), async () => {
         const host = ssh.getHost();
@@ -894,20 +894,20 @@ export async function setupNetwork(
         if (!server) return;
 
         try {
-          await createControlLoopService(
+          await createDaemonService(
             ssh,
             server.id,
             config.builder.engine,
             "jiji0",
           );
-          log.say("├── Network control loop configured", 2);
+          log.say("├── Network daemon configured", 2);
           log.say(
             "└── Network state stored in Corrosion distributed database",
             2,
           );
         } catch (error) {
           log.error(
-            `Failed to setup network control loop on ${host}: ${error}`,
+            `Failed to setup network daemon on ${host}: ${error}`,
             "network",
           );
           results.push({ host, success: false, error: String(error) });

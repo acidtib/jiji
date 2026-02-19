@@ -1,10 +1,10 @@
 /**
- * Control loop binary installation and service management
+ * Daemon binary installation and service management
  *
- * Downloads and installs the jiji-control-loop binary from GitHub releases,
+ * Downloads and installs the jiji-daemon binary from GitHub releases,
  * configures it as a systemd service with environment variables.
  *
- * The control loop runs continuously on each server and handles:
+ * The daemon runs continuously on each server and handles:
  * 1. Topology reconciliation - Add/remove WireGuard peers based on Corrosion state
  * 2. Endpoint health monitoring - Check handshake times and rotate endpoints
  * 3. Container health tracking - Validate containers and update Corrosion
@@ -15,25 +15,40 @@
 import type { SSHManager } from "../../utils/ssh.ts";
 import { log } from "../../utils/logger.ts";
 import { CORROSION_API_PORT } from "../../constants.ts";
+import { VERSION } from "../../version.ts";
 
-const CONTROL_LOOP_INSTALL_DIR = "/opt/jiji/bin";
-const CONTROL_LOOP_BINARY = "jiji-control-loop";
-const CONTROL_LOOP_REPO = "acidtib/jiji-control-loop";
-const CONTROL_LOOP_VERSION = "0.1.0";
+const DAEMON_INSTALL_DIR = "/opt/jiji/bin";
+const DAEMON_BINARY = "jiji-daemon";
+const DAEMON_REPO = "acidtib/jiji";
+const DAEMON_VERSION = VERSION;
 
 /**
- * Install jiji-control-loop binary on a remote server
+ * Install jiji-daemon binary on a remote server
  *
  * Downloads pre-built binary from GitHub releases.
  *
  * @param ssh - SSH connection to the server
  * @returns True if installation was successful
  */
-export async function installControlLoop(
+export async function installDaemon(
   ssh: SSHManager,
 ): Promise<boolean> {
   const host = ssh.getHost();
-  const binaryPath = `${CONTROL_LOOP_INSTALL_DIR}/${CONTROL_LOOP_BINARY}`;
+  const binaryPath = `${DAEMON_INSTALL_DIR}/${DAEMON_BINARY}`;
+
+  // Clean up old jiji-control-loop binary and service (backward compatibility)
+  await ssh.executeCommand(
+    `rm -f ${DAEMON_INSTALL_DIR}/jiji-control-loop`,
+  );
+  await ssh.executeCommand(
+    "systemctl stop jiji-control-loop.service 2>/dev/null || true",
+  );
+  await ssh.executeCommand(
+    "systemctl disable jiji-control-loop.service 2>/dev/null || true",
+  );
+  await ssh.executeCommand(
+    "rm -f /etc/systemd/system/jiji-control-loop.service",
+  );
 
   // Check if already installed
   const checkResult = await ssh.executeCommand(
@@ -41,12 +56,12 @@ export async function installControlLoop(
   );
 
   if (checkResult.stdout.includes("exists")) {
-    log.debug(`jiji-control-loop already installed on ${host}`, "network");
+    log.debug(`jiji-daemon already installed on ${host}`, "network");
     return true;
   }
 
   // Create installation directory
-  await ssh.executeCommand(`mkdir -p ${CONTROL_LOOP_INSTALL_DIR}`);
+  await ssh.executeCommand(`mkdir -p ${DAEMON_INSTALL_DIR}`);
 
   // Detect architecture
   const archResult = await ssh.executeCommand("uname -m");
@@ -64,31 +79,31 @@ export async function installControlLoop(
 
   try {
     const downloadUrl =
-      `https://github.com/${CONTROL_LOOP_REPO}/releases/download/v${CONTROL_LOOP_VERSION}/${CONTROL_LOOP_BINARY}-${downloadArch}`;
+      `https://github.com/${DAEMON_REPO}/releases/download/v${DAEMON_VERSION}/${DAEMON_BINARY}-${downloadArch}`;
 
     log.info(
-      `Downloading jiji-control-loop from ${downloadUrl}...`,
+      `Downloading jiji-daemon from ${downloadUrl}...`,
       "network",
     );
 
     const downloadResult = await ssh.executeCommand(
-      `cd ${CONTROL_LOOP_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o ${CONTROL_LOOP_BINARY}`,
+      `cd ${DAEMON_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o ${DAEMON_BINARY}`,
     );
 
     if (downloadResult.code !== 0) {
       throw new Error(
-        `Failed to download jiji-control-loop: ${downloadResult.stderr}`,
+        `Failed to download jiji-daemon: ${downloadResult.stderr}`,
       );
     }
 
     // Make executable
     await ssh.executeCommand(`chmod +x ${binaryPath}`);
 
-    log.success(`jiji-control-loop installed on ${host}`, "network");
+    log.success(`jiji-daemon installed on ${host}`, "network");
     return true;
   } catch (error) {
     log.error(
-      `Failed to install jiji-control-loop on ${host}: ${error}`,
+      `Failed to install jiji-daemon on ${host}: ${error}`,
       "network",
     );
     return false;
@@ -96,42 +111,42 @@ export async function installControlLoop(
 }
 
 /**
- * Create systemd service for the control loop
+ * Create systemd service for the daemon
  *
  * @param ssh - SSH connection to the server
  * @param serverId - ID of the local server
  * @param engine - Container engine (docker or podman)
  * @param interfaceName - WireGuard interface name (default: jiji0)
  */
-export async function createControlLoopService(
+export async function createDaemonService(
   ssh: SSHManager,
   serverId: string,
   engine: "docker" | "podman",
   interfaceName: string = "jiji0",
 ): Promise<void> {
-  const binaryPath = `${CONTROL_LOOP_INSTALL_DIR}/${CONTROL_LOOP_BINARY}`;
+  const binaryPath = `${DAEMON_INSTALL_DIR}/${DAEMON_BINARY}`;
 
   // Install binary if needed
-  const installed = await installControlLoop(ssh);
+  const installed = await installDaemon(ssh);
   if (!installed) {
-    throw new Error("Failed to install jiji-control-loop binary");
+    throw new Error("Failed to install jiji-daemon binary");
   }
 
   // Create systemd service with environment variables
   const serviceContent = `[Unit]
-Description=Jiji Network Control Loop
+Description=Jiji Network Daemon
 After=jiji-corrosion.service
 Requires=jiji-corrosion.service
 
 [Service]
 Type=simple
 ExecStart=${binaryPath}
-Environment="SERVER_ID=${serverId}"
-Environment="ENGINE=${engine}"
-Environment="INTERFACE=${interfaceName}"
-Environment="CORROSION_API=http://127.0.0.1:${CORROSION_API_PORT}"
-Environment="CORROSION_DIR=/opt/jiji/corrosion"
-Environment="LOOP_INTERVAL=30"
+Environment="JIJI_SERVER_ID=${serverId}"
+Environment="JIJI_ENGINE=${engine}"
+Environment="JIJI_INTERFACE=${interfaceName}"
+Environment="JIJI_CORROSION_API=http://127.0.0.1:${CORROSION_API_PORT}"
+Environment="JIJI_CORROSION_DIR=/opt/jiji/corrosion"
+Environment="JIJI_LOOP_INTERVAL=30"
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -142,12 +157,12 @@ WantedBy=multi-user.target
 `;
 
   const serviceResult = await ssh.executeCommand(
-    `cat > /etc/systemd/system/jiji-control-loop.service << 'EOFSERVICE'\n${serviceContent}\nEOFSERVICE`,
+    `cat > /etc/systemd/system/jiji-daemon.service << 'EOFSERVICE'\n${serviceContent}\nEOFSERVICE`,
   );
 
   if (serviceResult.code !== 0) {
     throw new Error(
-      `Failed to create control loop service: ${serviceResult.stderr}`,
+      `Failed to create daemon service: ${serviceResult.stderr}`,
     );
   }
 
@@ -155,35 +170,41 @@ WantedBy=multi-user.target
   await ssh.executeCommand("systemctl daemon-reload");
 
   // Enable and start service
-  await ssh.executeCommand("systemctl enable jiji-control-loop.service");
-  await ssh.executeCommand("systemctl restart jiji-control-loop.service");
+  await ssh.executeCommand("systemctl enable jiji-daemon.service");
+  await ssh.executeCommand("systemctl restart jiji-daemon.service");
 }
 
 /**
- * Stop and remove control loop service
+ * Stop and remove daemon service
  *
  * @param ssh - SSH connection to the server
  */
-export async function removeControlLoopService(
+export async function removeDaemonService(
   ssh: SSHManager,
 ): Promise<void> {
   await ssh.executeCommand(
-    "systemctl stop jiji-control-loop.service 2>/dev/null || true",
+    "systemctl stop jiji-daemon.service 2>/dev/null || true",
   );
   await ssh.executeCommand(
-    "systemctl disable jiji-control-loop.service 2>/dev/null || true",
+    "systemctl disable jiji-daemon.service 2>/dev/null || true",
+  );
+  await ssh.executeCommand(
+    "rm -f /etc/systemd/system/jiji-daemon.service",
+  );
+  await ssh.executeCommand(
+    `rm -f ${DAEMON_INSTALL_DIR}/${DAEMON_BINARY}`,
+  );
+  // Also clean up old control-loop files from prior version
+  await ssh.executeCommand(
+    `rm -f ${DAEMON_INSTALL_DIR}/jiji-control-loop`,
+  );
+  await ssh.executeCommand(
+    `rm -f ${DAEMON_INSTALL_DIR}/jiji-control-loop.sh`,
   );
   await ssh.executeCommand(
     "rm -f /etc/systemd/system/jiji-control-loop.service",
   );
-  await ssh.executeCommand(
-    `rm -f ${CONTROL_LOOP_INSTALL_DIR}/${CONTROL_LOOP_BINARY}`,
-  );
-  // Also clean up old bash script if it exists from prior version
-  await ssh.executeCommand(
-    `rm -f ${CONTROL_LOOP_INSTALL_DIR}/jiji-control-loop.sh`,
-  );
   await ssh.executeCommand("systemctl daemon-reload");
 
-  log.debug("Control loop service removed", "network");
+  log.debug("Daemon service removed", "network");
 }

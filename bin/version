@@ -1,7 +1,11 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write
 
-const VERSION_FILE = "./src/version.ts";
-const DENO_CONFIG = "./deno.json";
+const VERSION_FILE = "./packages/cli/src/version.ts";
+const MEMBER_CONFIGS = [
+  "./packages/cli/deno.json",
+  "./packages/dns/deno.json",
+  "./packages/daemon/deno.json",
+];
 
 // Function to get current version from version.ts
 async function getCurrentVersion(): Promise<string> {
@@ -47,20 +51,23 @@ function incrementPatchVersion(version: string): string {
   return `${major}.${minor}.${patch + 1}`;
 }
 
-// Function to update version in deno.json
-async function updateDenoConfig(version: string): Promise<void> {
-  try {
-    const content = await Deno.readTextFile(DENO_CONFIG);
-    const config = JSON.parse(content);
-    config.version = version;
-    await Deno.writeTextFile(
-      DENO_CONFIG,
-      JSON.stringify(config, null, 2) + "\n",
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Error updating deno.json: ${message}`);
-    throw error;
+// Function to update version in all member deno.json files
+async function updateDenoConfigs(version: string): Promise<void> {
+  for (const configPath of MEMBER_CONFIGS) {
+    try {
+      const content = await Deno.readTextFile(configPath);
+      const config = JSON.parse(content);
+      config.version = version;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify(config, null, 2) + "\n",
+      );
+      console.log(`Updated ${configPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error updating ${configPath}: ${message}`);
+      throw error;
+    }
   }
 }
 
@@ -99,8 +106,7 @@ async function main() {
       await updateVersionFile(newVersion);
       console.log(`Updated ${VERSION_FILE}`);
 
-      await updateDenoConfig(newVersion);
-      console.log(`Updated ${DENO_CONFIG}`);
+      await updateDenoConfigs(newVersion);
 
       console.log(`Version updated to ${newVersion}`);
     } catch (error) {

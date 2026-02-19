@@ -5,6 +5,7 @@ npm_modules/
 # Build output
 build/
 dist/
+target/
 
 # Environment variables
 .env
