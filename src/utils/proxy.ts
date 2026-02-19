@@ -20,8 +20,12 @@ export interface KamalProxyDeployOptions {
   hosts?: string[];
   /** Path prefix for path-based routing */
   pathPrefix?: string;
-  /** Enable TLS/SSL */
+  /** Enable TLS/SSL via Let's Encrypt */
   tls?: boolean;
+  /** Path to custom TLS certificate file (inside kamal-proxy container) */
+  tlsCertificatePath?: string;
+  /** Path to custom TLS private key file (inside kamal-proxy container) */
+  tlsPrivateKeyPath?: string;
   /** Health check endpoint path (HTTP-based) */
   healthCheckPath?: string;
   /** Health check command (command-based) */
@@ -81,7 +85,10 @@ export function buildKamalProxyOptionsFromTarget(
     target: targetAddr,
     hosts,
     pathPrefix: target.path_prefix,
-    tls: target.ssl,
+    // TLS is negotiated at the host level before HTTP routing — kamal-proxy only
+    // accepts --tls on the root path ("/") service. Path-prefix services inherit
+    // TLS automatically and must not receive --tls or cert path flags.
+    tls: target.ssl && !target.path_prefix ? true : undefined,
     healthCheckPath: target.healthcheck?.path,
     healthCheckCmd: target.healthcheck?.cmd,
     healthCheckCmdRuntime: cmdRuntime,
@@ -108,6 +115,12 @@ export function buildDeployCommandArgs(
 
   if (options.pathPrefix) args.push(`--path-prefix=${options.pathPrefix}`);
   if (options.tls) args.push("--tls");
+  if (options.tlsCertificatePath) {
+    args.push(`--tls-certificate-path=${options.tlsCertificatePath}`);
+  }
+  if (options.tlsPrivateKeyPath) {
+    args.push(`--tls-private-key-path=${options.tlsPrivateKeyPath}`);
+  }
 
   // HTTP-based health check
   if (options.healthCheckPath) {
@@ -173,6 +186,13 @@ export class ProxyCommands {
       `${this.engine} ps --filter "name=^${this.containerName}$" --format "{{.Names}}" | grep -q "${this.containerName}"`;
     const result = await this.ssh.executeCommand(command);
     return result.success;
+  }
+
+  async hasCertsMount(): Promise<boolean> {
+    const command =
+      `${this.engine} inspect ${this.containerName} --format '{{json .HostConfig.Binds}}' 2>/dev/null`;
+    const result = await this.ssh.executeCommand(command);
+    return result.success && result.stdout.includes("jiji-certs");
   }
 
   async getVersion(): Promise<string | null> {
@@ -247,7 +267,7 @@ export class ProxyCommands {
       : "";
 
     const command =
-      `${this.engine} run --name ${this.containerName} --network ${this.networkName} ${dnsArgs} --detach --restart unless-stopped ${privilegedFlag} --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy ${runtimeMounts} ${publishArgs} ghcr.io/acidtib/kamal-proxy:jiji kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
+      `${this.engine} run --name ${this.containerName} --network ${this.networkName} ${dnsArgs} --detach --restart unless-stopped ${privilegedFlag} --volume ${this.configVolume}:/home/kamal-proxy/.config/kamal-proxy --volume $HOME/.jiji/certs:/jiji-certs:ro ${runtimeMounts} ${publishArgs} ghcr.io/acidtib/kamal-proxy:jiji kamal-proxy run --http-port ${this.internalHttpPort} --https-port ${this.internalHttpsPort}`;
 
     const result = await this.ssh.executeCommand(command);
     if (!result.success) {
@@ -290,7 +310,7 @@ export class ProxyCommands {
     await this.waitForReady();
   }
 
-  private async waitForReady(maxAttempts = 30, delayMs = 1000): Promise<void> {
+  async waitForReady(maxAttempts = 30, delayMs = 1000): Promise<void> {
     for (let i = 0; i < maxAttempts; i++) {
       const command =
         `${this.engine} inspect ${this.containerName} --format '{{.State.Status}}'`;
@@ -381,6 +401,7 @@ export class ProxyCommands {
     appPort: number,
     projectName: string,
     containerIp?: string,
+    certPaths?: { cert: string; key: string },
   ): Promise<void> {
     const options = buildKamalProxyOptionsFromTarget(
       serviceName,
@@ -391,6 +412,10 @@ export class ProxyCommands {
       this.engine, // Pass engine as default runtime for command health checks
       containerName, // Pass container name for command-based health checks
     );
+    if (certPaths) {
+      options.tlsCertificatePath = certPaths.cert;
+      options.tlsPrivateKeyPath = certPaths.key;
+    }
 
     const args = buildDeployCommandArgs(options);
     const argsStr = args.join(" ");

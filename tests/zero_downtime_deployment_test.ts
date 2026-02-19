@@ -94,6 +94,14 @@ class IntegrationMockSSHManager {
 
     // Handle proxy container checks
     if (command.includes("docker inspect kamal-proxy")) {
+      if (command.includes("HostConfig.Binds")) {
+        return {
+          success: true,
+          stdout: '["$HOME/.jiji/certs:/jiji-certs:ro"]',
+          stderr: "",
+          code: 0,
+        };
+      }
       return { success: true, stdout: "running", stderr: "", code: 0 };
     }
 

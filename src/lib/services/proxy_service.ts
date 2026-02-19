@@ -7,11 +7,63 @@ import type { Configuration } from "../configuration.ts";
 import type { ServiceConfiguration } from "../configuration/service.ts";
 import type { SSHManager } from "../../utils/ssh.ts";
 import { ProxyCommands } from "../../utils/proxy.ts";
+import type { ProxySslCerts } from "../configuration/proxy.ts";
 import { createServerAuditLogger } from "../../utils/audit.ts";
 import { getDnsServerForHost } from "../../utils/network_helpers.ts";
 import { getContainerIp } from "./container_registry.ts";
 import { log } from "../../utils/logger.ts";
 import type { ProxyConfigResult, ProxyInstallResult } from "../../types.ts";
+
+/**
+ * Write PEM certificate and key files to the remote host via SFTP.
+ * Files are written to .jiji/certs/{project}/{serviceName}/ and
+ * returns the container-internal paths (mounted at /jiji-certs).
+ */
+async function writeCertFiles(
+  ssh: SSHManager,
+  project: string,
+  serviceName: string,
+  certPem: string,
+  keyPem: string,
+): Promise<{ cert: string; key: string }> {
+  const remoteDir = `.jiji/certs/${project}/${serviceName}`;
+  const remoteCertPath = `${remoteDir}/cert.pem`;
+  const remoteKeyPath = `${remoteDir}/key.pem`;
+
+  // Create remote directory
+  const mkdirResult = await ssh.executeCommand(`mkdir -p ${remoteDir}`);
+  if (!mkdirResult.success) {
+    throw new Error(
+      `Failed to create cert directory ${remoteDir}: ${mkdirResult.stderr}`,
+    );
+  }
+
+  // Write cert.pem via temp file
+  const tempCert = await Deno.makeTempFile({ suffix: ".pem" });
+  try {
+    await Deno.writeTextFile(tempCert, certPem);
+    await ssh.uploadFile(tempCert, remoteCertPath);
+  } finally {
+    await Deno.remove(tempCert).catch(() => {});
+  }
+
+  // Write key.pem via temp file
+  const tempKey = await Deno.makeTempFile({ suffix: ".pem" });
+  try {
+    await Deno.writeTextFile(tempKey, keyPem);
+    await ssh.uploadFile(tempKey, remoteKeyPath);
+  } finally {
+    await Deno.remove(tempKey).catch(() => {});
+  }
+
+  // Restrict key file permissions
+  await ssh.executeCommand(`chmod 600 ${remoteKeyPath}`);
+
+  return {
+    cert: `/jiji-certs/${project}/${serviceName}/cert.pem`,
+    key: `/jiji-certs/${project}/${serviceName}/key.pem`,
+  };
+}
 
 /**
  * Service for managing kamal-proxy across multiple hosts
@@ -80,8 +132,9 @@ export class ProxyService {
 
           // Check if proxy is already running
           const isRunning = await proxyCmd.isRunning();
+          const needsReboot = isRunning && !(await proxyCmd.hasCertsMount());
 
-          if (isRunning) {
+          if (isRunning && !needsReboot) {
             const version = await proxyCmd.getVersion();
             log.say(
               `└── kamal-proxy already running on ${host} (version: ${
@@ -106,9 +159,17 @@ export class ProxyService {
               );
             }
 
-            // Boot the proxy
-            log.say(`Booting kamal-proxy on ${host}...`, 2);
-            await proxyCmd.boot({ dnsServer });
+            if (needsReboot) {
+              log.say(
+                `Rebooting kamal-proxy on ${host} to add certs volume mount...`,
+                2,
+              );
+              await proxyCmd.run({ dnsServer });
+              await proxyCmd.waitForReady();
+            } else {
+              log.say(`Booting kamal-proxy on ${host}...`, 2);
+              await proxyCmd.boot({ dnsServer });
+            }
 
             const version = await proxyCmd.getVersion();
             log.say(
@@ -120,7 +181,7 @@ export class ProxyService {
             results.push({
               host,
               success: true,
-              message: "Started",
+              message: needsReboot ? "Rebooted" : "Started",
               version: version || undefined,
             });
 
@@ -132,7 +193,9 @@ export class ProxyService {
             await hostLogger.logProxyEvent(
               "boot",
               "success",
-              `kamal-proxy ${version || "unknown"} started`,
+              `kamal-proxy ${version || "unknown"} ${
+                needsReboot ? "rebooted" : "started"
+              }`,
             );
           }
         } catch (error) {
@@ -178,12 +241,14 @@ export class ProxyService {
    * @param service Service configuration
    * @param host Hostname
    * @param ssh SSH manager for the host
+   * @param envVars Resolved environment variables for secret lookups
    * @returns Configuration result
    */
   async configureServiceProxy(
     service: ServiceConfiguration,
     host: string,
     ssh: SSHManager,
+    envVars: Record<string, string> = {},
   ): Promise<ProxyConfigResult> {
     const proxyConfig = service.proxy;
     if (!proxyConfig || !proxyConfig.enabled) {
@@ -233,6 +298,39 @@ export class ProxyService {
         );
 
         try {
+          // Resolve custom TLS cert paths if configured.
+          // Only the root path service ("/") gets cert flags — path-prefix services
+          // inherit TLS from the root and must not receive --tls-certificate-path.
+          let certPaths: { cert: string; key: string } | undefined;
+          if (
+            target.ssl && typeof target.ssl === "object" && !target.path_prefix
+          ) {
+            const certs = target.ssl as ProxySslCerts;
+            const certPem = envVars[certs.certificate_pem];
+            const keyPem = envVars[certs.private_key_pem];
+            if (!certPem) {
+              throw new Error(
+                `Secret '${certs.certificate_pem}' not found in environment for TLS certificate`,
+              );
+            }
+            if (!keyPem) {
+              throw new Error(
+                `Secret '${certs.private_key_pem}' not found in environment for TLS private key`,
+              );
+            }
+            log.debug(
+              `Writing TLS certs for ${targetServiceName} on ${host}`,
+              "proxy",
+            );
+            certPaths = await writeCertFiles(
+              ssh,
+              this.config.project,
+              service.name,
+              certPem,
+              keyPem,
+            );
+          }
+
           await proxyCmd.deployTarget(
             targetServiceName,
             containerName,
@@ -240,6 +338,7 @@ export class ProxyService {
             appPort,
             this.config.project,
             containerIp,
+            certPaths,
           );
 
           const hostsStr = target.host ||
@@ -328,10 +427,12 @@ export class ProxyService {
    * Configure proxy for all services that need it
    *
    * @param services Services with proxy configuration
+   * @param envVars Resolved environment variables for secret lookups
    * @returns Array of configuration results
    */
   async configureProxyForServices(
     services: ServiceConfiguration[],
+    envVars: Record<string, string> = {},
   ): Promise<ProxyConfigResult[]> {
     const results: ProxyConfigResult[] = [];
 
@@ -365,6 +466,7 @@ export class ProxyService {
             service,
             host,
             hostSsh,
+            envVars,
           );
           results.push(result);
         }, { indent: 1 });

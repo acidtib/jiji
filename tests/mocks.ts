@@ -69,6 +69,15 @@ export class MockSSHManager {
     }
 
     if (command.includes("docker inspect kamal-proxy")) {
+      // hasCertsMount() checks for "jiji-certs" in HostConfig.Binds output
+      if (command.includes("HostConfig.Binds")) {
+        return Promise.resolve({
+          success: true,
+          stdout: '["$HOME/.jiji/certs:/jiji-certs:ro"]',
+          stderr: "",
+          code: 0,
+        });
+      }
       return Promise.resolve({
         success: true,
         stdout: "running",

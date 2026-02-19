@@ -29,9 +29,6 @@ const command = new Command()
   .globalOption(
     "-c, --config-file=<CONFIG_FILE:string>",
     "Path to config file",
-    {
-      default: ".jiji/deploy.yml",
-    },
   )
   .globalOption(
     "-e, --environment=<ENVIRONMENT:string>",

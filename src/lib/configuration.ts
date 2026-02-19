@@ -14,6 +14,7 @@ import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
 import { log } from "../utils/logger.ts";
 import { DEFAULT_LOCAL_REGISTRY_PORT } from "../constants.ts";
+import { EnvLoader } from "../utils/env_loader.ts";
 
 export type ContainerEngine = "docker" | "podman";
 
@@ -693,6 +694,15 @@ export class Configuration extends BaseConfiguration {
     );
 
     const configuration = new Configuration(config, path, environment);
+
+    // Load env vars for server host resolution
+    const projectRoot = configuration.getProjectRoot();
+    const envResult = await EnvLoader.loadEnvFile({
+      projectRoot,
+      environment,
+      envPath: configuration.secretsPath,
+    });
+    configuration.servers.setEnvVars(envResult.variables);
 
     // Validate the loaded configuration
     const validationResult = configuration.validate();

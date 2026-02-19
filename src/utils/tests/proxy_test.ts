@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   buildDeployCommandArgs,
   buildKamalProxyOptionsFromTarget,
@@ -229,4 +229,112 @@ Deno.test("buildKamalProxyOptionsFromTarget - no runtime without cmd", () => {
   assertEquals(options.healthCheckPath, "/health");
   assertEquals(options.healthCheckCmd, undefined);
   assertEquals(options.healthCheckCmdRuntime, undefined); // No runtime for HTTP health checks
+});
+
+// Tests for custom TLS certificate support
+
+Deno.test("buildDeployCommandArgs - with tlsCertificatePath and tlsPrivateKeyPath", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "web",
+    target: "container:3000",
+    hosts: ["example.com"],
+    tls: true,
+    tlsCertificatePath: "/jiji-certs/myproject/web-3000/cert.pem",
+    tlsPrivateKeyPath: "/jiji-certs/myproject/web-3000/key.pem",
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--tls"), true); // --tls required even with custom certs
+  assertEquals(
+    args.includes(
+      "--tls-certificate-path=/jiji-certs/myproject/web-3000/cert.pem",
+    ),
+    true,
+  );
+  assertEquals(
+    args.includes(
+      "--tls-private-key-path=/jiji-certs/myproject/web-3000/key.pem",
+    ),
+    true,
+  );
+});
+
+Deno.test("buildDeployCommandArgs - tls:true uses --tls, not cert paths", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "web",
+    target: "container:3000",
+    hosts: ["example.com"],
+    tls: true,
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--tls"), true);
+  assertEquals(
+    args.some((a) => a.startsWith("--tls-certificate-path")),
+    false,
+  );
+  assertEquals(
+    args.some((a) => a.startsWith("--tls-private-key-path")),
+    false,
+  );
+});
+
+Deno.test("buildDeployCommandArgs - no TLS flags without tls or cert paths", () => {
+  const options: KamalProxyDeployOptions = {
+    serviceName: "web",
+    target: "container:3000",
+    hosts: ["example.com"],
+  };
+
+  const args = buildDeployCommandArgs(options);
+
+  assertEquals(args.includes("--tls"), false);
+  assertEquals(
+    args.some((a) => a.startsWith("--tls-certificate-path")),
+    false,
+  );
+  assertEquals(
+    args.some((a) => a.startsWith("--tls-private-key-path")),
+    false,
+  );
+});
+
+Deno.test("ProxyConfiguration - parses ssl object into ProxySslCerts", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    ssl: {
+      certificate_pem: "CERTIFICATE_PEM",
+      private_key_pem: "PRIVATE_KEY_PEM",
+    },
+  });
+
+  const ssl = config.targets[0].ssl;
+  assertEquals(typeof ssl, "object");
+  assertEquals(
+    (ssl as { certificate_pem: string }).certificate_pem,
+    "CERTIFICATE_PEM",
+  );
+  assertEquals(
+    (ssl as { private_key_pem: string }).private_key_pem,
+    "PRIVATE_KEY_PEM",
+  );
+});
+
+Deno.test("ProxyConfiguration - ssl object missing private_key_pem throws ConfigurationError", () => {
+  const config = new ProxyConfiguration({
+    app_port: 3000,
+    host: "example.com",
+    ssl: {
+      certificate_pem: "CERTIFICATE_PEM",
+    },
+  });
+
+  assertThrows(
+    () => config.validate(),
+    Error,
+    "ssl requires both",
+  );
 });

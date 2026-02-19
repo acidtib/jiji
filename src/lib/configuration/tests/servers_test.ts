@@ -363,3 +363,80 @@ Deno.test("ServersConfiguration - preserve insertion order in servers Map", () =
   const names = Array.from(config.servers.keys());
   assertEquals(names, ["server3", "server1", "server2"]);
 });
+
+// ============================================================================
+// Environment Variable Resolution Tests
+// ============================================================================
+
+Deno.test("ServersConfiguration - resolve host from pre-loaded env vars", () => {
+  const config = new ServersConfiguration({
+    "server1": { host: "HOST_SERVER1" },
+  });
+
+  config.setEnvVars({ HOST_SERVER1: "10.0.0.1" });
+
+  assertEquals(config.getServer("server1")?.host, "10.0.0.1");
+});
+
+Deno.test("ServersConfiguration - resolve host from Deno.env fallback", () => {
+  Deno.env.set("HOST_FROM_ENV", "10.0.0.2");
+  try {
+    const config = new ServersConfiguration({
+      "server1": { host: "HOST_FROM_ENV" },
+    });
+
+    assertEquals(config.getServer("server1")?.host, "10.0.0.2");
+  } finally {
+    Deno.env.delete("HOST_FROM_ENV");
+  }
+});
+
+Deno.test("ServersConfiguration - pre-loaded env vars take priority over Deno.env", () => {
+  Deno.env.set("HOST_PRIORITY", "from-host-env");
+  try {
+    const config = new ServersConfiguration({
+      "server1": { host: "HOST_PRIORITY" },
+    });
+
+    config.setEnvVars({ HOST_PRIORITY: "from-dotenv" });
+
+    assertEquals(config.getServer("server1")?.host, "from-dotenv");
+  } finally {
+    Deno.env.delete("HOST_PRIORITY");
+  }
+});
+
+Deno.test("ServersConfiguration - literal host values are not resolved", () => {
+  const config = new ServersConfiguration({
+    "server1": { host: "192.168.1.100" },
+    "server2": { host: "my-server.example.com" },
+  });
+
+  assertEquals(config.getServer("server1")?.host, "192.168.1.100");
+  assertEquals(config.getServer("server2")?.host, "my-server.example.com");
+});
+
+Deno.test("ServersConfiguration - error when env var reference is unresolved", () => {
+  assertThrows(
+    () => {
+      const config = new ServersConfiguration({
+        "server1": { host: "MISSING_HOST_VAR" },
+      });
+      config.servers;
+    },
+    ConfigurationError,
+    "Environment variable 'MISSING_HOST_VAR' not found for server 'server1' host",
+  );
+});
+
+Deno.test("ServersConfiguration - mix of literal and env var hosts", () => {
+  const config = new ServersConfiguration({
+    "server1": { host: "192.168.1.100" },
+    "server2": { host: "HOST_SERVER2" },
+  });
+
+  config.setEnvVars({ HOST_SERVER2: "10.0.0.5" });
+
+  assertEquals(config.getServer("server1")?.host, "192.168.1.100");
+  assertEquals(config.getServer("server2")?.host, "10.0.0.5");
+});

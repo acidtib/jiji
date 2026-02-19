@@ -1,6 +1,7 @@
 import { BaseConfiguration, ConfigurationError } from "./base.ts";
 import type { Validatable } from "./base.ts";
 import type { ValidationResult } from "./validation.ts";
+import { EnvLoader } from "../../utils/env_loader.ts";
 
 /**
  * Named server configuration from the top-level servers section
@@ -39,6 +40,7 @@ export interface ResolvedServerConfig {
 export class ServersConfiguration extends BaseConfiguration
   implements Validatable {
   private _servers?: Map<string, NamedServerConfig>;
+  private _envVars?: Record<string, string>;
 
   /**
    * Get all named servers
@@ -101,7 +103,7 @@ export class ServersConfiguration extends BaseConfiguration
     }
 
     const serverConfig: NamedServerConfig = {
-      host: obj.host,
+      host: this.resolveHostValue(obj.host, name),
     };
 
     // Optional arch
@@ -172,6 +174,37 @@ export class ServersConfiguration extends BaseConfiguration
     }
 
     return serverConfig;
+  }
+
+  /**
+   * Resolve a host value, checking if it's an environment variable reference
+   */
+  private resolveHostValue(host: string, serverName: string): string {
+    if (!EnvLoader.isEnvVarReference(host)) {
+      return host;
+    }
+
+    // Try pre-loaded env vars first, then host environment
+    const envVars = this._envVars ?? {};
+    const resolved = envVars[host] ?? Deno.env.get(host);
+
+    if (!resolved) {
+      throw new ConfigurationError(
+        `Environment variable '${host}' not found for server '${serverName}' host. ` +
+          `Set it in your .env file or host environment.`,
+      );
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Set pre-loaded environment variables for host resolution
+   */
+  setEnvVars(envVars: Record<string, string>): void {
+    this._envVars = envVars;
+    // Reset cached servers so they get re-parsed with env vars
+    this._servers = undefined;
   }
 
   /**

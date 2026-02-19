@@ -45,9 +45,11 @@ export class EnvLoader {
   static parseEnvFile(content: string): Record<string, string> {
     const result: Record<string, string> = {};
     const lines = content.split("\n");
+    let i = 0;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
+    while (i < lines.length) {
+      const trimmed = lines[i].trim();
+      i++;
 
       // Skip empty lines and comments
       if (!trimmed || trimmed.startsWith("#")) {
@@ -68,14 +70,32 @@ export class EnvLoader {
         continue; // Invalid key, skip
       }
 
-      // Handle quoted values
+      // Handle quoted values (including multiline)
       value = value.trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        // Remove quotes
-        value = value.slice(1, -1);
+      if (value.startsWith('"') || value.startsWith("'")) {
+        const quote = value[0];
+        // Check if the closing quote is on the same line
+        const rest = value.slice(1);
+        const closeIdx = rest.indexOf(quote);
+        if (closeIdx !== -1) {
+          // Single-line quoted value
+          value = rest.slice(0, closeIdx);
+        } else {
+          // Multiline quoted value — accumulate lines until closing quote
+          const parts: string[] = [rest];
+          while (i < lines.length) {
+            const nextLine = lines[i];
+            i++;
+            const endIdx = nextLine.indexOf(quote);
+            if (endIdx !== -1) {
+              // Found the closing quote
+              parts.push(nextLine.slice(0, endIdx));
+              break;
+            }
+            parts.push(nextLine);
+          }
+          value = parts.join("\n");
+        }
       } else {
         // Remove inline comments for unquoted values
         const commentIndex = value.indexOf(" #");

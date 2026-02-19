@@ -20,6 +20,16 @@ export interface ProxyHealthcheckConfig {
 }
 
 /**
+ * Custom TLS certificate configuration (resolved from secrets)
+ */
+export interface ProxySslCerts {
+  /** ALL_CAPS env var name whose value is the certificate PEM */
+  certificate_pem: string;
+  /** ALL_CAPS env var name whose value is the private key PEM */
+  private_key_pem: string;
+}
+
+/**
  * Individual proxy target configuration for multi-port services
  */
 export interface ProxyTarget {
@@ -29,8 +39,8 @@ export interface ProxyTarget {
   host?: string;
   /** Multiple host domains for routing (mutually exclusive with host) */
   hosts?: string[];
-  /** Enable TLS/SSL for this target */
-  ssl?: boolean;
+  /** Enable TLS/SSL: true = Let's Encrypt, object = custom certs from secrets */
+  ssl?: boolean | ProxySslCerts;
   /** Path prefix for path-based routing */
   path_prefix?: string;
   /** Health check configuration for this target */
@@ -51,6 +61,7 @@ export class ProxyConfiguration extends BaseConfiguration {
     /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
   private static readonly INVALID_PATH_CHARS = /[<>"|?*]/;
   private static readonly INTERVAL_PATTERN = /^\d+[smh]$/;
+  private static readonly ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
   constructor(config: Record<string, unknown>) {
     super(config);
@@ -89,6 +100,26 @@ export class ProxyConfiguration extends BaseConfiguration {
   }
 
   /**
+   * Parse ssl value into boolean | ProxySslCerts
+   */
+  private parseSslConfig(value: unknown): boolean | ProxySslCerts {
+    if (typeof value === "boolean") return value;
+    if (value && typeof value === "object") {
+      const config = value as Record<string, unknown>;
+      // Always parse as ProxySslCerts so validation can catch incomplete configs
+      return {
+        certificate_pem: typeof config.certificate_pem === "string"
+          ? config.certificate_pem
+          : "",
+        private_key_pem: typeof config.private_key_pem === "string"
+          ? config.private_key_pem
+          : "",
+      };
+    }
+    return false;
+  }
+
+  /**
    * Parse targets array from configuration
    */
   private parseTargets(): ProxyTarget[] {
@@ -106,7 +137,7 @@ export class ProxyConfiguration extends BaseConfiguration {
         hosts: Array.isArray(target.hosts)
           ? target.hosts.filter((h): h is string => typeof h === "string")
           : undefined,
-        ssl: typeof target.ssl === "boolean" ? target.ssl : false,
+        ssl: this.parseSslConfig(target.ssl),
         path_prefix: target.path_prefix as string | undefined,
         healthcheck: target.healthcheck
           ? target.healthcheck as ProxyHealthcheckConfig
@@ -162,7 +193,7 @@ export class ProxyConfiguration extends BaseConfiguration {
         : 0,
       host,
       hosts,
-      ssl: typeof this.rawConfig.ssl === "boolean" ? this.rawConfig.ssl : false,
+      ssl: this.parseSslConfig(this.rawConfig.ssl),
       path_prefix: typeof this.rawConfig.path_prefix === "string"
         ? this.rawConfig.path_prefix
         : undefined,
@@ -226,6 +257,33 @@ export class ProxyConfiguration extends BaseConfiguration {
         warnings.push(
           `Host '${host}' in ${targetLabel} uses localhost - this may not work in distributed deployments`,
         );
+      }
+    }
+
+    // Validate ssl certs object
+    if (target.ssl && typeof target.ssl === "object") {
+      const certs = target.ssl as ProxySslCerts;
+      if (!certs.certificate_pem || !certs.private_key_pem) {
+        errors.push(
+          new ConfigurationError(
+            `${targetLabel} ssl requires both 'certificate_pem' and 'private_key_pem'`,
+          ),
+        );
+      } else {
+        if (!ProxyConfiguration.ENV_VAR_PATTERN.test(certs.certificate_pem)) {
+          errors.push(
+            new ConfigurationError(
+              `${targetLabel} ssl.certificate_pem must be an env var name (e.g. CERTIFICATE_PEM), not a literal value`,
+            ),
+          );
+        }
+        if (!ProxyConfiguration.ENV_VAR_PATTERN.test(certs.private_key_pem)) {
+          errors.push(
+            new ConfigurationError(
+              `${targetLabel} ssl.private_key_pem must be an env var name (e.g. PRIVATE_KEY_PEM), not a literal value`,
+            ),
+          );
+        }
       }
     }
 
