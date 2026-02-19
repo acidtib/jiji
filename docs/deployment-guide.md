@@ -57,7 +57,7 @@ builder:
   local: true
   registry:
     type: local
-    port: 9270
+    port: 31270
 
 ssh:
   user: root
@@ -136,7 +136,7 @@ jiji registry login
 builder:
   registry:
     type: local
-    port: 9270 # Jiji handles port forwarding automatically
+    port: 31270 # Jiji handles port forwarding automatically
 ```
 
 ### 6. Initialize Servers

@@ -13,7 +13,7 @@ const TEST_CONFIG_DATA = {
     local: true,
     registry: {
       type: "local",
-      port: 9270,
+      port: 31270,
     },
   },
   servers: {
@@ -114,7 +114,7 @@ Deno.test("Configuration - deployment plan display format validation", () => {
   // Test basic configuration properties that would be displayed
   assertEquals(config.project, "test-deployment");
   assertEquals(config.builder.engine, "docker");
-  assertEquals(config.builder.registry.getRegistryUrl(), "localhost:9270");
+  assertEquals(config.builder.registry.getRegistryUrl(), "localhost:31270");
 
   const services = config.getDeployableServices();
 

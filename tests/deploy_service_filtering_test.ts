@@ -13,7 +13,7 @@ const TEST_CONFIG_DATA = {
     local: true,
     registry: {
       type: "local",
-      port: 9270,
+      port: 31270,
     },
   },
   servers: {

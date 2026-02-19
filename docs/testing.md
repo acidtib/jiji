@@ -194,10 +194,10 @@ Port forwarding enables remote servers to pull from your local registry:
 
 ```bash
 # Start local registry
-docker run -d -p 9270:5000 --name test-registry registry:2
+docker run -d -p 31270:5000 --name test-registry registry:2
 
 # Verify it's running
-curl http://localhost:9270/v2/
+curl http://localhost:31270/v2/
 # Expected: {}
 ```
 
@@ -205,10 +205,10 @@ curl http://localhost:9270/v2/
 
 ```bash
 # Manually create SSH reverse tunnel
-ssh -R 9270:localhost:9270 user@server1.example.com
+ssh -R 31270:localhost:31270 user@server1.example.com
 
 # On remote server, verify tunnel
-curl http://localhost:9270/v2/
+curl http://localhost:31270/v2/
 # Expected: {} (same as local)
 
 # Exit SSH session to close tunnel
@@ -222,7 +222,7 @@ exit
 builder:
   registry:
     type: local
-    port: 9270
+    port: 31270
 ```
 
 ```bash
@@ -233,21 +233,21 @@ jiji deploy --build
 # Check Jiji output for port forwarding messages
 
 # On remote server during deployment
-ssh user@server1.example.com "netstat -tlnp | grep 9270"
-# Expected: Listen on 127.0.0.1:9270
+ssh user@server1.example.com "netstat -tlnp | grep 31270"
+# Expected: Listen on 127.0.0.1:31270
 ```
 
 **What to verify:**
 
 - Local registry is accessible
 - SSH tunnel established automatically
-- Remote server can pull from localhost:9270
+- Remote server can pull from localhost:31270
 - Tunnel torn down after deployment
 - Deployment completes successfully
 
 ### Troubleshooting Port Forwarding
 
-**Issue: Remote can't connect to localhost:9270**
+**Issue: Remote can't connect to localhost:31270**
 
 ```bash
 # On remote server /etc/ssh/sshd_config
@@ -306,7 +306,7 @@ builder:
   local: true
   registry:
     type: local
-    port: 9270
+    port: 31270
 ssh:
   user: deploy
 servers:

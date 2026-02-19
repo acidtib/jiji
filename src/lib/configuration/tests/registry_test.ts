@@ -5,7 +5,7 @@ import { ConfigurationError } from "../base.ts";
 // Test data
 const LOCAL_REGISTRY_DATA = {
   type: "local",
-  port: 9270,
+  port: 31270,
 };
 
 const LOCAL_REGISTRY_CUSTOM_PORT_DATA = {
@@ -98,9 +98,9 @@ Deno.test("RegistryConfiguration - local registry with default port", () => {
   const registry = new RegistryConfiguration({});
 
   assertEquals(registry.type, "local");
-  assertEquals(registry.port, 9270);
+  assertEquals(registry.port, 31270);
   assertEquals(registry.isLocal(), true);
-  assertEquals(registry.getRegistryUrl(), "localhost:9270");
+  assertEquals(registry.getRegistryUrl(), "localhost:31270");
 });
 
 Deno.test("RegistryConfiguration - local registry with custom port", () => {
@@ -138,7 +138,7 @@ Deno.test("RegistryConfiguration - getFullImageName", () => {
   const registry = new RegistryConfiguration(LOCAL_REGISTRY_DATA);
 
   const imageName = registry.getFullImageName("myproject", "web", "v1.0.0");
-  assertEquals(imageName, "localhost:9270/myproject-web:v1.0.0");
+  assertEquals(imageName, "localhost:31270/myproject-web:v1.0.0");
 });
 
 Deno.test("RegistryConfiguration - getFullImageName with remote registry", () => {
@@ -400,10 +400,10 @@ Deno.test("RegistryConfiguration - Docker Hub validation fails without username"
 });
 
 Deno.test("RegistryConfiguration - registry URL for different ports", () => {
-  const registry1 = new RegistryConfiguration({ type: "local", port: 9270 });
+  const registry1 = new RegistryConfiguration({ type: "local", port: 31270 });
   const registry2 = new RegistryConfiguration({ type: "local", port: 8080 });
 
-  assertEquals(registry1.getRegistryUrl(), "localhost:9270");
+  assertEquals(registry1.getRegistryUrl(), "localhost:31270");
   assertEquals(registry2.getRegistryUrl(), "localhost:8080");
 });
 

@@ -46,10 +46,10 @@ Type: `local` No namespace required
 builder:
   registry:
     type: local
-    port: 9270 # optional, defaults to 9270
+    port: 31270 # optional, defaults to 31270
 ```
 
-Result: Images are stored at `localhost:9270/project-service:version`
+Result: Images are stored at `localhost:31270/project-service:version`
 
 ## Environment Setup
 
@@ -169,11 +169,11 @@ to allow remote servers to access the registry on your local machine.
 ### How It Works
 
 ```
-Local Machine (localhost:9270)
+Local Machine (localhost:31270)
   |
   | SSH Reverse Tunnel
   |
-Remote Server (localhost:9270)
+Remote Server (localhost:31270)
   |
   | Pull image
   V
@@ -194,8 +194,8 @@ jiji deploy
 
 # Jiji automatically:
 # 1. Establishes SSH connection to remote servers
-# 2. Creates reverse tunnel: remote:9270 -> local:9270
-# 3. Remote servers pull from localhost:9270
+# 2. Creates reverse tunnel: remote:31270 -> local:31270
+# 3. Remote servers pull from localhost:31270
 # 4. Tunnel is torn down after deployment
 ```
 
@@ -205,10 +205,10 @@ You can also manually set up port forwarding:
 
 ```bash
 # Forward local registry to remote server
-ssh -R 9270:localhost:9270 user@server1.example.com
+ssh -R 31270:localhost:31270 user@server1.example.com
 
-# On remote server, pull from localhost:9270
-docker pull localhost:9270/myapp/service:latest
+# On remote server, pull from localhost:31270
+docker pull localhost:31270/myapp/service:latest
 ```
 
 ### Configuration
@@ -220,18 +220,18 @@ builder:
   local: true # Build locally, push to local registry
   registry:
     type: local
-    port: 9270 # Default port (customizable)
+    port: 31270 # Default port (customizable)
 ```
 
 ### Troubleshooting Port Forwarding
 
-**Issue**: Remote server can't connect to localhost:9270
+**Issue**: Remote server can't connect to localhost:31270
 
 **Solutions**:
 
 1. Verify local registry is running:
    ```bash
-   curl http://localhost:9270/v2/
+   curl http://localhost:31270/v2/
    ```
 2. Check SSH allows port forwarding:
    ```bash
@@ -242,7 +242,7 @@ builder:
 3. Verify tunnel is established:
    ```bash
    # On remote server
-   netstat -tlnp | grep 9270
+   netstat -tlnp | grep 31270
    ```
 
 **Issue**: Permission denied for port forwarding

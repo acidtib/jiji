@@ -352,7 +352,7 @@ export class RegistryManager {
 
   /**
    * Get registry URL for image naming
-   * @returns Registry URL (e.g., "localhost:9270")
+   * @returns Registry URL (e.g., "localhost:31270")
    */
   getRegistryUrl(): string {
     return `localhost:${this.port}`;

@@ -13,7 +13,7 @@ const COMPLETE_LOCAL_BUILDER_DATA = {
   cache: true,
   registry: {
     type: "local",
-    port: 9270,
+    port: 31270,
   },
 };
 
@@ -23,7 +23,7 @@ const REMOTE_BUILDER_DATA = {
   remote: "ssh://builder@192.168.1.50:22",
   registry: {
     type: "local",
-    port: 9270,
+    port: 31270,
   },
 };
 
@@ -55,7 +55,7 @@ Deno.test("BuilderConfiguration - minimal configuration", () => {
   assertEquals(builder.remote, undefined);
   assertEquals(builder.cache, true);
   assertEquals(builder.registry.type, "local");
-  assertEquals(builder.registry.port, 9270);
+  assertEquals(builder.registry.port, 31270);
 });
 
 Deno.test("BuilderConfiguration - complete local builder", () => {

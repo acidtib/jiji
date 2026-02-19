@@ -40,7 +40,7 @@ builder:
 
     # Local Registry Settings (type: local)
     # Creates a local registry with SSH port forwarding to deployment hosts
-    port: 9270
+    port: 31270
 
     # Remote Registry Settings (type: remote)
     # Supported: Docker Hub, GitHub Container Registry
@@ -60,7 +60,7 @@ builder:
 #   cache: true
 #   registry:
 #     type: local
-#     port: 9270
+#     port: 31270
 #
 # Example 2: Remote Building with Local Registry
 # builder:
@@ -70,7 +70,7 @@ builder:
 #   cache: true
 #   registry:
 #     type: local
-#     port: 9270
+#     port: 31270
 #
 # Example 3: Remote Registry (Docker Hub)
 # builder:
@@ -296,7 +296,7 @@ ssh:
 #
 #   # Note: Service domain is always 'jiji' - containers reach each other via <project>-<service>.jiji
 #   # Note: Service discovery method is always 'corrosion' (distributed CRDT-based)
-#   # Note: Corrosion gossip port (9280) and API port (9220) are not configurable
+#   # Note: Corrosion gossip port (31280) and API port (31220) are not configurable
 #
 # Network Configuration Examples:
 # ==============================

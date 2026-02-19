@@ -133,12 +133,12 @@ Required ports:
 | Port  | Protocol | Purpose          |
 | ----- | -------- | ---------------- |
 | 31820 | UDP      | WireGuard tunnel |
-| 9280  | TCP      | Corrosion gossip |
+| 31280 | TCP      | Corrosion gossip |
 
 ```bash
 # UFW examples
 ufw allow 31820/udp
-ufw allow 9280/tcp
+ufw allow 31280/tcp
 ```
 
 ## Troubleshooting

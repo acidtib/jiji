@@ -95,7 +95,7 @@ Three components work together in `src/lib/network/`:
 
 - No central coordinator - eventual consistency
 - Tables: `servers`, `containers`, `services`, `cluster_metadata`
-- Gossip on port 9280, API on port 9220
+- Gossip on port 31280, API on port 31220
 
 **jiji-dns** (`dns.ts`): DNS-based service discovery
 

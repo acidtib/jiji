@@ -58,7 +58,7 @@ builder:
   local: true
   registry:
     type: local
-    port: 9270
+    port: 31270
 
 ssh:
   user: deploy
@@ -163,14 +163,14 @@ for development.
 builder:
   registry:
     type: local
-    port: 9270 # Optional, defaults to 9270
+    port: 31270 # Optional, defaults to 31270
 ```
 
 **How it works:**
 
-1. Local registry runs on `localhost:9270`
+1. Local registry runs on `localhost:31270`
 2. Jiji automatically creates SSH reverse tunnels to remote servers
-3. Remote servers pull from `localhost:9270` via the tunnel
+3. Remote servers pull from `localhost:31270` via the tunnel
 4. Tunnel torn down after deployment
 
 ### Remote Registry
@@ -407,8 +407,8 @@ The following network settings are hardcoded and cannot be changed:
 | Service domain        | `jiji`      | Containers reach each other via `{project}-{service}.jiji` |
 | Discovery method      | `corrosion` | Distributed CRDT-based service discovery                   |
 | WireGuard port        | `31820`     | UDP port for WireGuard VPN                                 |
-| Corrosion gossip port | `9280`      | TCP port for CRDT gossip protocol                          |
-| Corrosion API port    | `9220`      | TCP port for Corrosion HTTP API                            |
+| Corrosion gossip port | `31280`     | TCP port for CRDT gossip protocol                          |
+| Corrosion API port    | `31220`     | TCP port for Corrosion HTTP API                            |
 | DNS port              | `53`        | jiji-dns listens on standard DNS port                      |
 
 **Note:** The `.jiji` domain is internal only and not customizable. All service
@@ -1019,7 +1019,7 @@ builder:
   local: true
   registry:
     type: local
-    port: 9270
+    port: 31270
 
 ssh:
   user: deploy

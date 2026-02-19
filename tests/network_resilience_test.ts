@@ -206,76 +206,76 @@ Deno.test("CORROSION_SCHEMA includes health columns", async () => {
   );
 });
 
-Deno.test("control_loop includes signal handlers", async () => {
+Deno.test("control_loop installs binary from GitHub releases", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/control_loop.ts",
   );
 
   assertEquals(
-    content.includes("trap cleanup SIGTERM SIGINT SIGHUP"),
+    content.includes("installControlLoop"),
     true,
-    "Missing signal handlers",
+    "Missing installControlLoop function",
   );
   assertEquals(
-    content.includes("SHUTTING_DOWN"),
+    content.includes("jiji-control-loop"),
     true,
-    "Missing SHUTTING_DOWN flag",
+    "Missing binary name reference",
   );
 });
 
-Deno.test("control_loop includes split-brain detection", async () => {
+Deno.test("control_loop configures systemd service with environment variables", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/control_loop.ts",
   );
 
   assertEquals(
-    content.includes("detect_split_brain"),
+    content.includes('Environment="SERVER_ID='),
     true,
-    "Missing detect_split_brain function",
+    "Missing SERVER_ID environment variable",
   );
   assertEquals(
-    content.includes("SPLIT-BRAIN"),
+    content.includes('Environment="ENGINE='),
     true,
-    "Missing split-brain alert message",
+    "Missing ENGINE environment variable",
+  );
+  assertEquals(
+    content.includes('Environment="CORROSION_API='),
+    true,
+    "Missing CORROSION_API environment variable",
+  );
+  assertEquals(
+    content.includes('Environment="CORROSION_DIR='),
+    true,
+    "Missing CORROSION_DIR environment variable",
   );
 });
 
-Deno.test("control_loop includes iteration timing", async () => {
+Deno.test("control_loop supports multi-architecture download", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/control_loop.ts",
   );
 
   assertEquals(
-    content.includes("ITERATION_START"),
+    content.includes("linux-x64"),
     true,
-    "Missing ITERATION_START tracking",
+    "Missing x64 architecture support",
   );
   assertEquals(
-    content.includes("ITERATION_DURATION"),
+    content.includes("linux-arm64"),
     true,
-    "Missing ITERATION_DURATION tracking",
-  );
-  assertEquals(
-    content.includes("Slow iteration"),
-    true,
-    "Missing slow iteration warning",
+    "Missing arm64 architecture support",
   );
 });
 
-Deno.test("control_loop includes TCP health check", async () => {
+Deno.test("control_loop cleans up old bash script", async () => {
   const content = await Deno.readTextFile(
     "src/lib/network/control_loop.ts",
   );
 
   assertEquals(
-    content.includes("check_container_tcp_health"),
+    content.includes("jiji-control-loop.sh"),
     true,
-    "Missing TCP health check function",
-  );
-  assertEquals(
-    content.includes("/dev/tcp/"),
-    true,
-    "Missing bash TCP check syntax",
+    "Missing cleanup of old bash script",
   );
 });
 
