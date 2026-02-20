@@ -3,15 +3,7 @@
   "version": "0.4.0",
   "exports": "./src/main.ts",
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-env --allow-run --watch src/main.ts",
-    "run": "deno run --allow-net --allow-read --allow-env --allow-run src/main.ts",
-    "test": "deno test --allow-all --parallel tests/",
-    "check": "deno fmt --check && deno lint && deno test --allow-all --parallel tests/",
-    "fmt": "deno fmt",
-    "lint": "deno lint",
-    "build": "deno compile --allow-net --allow-read --allow-env --allow-run --output build/jiji-daemon src/main.ts",
-    "build:linux-x64": "deno compile --allow-net --allow-read --allow-env --allow-run --target x86_64-unknown-linux-gnu --output build/jiji-daemon-linux-x64 src/main.ts",
-    "build:linux-arm64": "deno compile --allow-net --allow-read --allow-env --allow-run --target aarch64-unknown-linux-gnu --output build/jiji-daemon-linux-arm64 src/main.ts"
+    "check": "deno fmt --check && deno lint && deno test --allow-all --parallel tests/"
   },
   "compilerOptions": {
     "strict": true,

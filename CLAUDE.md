@@ -14,7 +14,7 @@ packages/
 └── daemon/    # @jiji/daemon — Network reconciliation daemon
 ```
 
-All packages share a unified version number managed by `./bin/version`.
+All packages share a unified version number managed by `mise version`.
 
 ## Workspace Conventions
 
@@ -32,27 +32,45 @@ All packages share a unified version number managed by `./bin/version`.
 # Install dependencies (run from repo root)
 deno install --allow-scripts=npm:cpu-features,npm:ssh2
 
-# Run checks for a specific package
+# Build (via mise — runs from repo root)
+mise build              # Build all 3 binaries → target/
+mise build:release      # Cross-compile all release binaries
+
+# CLI (via mise)
+mise cli:run            # Run CLI
+mise cli:build          # Build CLI binary
+mise cli:install        # Build + install to /usr/local/bin/jiji
+mise cli:build:dev      # Build dev binary
+mise cli:install:dev    # Build dev binary + install to /usr/local/bin/jiji_dev
+mise cli:release        # Cross-compile CLI for all platforms
+
+# DNS (via mise)
+mise dns:run            # Run DNS server
+mise dns:build          # Build DNS binary
+mise dns:release        # Cross-compile DNS for Linux
+
+# Daemon (via mise)
+mise daemon:run         # Run daemon
+mise daemon:build       # Build daemon binary
+mise daemon:release     # Cross-compile daemon for Linux
+
+# Checks and tests
+mise check              # fmt --check + lint + test (CLI package)
+mise test               # Run CLI tests only
+mise fmt                # Format CLI code
+mise lint               # Lint CLI code
+deno test --allow-all packages/cli/tests/deploy_plan_test.ts  # Single test file
+
+# Per-package checks (via deno task — each package keeps a `check` task)
 cd packages/cli && deno task check
 cd packages/dns && deno task check
 cd packages/daemon && deno task check
 
-# Run a single test file
-deno test --allow-all packages/cli/tests/deploy_plan_test.ts
+# Version management
+mise version                    # Show current version
+mise version -- --bump          # Auto-increment patch version
+mise version -- --bump 1.0.0    # Set specific version (updates all 3 packages)
 
-# Build binaries
-cd packages/cli && deno task build       # → build/jiji
-cd packages/dns && deno task build       # → build/jiji-dns
-cd packages/daemon && deno task build    # → build/jiji-daemon
-
-# CLI-specific
-cd packages/cli && deno task run         # Run CLI directly
-cd packages/cli && deno task install     # Build and install to /usr/local/bin/jiji
-
-# Version management (run from repo root)
-./bin/version              # Show current version
-./bin/version --bump       # Auto-increment patch version
-./bin/version --bump 1.0.0 # Set specific version (updates all 3 packages)
 ```
 
 ## High-Level Architecture
@@ -133,8 +151,9 @@ for concurrency control (default: 30 concurrent connections).
 
 - `executeConcurrent()` - Acquire permit before SSH operation, prevents server
   overload
-- `executeBestEffort()` - For cleanup operations; logs failures but doesn't
-  block execution
+
+Related: `executeBestEffort()` in `command_helpers.ts` wraps SSH commands for
+cleanup operations — logs failures but doesn't block execution.
 
 ### Service Orchestration
 
@@ -195,8 +214,8 @@ Registry passwords also support this pattern (e.g., `password: GITHUB_TOKEN`).
 ## Testing
 
 Tests use `MockSSHManager` from `packages/cli/tests/mocks.ts` which simulates
-SSH operations via `MockServerState`. Commands are parsed and state is mutated to
-simulate container operations without real SSH connections.
+SSH operations via an internal command→response map. Stubbed commands are matched
+and responses returned without real SSH connections.
 
 Pattern for adding new tests:
 
@@ -210,54 +229,7 @@ Run specific test with:
 deno test --allow-all packages/cli/tests/zero_downtime_deployment_test.ts
 ```
 
-## DNS Package
+## DNS & Daemon Packages
 
-jiji-dns is a lightweight DNS server for service discovery. It subscribes to
-Corrosion's real-time streaming API and maintains an in-memory DNS cache.
-
-### Component Flow
-
-```
-Corrosion DB ─HTTP Stream─► CorrosionSubscriber ─► DnsCache ◄── DnsServer ◄── UDP Queries
-                           (NDJSON events)        (in-memory)   (port 53)
-```
-
-### Key Components
-
-- `packages/dns/src/corrosion_subscriber.ts` - HTTP streaming connection to
-  Corrosion `/v1/subscriptions`. Auto-reconnects with exponential backoff.
-- `packages/dns/src/dns_cache.ts` - In-memory cache. Newest-container-wins per
-  service/server. Only healthy containers returned.
-- `packages/dns/src/dns_server.ts` - UDP DNS server (RFC 1035). Routes
-  `*.{serviceDomain}` to cache, forwards others to system resolvers.
-- `packages/dns/src/dns_protocol.ts` - DNS packet parsing and building.
-
-### DNS Resolution Patterns
-
-| Pattern                                   | Example                 | Description                        |
-| ----------------------------------------- | ----------------------- | ---------------------------------- |
-| `{project}-{service}.{domain}`            | `casa-api.jiji`         | All healthy containers for service |
-| `{project}-{service}-{instance}.{domain}` | `casa-api-primary.jiji` | Specific instance                  |
-
-## Daemon Package
-
-The daemon (formerly jiji-control-loop) runs continuously on each server and
-handles network reconciliation:
-
-1. Topology reconciliation - Add/remove WireGuard peers based on Corrosion state
-2. Endpoint health monitoring - Check handshake times and rotate endpoints
-3. Container health tracking - Validate containers and update Corrosion
-4. Heartbeat updates - Keep server alive in Corrosion
-5. Garbage collection - Clean up stale records
-6. Public IP discovery - Periodically refresh endpoints
-7. Corrosion health checks - Monitor database health
-8. Split-brain detection - Detect cluster partitions
-
-Key source files in `packages/daemon/src/`:
-
-- `main.ts` - Entry point, main loop
-- `peer_reconciler.ts` - WireGuard peer sync
-- `peer_monitor.ts` - Peer health monitoring
-- `container_health.ts` - Container health checks
-- `corrosion_client.ts` - HTTP client for Corrosion API
-- `corrosion_cli.ts` - CLI wrapper for Corrosion queries
+See `packages/dns/CLAUDE.md` and `packages/daemon/CLAUDE.md` for package-specific
+architecture, commands, and gotchas.

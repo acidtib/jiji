@@ -159,7 +159,7 @@ export interface DnsServerConfig {
   listenAddrs: string[];
   /** Service domain suffix (e.g., "jiji") */
   serviceDomain: string;
-  /** Corrosion API address (e.g., "http://127.0.0.1:9220") */
+  /** Corrosion API address (e.g., "http://127.0.0.1:31220") */
   corrosionApi: string;
   /** TTL for DNS responses in seconds (default: 60) */
   ttl?: number;
@@ -175,7 +175,7 @@ export interface DnsServerConfig {
 export function parseConfig(): DnsServerConfig {
   const listenAddrEnv = Deno.env.get("JIJI_LISTEN_ADDR");
   const serviceDomain = Deno.env.get("JIJI_SERVICE_DOMAIN") || "jiji";
-  const corrosionApi = Deno.env.get("JIJI_CORROSION_API") || "http://127.0.0.1:9220";
+  const corrosionApi = Deno.env.get("JIJI_CORROSION_API") || "http://127.0.0.1:31220";
   const ttl = parseInt(Deno.env.get("JIJI_DNS_TTL") || "60", 10);
   const reconnectInterval = parseInt(Deno.env.get("JIJI_RECONNECT_INTERVAL") || "5000", 10);
 

@@ -5,8 +5,9 @@ each server maintaining mesh health and cluster state.
 
 ```bash
 deno task check          # fmt + lint + test
-deno task dev            # Run with watch mode (requires JIJI_SERVER_ID env)
-deno task build          # Compile to build/jiji-daemon
+mise daemon:run      # Run daemon (requires JIJI_SERVER_ID env)
+mise daemon:build    # Build daemon binary
+mise daemon:release  # Cross-compile for Linux
 ```
 
 Requires `JIJI_SERVER_ID` env var to run. See `src/types.ts` `parseConfig()` for

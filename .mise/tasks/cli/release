@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Cross-compile CLI for all platforms"
+set -e
+
+COMPILE_FLAGS="--allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml"
+
+targets=(
+  "x86_64-unknown-linux-gnu:jiji-linux-x86_64"
+  "aarch64-unknown-linux-gnu:jiji-linux-arm64"
+  "x86_64-apple-darwin:jiji-macos-x86_64"
+  "aarch64-apple-darwin:jiji-macos-arm64"
+  "x86_64-pc-windows-msvc:jiji-windows-x86_64"
+)
+
+for entry in "${targets[@]}"; do
+  target="${entry%%:*}"
+  output="${entry##*:}"
+  echo "Compiling CLI → target/${output} (${target})"
+  deno compile $COMPILE_FLAGS --target "$target" --output "target/${output}" packages/cli/src/main.ts
+done

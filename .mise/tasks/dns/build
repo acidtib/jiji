@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Build DNS server binary"
+set -e
+
+deno compile \
+  --unstable-net --allow-net --allow-read --allow-env \
+  --output target/jiji-dns \
+  packages/dns/src/main.ts

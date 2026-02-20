@@ -2,11 +2,50 @@
 
 # Setup script for jiji project
 
-set -e  # Exit on any error
+set -e
 
-echo "Setting up jiji project..."
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
 
-echo "Installing deno dependencies..."
-deno install
+info()  { echo -e "${GREEN}==>${NC} $1"; }
+warn()  { echo -e "${YELLOW}==>${NC} $1"; }
+error() { echo -e "${RED}==>${NC} $1" >&2; }
 
-echo "Setup complete!"
+REQUIRED_DENO_MAJOR=2
+
+# Check for deno
+if ! command -v deno &> /dev/null; then
+  error "deno is not installed."
+  echo "  Install it from https://deno.land or via mise:"
+  echo "    mise install deno"
+  exit 1
+fi
+
+# Check deno version
+DENO_VERSION=$(deno --version | head -1 | sed 's/deno //')
+DENO_MAJOR=$(echo "$DENO_VERSION" | cut -d. -f1)
+
+if [ "$DENO_MAJOR" -lt "$REQUIRED_DENO_MAJOR" ]; then
+  error "deno $REQUIRED_DENO_MAJOR.x+ is required (found $DENO_VERSION)."
+  echo "  Update with: mise install deno or deno upgrade"
+  exit 1
+fi
+
+info "deno $DENO_VERSION"
+
+# Check for mise (optional but recommended)
+if command -v mise &> /dev/null; then
+  MISE_VERSION=$(mise --version | cut -d' ' -f1)
+  info "mise $MISE_VERSION"
+else
+  warn "mise is not installed (optional, needed for build/version tasks)."
+  echo "  Install it from https://mise.jdx.dev"
+fi
+
+# Install deno dependencies
+info "Installing deno dependencies..."
+deno install --allow-scripts=npm:cpu-features,npm:ssh2
+
+info "Setup complete!"

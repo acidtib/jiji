@@ -3,7 +3,8 @@ node_modules/
 npm_modules/
 
 # Build output
-build/
+/build/
+**/packages/*/build/
 dist/
 target/
 

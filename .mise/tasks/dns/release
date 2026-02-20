@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#MISE description="Cross-compile DNS for Linux"
+set -e
+
+COMPILE_FLAGS="--unstable-net --allow-net --allow-read --allow-env"
+
+targets=(
+  "x86_64-unknown-linux-gnu:jiji-dns-linux-x64"
+  "aarch64-unknown-linux-gnu:jiji-dns-linux-arm64"
+)
+
+for entry in "${targets[@]}"; do
+  target="${entry%%:*}"
+  output="${entry##*:}"
+  echo "Compiling DNS → target/${output} (${target})"
+  deno compile $COMPILE_FLAGS --target "$target" --output "target/${output}" packages/dns/src/main.ts
+done

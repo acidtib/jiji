@@ -7,21 +7,21 @@ repository.
 
 ```bash
 deno task check          # fmt + lint + test
-deno task dev            # Run with watch mode (requires JIJI_LISTEN_ADDR)
-deno task run            # Run without watch mode
-deno task build          # Compile to build/jiji-dns
+mise dns:run          # Run DNS server (requires JIJI_LISTEN_ADDR)
+mise dns:build        # Build DNS binary
+mise dns:release      # Cross-compile for Linux
 deno test --allow-net --allow-read --allow-env tests/dns_cache_test.ts  # Single test file
 ```
 
 ## Environment Variables
 
-| Variable                  | Required | Default                 | Description                                                         |
-| ------------------------- | -------- | ----------------------- | ------------------------------------------------------------------- |
-| `JIJI_LISTEN_ADDR`        | Yes      | —                       | Comma-separated `host:port` (e.g., `10.210.1.1:53,10.210.128.1:53`) |
-| `JIJI_CORROSION_API`      | No       | `http://127.0.0.1:9220` | Corrosion HTTP API address                                          |
-| `JIJI_SERVICE_DOMAIN`     | No       | `jiji`                  | Domain suffix for service queries                                   |
-| `JIJI_DNS_TTL`            | No       | `60`                    | TTL for DNS responses (seconds)                                     |
-| `JIJI_RECONNECT_INTERVAL` | No       | `5000`                  | Base reconnect delay (ms, with exponential backoff)                 |
+| Variable                  | Required | Default                  | Description                                                         |
+| ------------------------- | -------- | ------------------------ | ------------------------------------------------------------------- |
+| `JIJI_LISTEN_ADDR`        | Yes      | —                        | Comma-separated `host:port` (e.g., `10.210.1.1:53,10.210.128.1:53`) |
+| `JIJI_CORROSION_API`      | No       | `http://127.0.0.1:31220` | Corrosion HTTP API address                                          |
+| `JIJI_SERVICE_DOMAIN`     | No       | `jiji`                   | Domain suffix for service queries                                   |
+| `JIJI_DNS_TTL`            | No       | `60`                     | TTL for DNS responses (seconds)                                     |
+| `JIJI_RECONNECT_INTERVAL` | No       | `5000`                   | Base reconnect delay (ms, with exponential backoff)                 |
 
 ## Architecture
 

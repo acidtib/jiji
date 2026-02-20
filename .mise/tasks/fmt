@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Format code"
+#MISE dir="{{config_root}}/packages/cli"
+set -e
+
+deno fmt "$@"
