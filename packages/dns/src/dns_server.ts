@@ -18,6 +18,9 @@ import {
 } from "./dns_protocol.ts";
 import { DnsResponseCode } from "./types.ts";
 
+/** ANY query type (RFC 1035 §3.2.3) — commonly abused in amplification attacks */
+const QTYPE_ANY = 255;
+
 /**
  * DNS server that handles queries and routes them to cache or upstream
  */
@@ -119,12 +122,22 @@ export class DnsServer {
     try {
       const query = parseDnsQuery(data);
 
-      // Check if this is a query for our service domain
-      if (isServiceDomain(query.domain, this.config.serviceDomain)) {
+      // Block ANY queries to prevent DNS amplification attacks
+      if (query.queryType === QTYPE_ANY) {
+        response = buildDnsResponse({
+          transactionId: query.transactionId,
+          responseCode: DnsResponseCode.REFUSED,
+          domain: query.domain,
+          ips: [],
+          ttl: 0,
+          queryType: query.queryType,
+        });
+      } else if (isServiceDomain(query.domain, this.config.serviceDomain)) {
+        // Check if this is a query for our service domain
         response = this.handleServiceQuery(query.domain, query.transactionId, query.queryType);
       } else {
-        // Forward to upstream resolver
-        response = await this.forwardQuery(data);
+        // Forward to upstream resolver, validating response txn ID
+        response = await this.forwardQuery(data, query.transactionId);
       }
     } catch (error) {
       console.error("Error processing query:", error);
@@ -188,7 +201,10 @@ export class DnsServer {
   /**
    * Forward a query to upstream DNS resolver
    */
-  private async forwardQuery(queryData: Uint8Array): Promise<Uint8Array> {
+  private async forwardQuery(
+    queryData: Uint8Array,
+    expectedTxnId: number,
+  ): Promise<Uint8Array> {
     if (this.systemResolvers.length === 0) {
       throw new Error("No system resolvers available");
     }
@@ -196,7 +212,7 @@ export class DnsServer {
     // Try each resolver in order
     for (const resolver of this.systemResolvers) {
       try {
-        return await this.queryResolver(queryData, resolver);
+        return await this.queryResolver(queryData, resolver, expectedTxnId);
       } catch (error) {
         console.warn(`Resolver ${resolver} failed:`, error);
         continue;
@@ -209,7 +225,11 @@ export class DnsServer {
   /**
    * Send query to a single resolver and wait for response
    */
-  private async queryResolver(queryData: Uint8Array, resolver: string): Promise<Uint8Array> {
+  private async queryResolver(
+    queryData: Uint8Array,
+    resolver: string,
+    expectedTxnId: number,
+  ): Promise<Uint8Array> {
     const conn = Deno.listenDatagram({
       port: 0, // Ephemeral port
       hostname: "0.0.0.0",
@@ -232,6 +252,18 @@ export class DnsServer {
       });
 
       const [response] = await Promise.race([responsePromise, timeoutPromise]);
+
+      // Validate transaction ID in response matches the query
+      if (response.length < 2) {
+        throw new Error("DNS response too short");
+      }
+      const responseTxnId = (response[0] << 8) | response[1];
+      if (responseTxnId !== expectedTxnId) {
+        throw new Error(
+          `DNS response transaction ID mismatch: expected ${expectedTxnId}, got ${responseTxnId}`,
+        );
+      }
+
       return response;
     } finally {
       conn.close();

@@ -9,6 +9,7 @@ import type { SSHManager } from "../../utils/ssh.ts";
 import type { ContainerRegistration } from "../../types/network.ts";
 import {
   corrosionExec,
+  escapeSql,
   registerContainer,
   registerService,
   unregisterContainer,
@@ -223,7 +224,9 @@ export async function updateContainerHealth(
     // Update health status in Corrosion via HTTP API for real-time subscription updates
     const healthStatus = healthy ? "healthy" : "unhealthy";
     const sql =
-      `UPDATE containers SET health_status = '${healthStatus}' WHERE id = '${containerId}';`;
+      `UPDATE containers SET health_status = '${healthStatus}' WHERE id = '${
+        escapeSql(containerId)
+      }';`;
 
     const result = await corrosionExec(ssh, sql);
 
@@ -257,8 +260,9 @@ export async function getServiceContainers(
   serviceName: string,
 ): Promise<string[]> {
   try {
-    const sql =
-      `SELECT ip FROM containers WHERE service = '${serviceName}' AND health_status = 'healthy';`;
+    const sql = `SELECT ip FROM containers WHERE service = '${
+      escapeSql(serviceName)
+    }' AND health_status = 'healthy';`;
 
     const result = await ssh.executeCommand(
       `/opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "${sql}"`,
@@ -306,8 +310,9 @@ export async function cleanupServiceContainers(
   try {
     // Get containers for this service on THIS server only
     // This prevents accidentally cleaning up containers from other servers
-    const sql =
-      `SELECT id FROM containers WHERE service = '${serviceName}' AND server_id = '${serverId}';`;
+    const sql = `SELECT id FROM containers WHERE service = '${
+      escapeSql(serviceName)
+    }' AND server_id = '${escapeSql(serverId)}';`;
 
     const result = await ssh.executeCommand(
       `/opt/jiji/corrosion/corrosion query --config /opt/jiji/corrosion/config.toml "${sql}"`,

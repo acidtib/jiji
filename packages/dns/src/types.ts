@@ -177,7 +177,14 @@ export function parseConfig(): DnsServerConfig {
   const serviceDomain = Deno.env.get("JIJI_SERVICE_DOMAIN") || "jiji";
   const corrosionApi = Deno.env.get("JIJI_CORROSION_API") || "http://127.0.0.1:31220";
   const ttl = parseInt(Deno.env.get("JIJI_DNS_TTL") || "60", 10);
+  if (isNaN(ttl) || ttl <= 0) {
+    throw new Error("JIJI_DNS_TTL must be a positive integer");
+  }
+
   const reconnectInterval = parseInt(Deno.env.get("JIJI_RECONNECT_INTERVAL") || "5000", 10);
+  if (isNaN(reconnectInterval) || reconnectInterval <= 0) {
+    throw new Error("JIJI_RECONNECT_INTERVAL must be a positive integer");
+  }
 
   if (!listenAddrEnv) {
     throw new Error("JIJI_LISTEN_ADDR environment variable is required");

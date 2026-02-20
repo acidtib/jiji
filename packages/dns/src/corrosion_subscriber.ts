@@ -146,6 +146,9 @@ export class CorrosionSubscriber {
     }
   }
 
+  /** Maximum buffer size (1 MB) to prevent unbounded memory growth */
+  private static readonly MAX_BUFFER_SIZE = 1024 * 1024;
+
   /**
    * Process the NDJSON stream from Corrosion
    */
@@ -164,6 +167,13 @@ export class CorrosionSubscriber {
         }
 
         buffer += decoder.decode(value, { stream: true });
+
+        // Guard against unbounded buffer growth
+        if (buffer.length > CorrosionSubscriber.MAX_BUFFER_SIZE) {
+          console.error("Stream buffer exceeded 1 MB, dropping connection");
+          buffer = "";
+          break;
+        }
 
         // Process complete lines
         let newlineIndex: number;
@@ -269,6 +279,19 @@ export class CorrosionSubscriber {
       typeof ip !== "string" ||
       typeof project !== "string"
     ) {
+      return null;
+    }
+
+    // Validate IPv4 format (4 octets, each 0-255)
+    const octets = ip.split(".");
+    if (
+      octets.length !== 4 ||
+      !octets.every((o) => {
+        const n = parseInt(o, 10);
+        return !isNaN(n) && n >= 0 && n <= 255 && String(n) === o;
+      })
+    ) {
+      console.warn(`Invalid IP address from Corrosion: ${ip}`);
       return null;
     }
 

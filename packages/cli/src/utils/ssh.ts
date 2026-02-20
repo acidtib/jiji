@@ -188,6 +188,60 @@ export class SSHManager {
   }
 
   /**
+   * Execute a command on the remote host with data piped to stdin
+   * This avoids embedding sensitive data in shell strings
+   */
+  async executeCommandWithInput(
+    command: string,
+    input: string,
+  ): Promise<CommandResult> {
+    if (!this.isConnected()) {
+      const errorMsg = "SSH connection not established. Call connect() first.";
+      this.logger.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+
+    this.logger.debug(`Executing command with stdin: ${command}`);
+    const startTime = Date.now();
+
+    try {
+      const result = await this.ssh.execCommand(command, { stdin: input });
+      const duration = Date.now() - startTime;
+
+      if (result.code === 0) {
+        this.logger.debug(`Command completed successfully in ${duration}ms`);
+      } else {
+        this.logger.warn(
+          `Command failed with exit code ${result.code} in ${duration}ms`,
+        );
+        if (result.stderr) {
+          this.logger.warn(`Command stderr: ${result.stderr.trim()}`);
+        }
+      }
+
+      return {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        success: result.code === 0,
+        code: result.code,
+      };
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Command execution failed after ${duration}ms: ${errorMsg}`,
+      );
+
+      return {
+        stdout: "",
+        stderr: errorMsg,
+        success: false,
+        code: null,
+      };
+    }
+  }
+
+  /**
    * Execute a command and stream output directly to stdout/stderr
    * This is useful for commands with long-running output that should be displayed in real-time
    */
@@ -555,6 +609,13 @@ export class SSHManager {
    * Build configuration for ProxyCommand (custom proxy command)
    */
   private buildProxyCommandConfig(proxyCommand: string) {
+    // Validate host to prevent shell metacharacter injection via %h substitution
+    if (/[;&|`$(){}!#\n\r\\<>'"*?~]/.test(this.config.host)) {
+      throw new Error(
+        `SSH host contains invalid characters: ${this.config.host}`,
+      );
+    }
+
     // Replace %h and %p with actual host/port
     const command = proxyCommand
       .replace(/%h/g, this.config.host)

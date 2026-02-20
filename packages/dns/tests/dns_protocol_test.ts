@@ -170,6 +170,119 @@ Deno.test("buildDnsResponse - AAAA query echoes correct query type", () => {
   assertEquals(queryType, DnsQueryType.AAAA, "Query type in response should match AAAA");
 });
 
+// --- Compression pointer security tests ---
+
+Deno.test("parseDnsQuery - self-referencing compression pointer is rejected", () => {
+  // Build a packet where the question domain has a compression pointer to itself.
+  // Header (12 bytes) + domain starting at offset 12:
+  //   byte 12-13: compression pointer 0xC0 0x0C → points back to offset 12
+  //   byte 14-15: query type A (0x0001)
+  //   byte 16-17: query class IN (0x0001)
+  const packet = new Uint8Array(18);
+  const view = new DataView(packet.buffer);
+  view.setUint16(0, 0x1234); // txn ID
+  view.setUint16(2, 0x0100); // standard query
+  view.setUint16(4, 1); // 1 question
+  // Self-referencing pointer at offset 12 → offset 12
+  packet[12] = 0xc0;
+  packet[13] = 0x0c;
+  view.setUint16(14, DnsQueryType.A);
+  view.setUint16(16, 1);
+
+  assertThrows(() => parseDnsQuery(packet), Error, "loop");
+});
+
+Deno.test("parseDnsQuery - forward pointer loop is rejected", () => {
+  // Two compression pointers that point to each other:
+  //   offset 12-13: pointer → offset 14
+  //   offset 14-15: pointer → offset 12
+  //   offset 16-17: query type, offset 18-19: query class
+  const packet = new Uint8Array(20);
+  const view = new DataView(packet.buffer);
+  view.setUint16(0, 0xabcd);
+  view.setUint16(2, 0x0100);
+  view.setUint16(4, 1);
+  // Pointer at 12 → 14
+  packet[12] = 0xc0;
+  packet[13] = 0x0e; // 14
+  // Pointer at 14 → 12
+  packet[14] = 0xc0;
+  packet[15] = 0x0c; // 12
+  view.setUint16(16, DnsQueryType.A);
+  view.setUint16(18, 1);
+
+  assertThrows(() => parseDnsQuery(packet), Error, "loop");
+});
+
+Deno.test("parseDnsQuery - valid compression pointer still works", () => {
+  // Packet layout:
+  //   0-11:  Header (12 bytes)
+  //   12-15: label "api" = [3, 'a','p','i']
+  //   16-17: compression pointer 0xC0 0x16 → offset 22
+  //   18-19: query type A (newOffset after pointer = 18)
+  //   20-21: query class IN
+  //   22-27: target label [4]jiji[0] (pointed to by the compression pointer)
+  // Parsed domain = "api.jiji"
+  const packet = new Uint8Array(28);
+  const view = new DataView(packet.buffer);
+  view.setUint16(0, 0x5555);
+  view.setUint16(2, 0x0100);
+  view.setUint16(4, 1);
+
+  // offset 12: label "api"
+  packet[12] = 3;
+  packet[13] = 0x61; // 'a'
+  packet[14] = 0x70; // 'p'
+  packet[15] = 0x69; // 'i'
+  // offset 16: compression pointer to offset 22
+  packet[16] = 0xc0;
+  packet[17] = 22;
+  // offset 18: query type A + class IN (parseDomainName returns newOffset=18)
+  view.setUint16(18, DnsQueryType.A);
+  view.setUint16(20, 1);
+  // offset 22: target label "jiji" + null terminator
+  packet[22] = 4;
+  packet[23] = 0x6a; // 'j'
+  packet[24] = 0x69; // 'i'
+  packet[25] = 0x6a; // 'j'
+  packet[26] = 0x69; // 'i'
+  packet[27] = 0; // null terminator
+
+  const query = parseDnsQuery(packet);
+  assertEquals(query.domain, "api.jiji");
+  assertEquals(query.transactionId, 0x5555);
+  assertEquals(query.queryType, DnsQueryType.A);
+});
+
+Deno.test("parseDnsQuery - compression pointer OOB second byte is rejected", () => {
+  // Packet just long enough for header + one compression pointer byte, missing second byte
+  const packet = new Uint8Array(13);
+  const view = new DataView(packet.buffer);
+  view.setUint16(0, 0x1234);
+  view.setUint16(2, 0x0100);
+  view.setUint16(4, 1);
+  // Compression pointer at offset 12, but packet is only 13 bytes — second byte missing
+  packet[12] = 0xc0;
+
+  assertThrows(() => parseDnsQuery(packet), Error, "truncated");
+});
+
+Deno.test("buildDnsResponse - rejects invalid IPv4 address", () => {
+  assertThrows(
+    () =>
+      buildDnsResponse({
+        transactionId: 0x1234,
+        responseCode: DnsResponseCode.NOERROR,
+        domain: "test.jiji",
+        ips: ["not.an.ip.addr"],
+        ttl: 60,
+        queryType: DnsQueryType.A,
+      }),
+    Error,
+    "Invalid IPv4",
+  );
+});
+
 /**
  * Helper to build a test DNS query packet
  */

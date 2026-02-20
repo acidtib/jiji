@@ -6,6 +6,7 @@
  */
 
 import type { ContainerRecord, HealthResult } from "./types.ts";
+import { isValidContainerId, isValidIPv4 } from "./validation.ts";
 import * as log from "./logger.ts";
 
 const TCP_TIMEOUT_MS = 2000;
@@ -45,6 +46,13 @@ async function isContainerRunning(
   engine: "docker" | "podman",
   containerId: string,
 ): Promise<boolean> {
+  if (!isValidContainerId(containerId)) {
+    log.warn("Refusing to query container with invalid ID format", {
+      container_id: containerId,
+    });
+    return false;
+  }
+
   const cmd = new Deno.Command(engine, {
     args: ["ps", "-q", "--filter", `id=${containerId}`],
     stdout: "piped",
@@ -96,6 +104,20 @@ async function checkSingleContainer(
   const { id, ip, healthPort, healthStatus, consecutiveFailures } = container;
   let newStatus = "";
   let newFailures = consecutiveFailures;
+
+  // Validate container IP before making network connections (SSRF protection)
+  if (ip && !isValidIPv4(ip)) {
+    log.warn("Skipping health check for container with invalid IP", {
+      container_id: id,
+      ip,
+    });
+    return {
+      containerId: id,
+      newStatus: healthStatus,
+      newFailures: consecutiveFailures,
+      changed: false,
+    };
+  }
 
   // Check if container process is running
   const running = await isContainerRunning(engine, id);

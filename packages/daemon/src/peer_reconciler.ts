@@ -7,6 +7,13 @@
 import type { Config, ServerRecord } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
 import * as wg from "./wireguard.ts";
+import {
+  escapeSql,
+  isValidCIDR,
+  isValidEndpoint,
+  isValidIPv6,
+  isValidWireGuardKey,
+} from "./validation.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -32,8 +39,9 @@ async function getActiveServers(
   cli: CorrosionCli,
   serverId: string,
 ): Promise<ServerRecord[]> {
+  const escapedId = escapeSql(serverId);
   const rows = await cli.query(
-    `SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE last_seen > (strftime('%s', 'now') - 300) * 1000 AND id != '${serverId}';`,
+    `SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE last_seen > (strftime('%s', 'now') - 300) * 1000 AND id != '${escapedId}';`,
   );
 
   return rows.filter((r) => r[0]?.trim()).map((row) => ({
@@ -69,10 +77,42 @@ export async function reconcilePeers(
   // Add missing peers
   for (const server of activeServers) {
     if (!currentPubkeys.has(server.wireguardPubkey)) {
+      // Validate all Corrosion-sourced peer data before passing to wg
+      if (!isValidWireGuardKey(server.wireguardPubkey)) {
+        log.warn("Skipping peer with invalid pubkey format", {
+          pubkey: server.wireguardPubkey,
+        });
+        continue;
+      }
+
+      if (!isValidCIDR(server.subnet)) {
+        log.warn("Skipping peer with invalid subnet", {
+          pubkey: server.wireguardPubkey,
+          subnet: server.subnet,
+        });
+        continue;
+      }
+
+      if (!isValidIPv6(server.managementIp)) {
+        log.warn("Skipping peer with invalid management IP", {
+          pubkey: server.wireguardPubkey,
+          management_ip: server.managementIp,
+        });
+        continue;
+      }
+
       const endpoint = server.endpoints[0];
       if (!endpoint) {
         log.warn("Server has no endpoints, skipping", {
           pubkey: server.wireguardPubkey,
+        });
+        continue;
+      }
+
+      if (!isValidEndpoint(endpoint)) {
+        log.warn("Skipping peer with invalid endpoint format", {
+          pubkey: server.wireguardPubkey,
+          endpoint,
         });
         continue;
       }

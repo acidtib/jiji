@@ -1,3 +1,5 @@
+import { isValidServerId } from "./validation.ts";
+
 /**
  * Configuration for the daemon, parsed from environment variables.
  * All env vars use the JIJI_ prefix to avoid collisions.
@@ -18,6 +20,11 @@ export function parseConfig(): Config {
   const serverId = Deno.env.get("JIJI_SERVER_ID");
   if (!serverId) {
     throw new Error("JIJI_SERVER_ID environment variable is required");
+  }
+  if (!isValidServerId(serverId)) {
+    throw new Error(
+      `Invalid JIJI_SERVER_ID format: ${serverId}. Must be alphanumeric with hyphens, underscores, or dots (1-128 chars)`,
+    );
   }
 
   const engine = Deno.env.get("JIJI_ENGINE") ?? "docker";
@@ -123,3 +130,4 @@ export const STALE_CONTAINER_THRESHOLD = 180; // 3 minutes in seconds
 export const OFFLINE_SERVER_THRESHOLD = 600000; // 10 minutes in milliseconds
 export const HEARTBEAT_STALE_THRESHOLD = 120000; // 2 minutes in milliseconds
 export const ACTIVE_SERVER_THRESHOLD = 300000; // 5 minutes in milliseconds
+export const CLOCK_SKEW_MARGIN = 300; // 5 minutes in seconds — safety margin for GC

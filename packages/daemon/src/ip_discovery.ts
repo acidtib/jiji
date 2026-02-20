@@ -8,6 +8,7 @@
 import type { Config } from "./types.ts";
 import type { CorrosionClient } from "./corrosion_client.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
+import { escapeSql } from "./validation.ts";
 import * as log from "./logger.ts";
 
 const IP_SERVICES = [
@@ -59,8 +60,9 @@ export async function updatePublicIp(
   }
 
   // Get current endpoints
+  const escapedId = escapeSql(config.serverId);
   const current = await cli.queryScalar(
-    `SELECT endpoints FROM servers WHERE id = '${config.serverId}';`,
+    `SELECT endpoints FROM servers WHERE id = '${escapedId}';`,
   );
 
   if (current && current.includes(newIp)) {
@@ -72,9 +74,10 @@ export async function updatePublicIp(
   const newEndpoint = `${newIp}:${WIREGUARD_PORT}`;
   const endpointsJson = JSON.stringify([newEndpoint]);
 
+  const escapedJson = escapeSql(endpointsJson);
   try {
     await client.exec(
-      `UPDATE servers SET endpoints = '${endpointsJson}' WHERE id = '${config.serverId}';`,
+      `UPDATE servers SET endpoints = '${escapedJson}' WHERE id = '${escapedId}';`,
     );
   } catch (err) {
     log.error("Failed to update endpoints", { error: String(err) });

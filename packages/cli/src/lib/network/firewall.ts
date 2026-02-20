@@ -63,6 +63,13 @@ export async function addContainerForwardRules(
 ): Promise<void> {
   const host = ssh.getHost();
 
+  // Validate containerSubnet is a proper CIDR to prevent sed injection
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/.test(containerSubnet)) {
+    throw new Error(
+      `Invalid container subnet CIDR format: ${containerSubnet}`,
+    );
+  }
+
   // Find the line number of the last COMMIT in before.rules (*filter section)
   const findResult = await ssh.executeCommand(
     `grep -n '^COMMIT$' /etc/ufw/before.rules | tail -1 | cut -d: -f1`,

@@ -98,10 +98,19 @@ export function parseDnsQuery(data: Uint8Array): DnsQuery {
  * @param offset Starting offset
  * @returns Parsed domain and new offset
  */
+const MAX_COMPRESSION_DEPTH = 128;
+const DNS_LABEL_PATTERN = /^[a-zA-Z0-9-]+$/;
+
 function parseDomainName(
   data: Uint8Array,
   offset: number,
+  visited: Set<number> = new Set(),
+  depth: number = 0,
 ): { domain: string; newOffset: number } {
+  if (depth > MAX_COMPRESSION_DEPTH) {
+    throw new Error("DNS compression pointer depth exceeded");
+  }
+
   const labels: string[] = [];
   let currentOffset = offset;
 
@@ -116,9 +125,17 @@ function parseDomainName(
 
     // Check for compression pointer (starts with 11xxxxxx)
     if ((length & 0xc0) === 0xc0) {
-      // Compression pointer - 2 bytes
+      // Guard against OOB read on second byte
+      if (currentOffset + 1 >= data.length) {
+        throw new Error("DNS compression pointer truncated");
+      }
       const pointer = ((length & 0x3f) << 8) | data[currentOffset + 1];
-      const { domain: compressedDomain } = parseDomainName(data, pointer);
+      // Detect pointer loops
+      if (visited.has(pointer)) {
+        throw new Error("DNS compression pointer loop detected");
+      }
+      visited.add(pointer);
+      const { domain: compressedDomain } = parseDomainName(data, pointer, visited, depth + 1);
       labels.push(compressedDomain);
       currentOffset += 2;
       break;
@@ -131,6 +148,10 @@ function parseDomainName(
     }
 
     const label = new TextDecoder().decode(data.subarray(currentOffset, currentOffset + length));
+    // Validate label characters (RFC 1035: letters, digits, hyphens)
+    if (!DNS_LABEL_PATTERN.test(label)) {
+      throw new Error(`Invalid DNS label: ${label}`);
+    }
     labels.push(label);
     currentOffset += length;
   }
@@ -201,9 +222,19 @@ export function buildDnsResponse(response: DnsResponse): Uint8Array {
 
     parts.push(answerMeta);
 
-    // IPv4 address
-    const ipParts = ip.split(".").map((p) => parseInt(p, 10));
-    const ipBytes = new Uint8Array(ipParts);
+    // IPv4 address — validate before encoding
+    const ipParts = ip.split(".");
+    if (ipParts.length !== 4) {
+      throw new Error(`Invalid IPv4 address: ${ip}`);
+    }
+    const ipBytes = new Uint8Array(4);
+    for (let i = 0; i < 4; i++) {
+      const octet = parseInt(ipParts[i], 10);
+      if (isNaN(octet) || octet < 0 || octet > 255) {
+        throw new Error(`Invalid IPv4 address: ${ip}`);
+      }
+      ipBytes[i] = octet;
+    }
     parts.push(ipBytes);
   }
 

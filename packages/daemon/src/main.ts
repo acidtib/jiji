@@ -16,6 +16,7 @@ import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
 import { detectSplitBrain } from "./split_brain.ts";
+import { escapeSql, isValidContainerId } from "./validation.ts";
 import type { ContainerRecord } from "./types.ts";
 
 const BANNER = `
@@ -61,8 +62,9 @@ async function main(): Promise<void> {
 
     // Final heartbeat
     const now = Date.now();
+    const escapedId = escapeSql(config.serverId);
     client.exec(
-      `UPDATE servers SET last_seen = ${now} WHERE id = '${config.serverId}';`,
+      `UPDATE servers SET last_seen = ${now} WHERE id = '${escapedId}';`,
     ).catch(() => {});
 
     log.info("Daemon shutdown complete");
@@ -80,8 +82,9 @@ async function main(): Promise<void> {
     try {
       // 1. Update heartbeat
       const now = Date.now();
+      const hbEscapedId = escapeSql(config.serverId);
       await client.exec(
-        `UPDATE servers SET last_seen = ${now} WHERE id = '${config.serverId}';`,
+        `UPDATE servers SET last_seen = ${now} WHERE id = '${hbEscapedId}';`,
       ).catch((err) =>
         log.error("Failed to update heartbeat", { error: String(err) })
       );
@@ -151,8 +154,9 @@ async function syncContainerHealth(
   cli: CorrosionCli,
 ): Promise<void> {
   // Get containers from this server
+  const syncEscapedId = escapeSql(config.serverId);
   const rows = await cli.query(
-    `SELECT id, ip, health_port, health_status, consecutive_failures FROM containers WHERE server_id = '${config.serverId}';`,
+    `SELECT id, ip, health_port, health_status, consecutive_failures FROM containers WHERE server_id = '${syncEscapedId}';`,
   );
 
   if (rows.length === 0) return;
@@ -176,10 +180,19 @@ async function syncContainerHealth(
   for (const result of results) {
     if (!result.changed) continue;
 
+    if (!isValidContainerId(result.containerId)) {
+      log.warn("Skipping health update for container with invalid ID", {
+        container_id: result.containerId,
+      });
+      continue;
+    }
+
     const now = Date.now();
+    const escapedCId = escapeSql(result.containerId);
+    const escapedStatus = escapeSql(result.newStatus);
     try {
       await client.exec(
-        `UPDATE containers SET health_status = '${result.newStatus}', last_health_check = ${now}, consecutive_failures = ${result.newFailures} WHERE id = '${result.containerId}';`,
+        `UPDATE containers SET health_status = '${escapedStatus}', last_health_check = ${now}, consecutive_failures = ${result.newFailures} WHERE id = '${escapedCId}';`,
       );
       changes++;
       log.info("Container health changed", {

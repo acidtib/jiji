@@ -29,7 +29,7 @@ const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
  * Escape SQL string values to prevent SQL injection
  * Follows SQLite string literal escaping rules
  */
-function escapeSql(value: string): string {
+export function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
 }
 
@@ -263,6 +263,18 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
 }
 
 /**
+ * Escape a string value for embedding in a TOML double-quoted string
+ * Escapes backslashes, double quotes, and newlines
+ */
+function escapeToml(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
+/**
  * Generate Corrosion configuration file content
  *
  * @param config - Corrosion configuration
@@ -270,23 +282,23 @@ export async function installCorrosion(ssh: SSHManager): Promise<boolean> {
  */
 export function generateCorrosionConfig(config: CorrosionConfig): string {
   const initialPeers = config.bootstrap
-    .map((peer) => `"${peer}"`)
+    .map((peer) => `"${escapeToml(peer)}"`)
     .join(", ");
 
   return `[db]
-path = "${config.dbPath}"
-schema_paths = ["${config.schemaPath}"]
+path = "${escapeToml(config.dbPath)}"
+schema_paths = ["${escapeToml(config.schemaPath)}"]
 
 [gossip]
-addr = "${config.gossipAddr}"
+addr = "${escapeToml(config.gossipAddr)}"
 bootstrap = [${initialPeers}]
 plaintext = ${config.plaintext}
 
 [api]
-addr = "${config.apiAddr}"
+addr = "${escapeToml(config.apiAddr)}"
 
 [admin]
-path = "${config.adminPath}"
+path = "${escapeToml(config.adminPath)}"
 `;
 }
 
@@ -432,7 +444,7 @@ export async function registerServer(
       escapeSql(server.wireguardIp)
     }', '${escapeSql(server.wireguardPublicKey)}', '${
       escapeSql(server.managementIp)
-    }', '${endpointsJson}', ${server.lastSeen});`;
+    }', '${escapeSql(endpointsJson)}', ${server.lastSeen});`;
 
   const result = await corrosionExec(ssh, sql);
 
@@ -716,7 +728,7 @@ export async function updateServerEndpoints(
 
   const sql = `
     UPDATE servers
-    SET endpoints = '${endpointsJson}'
+    SET endpoints = '${escapeSql(endpointsJson)}'
     WHERE id = '${escapeSql(serverId)}';
   `;
 

@@ -3,7 +3,7 @@ import type {
   DirectoryMountConfig,
   FileMountConfig,
 } from "../lib/configuration/service.ts";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 
 /**
  * Parsed mount configuration
@@ -62,6 +62,18 @@ export async function prepareMountFiles(
     const parsed = parseMountConfig(fileMount);
     const remoteFilePath = join(filesDir, parsed.local);
 
+    // Prevent path traversal — resolved path must stay within the base directory
+    const resolvedBase = resolve(filesDir);
+    const resolvedPath = resolve(remoteFilePath);
+    if (
+      !resolvedPath.startsWith(resolvedBase + "/") &&
+      resolvedPath !== resolvedBase
+    ) {
+      throw new Error(
+        `File path traversal detected: '${parsed.local}' resolves outside base directory`,
+      );
+    }
+
     // Upload file to remote host
     await ssh.uploadFile(parsed.local, remoteFilePath);
 
@@ -96,6 +108,18 @@ export async function prepareMountDirectories(
   for (const dirMount of directories) {
     const parsed = parseMountConfig(dirMount);
     const remoteDirPath = `${directoriesBase}/${parsed.local}`;
+
+    // Prevent path traversal — resolved path must stay within the base directory
+    const resolvedBase = resolve(directoriesBase);
+    const resolvedPath = resolve(remoteDirPath);
+    if (
+      !resolvedPath.startsWith(resolvedBase + "/") &&
+      resolvedPath !== resolvedBase
+    ) {
+      throw new Error(
+        `Directory path traversal detected: '${parsed.local}' resolves outside base directory`,
+      );
+    }
 
     // Check if local directory exists
     try {

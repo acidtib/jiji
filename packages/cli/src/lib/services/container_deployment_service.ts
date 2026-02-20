@@ -26,7 +26,7 @@ import {
   getServerByHostname,
   loadTopology,
 } from "../network/topology.ts";
-import { corrosionExec } from "../network/corrosion.ts";
+import { corrosionExec, escapeSql } from "../network/corrosion.ts";
 import { RegistryAuthService } from "./registry_auth_service.ts";
 import { log } from "../../utils/logger.ts";
 import { executeBestEffort } from "../../utils/command_helpers.ts";
@@ -119,7 +119,11 @@ export class ContainerDeploymentService {
 
       // Authenticate to registry if needed
       if (!this.config.builder.registry.isLocal() && service.requiresBuild()) {
-        await this.registryAuthService.authenticateRemotely(ssh);
+        await this.registryAuthService.authenticateRemotely(
+          ssh,
+          options.envVars ?? {},
+          options.allowHostEnv ?? false,
+        );
       }
 
       // Pull image
@@ -171,7 +175,9 @@ export class ContainerDeploymentService {
               try {
                 await corrosionExec(
                   remoteSsh,
-                  `DELETE FROM containers WHERE id = '${oldContainerId}';`,
+                  `DELETE FROM containers WHERE id = '${
+                    escapeSql(oldContainerId)
+                  }';`,
                 );
               } catch {
                 // Ignore errors
@@ -804,7 +810,9 @@ export class ContainerDeploymentService {
           try {
             await corrosionExec(
               remoteSsh,
-              `DELETE FROM containers WHERE id = '${oldContainerId}';`,
+              `DELETE FROM containers WHERE id = '${
+                escapeSql(oldContainerId)
+              }';`,
             );
           } catch (error) {
             log.debug(

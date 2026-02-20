@@ -25,9 +25,9 @@ export async function generateWireGuardKeypair(
 
   const privateKey = privateKeyResult.stdout.trim();
 
-  // Generate public key from private key
+  // Generate public key from private key (use printf with single quotes to avoid shell expansion)
   const publicKeyResult = await ssh.executeCommand(
-    `echo "${privateKey}" | wg pubkey`,
+    `printf '%s' '${privateKey.replace(/'/g, "'\\''")}' | wg pubkey`,
   );
   if (publicKeyResult.code !== 0) {
     throw new Error(

@@ -29,7 +29,9 @@ export class CorrosionCli {
 
     if (!output.success) {
       const stderr = new TextDecoder().decode(output.stderr);
-      log.error("Corrosion CLI query failed", { sql, stderr });
+      // Log only the SQL command (first keyword + table) to avoid leaking values
+      const sqlPreview = sql.length > 80 ? sql.slice(0, 80) + "..." : sql;
+      log.error("Corrosion CLI query failed", { sql: sqlPreview, stderr });
       return [];
     }
 

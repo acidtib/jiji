@@ -9,6 +9,11 @@ import { PEER_DOWN_THRESHOLD } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
 import * as wg from "./wireguard.ts";
 import { parseEndpoints } from "./peer_reconciler.ts";
+import {
+  escapeSql,
+  isValidEndpoint,
+  isValidWireGuardKey,
+} from "./validation.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -46,8 +51,16 @@ async function tryRotateEndpoint(
   publicKey: string,
   currentEndpoint: string,
 ): Promise<void> {
+  if (!isValidWireGuardKey(publicKey)) {
+    log.warn("Skipping endpoint rotation for invalid pubkey format", {
+      pubkey: publicKey,
+    });
+    return;
+  }
+
+  const escapedKey = escapeSql(publicKey);
   const rows = await cli.query(
-    `SELECT endpoints FROM servers WHERE wireguard_pubkey = '${publicKey}';`,
+    `SELECT endpoints FROM servers WHERE wireguard_pubkey = '${escapedKey}';`,
   );
 
   if (rows.length === 0 || !rows[0][0]) return;
@@ -61,6 +74,11 @@ async function tryRotateEndpoint(
   const nextEndpoint = endpoints[nextIndex];
 
   if (nextEndpoint === currentEndpoint) return;
+
+  if (!isValidEndpoint(nextEndpoint)) {
+    log.warn("Skipping invalid endpoint", { endpoint: nextEndpoint });
+    return;
+  }
 
   log.info("Rotating endpoint", {
     pubkey: publicKey,

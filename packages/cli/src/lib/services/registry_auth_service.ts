@@ -70,9 +70,15 @@ export class RegistryAuthService {
    * Authenticate on a remote server (for pulling images)
    *
    * @param ssh SSH manager for the remote host
+   * @param envVars Pre-loaded environment variables for secret resolution
+   * @param allowHostEnv Whether to allow host environment fallback
    * @returns True if authenticated successfully
    */
-  async authenticateRemotely(ssh: SSHManager): Promise<boolean> {
+  async authenticateRemotely(
+    ssh: SSHManager,
+    envVars: Record<string, string> = {},
+    allowHostEnv: boolean = false,
+  ): Promise<boolean> {
     // Skip authentication for local registries
     if (this.registry.isLocal()) {
       log.debug(
@@ -85,7 +91,7 @@ export class RegistryAuthService {
     const host = ssh.getHost();
     const registryUrl = this.registry.getRegistryUrl();
     const username = this.registry.username;
-    const password = this.registry.password;
+    const password = this.registry.resolvePassword(envVars, allowHostEnv);
 
     if (!username || !password) {
       log.warn(
@@ -98,10 +104,13 @@ export class RegistryAuthService {
     try {
       log.status(`Authenticating to ${registryUrl} on ${host}`, "registry");
 
-      // Use echo to pipe password to podman/docker login
+      // Pipe password via stdin to avoid embedding secrets in shell strings
       const loginCommand =
-        `echo '${password}' | ${this.engine} login ${registryUrl} --username ${username} --password-stdin`;
-      const loginResult = await ssh.executeCommand(loginCommand);
+        `${this.engine} login ${registryUrl} --username ${username} --password-stdin`;
+      const loginResult = await ssh.executeCommandWithInput(
+        loginCommand,
+        password,
+      );
 
       if (!loginResult.success) {
         throw new Error(loginResult.stderr || "Login failed");

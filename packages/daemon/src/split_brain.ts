@@ -10,6 +10,14 @@ import { ACTIVE_SERVER_THRESHOLD } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
 import * as log from "./logger.ts";
 
+/** Flag indicating whether a split-brain condition is currently detected. */
+let _splitBrainDetected = false;
+
+/** Check whether garbage collection should be paused due to split-brain. */
+export function isSplitBrainDetected(): boolean {
+  return _splitBrainDetected;
+}
+
 /**
  * Check for cluster partition / split-brain scenario.
  */
@@ -47,7 +55,8 @@ export async function detectSplitBrain(
 
   // Alert if less than 50% reachable and we have more than 1 server
   if (totalServers > 1 && reachablePct < 50) {
-    log.error("POTENTIAL SPLIT-BRAIN", {
+    _splitBrainDetected = true;
+    log.error("POTENTIAL SPLIT-BRAIN — garbage collection paused", {
       active: activeServers,
       total: totalServers,
       percent: reachablePct,
@@ -63,5 +72,10 @@ export async function detectSplitBrain(
         servers: unreachable,
       });
     }
+  } else {
+    if (_splitBrainDetected) {
+      log.info("Split-brain condition resolved, resuming garbage collection");
+    }
+    _splitBrainDetected = false;
   }
 }
