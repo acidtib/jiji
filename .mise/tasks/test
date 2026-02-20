@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Run CLI tests"
-#MISE dir="{{config_root}}/packages/cli"
+#MISE description="Run tests for all packages"
+#MISE dir="{{config_root}}"
 set -e
 
-deno test --allow-all --parallel "$@"
+echo "Running CLI tests..."
+(cd packages/cli && deno test --allow-all --parallel "$@")
+
+echo "Running DNS tests..."
+(cd packages/dns && deno test --allow-net --allow-read --allow-env tests/ "$@")
+
+echo "Running daemon tests..."
+(cd packages/daemon && deno test --allow-all --parallel tests/ "$@")
