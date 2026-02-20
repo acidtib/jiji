@@ -8,8 +8,7 @@
   "nodeModulesDir": "auto",
   "unstable": ["net"],
   "imports": {
-    "@std/assert": "jsr:@std/assert@^1.0.8",
-    "@jiji/shared": "./packages/shared/mod.ts"
+    "@std/assert": "jsr:@std/assert@^1.0.8"
   },
   "allowScripts": [
     "npm:cpu-features@0.0.10",
