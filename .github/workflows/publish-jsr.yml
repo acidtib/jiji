@@ -32,4 +32,3 @@ jobs:
 
       - name: Publish to jsr
         run: deno publish
-        working-directory: packages/cli
