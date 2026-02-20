@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Build CLI binary"
+set -e
+
+deno compile \
+  --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys \
+  --include packages/cli/src/jiji.yml \
+  --output target/jiji \
+  packages/cli/src/main.ts

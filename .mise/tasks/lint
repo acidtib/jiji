@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Lint code across all packages"
+#MISE dir="{{config_root}}"
+set -e
+
+deno lint "$@"

@@ -40,10 +40,11 @@ jobs:
 
       - name: Build npm package
         run: ./bin/build_npm ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+        working-directory: packages/cli
 
       - name: Publish to npm
         run: |
-          cd build/npm
+          cd packages/cli/build/npm
           npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

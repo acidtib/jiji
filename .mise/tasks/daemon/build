@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Build daemon binary"
+set -e
+
+deno compile \
+  --allow-net --allow-read --allow-env --allow-run \
+  --output target/jiji-daemon \
+  packages/daemon/src/main.ts

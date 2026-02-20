@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#MISE description="Show or bump version across all packages"
+#MISE dir="{{config_root}}"
+set -e
+
+VERSION_FILE="./packages/cli/src/version.ts"
+MEMBER_CONFIGS=(
+  "./packages/cli/deno.json"
+  "./packages/dns/deno.json"
+  "./packages/daemon/deno.json"
+  "./packages/shared/deno.json"
+)
+
+get_current_version() {
+  sed -n 's/.*VERSION = ["\x27]\([^"\x27]*\)["\x27].*/\1/p' "$VERSION_FILE"
+}
+
+update_version_file() {
+  local version="$1"
+  printf 'export const VERSION = "%s";\n' "$version" > "$VERSION_FILE"
+}
+
+increment_patch() {
+  local version="$1"
+  local major minor patch
+  IFS='.' read -r major minor patch <<< "$version"
+
+  if [[ -z "$major" || -z "$minor" || -z "$patch" ]]; then
+    echo "Invalid version format: $version. Expected x.y.z" >&2
+    exit 1
+  fi
+
+  echo "${major}.${minor}.$((patch + 1))"
+}
+
+update_deno_configs() {
+  local version="$1"
+  for config in "${MEMBER_CONFIGS[@]}"; do
+    local tmp
+    tmp=$(mktemp)
+    jq --arg v "$version" '.version = $v' "$config" > "$tmp" && mv "$tmp" "$config"
+    echo "Updated $config"
+  done
+}
+
+# No arguments — show current version
+if [[ $# -eq 0 ]]; then
+  get_current_version
+  exit 0
+fi
+
+# --bump [version]
+if [[ "$1" == "--bump" ]]; then
+  current=$(get_current_version)
+
+  if [[ -n "$2" ]]; then
+    new_version="$2"
+  else
+    new_version=$(increment_patch "$current")
+  fi
+
+  echo "Updating version from $current to $new_version"
+
+  update_version_file "$new_version"
+  echo "Updated $VERSION_FILE"
+
+  update_deno_configs "$new_version"
+
+  echo "Version updated to $new_version"
+  exit 0
+fi
+
+echo "Usage:"
+echo "  mise run version              # Show current version"
+echo "  mise run version -- --bump       # Auto-increment patch version"
+echo "  mise run version -- --bump 1.0.5 # Set version to 1.0.5"

@@ -1,0 +1,27 @@
+[tools]
+deno = "2.5.6"
+
+[tasks.build]
+description = "Build all packages for current platform"
+depends = ["cli:build", "dns:build", "daemon:build"]
+
+[tasks."cli:build:dev"]
+description = "Build dev CLI binary"
+dir = "{{config_root}}/packages/cli"
+run = """
+deno compile \
+  --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys \
+  --include src/jiji.yml \
+  --output ../../target/jiji_dev \
+  src/main.ts
+"""
+
+[tasks."cli:install:dev"]
+description = "Build and install dev CLI to /usr/local/bin"
+depends = ["cli:build:dev"]
+dir = "{{config_root}}/packages/cli"
+run = "sudo cp ../../target/jiji_dev /usr/local/bin/jiji_dev"
+
+[tasks."build:release"]
+description = "Cross-compile all 9 release binaries"
+depends = ["cli:release", "dns:release", "daemon:release"]

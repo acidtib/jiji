@@ -3,39 +3,78 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
+## Monorepo Structure
+
+This is a Deno workspace monorepo with three packages:
+
+```
+packages/
+├── cli/       # @jiji/cli — Main CLI tool (Cliffy, SSH, deployment)
+├── dns/       # @jiji/dns — DNS server for service discovery
+└── daemon/    # @jiji/daemon — Network reconciliation daemon
+```
+
+All packages share a unified version number managed by `mise run version`.
+
+## Workspace Conventions
+
+- `nodeModulesDir` and `unstable` must be in root `deno.json` (Deno workspace
+  requirement) — member configs cannot override these
+- `@std/assert` is declared in root `deno.json` and inherited by all members —
+  don't re-declare it in package configs
+- `allowScripts` for npm packages with native builds lives in root config
+- Tests run from the package directory (`cd packages/cli && deno task check`),
+  so relative paths in tests resolve from there
+
 ## Quick Start Commands
 
 ```bash
-# Run CLI directly (requires all permissions)
-deno task run
+# Install dependencies (run from repo root)
+deno install --allow-scripts=npm:cpu-features,npm:ssh2
 
-# Run all checks (format, lint, tests)
-deno task check
+# Build (via mise — runs from repo root)
+mise build              # Build all 3 binaries → target/
+mise build:release      # Cross-compile all release binaries
 
-# Run tests (parallel execution)
-deno task test
+# CLI (via mise)
+mise cli:run            # Run CLI
+mise cli:build          # Build CLI binary
+mise cli:install        # Build + install to /usr/local/bin/jiji
+mise cli:build:dev      # Build dev binary
+mise cli:install:dev    # Build dev binary + install to /usr/local/bin/jiji_dev
+mise cli:release        # Cross-compile CLI for all platforms
 
-# Run a single test file
-deno test --allow-all tests/deploy_plan_test.ts
+# DNS (via mise)
+mise dns:run            # Run DNS server
+mise dns:build          # Build DNS binary
+mise dns:release        # Cross-compile DNS for Linux
 
-# Format and lint
-deno task fmt
-deno task lint
+# Daemon (via mise)
+mise daemon:run         # Run daemon
+mise daemon:build       # Build daemon binary
+mise daemon:release     # Cross-compile daemon for Linux
 
-# Build compiled binary (outputs to build/jiji)
-deno task build
+# Checks and tests
+mise check              # fmt --check + lint + test (CLI package)
+mise test               # Run CLI tests only
+mise fmt                # Format CLI code
+mise lint               # Lint CLI code
+deno test --allow-all packages/cli/tests/deploy_plan_test.ts  # Single test file
 
-# Build and install to /usr/local/bin/jiji
-deno task install
+# Per-package checks (via deno task — each package keeps a `check` task)
+cd packages/cli && deno task check
+cd packages/dns && deno task check
+cd packages/daemon && deno task check
 
 # Version management
-./bin/version          # Show current version
-./bin/version 1.2.3    # Update to specific version
+mise run version                    # Show current version
+mise run version -- --bump          # Auto-increment patch version
+mise run version -- --bump 1.0.0    # Set specific version (updates all 3 packages)
 ```
 
 ## High-Level Architecture
 
-### Command Flow
+### Command Flow (CLI)
 
 The CLI uses Cliffy for command routing. Each command follows this pattern:
 
@@ -43,16 +82,15 @@ The CLI uses Cliffy for command routing. Each command follows this pattern:
 Command → setupCommandContext() → Load Config → Filter Hosts/Services → SSH Setup → Execute → Cleanup
 ```
 
-Commands are defined in `src/main.ts` and handlers live in `src/commands/`. The
-`setupCommandContext()` helper in `src/commands/command_helpers.ts` handles
-common setup.
+Commands are defined in `packages/cli/src/main.ts` and handlers live in
+`packages/cli/src/commands/`. The `setupCommandContext()` helper in
+`packages/cli/src/utils/command_helpers.ts` handles common setup.
 
 ### Configuration System
 
-Configuration classes in `src/lib/configuration/` use **lazy-loaded, cached
-properties**. Validation happens at property access time, not construction. This
-prevents errors for unused config sections but means errors surface later in
-execution.
+Configuration classes in `packages/cli/src/lib/configuration/` use
+**lazy-loaded, cached properties**. Validation happens at property access time,
+not construction.
 
 All configuration classes extend `BaseConfiguration`. The main classes are:
 
@@ -84,7 +122,7 @@ If health checks fail, old container continues serving traffic.
 
 ### Distributed Networking Stack
 
-Three components work together in `src/lib/network/`:
+Three components work together in `packages/cli/src/lib/network/`:
 
 **WireGuard** (`wireguard.ts`): Encrypted mesh VPN
 
@@ -95,7 +133,7 @@ Three components work together in `src/lib/network/`:
 
 - No central coordinator - eventual consistency
 - Tables: `servers`, `containers`, `services`, `cluster_metadata`
-- Gossip on port 9280, API on port 9220
+- Gossip on port 31280, API on port 31220
 
 **jiji-dns** (`dns.ts`): DNS-based service discovery
 
@@ -105,19 +143,20 @@ Three components work together in `src/lib/network/`:
 
 ### SSH Connection Management
 
-`SSHConnectionPool` in `src/utils/ssh_pool.ts` uses a semaphore for concurrency
-control (default: 30 concurrent connections).
+`SSHConnectionPool` in `packages/cli/src/utils/ssh_pool.ts` uses a semaphore for
+concurrency control (default: 30 concurrent connections).
 
 **Patterns:**
 
 - `executeConcurrent()` - Acquire permit before SSH operation, prevents server
   overload
-- `executeBestEffort()` - For cleanup operations; logs failures but doesn't
-  block execution
+
+Related: `executeBestEffort()` in `command_helpers.ts` wraps SSH commands for
+cleanup operations — logs failures but doesn't block execution.
 
 ### Service Orchestration
 
-Key services in `src/lib/services/`:
+Key services in `packages/cli/src/lib/services/`:
 
 - `DeploymentOrchestrator` - High-level deployment coordination
 - `ContainerDeploymentService` - Container lifecycle with zero-downtime
@@ -164,25 +203,32 @@ Registry passwords also support this pattern (e.g., `password: GITHUB_TOKEN`).
 
 ## Key Files
 
-- `src/jiji.yml` - Authoritative configuration reference with all options
-- `src/constants.ts` - System constants (ports, timeouts, defaults)
-- `src/types/` - TypeScript interfaces for all major types
-- `tests/mocks.ts` - Mock SSH manager for testing without real connections
+- `packages/cli/src/jiji.yml` - Authoritative configuration reference with all
+  options
+- `packages/cli/src/constants.ts` - System constants (ports, timeouts, defaults)
+- `packages/cli/src/types/` - TypeScript interfaces for all major types
+- `packages/cli/tests/mocks.ts` - Mock SSH manager for testing without real
+  connections
 
 ## Testing
 
-Tests use `MockSSHManager` from `tests/mocks.ts` which simulates SSH operations
-via `MockServerState`. Commands are parsed and state is mutated to simulate
-container operations without real SSH connections.
+Tests use `MockSSHManager` from `packages/cli/tests/mocks.ts` which simulates
+SSH operations via an internal command→response map. Stubbed commands are
+matched and responses returned without real SSH connections.
 
 Pattern for adding new tests:
 
-1. Create mock SSH manager with `createMockSSHManager()`
-2. Initialize `MockServerState` for each host
-3. Use services normally - they'll interact with mock state
+1. Create `new MockSSHManager("hostname")` for each host
+2. Use `addMockResponse(commandPattern, response)` to stub SSH commands
+3. Cast with `mock as any` when passing to functions expecting `SSHManager`
 
 Run specific test with:
 
 ```bash
-deno test --allow-all tests/zero_downtime_deployment_test.ts
+deno test --allow-all packages/cli/tests/zero_downtime_deployment_test.ts
 ```
+
+## DNS & Daemon Packages
+
+See `packages/dns/CLAUDE.md` and `packages/daemon/CLAUDE.md` for
+package-specific architecture, commands, and gotchas.

@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      jsr:
+        type: boolean
+        default: true
+        description: publish to jsr
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  jsr:
+    if: ${{ inputs.jsr || github.event_name == 'push' }}
+    needs: test
+    uses: ./.github/workflows/publish-jsr.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  release:
+    needs:
+      - test
+      - jsr
+    if: ${{ always() && needs.test.result == 'success' && (needs.jsr.result == 'success' || needs.jsr.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Get tag version
+        id: get_tag_version
+        run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.6
+
+      - name: Cache Deno dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/deno
+          key: ${{ runner.os }}-deno-${{ hashFiles('deno.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-deno-
+
+      # CLI binaries (5 targets)
+      - name: Compile CLI - Linux x86_64
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml --target x86_64-unknown-linux-gnu --output target/jiji-linux-x86_64 packages/cli/src/main.ts
+
+      - name: Compile CLI - Linux ARM64
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml --target aarch64-unknown-linux-gnu --output target/jiji-linux-arm64 packages/cli/src/main.ts
+
+      - name: Compile CLI - macOS x86_64
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml --target x86_64-apple-darwin --output target/jiji-macos-x86_64 packages/cli/src/main.ts
+
+      - name: Compile CLI - macOS ARM64
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml --target aarch64-apple-darwin --output target/jiji-macos-arm64 packages/cli/src/main.ts
+
+      - name: Compile CLI - Windows x86_64
+        run: deno compile --allow-read --allow-write --allow-net --allow-run --allow-ffi --allow-env --allow-sys --include packages/cli/src/jiji.yml --target x86_64-pc-windows-msvc --output target/jiji-windows-x86_64 packages/cli/src/main.ts
+
+      # DNS binaries (2 targets)
+      - name: Compile DNS - Linux x86_64
+        run: deno compile --unstable-net --allow-net --allow-read --allow-env --target x86_64-unknown-linux-gnu --output target/jiji-dns-linux-x64 packages/dns/src/main.ts
+
+      - name: Compile DNS - Linux ARM64
+        run: deno compile --unstable-net --allow-net --allow-read --allow-env --target aarch64-unknown-linux-gnu --output target/jiji-dns-linux-arm64 packages/dns/src/main.ts
+
+      # Daemon binaries (2 targets)
+      - name: Compile Daemon - Linux x86_64
+        run: deno compile --allow-net --allow-read --allow-env --allow-run --target x86_64-unknown-linux-gnu --output target/jiji-daemon-linux-x64 packages/daemon/src/main.ts
+
+      - name: Compile Daemon - Linux ARM64
+        run: deno compile --allow-net --allow-read --allow-env --allow-run --target aarch64-unknown-linux-gnu --output target/jiji-daemon-linux-arm64 packages/daemon/src/main.ts
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          allowUpdates: true
+          generateReleaseNotes: true
+          artifacts: "target/jiji-linux-x86_64,target/jiji-linux-arm64,target/jiji-macos-x86_64,target/jiji-macos-arm64,target/jiji-windows-x86_64.exe,target/jiji-dns-linux-x64,target/jiji-dns-linux-arm64,target/jiji-daemon-linux-x64,target/jiji-daemon-linux-arm64"
+          body: |
+            ## Installation
+
+            ### JSR
+            ```bash
+            deno install --allow-all --name jiji jsr:@jiji/cli@${{ steps.get_tag_version.outputs.TAG_VERSION }}
+            ```
+
+            ### Linux/MacOS
+            ```bash
+            curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
+            ```
+
+            ### Windows, exe download below
+            https://github.com/acidtib/jiji/releases/download/v${{ steps.get_tag_version.outputs.TAG_VERSION }}/jiji-windows-x86_64.exe
+
+            ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}

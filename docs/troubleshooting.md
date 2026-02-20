@@ -252,25 +252,25 @@ Error: Failed to push image: requested access to the resource is denied
 **Symptoms:**
 
 ```
-Error: Failed to connect to localhost:9270
+Error: Failed to connect to localhost:31270
 ```
 
 **Solutions:**
 
 1. **Verify local registry is running:**
    ```bash
-   curl http://localhost:9270/v2/
+   curl http://localhost:31270/v2/
    ```
 
 2. **Start local registry:**
    ```bash
-   docker run -d -p 9270:5000 --name jiji-registry registry:2
+   docker run -d -p 31270:5000 --name jiji-registry registry:2
    ```
 
 3. **Check port forwarding:**
    ```bash
    # On remote server during deployment
-   netstat -tlnp | grep 9270
+   netstat -tlnp | grep 31270
    ```
 
 4. **Verify SSH allows port forwarding:**
@@ -432,11 +432,11 @@ No recent handshake times
 
 2. **Verify firewall allows WireGuard:**
    ```bash
-   # Allow UDP 51820
-   jiji server exec "sudo ufw allow 51820/udp"
+   # Allow UDP 31820
+   jiji server exec "sudo ufw allow 31820/udp"
 
    # Verify rule
-   jiji server exec "sudo ufw status | grep 51820"
+   jiji server exec "sudo ufw status | grep 31820"
    ```
 
 3. **Check network status:**
