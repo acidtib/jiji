@@ -632,7 +632,11 @@ export class ContainerDeploymentService {
       containerName,
       fullImageName,
     )
-      .network(JIJI_NETWORK_NAME)
+      .network(
+        service.network_mode === "bridge"
+          ? JIJI_NETWORK_NAME
+          : service.network_mode,
+      )
       .detached()
       .restart("unless-stopped")
       .ports(service.ports)

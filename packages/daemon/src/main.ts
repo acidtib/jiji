@@ -11,13 +11,25 @@ import { CorrosionClient } from "./corrosion_client.ts";
 import { CorrosionCli } from "./corrosion_cli.ts";
 import { reconcilePeers } from "./peer_reconciler.ts";
 import { monitorPeerHealth } from "./peer_monitor.ts";
-import { checkAllContainers } from "./container_health.ts";
+import { syncContainerHealth } from "./container_sync.ts";
 import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
 import { detectSplitBrain } from "./split_brain.ts";
-import { escapeSql, isValidContainerId } from "./validation.ts";
-import type { ContainerRecord } from "./types.ts";
+import { escapeSql } from "./validation.ts";
+
+/** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
+const GC_INTERVAL = 10;
+/** Update public IP every 20 iterations (~10 min) */
+const IP_UPDATE_INTERVAL = 20;
+/** Check Corrosion health every 20 iterations (~10 min) */
+const CORROSION_HEALTH_INTERVAL = 20;
+/** Detect split-brain every 20 iterations (~10 min) */
+const SPLIT_BRAIN_INTERVAL = 20;
+/** Log milestone every 100 iterations (~50 min) */
+const MILESTONE_INTERVAL = 100;
+/** Warn if a single iteration takes longer than 15 seconds */
+const SLOW_ITERATION_THRESHOLD_S = 15;
 
 const BANNER = `
      _ _ _ _         _
@@ -99,22 +111,22 @@ async function main(): Promise<void> {
       await syncContainerHealth(config, client, cli);
 
       // 5. Garbage collection (every 10 iterations = 5 minutes)
-      if (iteration % 10 === 0) {
+      if (iteration % GC_INTERVAL === 0) {
         await garbageCollect(config, client, cli);
       }
 
       // 6. Update public IP (every 20 iterations = 10 minutes)
-      if (iteration % 20 === 0) {
+      if (iteration % IP_UPDATE_INTERVAL === 0) {
         await updatePublicIp(config, client, cli);
       }
 
       // 7. Check Corrosion health (every 20 iterations = 10 minutes)
-      if (iteration % 20 === 0) {
+      if (iteration % CORROSION_HEALTH_INTERVAL === 0) {
         await checkCorrosionHealth(config, cli);
       }
 
       // 8. Detect cluster partition (every 20 iterations = 10 minutes)
-      if (iteration % 20 === 0) {
+      if (iteration % SPLIT_BRAIN_INTERVAL === 0) {
         await detectSplitBrain(config, cli);
       }
     } catch (err) {
@@ -126,7 +138,7 @@ async function main(): Promise<void> {
 
     // Check iteration timing
     const iterationDuration = Math.floor((Date.now() - iterationStart) / 1000);
-    if (iterationDuration > 15) {
+    if (iterationDuration > SLOW_ITERATION_THRESHOLD_S) {
       log.warn("Slow iteration", {
         iteration,
         duration_s: iterationDuration,
@@ -134,7 +146,7 @@ async function main(): Promise<void> {
     }
 
     // Log milestone every 100 iterations (50 minutes)
-    if (iteration % 100 === 0) {
+    if (iteration % MILESTONE_INTERVAL === 0) {
       log.info("Iteration milestone", { iteration });
     }
 
@@ -142,71 +154,6 @@ async function main(): Promise<void> {
     await new Promise((resolve) =>
       setTimeout(resolve, config.loopInterval * 1000)
     );
-  }
-}
-
-/**
- * Sync container health states with Corrosion.
- */
-async function syncContainerHealth(
-  config: ReturnType<typeof parseConfig>,
-  client: CorrosionClient,
-  cli: CorrosionCli,
-): Promise<void> {
-  // Get containers from this server
-  const syncEscapedId = escapeSql(config.serverId);
-  const rows = await cli.query(
-    `SELECT id, ip, health_port, health_status, consecutive_failures FROM containers WHERE server_id = '${syncEscapedId}';`,
-  );
-
-  if (rows.length === 0) return;
-
-  const containers: ContainerRecord[] = rows
-    .filter((r) => r[0]?.trim())
-    .map((row) => ({
-      id: row[0],
-      ip: row[1],
-      healthPort: row[2] && row[2] !== "null" && row[2] !== "0"
-        ? parseInt(row[2], 10)
-        : null,
-      healthStatus: row[3] ?? "",
-      consecutiveFailures: parseInt(row[4] ?? "0", 10),
-      serverId: config.serverId,
-    }));
-
-  const results = await checkAllContainers(config.engine, containers);
-
-  let changes = 0;
-  for (const result of results) {
-    if (!result.changed) continue;
-
-    if (!isValidContainerId(result.containerId)) {
-      log.warn("Skipping health update for container with invalid ID", {
-        container_id: result.containerId,
-      });
-      continue;
-    }
-
-    const now = Date.now();
-    const escapedCId = escapeSql(result.containerId);
-    const escapedStatus = escapeSql(result.newStatus);
-    try {
-      await client.exec(
-        `UPDATE containers SET health_status = '${escapedStatus}', last_health_check = ${now}, consecutive_failures = ${result.newFailures} WHERE id = '${escapedCId}';`,
-      );
-      changes++;
-      log.info("Container health changed", {
-        container_id: result.containerId,
-        status: result.newStatus,
-        failures: result.newFailures,
-      });
-    } catch {
-      // Continue with other containers
-    }
-  }
-
-  if (changes > 0) {
-    log.info("Container health sync complete", { changes });
   }
 }
 

@@ -21,17 +21,11 @@ import {
   CORROSION_SYNC_POLL_INTERVAL_MS,
   CORROSION_SYNC_TIMEOUT_SECONDS,
 } from "../../constants.ts";
+export { escapeSql } from "@jiji/shared";
+import { escapeSql } from "@jiji/shared";
 
 const CORROSION_REPO = "superfly/corrosion";
 const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
-
-/**
- * Escape SQL string values to prevent SQL injection
- * Follows SQLite string literal escaping rules
- */
-export function escapeSql(value: string): string {
-  return value.replace(/'/g, "''");
-}
 
 /**
  * Internal helper: Execute a Corrosion SELECT query

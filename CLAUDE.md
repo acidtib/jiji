@@ -14,7 +14,7 @@ packages/
 └── daemon/    # @jiji/daemon — Network reconciliation daemon
 ```
 
-All packages share a unified version number managed by `mise version`.
+All packages share a unified version number managed by `mise run version`.
 
 ## Workspace Conventions
 
@@ -67,9 +67,9 @@ cd packages/dns && deno task check
 cd packages/daemon && deno task check
 
 # Version management
-mise version                    # Show current version
-mise version -- --bump          # Auto-increment patch version
-mise version -- --bump 1.0.0    # Set specific version (updates all 3 packages)
+mise run version                    # Show current version
+mise run version -- --bump          # Auto-increment patch version
+mise run version -- --bump 1.0.0    # Set specific version (updates all 3 packages)
 
 ```
 

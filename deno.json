@@ -1,9 +1,15 @@
 {
-  "workspace": ["packages/cli", "packages/dns", "packages/daemon"],
+  "workspace": [
+    "packages/shared",
+    "packages/cli",
+    "packages/dns",
+    "packages/daemon"
+  ],
   "nodeModulesDir": "auto",
   "unstable": ["net"],
   "imports": {
-    "@std/assert": "jsr:@std/assert@^1.0.8"
+    "@std/assert": "jsr:@std/assert@^1.0.8",
+    "@jiji/shared": "./packages/shared/mod.ts"
   },
   "allowScripts": [
     "npm:cpu-features@0.0.10",

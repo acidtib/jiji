@@ -123,7 +123,8 @@ export class DnsServer {
       const query = parseDnsQuery(data);
 
       // Block ANY queries to prevent DNS amplification attacks
-      if (query.queryType === QTYPE_ANY) {
+      // queryType is cast from raw uint16, so it may not be a valid enum member
+      if ((query.queryType as number) === QTYPE_ANY) {
         response = buildDnsResponse({
           transactionId: query.transactionId,
           responseCode: DnsResponseCode.REFUSED,

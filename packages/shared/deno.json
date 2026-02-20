@@ -1,0 +1,12 @@
+{
+  "name": "@jiji/shared",
+  "version": "0.4.0",
+  "exports": "./mod.ts",
+  "tasks": {
+    "check": "deno fmt --check && deno lint && deno check mod.ts"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true
+  }
+}

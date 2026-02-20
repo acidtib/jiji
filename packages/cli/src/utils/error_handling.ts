@@ -1,3 +1,5 @@
+import { log } from "./logger.ts";
+
 /**
  * Registry-specific error class with additional context
  */
@@ -113,10 +115,7 @@ export function handleRegistryError(
     );
   }
 
-  import("./logger.ts").then(({ log }) => {
-    log.error(registryError.toString(), `registry:${operation}`);
-  });
-
+  log.error(registryError.toString(), `registry:${operation}`);
   Deno.exit(1);
 }
 
