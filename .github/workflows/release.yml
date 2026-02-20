@@ -52,6 +52,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deno-
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.11.1"
+
+      - run: npm install -g npm@latest node-gyp
+
       - name: Install dependencies
         run: deno install --allow-scripts=npm:cpu-features,npm:ssh2
 
