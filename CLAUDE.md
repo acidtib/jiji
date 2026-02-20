@@ -70,7 +70,6 @@ cd packages/daemon && deno task check
 mise run version                    # Show current version
 mise run version -- --bump          # Auto-increment patch version
 mise run version -- --bump 1.0.0    # Set specific version (updates all 3 packages)
-
 ```
 
 ## High-Level Architecture
@@ -144,8 +143,8 @@ Three components work together in `packages/cli/src/lib/network/`:
 
 ### SSH Connection Management
 
-`SSHConnectionPool` in `packages/cli/src/utils/ssh_pool.ts` uses a semaphore
-for concurrency control (default: 30 concurrent connections).
+`SSHConnectionPool` in `packages/cli/src/utils/ssh_pool.ts` uses a semaphore for
+concurrency control (default: 30 concurrent connections).
 
 **Patterns:**
 
@@ -214,8 +213,8 @@ Registry passwords also support this pattern (e.g., `password: GITHUB_TOKEN`).
 ## Testing
 
 Tests use `MockSSHManager` from `packages/cli/tests/mocks.ts` which simulates
-SSH operations via an internal command→response map. Stubbed commands are matched
-and responses returned without real SSH connections.
+SSH operations via an internal command→response map. Stubbed commands are
+matched and responses returned without real SSH connections.
 
 Pattern for adding new tests:
 
@@ -231,5 +230,5 @@ deno test --allow-all packages/cli/tests/zero_downtime_deployment_test.ts
 
 ## DNS & Daemon Packages
 
-See `packages/dns/CLAUDE.md` and `packages/daemon/CLAUDE.md` for package-specific
-architecture, commands, and gotchas.
+See `packages/dns/CLAUDE.md` and `packages/daemon/CLAUDE.md` for
+package-specific architecture, commands, and gotchas.
