@@ -24,8 +24,4 @@ run = "sudo cp ../../target/jiji_dev /usr/local/bin/jiji_dev"
 
 [tasks."build:release"]
 description = "Cross-compile all 9 release binaries"
-depends = [
-  "cli:release",
-  "dns:release",
-  "daemon:release",
-]
+depends = ["cli:release", "dns:release", "daemon:release"]

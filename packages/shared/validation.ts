@@ -14,6 +14,40 @@ export function escapeSql(str: string): string {
 }
 
 /**
+ * Tagged template literal for safe SQL query construction.
+ * Automatically escapes interpolated values based on type:
+ * - string → single-quoted and escaped (e.g., 'O''Brien')
+ * - number → bare numeric literal
+ * - null → NULL
+ *
+ * This eliminates the risk of forgetting to call escapeSql() on string values.
+ *
+ * @example
+ * ```ts
+ * const query = sql`UPDATE servers SET last_seen = ${now} WHERE id = ${serverId};`;
+ * // Produces: UPDATE servers SET last_seen = 1234567 WHERE id = 'my-server';
+ * ```
+ */
+export function sql(
+  strings: TemplateStringsArray,
+  ...values: (string | number | null)[]
+): string {
+  let result = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    if (value === null) {
+      result += "NULL";
+    } else if (typeof value === "number") {
+      result += String(value);
+    } else {
+      result += `'${escapeSql(value)}'`;
+    }
+    result += strings[i + 1];
+  }
+  return result;
+}
+
+/**
  * Validate a Docker/Podman container ID (hex string, 12-64 chars).
  */
 export function isValidContainerId(id: string): boolean {

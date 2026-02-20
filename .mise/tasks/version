@@ -8,6 +8,7 @@ MEMBER_CONFIGS=(
   "./packages/cli/deno.json"
   "./packages/dns/deno.json"
   "./packages/daemon/deno.json"
+  "./packages/shared/deno.json"
 )
 
 get_current_version() {

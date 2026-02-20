@@ -9,11 +9,7 @@ import { PEER_DOWN_THRESHOLD } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
 import * as wg from "./wireguard.ts";
 import { parseEndpoints } from "./peer_reconciler.ts";
-import {
-  escapeSql,
-  isValidEndpoint,
-  isValidWireGuardKey,
-} from "./validation.ts";
+import { isValidEndpoint, isValidWireGuardKey, sql } from "./validation.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -58,9 +54,8 @@ async function tryRotateEndpoint(
     return;
   }
 
-  const escapedKey = escapeSql(publicKey);
   const rows = await cli.query(
-    `SELECT endpoints FROM servers WHERE wireguard_pubkey = '${escapedKey}';`,
+    sql`SELECT endpoints FROM servers WHERE wireguard_pubkey = ${publicKey};`,
   );
 
   if (rows.length === 0 || !rows[0][0]) return;

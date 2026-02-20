@@ -14,4 +14,5 @@ export {
   isValidIPv6,
   isValidServerId,
   isValidWireGuardKey,
+  sql,
 } from "@jiji/shared";

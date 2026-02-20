@@ -154,7 +154,10 @@ export class SSHManager {
       if (result.code === 0) {
         this.logger.debug(`Command completed successfully in ${duration}ms`);
         if (result.stdout) {
-          this.logger.trace(`Command stdout: ${result.stdout.trim()}`);
+          const truncated = result.stdout.trim().length > 200
+            ? result.stdout.trim().slice(0, 200) + "... [truncated]"
+            : result.stdout.trim();
+          this.logger.trace(`Command stdout: ${truncated}`);
         }
       } else {
         this.logger.warn(

@@ -196,7 +196,13 @@ export class EnvLoader {
 
     // Then check host environment if allowed
     if (allowHostEnv) {
-      return Deno.env.get(name);
+      const value = Deno.env.get(name);
+      if (value !== undefined) {
+        console.warn(
+          `[warn] Resolved '${name}' from host environment (not .env file)`,
+        );
+      }
+      return value;
     }
 
     return undefined;

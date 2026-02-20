@@ -21,8 +21,8 @@ import {
   CORROSION_SYNC_POLL_INTERVAL_MS,
   CORROSION_SYNC_TIMEOUT_SECONDS,
 } from "../../constants.ts";
-export { escapeSql } from "@jiji/shared";
-import { escapeSql } from "@jiji/shared";
+export { escapeSql, sql } from "@jiji/shared";
+import { escapeSql, sql } from "@jiji/shared";
 
 const CORROSION_REPO = "superfly/corrosion";
 const CORROSION_INSTALL_DIR = "/opt/jiji/corrosion";
@@ -431,16 +431,10 @@ export async function registerServer(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(server.endpoints);
 
-  const sql =
-    `INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES ('${
-      escapeSql(server.id)
-    }', '${escapeSql(server.hostname)}', '${escapeSql(server.subnet)}', '${
-      escapeSql(server.wireguardIp)
-    }', '${escapeSql(server.wireguardPublicKey)}', '${
-      escapeSql(server.managementIp)
-    }', '${escapeSql(endpointsJson)}', ${server.lastSeen});`;
+  const query =
+    sql`INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES (${server.id}, ${server.hostname}, ${server.subnet}, ${server.wireguardIp}, ${server.wireguardPublicKey}, ${server.managementIp}, ${endpointsJson}, ${server.lastSeen});`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register server: ${result.stderr}`);
@@ -457,12 +451,10 @@ export async function registerService(
   ssh: SSHManager,
   service: ServiceRegistration,
 ): Promise<void> {
-  const sql = `
-    INSERT OR REPLACE INTO services (name, project)
-    VALUES ('${escapeSql(service.name)}', '${escapeSql(service.project)}');
-  `;
+  const query =
+    sql`INSERT OR REPLACE INTO services (name, project) VALUES (${service.name}, ${service.project});`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register service: ${result.stderr}`);
@@ -480,23 +472,12 @@ export async function registerContainer(
   container: ContainerRegistration,
 ): Promise<void> {
   const healthStatus = container.healthStatus ?? "healthy";
-  const instanceId = container.instanceId !== undefined
-    ? `'${escapeSql(container.instanceId)}'`
-    : "NULL";
+  const instanceId = container.instanceId ?? null;
 
-  const sql = `
-    INSERT OR REPLACE INTO containers
-    (id, service, server_id, ip, started_at, instance_id, health_status)
-    VALUES
-    ('${escapeSql(container.id)}', '${escapeSql(container.service)}', '${
-    escapeSql(container.serverId)
-  }',
-     '${escapeSql(container.ip)}', ${container.startedAt}, ${instanceId}, '${
-    escapeSql(healthStatus)
-  }');
-  `;
+  const query =
+    sql`INSERT OR REPLACE INTO containers (id, service, server_id, ip, started_at, instance_id, health_status) VALUES (${container.id}, ${container.service}, ${container.serverId}, ${container.ip}, ${container.startedAt}, ${instanceId}, ${healthStatus});`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register container: ${result.stderr}`);
@@ -513,9 +494,9 @@ export async function unregisterContainer(
   ssh: SSHManager,
   containerId: string,
 ): Promise<void> {
-  const sql = `DELETE FROM containers WHERE id = '${escapeSql(containerId)}';`;
+  const query = sql`DELETE FROM containers WHERE id = ${containerId};`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to unregister container: ${result.stderr}`);
@@ -533,11 +514,10 @@ export async function queryServiceContainers(
   ssh: SSHManager,
   serviceName: string,
 ): Promise<string[]> {
-  const sql = `SELECT ip FROM containers WHERE service = '${
-    escapeSql(serviceName)
-  }' AND health_status = 'healthy';`;
+  const query =
+    sql`SELECT ip FROM containers WHERE service = ${serviceName} AND health_status = 'healthy';`;
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query service containers: ${result.stderr}`);
@@ -560,11 +540,10 @@ export async function queryServerServiceContainers(
   serviceName: string,
   serverId: string,
 ): Promise<string[]> {
-  const sql = `SELECT ip FROM containers WHERE service = '${
-    escapeSql(serviceName)
-  }' AND server_id = '${escapeSql(serverId)}' AND health_status = 'healthy';`;
+  const query =
+    sql`SELECT ip FROM containers WHERE service = ${serviceName} AND server_id = ${serverId} AND health_status = 'healthy';`;
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(
@@ -591,11 +570,10 @@ export async function queryServerServiceContainerDetails(
   serviceName: string,
   serverId: string,
 ): Promise<Array<{ ip: string; instanceId?: string }>> {
-  const sql = `SELECT ip, instance_id FROM containers WHERE service = '${
-    escapeSql(serviceName)
-  }' AND server_id = '${escapeSql(serverId)}' AND health_status = 'healthy';`;
+  const query =
+    sql`SELECT ip, instance_id FROM containers WHERE service = ${serviceName} AND server_id = ${serverId} AND health_status = 'healthy';`;
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(
@@ -720,13 +698,10 @@ export async function updateServerEndpoints(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(endpoints);
 
-  const sql = `
-    UPDATE servers
-    SET endpoints = '${escapeSql(endpointsJson)}'
-    WHERE id = '${escapeSql(serverId)}';
-  `;
+  const query =
+    sql`UPDATE servers SET endpoints = ${endpointsJson} WHERE id = ${serverId};`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to update server endpoints: ${result.stderr}`);
@@ -751,13 +726,10 @@ export async function updateServerHeartbeat(
   serverId: string,
 ): Promise<void> {
   const now = Date.now();
-  const sql = `
-    UPDATE servers
-    SET last_seen = ${now}
-    WHERE id = '${escapeSql(serverId)}';
-  `;
+  const query =
+    sql`UPDATE servers SET last_seen = ${now} WHERE id = ${serverId};`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to update server heartbeat: ${result.stderr}`);
@@ -875,12 +847,10 @@ export async function setClusterMetadata(
   key: string,
   value: string,
 ): Promise<void> {
-  const sql = `
-    INSERT OR REPLACE INTO cluster_metadata (key, value)
-    VALUES ('${escapeSql(key)}', '${escapeSql(value)}');
-  `;
+  const query =
+    sql`INSERT OR REPLACE INTO cluster_metadata (key, value) VALUES (${key}, ${value});`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to set cluster metadata: ${result.stderr}`);
@@ -900,11 +870,9 @@ export async function getClusterMetadata(
   ssh: SSHManager,
   key: string,
 ): Promise<string | null> {
-  const sql = `SELECT value FROM cluster_metadata WHERE key = '${
-    escapeSql(key)
-  }';`;
+  const query = sql`SELECT value FROM cluster_metadata WHERE key = ${key};`;
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to get cluster metadata: ${result.stderr}`);
@@ -1111,21 +1079,19 @@ export async function deleteContainersByServer(
   serverId: string,
 ): Promise<number> {
   // First count how many will be deleted
-  const countSql = `SELECT COUNT(*) FROM containers WHERE server_id = '${
-    escapeSql(serverId)
-  }';`;
+  const countQuery =
+    sql`SELECT COUNT(*) FROM containers WHERE server_id = ${serverId};`;
 
-  const countResult = await corrosionQuery(ssh, countSql);
+  const countResult = await corrosionQuery(ssh, countQuery);
   const count = parseInt(countResult.stdout.trim(), 10) || 0;
 
   if (count === 0) return 0;
 
   // Delete the containers
-  const sql = `DELETE FROM containers WHERE server_id = '${
-    escapeSql(serverId)
-  }';`;
+  const deleteQuery =
+    sql`DELETE FROM containers WHERE server_id = ${serverId};`;
 
-  const result = await corrosionExec(ssh, sql);
+  const result = await corrosionExec(ssh, deleteQuery);
 
   if (result.code !== 0) {
     throw new Error(`Failed to delete containers for server: ${result.stderr}`);
@@ -1145,19 +1111,16 @@ export async function queryAllContainersWithDetails(
   ssh: SSHManager,
   serviceFilter?: string,
 ): Promise<ContainerWithDetails[]> {
-  let sql = `
-    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
-    FROM containers c
-    LEFT JOIN servers s ON c.server_id = s.id
-  `;
+  let query =
+    `SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id FROM containers c LEFT JOIN servers s ON c.server_id = s.id`;
 
   if (serviceFilter) {
-    sql += ` WHERE c.service = '${escapeSql(serviceFilter)}'`;
+    query += sql` WHERE c.service = ${serviceFilter}`;
   }
 
-  sql += " ORDER BY c.service, s.hostname;";
+  query += " ORDER BY c.service, s.hostname;";
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query containers: ${result.stderr}`);
@@ -1204,15 +1167,12 @@ export async function queryContainerById(
   ssh: SSHManager,
   containerId: string,
 ): Promise<ContainerWithDetails | null> {
-  const sql = `
-    SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id
-    FROM containers c
-    LEFT JOIN servers s ON c.server_id = s.id
-    WHERE c.id LIKE '${escapeSql(containerId)}%'
-    LIMIT 1;
-  `;
+  const query =
+    sql`SELECT c.id, c.service, c.server_id, s.hostname, c.ip, c.health_status, c.started_at, c.instance_id FROM containers c LEFT JOIN servers s ON c.server_id = s.id WHERE c.id LIKE ${
+      containerId + "%"
+    } LIMIT 1;`;
 
-  const result = await corrosionQuery(ssh, sql);
+  const result = await corrosionQuery(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to query container: ${result.stderr}`);

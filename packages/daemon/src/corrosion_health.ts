@@ -8,7 +8,7 @@
 import type { Config } from "./types.ts";
 import { HEARTBEAT_STALE_THRESHOLD } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
-import { escapeSql } from "./validation.ts";
+import { sql } from "./validation.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -72,9 +72,8 @@ export async function checkCorrosionHealth(
   }
 
   // Check heartbeat freshness
-  const escapedId = escapeSql(config.serverId);
   const lastSeen = await cli.queryScalar(
-    `SELECT last_seen FROM servers WHERE id = '${escapedId}';`,
+    sql`SELECT last_seen FROM servers WHERE id = ${config.serverId};`,
   );
 
   if (lastSeen) {

@@ -13,11 +13,7 @@ import {
 } from "./types.ts";
 import type { CorrosionClient } from "./corrosion_client.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
-import {
-  escapeSql,
-  isValidContainerId,
-  isValidServerId,
-} from "./validation.ts";
+import { isValidContainerId, isValidServerId, sql } from "./validation.ts";
 import { isSplitBrainDetected } from "./split_brain.ts";
 import * as log from "./logger.ts";
 
@@ -79,9 +75,8 @@ async function deleteStaleContainers(
       service,
     });
 
-    const escaped = escapeSql(containerId);
     const affected = await client.execGetRowsAffected(
-      `DELETE FROM containers WHERE id = '${escaped}';`,
+      sql`DELETE FROM containers WHERE id = ${containerId};`,
     );
     deleted += affected > 0 ? 1 : 0;
   }
@@ -97,9 +92,8 @@ async function deleteOfflineServerContainers(
   const now = Date.now();
   const threshold = now - OFFLINE_SERVER_THRESHOLD;
 
-  const escapedServerId = escapeSql(config.serverId);
   const rows = await cli.query(
-    `SELECT id FROM servers WHERE last_seen < ${threshold} AND id != '${escapedServerId}';`,
+    sql`SELECT id FROM servers WHERE last_seen < ${threshold} AND id != ${config.serverId};`,
   );
 
   let deleted = 0;
@@ -117,9 +111,8 @@ async function deleteOfflineServerContainers(
       server_id: serverId,
     });
 
-    const escaped = escapeSql(serverId);
     const affected = await client.execGetRowsAffected(
-      `DELETE FROM containers WHERE server_id = '${escaped}';`,
+      sql`DELETE FROM containers WHERE server_id = ${serverId};`,
     );
     deleted += affected;
   }

@@ -8,7 +8,7 @@
 import type { parseConfig } from "./types.ts";
 import type { CorrosionClient } from "./corrosion_client.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
-import { escapeSql, isValidContainerId } from "./validation.ts";
+import { isValidContainerId, sql } from "./validation.ts";
 import type { ContainerRecord } from "./types.ts";
 import { checkAllContainers } from "./container_health.ts";
 import * as log from "./logger.ts";
@@ -32,9 +32,8 @@ export async function syncContainerHealth(
   cli: CorrosionCli,
 ): Promise<void> {
   // Get containers from this server
-  const syncEscapedId = escapeSql(config.serverId);
   const rows = await cli.query(
-    `SELECT id, ip, health_port, health_status, consecutive_failures FROM containers WHERE server_id = '${syncEscapedId}';`,
+    sql`SELECT id, ip, health_port, health_status, consecutive_failures FROM containers WHERE server_id = ${config.serverId};`,
   );
 
   if (rows.length === 0) return;
@@ -64,11 +63,9 @@ export async function syncContainerHealth(
     }
 
     const now = Date.now();
-    const escapedCId = escapeSql(result.containerId);
-    const escapedStatus = escapeSql(result.newStatus);
     try {
       await client.exec(
-        `UPDATE containers SET health_status = '${escapedStatus}', last_health_check = ${now}, consecutive_failures = ${result.newFailures} WHERE id = '${escapedCId}';`,
+        sql`UPDATE containers SET health_status = ${result.newStatus}, last_health_check = ${now}, consecutive_failures = ${result.newFailures} WHERE id = ${result.containerId};`,
       );
       changes++;
       log.info("Container health changed", {

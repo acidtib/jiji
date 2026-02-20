@@ -16,7 +16,7 @@ import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
 import { detectSplitBrain } from "./split_brain.ts";
-import { escapeSql } from "./validation.ts";
+import { sql } from "./validation.ts";
 
 /** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
 const GC_INTERVAL = 10;
@@ -74,9 +74,8 @@ async function main(): Promise<void> {
 
     // Final heartbeat
     const now = Date.now();
-    const escapedId = escapeSql(config.serverId);
     client.exec(
-      `UPDATE servers SET last_seen = ${now} WHERE id = '${escapedId}';`,
+      sql`UPDATE servers SET last_seen = ${now} WHERE id = ${config.serverId};`,
     ).catch(() => {});
 
     log.info("Daemon shutdown complete");
@@ -94,9 +93,8 @@ async function main(): Promise<void> {
     try {
       // 1. Update heartbeat
       const now = Date.now();
-      const hbEscapedId = escapeSql(config.serverId);
       await client.exec(
-        `UPDATE servers SET last_seen = ${now} WHERE id = '${hbEscapedId}';`,
+        sql`UPDATE servers SET last_seen = ${now} WHERE id = ${config.serverId};`,
       ).catch((err) =>
         log.error("Failed to update heartbeat", { error: String(err) })
       );

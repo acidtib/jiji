@@ -8,11 +8,11 @@ import type { Config, ServerRecord } from "./types.ts";
 import type { CorrosionCli } from "./corrosion_cli.ts";
 import * as wg from "./wireguard.ts";
 import {
-  escapeSql,
   isValidCIDR,
   isValidEndpoint,
   isValidIPv6,
   isValidWireGuardKey,
+  sql,
 } from "./validation.ts";
 import * as log from "./logger.ts";
 
@@ -39,9 +39,8 @@ async function getActiveServers(
   cli: CorrosionCli,
   serverId: string,
 ): Promise<ServerRecord[]> {
-  const escapedId = escapeSql(serverId);
   const rows = await cli.query(
-    `SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE last_seen > (strftime('%s', 'now') - 300) * 1000 AND id != '${escapedId}';`,
+    sql`SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE last_seen > (strftime('%s', 'now') - 300) * 1000 AND id != ${serverId};`,
   );
 
   return rows.filter((r) => r[0]?.trim()).map((row) => ({
