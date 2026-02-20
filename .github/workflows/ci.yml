@@ -55,10 +55,10 @@ jobs:
 
       - name: Test CLI functionality
         run: |
-          deno task run --help
-          deno task run init --help
-          deno task run server --help
-          deno task run version
+          deno run -A src/main.ts --help
+          deno run -A src/main.ts init --help
+          deno run -A src/main.ts server --help
+          deno run -A src/main.ts version
 
   test-dns:
     runs-on: ubuntu-latest
