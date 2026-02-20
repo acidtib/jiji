@@ -26,6 +26,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deno-
 
+      - name: Install dependencies
+        run: deno install --allow-scripts=npm:cpu-features,npm:ssh2
+
       - name: Get tag version
         id: get_tag_version
         run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_OUTPUT
