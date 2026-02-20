@@ -1,6 +1,7 @@
 {
   "name": "@jiji/dns",
   "version": "0.4.1",
+  "license": "MIT",
   "exports": "./src/main.ts",
   "tasks": {
     "check": "deno fmt --check && deno lint && deno test --allow-net --allow-read --allow-env tests/"
