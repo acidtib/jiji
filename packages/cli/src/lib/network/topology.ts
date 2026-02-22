@@ -59,7 +59,9 @@ export async function loadTopology(
     log.debug("Loaded network topology from Corrosion", "network");
     return topology;
   } catch (error) {
-    log.debug(`No existing topology found in Corrosion: ${error}`, "network");
+    log.warn(
+      `Failed to load network topology from Corrosion on ${ssh.getHost()}: ${error}`,
+    );
     return null;
   }
 }

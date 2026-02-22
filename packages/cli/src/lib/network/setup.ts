@@ -50,7 +50,7 @@ import {
   validateTopology,
 } from "./topology.ts";
 import { setupServerRouting } from "./routes.ts";
-import { ensureUfwForwardRules } from "./firewall.ts";
+import { ensureUfwForwardRules, isUfwActive } from "./firewall.ts";
 import { createDaemonService } from "./daemon.ts";
 import { discoverAllEndpoints, selectBestEndpoint } from "./ip_discovery.ts";
 import { CORROSION_API_PORT, CORROSION_GOSSIP_PORT } from "../../constants.ts";
@@ -558,6 +558,41 @@ export async function setupNetwork(
           }
 
           await enableWireGuardService(ssh, "jiji0", config.builder.engine);
+
+          // Ensure UFW allows traffic for the jiji network.
+          // Two rules are needed:
+          // 1. jiji0 interface: allows all WireGuard tunnel traffic (IPv4 + IPv6 management)
+          //    Without this, Corrosion gossip over IPv6 management IPs gets blocked.
+          // 2. Container subnets (10.210.128.0/17): allows container-to-host traffic
+          //    Without this, containers can't reach jiji-dns on the gateway IP.
+          if (await isUfwActive(ssh)) {
+            const wgCheck = await ssh.executeCommand(
+              "ufw status | grep 'Anywhere on jiji0'",
+            );
+            if (wgCheck.code !== 0) {
+              await ssh.executeCommand(
+                "ufw allow in on jiji0 comment 'Jiji WireGuard tunnel (all traffic)'",
+              );
+              log.say(`├── UFW rule added for jiji0 interface`, 2);
+            }
+
+            const containerCheck = await ssh.executeCommand(
+              "ufw status | grep 'Jiji container networks'",
+            );
+            if (containerCheck.code !== 0) {
+              // 10.210.128.0/17 covers all container subnets (128.x-255.x)
+              // but not WireGuard subnets (0.x-127.x) which use the jiji0 rule
+              const containerCidr = config.network.clusterCidr.replace(
+                /\.0\.0\/16$/,
+                ".128.0/17",
+              );
+              await ssh.executeCommand(
+                `ufw allow from ${containerCidr} comment 'Jiji container networks'`,
+              );
+              log.say(`├── UFW rule added for container networks`, 2);
+            }
+          }
+
           log.say(
             `└── WireGuard mesh configured with ${peers.length} peer(s)`,
             2,

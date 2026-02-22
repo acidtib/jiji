@@ -245,6 +245,22 @@ export async function configureContainerDNS(
       log.warn("Failed to parse existing daemon.json, will overwrite", "dns");
     }
 
+    // Check if DNS config already matches
+    const currentDns = JSON.stringify(existingConfig.dns);
+    const currentSearch = JSON.stringify(existingConfig["dns-search"]);
+    const currentOpts = JSON.stringify(existingConfig["dns-opts"]);
+    if (
+      currentDns === JSON.stringify([dnsServer]) &&
+      currentSearch === JSON.stringify([serviceDomain]) &&
+      currentOpts === JSON.stringify(["ndots:1"])
+    ) {
+      log.debug(
+        `Docker DNS config already up to date on ${ssh.getHost()}`,
+        "dns",
+      );
+      return;
+    }
+
     // Merge DNS configuration with existing config
     const daemonConfig = {
       ...existingConfig,
@@ -260,7 +276,7 @@ export async function configureContainerDNS(
       `mkdir -p /etc/docker && cat > /etc/docker/daemon.json << 'EOFJSON'\n${configContent}\nEOFJSON`,
     );
 
-    // Reload Docker
+    // Reload Docker (SIGHUP - does not restart containers)
     const reloadResult = await ssh.executeCommand(
       "systemctl reload docker 2>/dev/null || systemctl restart docker",
     );
@@ -279,18 +295,22 @@ dns_searches = ["${serviceDomain}"]
 dns_options = ["ndots:1"]
 `;
 
+    // Check if config already matches to avoid unnecessary writes
+    const existingResult = await ssh.executeCommand(
+      "cat /etc/containers/containers.conf 2>/dev/null || echo ''",
+    );
+    const existingConf = existingResult.stdout.trim();
+
+    if (existingConf === containersConf.trim()) {
+      log.debug(
+        `Podman DNS config already up to date on ${ssh.getHost()}`,
+        "dns",
+      );
+      return;
+    }
+
     await ssh.executeCommand(
       `mkdir -p /etc/containers && cat > /etc/containers/containers.conf << 'EOFCONF'\n${containersConf}\nEOFCONF`,
     );
-
-    // Restart kamal-proxy if it exists to pick up new DNS configuration
-    const proxyCheck = await ssh.executeCommand(
-      "podman ps --filter name=kamal-proxy --format '{{.Names}}'",
-    );
-    if (proxyCheck.stdout.trim() === "kamal-proxy") {
-      log.info("Restarting kamal-proxy to apply DNS configuration...", "dns");
-      await ssh.executeCommand("podman restart kamal-proxy");
-      log.success("kamal-proxy restarted with new DNS configuration", "dns");
-    }
   }
 }
