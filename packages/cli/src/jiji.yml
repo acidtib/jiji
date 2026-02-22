@@ -360,6 +360,25 @@ ssh:
 #
 # Example: jiji -e production --host-env deploy
 #
+# External Secret Adapters:
+# Optionally fetch secrets from an external password manager.
+# When configured, adapter secrets are merged with .env file secrets.
+# .env values take precedence over adapter values (useful for local overrides).
+#
+# Supported adapters: doppler
+#
+# secrets:
+#   adapter: doppler
+#   project: my-app        # Optional: Doppler project name
+#   config: prd            # Optional: Doppler config/environment name
+#
+# Doppler Authentication:
+# - Set DOPPLER_TOKEN env var (service tokens, CI/CD)
+# - Or run 'doppler login' for interactive authentication
+#
+# When project/config are omitted, the Doppler CLI uses its own project
+# resolution (doppler.yaml in repo root or interactive selection).
+#
 # Debug Secrets:
 # Use 'jiji secrets print' to see which secrets are configured and their status.
 # Use 'jiji secrets print --show-values' to reveal actual secret values (use with caution).

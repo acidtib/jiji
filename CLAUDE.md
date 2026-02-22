@@ -232,3 +232,44 @@ deno test --allow-all packages/cli/tests/zero_downtime_deployment_test.ts
 
 See `packages/dns/CLAUDE.md` and `packages/daemon/CLAUDE.md` for
 package-specific architecture, commands, and gotchas.
+
+## Code Guidelines
+
+- Conform to codebase conventions: follow existing patterns, helpers, naming,
+  and formatting; if you must diverge, state why
+- Optimize for correctness and clarity; avoid risky shortcuts or speculative
+  changes
+- Keep type safety: changes should pass `mise build` and type-check; prefer
+  proper types over `any` casts
+- DRY: search for prior art before adding new helpers or logic; reuse or extract
+  shared helpers instead of duplicating
+- Tight error handling: no broad catches or silent defaults; propagate or
+  surface errors explicitly
+- Actionable error messages: every user-facing error must tell the user what to
+  DO, not just what went wrong
+- Efficient edits: read enough context before changing a file; batch logical
+  edits together instead of many tiny patches
+
+## Git Discipline
+
+- Run `/resume-work` at the start of a session to pick up context from previous
+  sessions
+- Never use `git commit --no-verify` — if hooks fail, fix every issue before
+  committing
+- Never use destructive commands (`git reset --hard`, `git checkout --`) unless
+  explicitly approved
+- Never force push to main
+- No revert commits for unpushed work: use `git reset HEAD~1` instead of
+  `git revert`
+- Do not amend a commit unless explicitly requested
+- Treat all ESLint warnings as bugs — run `mise lint` and fix before committing
+- OSV scanner findings are blockers: run `mise scan` and use `/fix-osv-finding`
+  to remediate; never dismiss without analyzing reachability
+
+## Workflow
+
+- Default expectation: deliver working code, not just a plan
+- When working within the existing design system, preserve established patterns
+  and visual language
+- Commit at logical stopping points using `/commit`
+- Pause after completing a task and wait for input before continuing

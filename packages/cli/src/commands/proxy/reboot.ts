@@ -76,9 +76,7 @@ export const rebootCommand = new Command()
               2,
             );
           } catch (error) {
-            const msg = error instanceof Error
-              ? error.message
-              : String(error);
+            const msg = error instanceof Error ? error.message : String(error);
             log.error(`Failed to reboot proxy on ${host}: ${msg}`, 2);
             failCount++;
           }
