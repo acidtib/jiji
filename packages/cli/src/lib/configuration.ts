@@ -9,12 +9,13 @@ import {
   type ResolvedServerConfig,
   ServersConfiguration,
 } from "./configuration/servers.ts";
+import { SecretsConfiguration } from "./configuration/secrets.ts";
 import { ValidatorPresets } from "./configuration/validation.ts";
 import type { ValidationResult } from "./configuration/validation.ts";
 import { BaseConfiguration, ConfigurationError } from "./configuration/base.ts";
 import { log } from "../utils/logger.ts";
 import { DEFAULT_LOCAL_REGISTRY_PORT } from "../constants.ts";
-import { EnvLoader } from "../utils/env_loader.ts";
+import { resolveSecrets } from "../utils/secret_resolver.ts";
 
 export type ContainerEngine = "docker" | "podman";
 
@@ -29,6 +30,7 @@ export class Configuration extends BaseConfiguration {
   private _environment?: EnvironmentConfiguration;
   private _builder?: BuilderConfiguration; // Lazy-loaded, required field
   private _network?: NetworkConfiguration;
+  private _secrets?: SecretsConfiguration;
   private _configPath?: string;
   private _environmentName?: string;
   private _secretsPath?: string;
@@ -154,6 +156,22 @@ export class Configuration extends BaseConfiguration {
       );
     }
     return this._network;
+  }
+
+  /**
+   * Secrets adapter configuration (e.g., Doppler)
+   */
+  get secretsAdapter(): SecretsConfiguration {
+    if (!this._secrets) {
+      const secretsConfig = this.has("secrets") ? this.get("secrets") : {};
+      this._secrets = new SecretsConfiguration(
+        typeof secretsConfig === "object" && secretsConfig !== null &&
+          !Array.isArray(secretsConfig)
+          ? (secretsConfig as Record<string, unknown>)
+          : {},
+      );
+    }
+    return this._secrets;
   }
 
   /**
@@ -539,6 +557,20 @@ export class Configuration extends BaseConfiguration {
       }
     }
 
+    // Validate secrets adapter configuration
+    try {
+      this.secretsAdapter.validate();
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        result.errors.push({
+          path: "secrets",
+          message: error.message,
+          code: "SECRETS_VALIDATION",
+        });
+        result.valid = false;
+      }
+    }
+
     // Validate servers configuration (required)
     try {
       const serversResult = this.servers.validate();
@@ -695,14 +727,17 @@ export class Configuration extends BaseConfiguration {
 
     const configuration = new Configuration(config, path, environment);
 
-    // Load env vars for server host resolution
+    // Load env vars for server host resolution (from .env + optional adapter)
     const projectRoot = configuration.getProjectRoot();
-    const envResult = await EnvLoader.loadEnvFile({
-      projectRoot,
-      environment,
-      envPath: configuration.secretsPath,
-    });
-    configuration.servers.setEnvVars(envResult.variables);
+    const secretResult = await resolveSecrets(
+      {
+        projectRoot,
+        environment,
+        envPath: configuration.secretsPath,
+      },
+      configuration.secretsAdapter,
+    );
+    configuration.servers.setEnvVars(secretResult.variables);
 
     // Validate the loaded configuration
     const validationResult = configuration.validate();
@@ -796,6 +831,7 @@ export {
   ProxyConfiguration,
   type ProxyHealthcheckConfig,
 } from "./configuration/proxy.ts";
+export { SecretsConfiguration } from "./configuration/secrets.ts";
 export {
   ConfigurationValidator,
   type ValidationError,

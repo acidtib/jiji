@@ -35,7 +35,7 @@ export async function getDnsServerForHost(
     const topology = await loadTopology(ssh);
     if (!topology) {
       log.debug(
-        `Network topology not found for ${hostname}`,
+        `Network topology not found on ${hostname} - is Corrosion running? Try: ssh root@${hostname} systemctl status jiji-corrosion`,
         "network",
       );
       return undefined;
@@ -43,9 +43,8 @@ export async function getDnsServerForHost(
 
     const server = getServerByHostname(topology, hostname);
     if (!server) {
-      log.debug(
-        `Server ${hostname} not found in network topology`,
-        "network",
+      log.warn(
+        `Server ${hostname} not found in network topology (${topology.servers.length} servers in cluster)`,
       );
       return undefined;
     }
