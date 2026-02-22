@@ -231,6 +231,13 @@ export class ProxyCommands {
     // Pull the image first
     await this.pullImage();
 
+    // Ensure certs directory exists on the host (needed for volume mount)
+    await executeBestEffort(
+      this.ssh,
+      "mkdir -p $HOME/.jiji/certs",
+      "creating certs directory",
+    );
+
     // Remove existing container if it exists
     await this.removeContainer();
 
