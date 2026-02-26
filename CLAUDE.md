@@ -39,9 +39,9 @@ mise build:release      # Cross-compile all release binaries
 # CLI (via mise)
 mise cli:run            # Run CLI
 mise cli:build          # Build CLI binary
-mise cli:install        # Build + install to /usr/local/bin/jiji
+mise cli:install        # Build + install to ~/.local/bin/jiji
 mise cli:build:dev      # Build dev binary
-mise cli:install:dev    # Build dev binary + install to /usr/local/bin/jiji_dev
+mise cli:install:dev    # Build dev binary + install to ~/.local/bin/jiji_dev
 mise cli:release        # Cross-compile CLI for all platforms
 
 # DNS (via mise)
