@@ -2,7 +2,7 @@
 set -e
 
 GITHUB_REPO="acidtib/jiji"
-INSTALL_DIR=${INSTALL_DIR:-/usr/local/bin}
+INSTALL_DIR=${INSTALL_DIR:-$HOME/.local/bin}
 # Use the latest version or specify the version to install:
 #   curl ... | VERSION=v1.2.3 sh
 VERSION=${VERSION:-latest}
@@ -13,7 +13,7 @@ print_manual_install() {
     echo "  1. Open your web browser and go to ${RELEASES_URL}"
     echo "  2. Download jiji-<OS>-<ARCH> for your platform (OS: linux/macos, ARCH: x86_64/arm64)."
     echo "  3. Make the binary executable: chmod +x ./jiji-*"
-    echo "  4. Install the binary to /usr/local/bin: sudo install ./jiji-* ${INSTALL_DIR}/jiji"
+    echo "  4. Install the binary: install ./jiji-* ${INSTALL_DIR}/jiji"
     echo "  5. Delete the downloaded binary: rm jiji-*"
     echo "  6. Run 'jiji --help' to verify the installation. Enjoy!"
 }
@@ -27,6 +27,9 @@ fetch_latest_version() {
         exit 1
     fi
 }
+
+# Ensure the install directory exists.
+mkdir -p "$INSTALL_DIR"
 
 # Check if not running as root and need to use sudo to write to INSTALL_DIR.
 SUDO=""

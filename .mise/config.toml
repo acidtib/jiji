@@ -17,10 +17,10 @@ deno compile \
 """
 
 [tasks."cli:install:dev"]
-description = "Build and install dev CLI to /usr/local/bin"
+description = "Build and install dev CLI to ~/.local/bin"
 depends = ["cli:build:dev"]
 dir = "{{config_root}}/packages/cli"
-run = "sudo cp ../../target/jiji_dev /usr/local/bin/jiji_dev"
+run = "mkdir -p \"$HOME/.local/bin\" && cp ../../target/jiji_dev \"$HOME/.local/bin/jiji_dev\""
 
 [tasks."build:release"]
 description = "Cross-compile all 9 release binaries"
