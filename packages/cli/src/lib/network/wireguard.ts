@@ -425,6 +425,49 @@ export async function restartWireGuardInterface(
 }
 
 /**
+ * Hot-reload WireGuard peer configuration without tearing down the interface.
+ * Uses `wg syncconf` which updates peers and allowed IPs on a running interface,
+ * avoiding the race condition where `wg-quick down` fails silently and `wg-quick up`
+ * skips because the interface already exists — leaving stale peer config loaded.
+ *
+ * @param ssh - SSH connection to the server
+ * @param interfaceName - Interface name (default: jiji0)
+ */
+export async function syncWireGuardConfig(
+  ssh: SSHManager,
+  interfaceName = "jiji0",
+): Promise<void> {
+  const host = ssh.getHost();
+
+  log.info(
+    `Syncing WireGuard config for ${interfaceName} on ${host}`,
+    "wireguard",
+  );
+
+  // Use a temp file instead of process substitution <(...) which requires bash.
+  // SSH exec channels may use sh/dash where process substitution is unsupported,
+  // causing syncconf to silently receive empty input and skip peer updates.
+  const result = await ssh.executeCommand(
+    `wg-quick strip ${interfaceName} > /tmp/jiji-wg-strip.conf && wg syncconf ${interfaceName} /tmp/jiji-wg-strip.conf && rm -f /tmp/jiji-wg-strip.conf`,
+  );
+
+  if (result.code !== 0) {
+    // Fallback to full restart if syncconf fails (e.g., interface not up)
+    log.warn(
+      `wg syncconf failed on ${host}, falling back to full restart: ${result.stderr}`,
+      "wireguard",
+    );
+    await restartWireGuardInterface(ssh, interfaceName);
+    return;
+  }
+
+  log.success(
+    `WireGuard config synced on ${host}`,
+    "wireguard",
+  );
+}
+
+/**
  * Get WireGuard interface status
  *
  * @param ssh - SSH connection to the server

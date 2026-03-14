@@ -677,9 +677,12 @@ export class ContainerDeploymentService {
       builder.capAdd(service.cap_add);
     }
 
-    // Add custom command if specified, with env var interpolation
+    // Add custom command if specified, with env var interpolation.
+    // Merge options.envVars (all available secrets from the adapter) with resolvedEnv
+    // so commands can reference any secret, not just those declared in environment.secrets.
     if (service.command) {
-      builder.command(interpolateCommand(service.command, resolvedEnv));
+      const commandEnv = { ...(options.envVars ?? {}), ...resolvedEnv };
+      builder.command(interpolateCommand(service.command, commandEnv));
     }
 
     const runCommand = builder.build();

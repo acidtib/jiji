@@ -3,6 +3,7 @@
  */
 
 import { Command } from "@cliffy/command";
+import { setupCommand } from "./network/setup.ts";
 import { statusCommand } from "./network/status.ts";
 import { teardownCommand } from "./network/teardown.ts";
 import { gcCommand } from "./network/gc.ts";
@@ -15,6 +16,7 @@ export const networkCommand = new Command()
   .action(function () {
     this.showHelp();
   })
+  .command("setup", setupCommand)
   .command("status", statusCommand)
   .command("teardown", teardownCommand)
   .command("gc", gcCommand)

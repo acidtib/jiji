@@ -73,55 +73,59 @@ export async function reconcilePeers(
   const currentPeers = await wg.showDump(config.interfaceName);
   const currentPubkeys = new Set(currentPeers.map((p) => p.publicKey));
 
-  // Add missing peers
+  // Add missing peers or fix incorrect allowed IPs
   for (const server of activeServers) {
+    // Validate all Corrosion-sourced peer data before passing to wg
+    if (!isValidWireGuardKey(server.wireguardPubkey)) {
+      log.warn("Skipping peer with invalid pubkey format", {
+        pubkey: server.wireguardPubkey,
+      });
+      continue;
+    }
+
+    if (!isValidCIDR(server.subnet)) {
+      log.warn("Skipping peer with invalid subnet", {
+        pubkey: server.wireguardPubkey,
+        subnet: server.subnet,
+      });
+      continue;
+    }
+
+    if (!isValidIPv6(server.managementIp)) {
+      log.warn("Skipping peer with invalid management IP", {
+        pubkey: server.wireguardPubkey,
+        management_ip: server.managementIp,
+      });
+      continue;
+    }
+
+    const endpoint = server.endpoints[0];
+    if (!endpoint) {
+      log.warn("Server has no endpoints, skipping", {
+        pubkey: server.wireguardPubkey,
+      });
+      continue;
+    }
+
+    if (!isValidEndpoint(endpoint)) {
+      log.warn("Skipping peer with invalid endpoint format", {
+        pubkey: server.wireguardPubkey,
+        endpoint,
+      });
+      continue;
+    }
+
+    // Compute expected allowed IPs including container subnet
+    const expectedAllowedIps = computeExpectedAllowedIps(server);
+
     if (!currentPubkeys.has(server.wireguardPubkey)) {
-      // Validate all Corrosion-sourced peer data before passing to wg
-      if (!isValidWireGuardKey(server.wireguardPubkey)) {
-        log.warn("Skipping peer with invalid pubkey format", {
-          pubkey: server.wireguardPubkey,
-        });
-        continue;
-      }
-
-      if (!isValidCIDR(server.subnet)) {
-        log.warn("Skipping peer with invalid subnet", {
-          pubkey: server.wireguardPubkey,
-          subnet: server.subnet,
-        });
-        continue;
-      }
-
-      if (!isValidIPv6(server.managementIp)) {
-        log.warn("Skipping peer with invalid management IP", {
-          pubkey: server.wireguardPubkey,
-          management_ip: server.managementIp,
-        });
-        continue;
-      }
-
-      const endpoint = server.endpoints[0];
-      if (!endpoint) {
-        log.warn("Server has no endpoints, skipping", {
-          pubkey: server.wireguardPubkey,
-        });
-        continue;
-      }
-
-      if (!isValidEndpoint(endpoint)) {
-        log.warn("Skipping peer with invalid endpoint format", {
-          pubkey: server.wireguardPubkey,
-          endpoint,
-        });
-        continue;
-      }
-
+      // New peer — add it
       log.info("Adding new peer", { pubkey: server.wireguardPubkey });
 
       try {
         await wg.setPeer(config.interfaceName, {
           publicKey: server.wireguardPubkey,
-          allowedIps: `${server.subnet},${server.managementIp}/128`,
+          allowedIps: expectedAllowedIps,
           endpoint,
           persistentKeepalive: 25,
         });
@@ -130,6 +134,39 @@ export async function reconcilePeers(
           pubkey: server.wireguardPubkey,
           error: String(err),
         });
+      }
+    } else {
+      // Existing peer — check if allowed IPs are correct
+      const existingPeer = currentPeers.find(
+        (p) => p.publicKey === server.wireguardPubkey,
+      );
+      if (existingPeer) {
+        const currentIps = normalizeAllowedIps(existingPeer.allowedIps);
+        const expectedIps = normalizeAllowedIps(expectedAllowedIps);
+
+        if (currentIps !== expectedIps) {
+          log.warn("Fixing incorrect allowed IPs for peer", {
+            pubkey: server.wireguardPubkey,
+            current: currentIps,
+            expected: expectedIps,
+          });
+
+          try {
+            await wg.setPeer(config.interfaceName, {
+              publicKey: server.wireguardPubkey,
+              allowedIps: expectedAllowedIps,
+              endpoint: existingPeer.endpoint !== "(none)"
+                ? existingPeer.endpoint
+                : endpoint,
+              persistentKeepalive: 25,
+            });
+          } catch (err) {
+            log.error("Failed to fix peer allowed IPs", {
+              pubkey: server.wireguardPubkey,
+              error: String(err),
+            });
+          }
+        }
       }
     }
   }
@@ -151,4 +188,27 @@ export async function reconcilePeers(
       }
     }
   }
+}
+
+/**
+ * Compute the expected allowed IPs for a peer, including its container subnet.
+ *
+ * Given a server subnet like 10.210.1.0/24, the container subnet is
+ * 10.210.(128 + serverIndex).0/24 where serverIndex is the third octet.
+ */
+function computeExpectedAllowedIps(server: ServerRecord): string {
+  const parts = server.subnet.split(".");
+  const serverIndex = parseInt(parts[2]);
+  const baseNetwork = parts.slice(0, 2).join(".");
+  const containerSubnet = `${baseNetwork}.${128 + serverIndex}.0/24`;
+
+  return `${server.subnet},${containerSubnet},${server.managementIp}/128`;
+}
+
+/**
+ * Normalize allowed IPs string for comparison.
+ * Sorts the IPs and removes whitespace so order doesn't matter.
+ */
+function normalizeAllowedIps(ips: string): string {
+  return ips.split(",").map((ip) => ip.trim()).filter(Boolean).sort().join(",");
 }

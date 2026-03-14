@@ -243,6 +243,19 @@ function collectAllRefs(
         }
       }
     }
+
+    // Command ${VAR} interpolation references
+    if (service.command) {
+      const cmdParts = Array.isArray(service.command)
+        ? service.command
+        : [service.command];
+      for (const part of cmdParts) {
+        const matches = part.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g);
+        for (const match of matches) {
+          refs.push({ name: match[1], source: `${prefix}.command` });
+        }
+      }
+    }
   }
 
   return refs;

@@ -16,6 +16,7 @@ import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
 import { detectSplitBrain } from "./split_brain.ts";
+import { reconcileNetworkBridge } from "./network_bridge.ts";
 import { sql } from "./validation.ts";
 
 /** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
@@ -26,6 +27,8 @@ const IP_UPDATE_INTERVAL = 20;
 const CORROSION_HEALTH_INTERVAL = 20;
 /** Detect split-brain every 20 iterations (~10 min) */
 const SPLIT_BRAIN_INTERVAL = 20;
+/** Check container network bridge every 10 iterations (~5 min) */
+const BRIDGE_CHECK_INTERVAL = 10;
 /** Log milestone every 100 iterations (~50 min) */
 const MILESTONE_INTERVAL = 100;
 /** Warn if a single iteration takes longer than 15 seconds */
@@ -126,6 +129,11 @@ async function main(): Promise<void> {
       // 8. Detect cluster partition (every 20 iterations = 10 minutes)
       if (iteration % SPLIT_BRAIN_INTERVAL === 0) {
         await detectSplitBrain(config, cli);
+      }
+
+      // 9. Check container network bridge (every 10 iterations = 5 minutes)
+      if (iteration % BRIDGE_CHECK_INTERVAL === 0) {
+        await reconcileNetworkBridge(config);
       }
     } catch (err) {
       log.error("Iteration error", {
