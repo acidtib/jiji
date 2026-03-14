@@ -57,7 +57,10 @@ export async function installDaemon(
 
   const installedVersion = checkResult.stdout.trim();
   if (installedVersion.includes(DAEMON_VERSION)) {
-    log.debug(`jiji-daemon ${DAEMON_VERSION} already installed on ${host}`, "network");
+    log.debug(
+      `jiji-daemon ${DAEMON_VERSION} already installed on ${host}`,
+      "network",
+    );
     return true;
   }
 
