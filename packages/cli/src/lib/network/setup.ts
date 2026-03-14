@@ -23,6 +23,7 @@ import {
   generateWireGuardKeypair,
   installWireGuard,
   restartWireGuardInterface,
+  syncWireGuardConfig,
   verifyWireGuardConfig,
   writeWireGuardConfig,
 } from "./wireguard.ts";
@@ -468,19 +469,17 @@ export async function setupNetwork(
           const isExistingServer = existingServerHosts.has(host);
           const isNewServer = newServerHosts.has(host);
 
-          if (isExistingServer && newServerHosts.size > 0) {
+          if (isNewServer) {
+            await bringUpWireGuardInterface(ssh);
+          } else if (isExistingServer) {
+            // Hot-reload peer config on running interface using wg syncconf.
+            // This avoids the race condition where wg-quick down fails silently
+            // and wg-quick up skips reload because the interface already exists.
             log.say(
-              `├── Restarting WireGuard to connect to ${newServerHosts.size} new server(s)`,
+              `├── Syncing WireGuard peer configuration`,
               2,
             );
-            await restartWireGuardInterface(ssh);
-          } else if (isNewServer) {
-            // log.say("Setting up WireGuard interface...", 2);
-            // User output: "WireGuard interface jiji0 is up on 143.110.143.43"
-            await bringUpWireGuardInterface(ssh);
-          } else {
-            // log.say("Ensuring WireGuard interface is running...", 2);
-            await bringUpWireGuardInterface(ssh);
+            await syncWireGuardConfig(ssh);
           }
 
           log.say(`├── WireGuard interface jiji0 is up`, 2);
@@ -707,6 +706,41 @@ export async function setupNetwork(
 
           if (existingNetwork.subnet) {
             if (existingNetwork.subnet === containerSubnet) {
+              // Network config is correct — but check if the bridge interface exists.
+              // After a reboot or engine update the bridge can disappear while the
+              // network definition stays, leaving containers without external connectivity.
+              const bridgeCheck = await ssh.executeCommand(
+                `${engine} network inspect ${networkName} --format '{{.NetworkInterface}}' 2>/dev/null || ${engine} network inspect ${networkName} --format '{{index .Options "com.docker.network.bridge.name"}}' 2>/dev/null`,
+              );
+              const bridgeName = bridgeCheck.stdout.trim();
+              if (bridgeName) {
+                const bridgeExists = await ssh.executeCommand(
+                  `ip link show ${bridgeName} 2>/dev/null`,
+                );
+                if (bridgeExists.code !== 0) {
+                  log.say(
+                    `├── Bridge ${bridgeName} missing, reloading container networks`,
+                    2,
+                  );
+                  await ssh.executeCommand(
+                    `${engine} network reload --all 2>/dev/null || true`,
+                  );
+                  // Verify bridge was recreated
+                  const bridgeRecovered = await ssh.executeCommand(
+                    `ip link show ${bridgeName} 2>/dev/null`,
+                  );
+                  if (bridgeRecovered.code === 0) {
+                    log.say(
+                      `├── Bridge ${bridgeName} recovered`,
+                      2,
+                    );
+                  } else {
+                    log.warn(
+                      `Bridge ${bridgeName} could not be recovered on ${host}`,
+                    );
+                  }
+                }
+              }
               log.say(
                 `└── ${engine} network '${networkName}' already exists with correct configuration`,
                 2,

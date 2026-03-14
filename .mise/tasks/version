@@ -3,7 +3,10 @@
 #MISE dir="{{config_root}}"
 set -e
 
-VERSION_FILE="./packages/cli/src/version.ts"
+VERSION_FILES=(
+  "./packages/cli/src/version.ts"
+  "./packages/daemon/src/version.ts"
+)
 MEMBER_CONFIGS=(
   "./packages/cli/deno.json"
   "./packages/dns/deno.json"
@@ -12,12 +15,15 @@ MEMBER_CONFIGS=(
 )
 
 get_current_version() {
-  sed -n 's/.*VERSION = ["\x27]\([^"\x27]*\)["\x27].*/\1/p' "$VERSION_FILE"
+  sed -n 's/.*VERSION = ["\x27]\([^"\x27]*\)["\x27].*/\1/p' "${VERSION_FILES[0]}"
 }
 
-update_version_file() {
+update_version_files() {
   local version="$1"
-  printf 'export const VERSION = "%s";\n' "$version" > "$VERSION_FILE"
+  for vfile in "${VERSION_FILES[@]}"; do
+    printf 'export const VERSION = "%s";\n' "$version" > "$vfile"
+    echo "Updated $vfile"
+  done
 }
 
 increment_patch() {
@@ -61,8 +67,7 @@ if [[ "$1" == "--bump" ]]; then
 
   echo "Updating version from $current to $new_version"
 
-  update_version_file "$new_version"
-  echo "Updated $VERSION_FILE"
+  update_version_files "$new_version"
 
   update_deno_configs "$new_version"
 
