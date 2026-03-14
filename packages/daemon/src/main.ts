@@ -6,6 +6,7 @@
  */
 
 import { parseConfig } from "./types.ts";
+import { VERSION } from "./version.ts";
 import * as log from "./logger.ts";
 import { CorrosionClient } from "./corrosion_client.ts";
 import { CorrosionCli } from "./corrosion_cli.ts";
@@ -43,6 +44,12 @@ const BANNER = `
 `;
 
 async function main(): Promise<void> {
+  // Handle --version flag
+  if (Deno.args.includes("--version")) {
+    console.log(VERSION);
+    Deno.exit(0);
+  }
+
   console.log(BANNER);
 
   // Parse configuration

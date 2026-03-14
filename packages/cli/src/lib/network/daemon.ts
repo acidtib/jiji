@@ -50,14 +50,22 @@ export async function installDaemon(
     "rm -f /etc/systemd/system/jiji-control-loop.service",
   );
 
-  // Check if already installed
+  // Check if already installed with the correct version
   const checkResult = await ssh.executeCommand(
-    `test -f ${binaryPath} && echo "exists"`,
+    `test -f ${binaryPath} && ${binaryPath} --version 2>/dev/null || echo "not-installed"`,
   );
 
-  if (checkResult.stdout.includes("exists")) {
-    log.debug(`jiji-daemon already installed on ${host}`, "network");
+  const installedVersion = checkResult.stdout.trim();
+  if (installedVersion.includes(DAEMON_VERSION)) {
+    log.debug(`jiji-daemon ${DAEMON_VERSION} already installed on ${host}`, "network");
     return true;
+  }
+
+  if (!installedVersion.includes("not-installed")) {
+    log.info(
+      `Upgrading jiji-daemon on ${host}: ${installedVersion} -> ${DAEMON_VERSION}`,
+      "network",
+    );
   }
 
   // Create installation directory
