@@ -97,8 +97,11 @@ export async function installDaemon(
       "network",
     );
 
+    // Download to a temp file first — the running daemon holds the binary open,
+    // so we can't overwrite it directly.
+    const tmpPath = `/tmp/${DAEMON_BINARY}.new`;
     const downloadResult = await ssh.executeCommand(
-      `cd ${DAEMON_INSTALL_DIR} && curl -fsSL "${downloadUrl}" -o ${DAEMON_BINARY}`,
+      `curl -fsSL "${downloadUrl}" -o ${tmpPath}`,
     );
 
     if (downloadResult.code !== 0) {
@@ -107,8 +110,13 @@ export async function installDaemon(
       );
     }
 
-    // Make executable
-    await ssh.executeCommand(`chmod +x ${binaryPath}`);
+    await ssh.executeCommand(`chmod +x ${tmpPath}`);
+
+    // Stop the daemon before replacing the binary
+    await ssh.executeCommand(
+      "systemctl stop jiji-daemon.service 2>/dev/null || true",
+    );
+    await ssh.executeCommand(`mv ${tmpPath} ${binaryPath}`);
 
     log.success(`jiji-daemon installed on ${host}`, "network");
     return true;
