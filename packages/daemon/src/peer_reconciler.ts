@@ -206,9 +206,42 @@ function computeExpectedAllowedIps(server: ServerRecord): string {
 }
 
 /**
+ * Normalize an IPv6 address by expanding all groups to 4 hex digits.
+ * This ensures consistent comparison between compressed (from WireGuard)
+ * and uncompressed (from Corrosion) forms.
+ */
+function expandIpv6(addr: string): string {
+  // Split off the prefix length if present (e.g., /128)
+  const [ip, prefix] = addr.split("/");
+
+  // Expand :: shorthand
+  const halves = ip.split("::");
+  let groups: string[];
+  if (halves.length === 2) {
+    const left = halves[0] ? halves[0].split(":") : [];
+    const right = halves[1] ? halves[1].split(":") : [];
+    const missing = 8 - left.length - right.length;
+    groups = [...left, ...Array(missing).fill("0"), ...right];
+  } else {
+    groups = ip.split(":");
+  }
+
+  // Pad each group to 4 digits
+  const expanded = groups.map((g) => g.padStart(4, "0")).join(":");
+  return prefix !== undefined ? `${expanded}/${prefix}` : expanded;
+}
+
+/**
  * Normalize allowed IPs string for comparison.
- * Sorts the IPs and removes whitespace so order doesn't matter.
+ * Sorts the IPs, removes whitespace, and expands IPv6 addresses
+ * so compressed and uncompressed forms compare equal.
  */
 function normalizeAllowedIps(ips: string): string {
-  return ips.split(",").map((ip) => ip.trim()).filter(Boolean).sort().join(",");
+  return ips
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean)
+    .map((ip) => (ip.includes(":") ? expandIpv6(ip) : ip))
+    .sort()
+    .join(",");
 }
