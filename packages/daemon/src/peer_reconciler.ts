@@ -18,6 +18,7 @@ import {
   isValidWireGuardKey,
   sql,
 } from "./validation.ts";
+import { type CachedPeer, saveCache } from "./peer_cache.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -98,6 +99,11 @@ export async function reconcilePeers(
   const currentPeers = await wg.showDump(config.interfaceName);
   const currentPubkeys = new Set(currentPeers.map((p) => p.publicKey));
 
+  // Build the cache snapshot as we validate each server below. Only peers
+  // that pass every validation gate make it in — we don't want a stale
+  // cache to seed something `wg` would reject.
+  const cacheable: CachedPeer[] = [];
+
   // Add missing peers or fix incorrect allowed IPs
   for (const server of peerServers) {
     // Validate all Corrosion-sourced peer data before passing to wg
@@ -142,6 +148,14 @@ export async function reconcilePeers(
 
     // Compute expected allowed IPs including container subnet
     const expectedAllowedIps = computeExpectedAllowedIps(server);
+
+    // Server passed all validation gates — record it for the boot cache.
+    cacheable.push({
+      publicKey: server.wireguardPubkey,
+      allowedIps: expectedAllowedIps,
+      endpoints: server.endpoints,
+      persistentKeepalive: 25,
+    });
 
     if (!currentPubkeys.has(server.wireguardPubkey)) {
       // New peer — add it
@@ -211,6 +225,21 @@ export async function reconcilePeers(
           error: String(err),
         });
       }
+    }
+  }
+
+  // Snapshot the validated peer set so a future cold boot can seed WG
+  // without needing Corrosion to be reachable. Guard against writing an
+  // empty cache: if every peer failed validation, that's a bug, not a
+  // legitimate "no peers" state — preserve whatever the previous cache had.
+  if (cacheable.length > 0) {
+    try {
+      await saveCache(config.peerCachePath, cacheable);
+    } catch (err) {
+      log.warn("Failed to write peer cache", {
+        path: config.peerCachePath,
+        error: String(err),
+      });
     }
   }
 }

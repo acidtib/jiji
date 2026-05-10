@@ -18,6 +18,7 @@ import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
 import { detectSplitBrain } from "./split_brain.ts";
 import { reconcileNetworkBridge } from "./network_bridge.ts";
+import { hydrateFromCache } from "./peer_cache.ts";
 import { sql } from "./validation.ts";
 
 /** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
@@ -94,6 +95,27 @@ async function main(): Promise<void> {
 
   Deno.addSignalListener("SIGTERM", shutdown);
   Deno.addSignalListener("SIGINT", shutdown);
+
+  // Seed WireGuard from the last-known-good peer set before the first
+  // reconcile. Without this, a daemon that boots while Corrosion is
+  // unreachable can't bring up any peers (which is the gossip path itself).
+  try {
+    const seeded = await hydrateFromCache(
+      config.interfaceName,
+      config.peerCachePath,
+    );
+    if (seeded > 0) {
+      log.info("Seeded WireGuard from peer cache", {
+        path: config.peerCachePath,
+        peers: seeded,
+      });
+    }
+  } catch (err) {
+    log.warn("Peer cache hydrate failed, continuing without seed", {
+      path: config.peerCachePath,
+      error: String(err),
+    });
+  }
 
   // Main loop
   while (!shuttingDown) {

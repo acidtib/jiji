@@ -166,6 +166,8 @@ Environment="JIJI_INTERFACE=${interfaceName}"
 Environment="JIJI_CORROSION_API=http://127.0.0.1:${CORROSION_API_PORT}"
 Environment="JIJI_CORROSION_DIR=/opt/jiji/corrosion"
 Environment="JIJI_LOOP_INTERVAL=30"
+Environment="JIJI_PEER_CACHE=/var/lib/jiji/peers.json"
+StateDirectory=jiji
 Restart=always
 RestartSec=10
 StandardOutput=journal

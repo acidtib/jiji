@@ -25,6 +25,7 @@ Deno.test("parseConfig - uses defaults when only JIJI_SERVER_ID set", () => {
     JIJI_CORROSION_API: Deno.env.get("JIJI_CORROSION_API"),
     JIJI_CORROSION_DIR: Deno.env.get("JIJI_CORROSION_DIR"),
     JIJI_LOOP_INTERVAL: Deno.env.get("JIJI_LOOP_INTERVAL"),
+    JIJI_PEER_CACHE: Deno.env.get("JIJI_PEER_CACHE"),
   };
 
   // Set only JIJI_SERVER_ID, clear others
@@ -34,6 +35,7 @@ Deno.test("parseConfig - uses defaults when only JIJI_SERVER_ID set", () => {
   Deno.env.delete("JIJI_CORROSION_API");
   Deno.env.delete("JIJI_CORROSION_DIR");
   Deno.env.delete("JIJI_LOOP_INTERVAL");
+  Deno.env.delete("JIJI_PEER_CACHE");
 
   try {
     const config = parseConfig();
@@ -43,6 +45,7 @@ Deno.test("parseConfig - uses defaults when only JIJI_SERVER_ID set", () => {
     assertEquals(config.corrosionApi, "http://127.0.0.1:31220");
     assertEquals(config.corrosionDir, "/opt/jiji/corrosion");
     assertEquals(config.loopInterval, 30);
+    assertEquals(config.peerCachePath, "/var/lib/jiji/peers.json");
   } finally {
     // Restore
     for (const [key, val] of Object.entries(original)) {
@@ -106,6 +109,7 @@ Deno.test("parseConfig - accepts custom values", () => {
     JIJI_CORROSION_API: Deno.env.get("JIJI_CORROSION_API"),
     JIJI_CORROSION_DIR: Deno.env.get("JIJI_CORROSION_DIR"),
     JIJI_LOOP_INTERVAL: Deno.env.get("JIJI_LOOP_INTERVAL"),
+    JIJI_PEER_CACHE: Deno.env.get("JIJI_PEER_CACHE"),
   };
 
   Deno.env.set("JIJI_SERVER_ID", "custom-server");
@@ -114,6 +118,7 @@ Deno.test("parseConfig - accepts custom values", () => {
   Deno.env.set("JIJI_CORROSION_API", "http://10.0.0.1:31220");
   Deno.env.set("JIJI_CORROSION_DIR", "/custom/path");
   Deno.env.set("JIJI_LOOP_INTERVAL", "60");
+  Deno.env.set("JIJI_PEER_CACHE", "/run/jiji/peers.json");
 
   try {
     const config = parseConfig();
@@ -123,6 +128,7 @@ Deno.test("parseConfig - accepts custom values", () => {
     assertEquals(config.corrosionApi, "http://10.0.0.1:31220");
     assertEquals(config.corrosionDir, "/custom/path");
     assertEquals(config.loopInterval, 60);
+    assertEquals(config.peerCachePath, "/run/jiji/peers.json");
   } finally {
     for (const [key, val] of Object.entries(original)) {
       if (val !== undefined) Deno.env.set(key, val);
