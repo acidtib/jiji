@@ -1,7 +1,11 @@
 /**
  * Reconcile WireGuard peers with Corrosion state.
  *
- * Adds missing peers and removes stale ones.
+ * Additive by default: adds missing peers, fixes incorrect AllowedIPs, and
+ * removes peers only when their server row is explicitly tombstoned
+ * (removed_at IS NOT NULL). Absence from the Corrosion view is never treated
+ * as a removal signal — that turns transient gossip partitions into permanent
+ * mesh tears.
  */
 
 import type { Config, ServerRecord } from "./types.ts";
@@ -33,14 +37,18 @@ export function parseEndpoints(raw: string): string[] {
 }
 
 /**
- * Get active servers from Corrosion (seen in last 5 minutes).
+ * Get all non-tombstoned peer servers from Corrosion.
+ *
+ * We deliberately do NOT filter by last_seen: a server being temporarily
+ * unreachable is the exact scenario where we most need to keep its WireGuard
+ * peer in place so gossip can resume on recovery.
  */
-async function getActiveServers(
+async function getPeerServers(
   cli: CorrosionCli,
   serverId: string,
 ): Promise<ServerRecord[]> {
   const rows = await cli.query(
-    sql`SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE last_seen > (strftime('%s', 'now') - 300) * 1000 AND id != ${serverId};`,
+    sql`SELECT wireguard_pubkey, subnet, management_ip, endpoints FROM servers WHERE removed_at IS NULL AND id != ${serverId};`,
   );
 
   return rows.filter((r) => r[0]?.trim()).map((row) => ({
@@ -54,6 +62,20 @@ async function getActiveServers(
 }
 
 /**
+ * Get pubkeys of tombstoned servers. These should be torn down from
+ * WireGuard on next reconcile cycle, cluster-wide.
+ */
+async function getTombstonedPubkeys(
+  cli: CorrosionCli,
+  serverId: string,
+): Promise<Set<string>> {
+  const rows = await cli.query(
+    sql`SELECT wireguard_pubkey FROM servers WHERE removed_at IS NOT NULL AND id != ${serverId};`,
+  );
+  return new Set(rows.map((r) => r[0]).filter((k): k is string => !!k?.trim()));
+}
+
+/**
  * Reconcile WireGuard peers with the current Corrosion state.
  */
 export async function reconcilePeers(
@@ -62,10 +84,13 @@ export async function reconcilePeers(
 ): Promise<void> {
   log.info("Reconciling WireGuard peers...");
 
-  const activeServers = await getActiveServers(cli, config.serverId);
+  const peerServers = await getPeerServers(cli, config.serverId);
+  const tombstonedPubkeys = await getTombstonedPubkeys(cli, config.serverId);
 
-  if (activeServers.length === 0) {
-    log.warn("No active servers found in Corrosion");
+  if (peerServers.length === 0 && tombstonedPubkeys.size === 0) {
+    // No peers and nothing to remove. This is normal on a fresh single-node
+    // cluster; otherwise it usually means Corrosion is empty/uninitialized.
+    log.warn("No peer servers found in Corrosion");
     return;
   }
 
@@ -74,7 +99,7 @@ export async function reconcilePeers(
   const currentPubkeys = new Set(currentPeers.map((p) => p.publicKey));
 
   // Add missing peers or fix incorrect allowed IPs
-  for (const server of activeServers) {
+  for (const server of peerServers) {
     // Validate all Corrosion-sourced peer data before passing to wg
     if (!isValidWireGuardKey(server.wireguardPubkey)) {
       log.warn("Skipping peer with invalid pubkey format", {
@@ -171,17 +196,17 @@ export async function reconcilePeers(
     }
   }
 
-  // Remove stale peers (not in active servers list)
-  const activePubkeys = new Set(
-    activeServers.map((s) => s.wireguardPubkey),
-  );
+  // Remove peers that have been explicitly tombstoned. We only remove on
+  // positive evidence (a non-null removed_at in Corrosion), never on absence
+  // from the active set — that would re-introduce the split-brain bug where a
+  // partition causes nodes to evict each other.
   for (const peer of currentPeers) {
-    if (!activePubkeys.has(peer.publicKey)) {
-      log.warn("Removing stale peer", { pubkey: peer.publicKey });
+    if (tombstonedPubkeys.has(peer.publicKey)) {
+      log.warn("Removing tombstoned peer", { pubkey: peer.publicKey });
       try {
         await wg.removePeer(config.interfaceName, peer.publicKey);
       } catch (err) {
-        log.error("Failed to remove peer", {
+        log.error("Failed to remove tombstoned peer", {
           pubkey: peer.publicKey,
           error: String(err),
         });

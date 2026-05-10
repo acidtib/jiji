@@ -10,6 +10,7 @@ import { gcCommand } from "./network/gc.ts";
 import { dnsCommand } from "./network/dns.ts";
 import { inspectCommand } from "./network/inspect.ts";
 import { dbCommand } from "./network/db.ts";
+import { serverCommand } from "./network/server.ts";
 
 export const networkCommand = new Command()
   .description("Manage private network")
@@ -22,4 +23,5 @@ export const networkCommand = new Command()
   .command("gc", gcCommand)
   .command("dns", dnsCommand)
   .command("inspect", inspectCommand)
-  .command("db", dbCommand);
+  .command("db", dbCommand)
+  .command("server", serverCommand);

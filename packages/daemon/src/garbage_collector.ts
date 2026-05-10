@@ -37,6 +37,10 @@ export async function garbageCollect(
   // Delete containers that have been unhealthy for more than 3 minutes
   deleted += await deleteStaleContainers(client, cli);
 
+  // Delete containers belonging to explicitly-tombstoned servers immediately.
+  // This is positive evidence the server is gone — no grace period needed.
+  deleted += await deleteTombstonedServerContainers(client, cli);
+
   // Delete containers from offline servers (no heartbeat in 10 minutes)
   deleted += await deleteOfflineServerContainers(config, client, cli);
 
@@ -84,6 +88,40 @@ async function deleteStaleContainers(
   return deleted;
 }
 
+async function deleteTombstonedServerContainers(
+  client: CorrosionClient,
+  cli: CorrosionCli,
+): Promise<number> {
+  const rows = await cli.query(
+    sql`SELECT id FROM servers WHERE removed_at IS NOT NULL;`,
+  );
+
+  let deleted = 0;
+  for (const [serverId] of rows) {
+    if (!serverId) continue;
+
+    if (!isValidServerId(serverId)) {
+      log.warn("Skipping tombstoned server with invalid ID format", {
+        server_id: serverId,
+      });
+      continue;
+    }
+
+    const affected = await client.execGetRowsAffected(
+      sql`DELETE FROM containers WHERE server_id = ${serverId};`,
+    );
+    if (affected > 0) {
+      log.info("Removed containers for tombstoned server", {
+        server_id: serverId,
+        removed: affected,
+      });
+    }
+    deleted += affected;
+  }
+
+  return deleted;
+}
+
 async function deleteOfflineServerContainers(
   config: Config,
   client: CorrosionClient,
@@ -93,7 +131,7 @@ async function deleteOfflineServerContainers(
   const threshold = now - OFFLINE_SERVER_THRESHOLD;
 
   const rows = await cli.query(
-    sql`SELECT id FROM servers WHERE last_seen < ${threshold} AND id != ${config.serverId};`,
+    sql`SELECT id FROM servers WHERE last_seen < ${threshold} AND removed_at IS NULL AND id != ${config.serverId};`,
   );
 
   let deleted = 0;

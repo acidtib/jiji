@@ -27,7 +27,9 @@ export async function detectSplitBrain(
 ): Promise<void> {
   log.info("Checking for cluster partition...");
 
-  const totalStr = await cli.queryScalar("SELECT COUNT(*) FROM servers;");
+  const totalStr = await cli.queryScalar(
+    "SELECT COUNT(*) FROM servers WHERE removed_at IS NULL;",
+  );
   const totalServers = parseInt(totalStr ?? "0", 10);
 
   if (totalServers === 0) {
@@ -39,7 +41,7 @@ export async function detectSplitBrain(
   const activeThreshold = now - ACTIVE_SERVER_THRESHOLD;
 
   const activeStr = await cli.queryScalar(
-    `SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold};`,
+    `SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold} AND removed_at IS NULL;`,
   );
   const activeServers = parseInt(activeStr ?? "0", 10);
 
@@ -64,7 +66,7 @@ export async function detectSplitBrain(
 
     // Log unreachable servers for debugging
     const rows = await cli.query(
-      `SELECT hostname FROM servers WHERE last_seen <= ${activeThreshold};`,
+      `SELECT hostname FROM servers WHERE last_seen <= ${activeThreshold} AND removed_at IS NULL;`,
     );
     const unreachable = rows.map((r) => r[0]).filter(Boolean);
     if (unreachable.length > 0) {
