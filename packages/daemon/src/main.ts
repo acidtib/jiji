@@ -16,9 +16,9 @@ import { syncContainerHealth } from "./container_sync.ts";
 import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
-import { detectSplitBrain } from "./split_brain.ts";
+import { detectSplitBrain, isSplitBrainDetected } from "./split_brain.ts";
 import { reconcileNetworkBridge } from "./network_bridge.ts";
-import { hydrateFromCache } from "./peer_cache.ts";
+import { healSplitBrain, hydrateFromCache } from "./peer_cache.ts";
 import { sql } from "./validation.ts";
 
 /** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
@@ -158,6 +158,15 @@ async function main(): Promise<void> {
       // 8. Detect cluster partition (every 20 iterations = 10 minutes)
       if (iteration % SPLIT_BRAIN_INTERVAL === 0) {
         await detectSplitBrain(config, cli);
+      }
+
+      // 8a. Heal split-brain (every iteration while flag is set).
+      // Detection runs every 10 minutes but the flag is sticky until the
+      // next detection clears it; heal runs every loop tick so peers get
+      // ~30s between re-handshake attempts — the right cadence for
+      // WireGuard to actually settle a new endpoint.
+      if (isSplitBrainDetected()) {
+        await healSplitBrain(config.interfaceName, config.peerCachePath);
       }
 
       // 9. Check container network bridge (every 10 iterations = 5 minutes)

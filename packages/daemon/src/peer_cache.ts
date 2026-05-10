@@ -19,6 +19,7 @@
  */
 
 import * as wg from "./wireguard.ts";
+import { PEER_DOWN_THRESHOLD, type PeerState } from "./types.ts";
 import {
   isValidCIDR,
   isValidEndpoint,
@@ -178,6 +179,114 @@ export async function hydrateFromCache(
   }
 
   return seeded;
+}
+
+/**
+ * Heal a detected split-brain by exercising every cached peer entry.
+ *
+ * When split-brain is active, Corrosion gossip is by definition broken,
+ * so the normal reconciliation paths can't recover on their own:
+ *
+ *   - `reconcilePeers` reads peer rows from Corrosion → may have a partial
+ *     view → can't add peers it doesn't know about.
+ *   - `peer_monitor.tryRotateEndpoint` reads endpoint lists from Corrosion
+ *     to pick the next endpoint → can't rotate during a partition.
+ *
+ * This function uses the on-disk cache as an out-of-band source of truth.
+ * It only takes additive actions:
+ *
+ *   - Cached peers missing from WG: add with the first cached endpoint.
+ *   - Cached peers present but with a stale handshake: rotate to the next
+ *     cached endpoint (same behaviour as peer_monitor, but cache-sourced).
+ *
+ * Peers that never handshaked (latestHandshake === 0) are left alone, the
+ * same way peer_monitor handles them — we have no evidence that the
+ * current endpoint is wrong yet.
+ */
+export async function healSplitBrain(
+  interfaceName: string,
+  cachePath: string,
+): Promise<{ added: number; rotated: number }> {
+  const cache = await loadCache(cachePath);
+  if (!cache) {
+    log.warn("Split-brain heal skipped: no cache available", {
+      path: cachePath,
+    });
+    return { added: 0, rotated: 0 };
+  }
+
+  let current: PeerState[];
+  try {
+    current = await wg.showDump(interfaceName);
+  } catch (err) {
+    log.warn("Split-brain heal skipped: cannot read WireGuard state", {
+      interface: interfaceName,
+      error: String(err),
+    });
+    return { added: 0, rotated: 0 };
+  }
+
+  const currentByKey = new Map(current.map((p) => [p.publicKey, p]));
+  const now = Math.floor(Date.now() / 1000);
+
+  let added = 0;
+  let rotated = 0;
+
+  for (const peer of cache.peers) {
+    if (!isValidCachedPeer(peer)) continue;
+
+    const existing = currentByKey.get(peer.publicKey);
+
+    if (!existing) {
+      try {
+        await wg.setPeer(interfaceName, {
+          publicKey: peer.publicKey,
+          allowedIps: peer.allowedIps,
+          endpoint: peer.endpoints[0],
+          persistentKeepalive: peer.persistentKeepalive,
+        });
+        log.info("Split-brain heal: re-added missing peer", {
+          pubkey: peer.publicKey,
+          endpoint: peer.endpoints[0],
+        });
+        added++;
+      } catch (err) {
+        log.warn("Split-brain heal: failed to re-add peer", {
+          pubkey: peer.publicKey,
+          error: String(err),
+        });
+      }
+      continue;
+    }
+
+    // Peer is in WG. Only rotate if it has handshaked at least once and the
+    // last handshake is older than the down-threshold — otherwise we'd
+    // flap endpoints on a peer that's just slow to come up.
+    if (existing.latestHandshake === 0) continue;
+    if (now - existing.latestHandshake <= PEER_DOWN_THRESHOLD) continue;
+    if (peer.endpoints.length <= 1) continue;
+
+    const idx = peer.endpoints.indexOf(existing.endpoint);
+    const next = peer.endpoints[(idx + 1) % peer.endpoints.length];
+    if (next === existing.endpoint) continue;
+
+    try {
+      await wg.updateEndpoint(interfaceName, peer.publicKey, next);
+      log.info("Split-brain heal: rotated stale endpoint", {
+        pubkey: peer.publicKey,
+        from: existing.endpoint,
+        to: next,
+      });
+      rotated++;
+    } catch (err) {
+      log.warn("Split-brain heal: failed to rotate endpoint", {
+        pubkey: peer.publicKey,
+        error: String(err),
+      });
+    }
+  }
+
+  return { added, rotated };
 }
 
 function parentDir(path: string): string | null {
