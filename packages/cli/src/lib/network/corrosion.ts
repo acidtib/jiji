@@ -69,7 +69,11 @@ CREATE TABLE IF NOT EXISTS cluster_metadata (
   value TEXT NOT NULL DEFAULT ''
 );
 
--- Servers in the cluster
+-- Servers in the cluster.
+-- removed_at: NULL = active. Non-null = decommissioned at that wall-clock
+-- millis. Set via "jiji network remove <id>"; never set automatically. The
+-- daemon reconciler treats a non-null tombstone as a positive signal to drop
+-- the corresponding WireGuard peer cluster-wide.
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT NOT NULL PRIMARY KEY,
   hostname TEXT NOT NULL DEFAULT '',
@@ -78,7 +82,8 @@ CREATE TABLE IF NOT EXISTS servers (
   wireguard_pubkey TEXT NOT NULL DEFAULT '',
   management_ip TEXT NOT NULL DEFAULT '',
   endpoints TEXT NOT NULL DEFAULT '',
-  last_seen INTEGER NOT NULL DEFAULT 0
+  last_seen INTEGER NOT NULL DEFAULT 0,
+  removed_at INTEGER DEFAULT NULL
 );
 
 -- Services deployed
@@ -178,6 +183,38 @@ export async function applyMigrations(ssh: SSHManager): Promise<boolean> {
       log.success(`Migration complete on ${host}`, "corrosion");
     } else {
       log.debug(`Migration already applied on ${host}`, "corrosion");
+    }
+
+    // Independent check: servers.removed_at (tombstone column)
+    const removedAtCheck = await corrosionQuery(
+      ssh,
+      "SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'removed_at';",
+    );
+
+    if (removedAtCheck.code === 0 && removedAtCheck.stdout.trim() === "0") {
+      log.info(
+        `Applying servers.removed_at migration on ${host}...`,
+        "corrosion",
+      );
+      const result = await corrosionExec(
+        ssh,
+        "ALTER TABLE servers ADD COLUMN removed_at INTEGER DEFAULT NULL;",
+      );
+      if (
+        result.code !== 0 &&
+        !result.stderr.includes("duplicate column") &&
+        !result.stderr.includes("already exists")
+      ) {
+        log.warn(
+          `removed_at migration failed: ${result.stderr}`,
+          "corrosion",
+        );
+      } else {
+        log.success(
+          `servers.removed_at migration complete on ${host}`,
+          "corrosion",
+        );
+      }
     }
 
     return true;
@@ -431,14 +468,63 @@ export async function registerServer(
 ): Promise<void> {
   const endpointsJson = JSON.stringify(server.endpoints);
 
+  // UPSERT preserves removed_at so a re-registration (e.g. another `jiji
+  // network setup` run) doesn't silently un-tombstone a decommissioned server.
+  // Use `jiji server restore <id>` (TODO) if you actually want to revive one.
   const query =
-    sql`INSERT OR REPLACE INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES (${server.id}, ${server.hostname}, ${server.subnet}, ${server.wireguardIp}, ${server.wireguardPublicKey}, ${server.managementIp}, ${endpointsJson}, ${server.lastSeen});`;
+    sql`INSERT INTO servers (id, hostname, subnet, wireguard_ip, wireguard_pubkey, management_ip, endpoints, last_seen) VALUES (${server.id}, ${server.hostname}, ${server.subnet}, ${server.wireguardIp}, ${server.wireguardPublicKey}, ${server.managementIp}, ${endpointsJson}, ${server.lastSeen}) ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, subnet = excluded.subnet, wireguard_ip = excluded.wireguard_ip, wireguard_pubkey = excluded.wireguard_pubkey, management_ip = excluded.management_ip, endpoints = excluded.endpoints, last_seen = excluded.last_seen;`;
 
   const result = await corrosionExec(ssh, query);
 
   if (result.code !== 0) {
     throw new Error(`Failed to register server: ${result.stderr}`);
   }
+}
+
+/**
+ * Tombstone a server by id, signalling cluster-wide that its WireGuard peer
+ * should be removed and its containers GC'd.
+ *
+ * Returns true if the row was tombstoned (or already tombstoned), false if no
+ * such id exists. Idempotent: re-tombstoning is a no-op and does not overwrite
+ * the original removed_at timestamp.
+ */
+export async function tombstoneServer(
+  ssh: SSHManager,
+  serverId: string,
+): Promise<{ tombstoned: boolean; alreadyRemoved: boolean }> {
+  // IFNULL coalesces to 0 so we can distinguish "no row" (empty stdout) from
+  // "row exists, removed_at is NULL" (stdout has the id and a 0).
+  const existing = await corrosionQuery(
+    ssh,
+    sql`SELECT id, IFNULL(removed_at, 0) FROM servers WHERE id = ${serverId};`,
+  );
+
+  if (existing.code !== 0) {
+    throw new Error(`Failed to look up server: ${existing.stderr}`);
+  }
+
+  const line = existing.stdout.trim();
+  if (line.length === 0) {
+    return { tombstoned: false, alreadyRemoved: false };
+  }
+
+  const removedAtStr = line.split("|")[1] ?? "0";
+  if (removedAtStr !== "0") {
+    return { tombstoned: true, alreadyRemoved: true };
+  }
+
+  const now = Date.now();
+  const result = await corrosionExec(
+    ssh,
+    sql`UPDATE servers SET removed_at = ${now} WHERE id = ${serverId} AND removed_at IS NULL;`,
+  );
+
+  if (result.code !== 0) {
+    throw new Error(`Failed to tombstone server: ${result.stderr}`);
+  }
+
+  return { tombstoned: true, alreadyRemoved: false };
 }
 
 /**
@@ -790,6 +876,7 @@ export async function queryActiveServers(
            management_ip, endpoints, last_seen
     FROM servers
     WHERE last_seen > (strftime('%s', 'now') - 300) * 1000
+      AND removed_at IS NULL
     ORDER BY hostname;
   `;
 
@@ -809,16 +896,23 @@ export async function queryActiveServers(
 /**
  * Query all servers from Corrosion (including inactive ones)
  *
+ * Tombstoned (decommissioned) servers are excluded by default. Pass
+ * `includeRemoved: true` for admin/diagnostic views that need every row.
+ *
  * @param ssh - SSH connection to any server
- * @returns Array of all server registrations
+ * @param options.includeRemoved - Include tombstoned servers (default: false)
+ * @returns Array of server registrations
  */
 export async function queryAllServers(
   ssh: SSHManager,
+  options: { includeRemoved?: boolean } = {},
 ): Promise<ServerRegistration[]> {
+  const where = options.includeRemoved ? "" : "WHERE removed_at IS NULL";
   const sql = `
     SELECT id, hostname, subnet, wireguard_ip, wireguard_pubkey,
            management_ip, endpoints, last_seen
     FROM servers
+    ${where}
     ORDER BY hostname;
   `;
 
@@ -1018,6 +1112,7 @@ export async function queryOfflineServers(
            (SELECT COUNT(*) FROM containers c WHERE c.server_id = s.id) as container_count
     FROM servers s
     WHERE s.last_seen < ${threshold}
+      AND s.removed_at IS NULL
     ORDER BY s.last_seen;
   `;
 
@@ -1236,8 +1331,8 @@ export async function getDbStats(ssh: SSHManager): Promise<DbStats> {
 
   const sql = `
     SELECT
-      (SELECT COUNT(*) FROM servers) as server_count,
-      (SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold}) as active_server_count,
+      (SELECT COUNT(*) FROM servers WHERE removed_at IS NULL) as server_count,
+      (SELECT COUNT(*) FROM servers WHERE last_seen > ${activeThreshold} AND removed_at IS NULL) as active_server_count,
       (SELECT COUNT(*) FROM containers) as container_count,
       (SELECT COUNT(*) FROM containers WHERE health_status = 'healthy') as healthy_container_count,
       (SELECT COUNT(*) FROM containers WHERE health_status != 'healthy') as unhealthy_container_count,

@@ -16,8 +16,9 @@ import { syncContainerHealth } from "./container_sync.ts";
 import { garbageCollect } from "./garbage_collector.ts";
 import { updatePublicIp } from "./ip_discovery.ts";
 import { checkCorrosionHealth } from "./corrosion_health.ts";
-import { detectSplitBrain } from "./split_brain.ts";
+import { detectSplitBrain, isSplitBrainDetected } from "./split_brain.ts";
 import { reconcileNetworkBridge } from "./network_bridge.ts";
+import { healSplitBrain, hydrateFromCache } from "./peer_cache.ts";
 import { sql } from "./validation.ts";
 
 /** Run garbage collection every 10 iterations (~5 min at default 30s interval) */
@@ -95,6 +96,27 @@ async function main(): Promise<void> {
   Deno.addSignalListener("SIGTERM", shutdown);
   Deno.addSignalListener("SIGINT", shutdown);
 
+  // Seed WireGuard from the last-known-good peer set before the first
+  // reconcile. Without this, a daemon that boots while Corrosion is
+  // unreachable can't bring up any peers (which is the gossip path itself).
+  try {
+    const seeded = await hydrateFromCache(
+      config.interfaceName,
+      config.peerCachePath,
+    );
+    if (seeded > 0) {
+      log.info("Seeded WireGuard from peer cache", {
+        path: config.peerCachePath,
+        peers: seeded,
+      });
+    }
+  } catch (err) {
+    log.warn("Peer cache hydrate failed, continuing without seed", {
+      path: config.peerCachePath,
+      error: String(err),
+    });
+  }
+
   // Main loop
   while (!shuttingDown) {
     iteration++;
@@ -136,6 +158,15 @@ async function main(): Promise<void> {
       // 8. Detect cluster partition (every 20 iterations = 10 minutes)
       if (iteration % SPLIT_BRAIN_INTERVAL === 0) {
         await detectSplitBrain(config, cli);
+      }
+
+      // 8a. Heal split-brain (every iteration while flag is set).
+      // Detection runs every 10 minutes but the flag is sticky until the
+      // next detection clears it; heal runs every loop tick so peers get
+      // ~30s between re-handshake attempts — the right cadence for
+      // WireGuard to actually settle a new endpoint.
+      if (isSplitBrainDetected()) {
+        await healSplitBrain(config.interfaceName, config.peerCachePath);
       }
 
       // 9. Check container network bridge (every 10 iterations = 5 minutes)

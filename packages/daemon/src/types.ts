@@ -11,6 +11,7 @@ export interface Config {
   corrosionApi: string;
   corrosionDir: string;
   loopInterval: number;
+  peerCachePath: string;
 }
 
 /**
@@ -48,6 +49,9 @@ export function parseConfig(): Config {
     throw new Error("JIJI_LOOP_INTERVAL must be a positive integer");
   }
 
+  const peerCachePath = Deno.env.get("JIJI_PEER_CACHE") ??
+    "/var/lib/jiji/peers.json";
+
   return {
     serverId,
     engine,
@@ -55,6 +59,7 @@ export function parseConfig(): Config {
     corrosionApi,
     corrosionDir,
     loopInterval,
+    peerCachePath,
   };
 }
 

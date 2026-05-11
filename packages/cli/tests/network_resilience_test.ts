@@ -18,7 +18,8 @@ const asSsh = (mock: MockSSHManager): any => mock;
 Deno.test("applyMigrations skips when columns already exist", async () => {
   const mockSsh = new MockSSHManager("test-server");
 
-  // Mock response: column exists (count = 1)
+  // Mock response: column exists (count = 1). Matched as a substring, so both
+  // the health_status and removed_at pragma checks get the same answer.
   mockSsh.addMockResponse("pragma_table_info", {
     success: true,
     stdout: "1",
@@ -30,10 +31,11 @@ Deno.test("applyMigrations skips when columns already exist", async () => {
 
   assertEquals(result, true);
 
-  // Verify only one command was executed (the check)
+  // Two pragma_table_info checks run (health_status, then removed_at) and
+  // both short-circuit because the columns already exist.
   const commands = mockSsh.getAllCommands();
-  assertEquals(commands.length, 1);
-  assertEquals(commands[0].includes("pragma_table_info"), true);
+  assertEquals(commands.length, 2);
+  assertEquals(commands.every((c) => c.includes("pragma_table_info")), true);
 });
 
 Deno.test("applyMigrations applies migration when columns missing", async () => {
