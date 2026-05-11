@@ -198,6 +198,134 @@ async function waitForNetworkReady(
 }
 
 /**
+ * Result of attempting to recover a missing container-network bridge.
+ */
+export interface BridgeRecoveryResult {
+  recovered: boolean;
+  /** Populated when reload + recreate both failed, with the underlying cause. */
+  failureReason?: string;
+  /** Populated when recreate was refused because containers are attached. */
+  attachedContainers?: string[];
+}
+
+/**
+ * Recover a container-network bridge interface that exists in the engine's
+ * network definition but is missing from the kernel.
+ *
+ * This shows up after reboots or container engine updates: `podman network
+ * inspect jiji` reports the network just fine, but `ip link show podman1`
+ * returns nothing and any container using the network has no external
+ * connectivity. `podman network reload --all` is the documented fix but
+ * silently no-ops in some states (we hit this on a node where it couldn't
+ * recreate the bridge — exit 0, no bridge, no actionable error).
+ *
+ * Strategy, in order:
+ *   1. Try `<engine> network reload --all`. Capture stderr so a real
+ *      failure surfaces to the caller instead of being eaten by `|| true`.
+ *   2. If the bridge appeared, we're done.
+ *   3. Otherwise check whether any containers are attached to the network.
+ *      If yes, refuse — `network rm` would fail (and even if it didn't,
+ *      we'd disconnect them from the network without warning).
+ *   4. With no containers attached, rm the network and re-create it with
+ *      the same subnet/gateway, then wait for it to come up and verify
+ *      the bridge exists.
+ */
+export async function recoverMissingBridge(
+  ssh: SSHManager,
+  engine: "docker" | "podman",
+  networkName: string,
+  bridgeName: string,
+  containerSubnet: string,
+  containerGateway: string,
+): Promise<BridgeRecoveryResult> {
+  // Step 1: try reload and actually inspect the result.
+  const reload = await ssh.executeCommand(
+    `${engine} network reload --all`,
+  );
+  if (reload.code !== 0) {
+    log.debug(
+      `${engine} network reload --all failed: ${reload.stderr.trim()}`,
+      "network",
+    );
+  }
+
+  // Step 2: did reload bring the bridge back?
+  const bridgeAfterReload = await ssh.executeCommand(
+    `ip link show ${bridgeName} 2>/dev/null`,
+  );
+  if (bridgeAfterReload.code === 0) {
+    return { recovered: true };
+  }
+
+  // Step 3: check for attached containers before doing anything destructive.
+  const containersResult = await ssh.executeCommand(
+    `${engine} ps -a --filter network=${networkName} --format '{{.Names}}'`,
+  );
+  const attachedContainers = containersResult.stdout.trim().split("\n")
+    .filter((c) => c.length > 0);
+
+  if (attachedContainers.length > 0) {
+    return {
+      recovered: false,
+      attachedContainers,
+      failureReason:
+        `Reload did not restore bridge ${bridgeName}, and ${attachedContainers.length} container(s) are still attached to the network. Stop or move them, then re-run setup.`,
+    };
+  }
+
+  // Step 4: rm + create with the same subnet/gateway.
+  const rm = await ssh.executeCommand(
+    `${engine} network rm ${networkName}`,
+  );
+  if (rm.code !== 0) {
+    return {
+      recovered: false,
+      failureReason:
+        `Reload did not restore bridge ${bridgeName} and removing the network for recreate failed: ${rm.stderr.trim()}`,
+    };
+  }
+
+  const createCmd = buildNetworkCreateCmd(
+    engine,
+    networkName,
+    containerSubnet,
+    containerGateway,
+  );
+  const create = await ssh.executeCommand(createCmd);
+  if (create.code !== 0) {
+    return {
+      recovered: false,
+      failureReason:
+        `Reload did not restore bridge ${bridgeName}; subsequent network recreate failed: ${create.stderr.trim()}`,
+    };
+  }
+
+  try {
+    await waitForNetworkReady(ssh, networkName, engine, containerSubnet);
+  } catch (err) {
+    return {
+      recovered: false,
+      failureReason: `Network recreated but did not become ready: ${
+        String(err)
+      }`,
+    };
+  }
+
+  const bridgeAfterCreate = await ssh.executeCommand(
+    `ip link show ${bridgeName} 2>/dev/null`,
+  );
+  if (bridgeAfterCreate.code === 0) {
+    return { recovered: true };
+  }
+
+  return {
+    recovered: false,
+    failureReason:
+      `Network recreated but bridge ${bridgeName} is still missing. The kernel may be unable to create the bridge (check journalctl for podman/netavark errors).`,
+  };
+}
+
+/**
  * Setup private networking on servers
  *
  * This is the main entry point for network setup, called from the init command.
@@ -719,24 +847,30 @@ export async function setupNetwork(
                 );
                 if (bridgeExists.code !== 0) {
                   log.say(
-                    `├── Bridge ${bridgeName} missing, reloading container networks`,
+                    `├── Bridge ${bridgeName} missing, attempting recovery`,
                     2,
                   );
-                  await ssh.executeCommand(
-                    `${engine} network reload --all 2>/dev/null || true`,
+                  const recovery = await recoverMissingBridge(
+                    ssh,
+                    engine,
+                    networkName,
+                    bridgeName,
+                    containerSubnet,
+                    containerGateway,
                   );
-                  // Verify bridge was recreated
-                  const bridgeRecovered = await ssh.executeCommand(
-                    `ip link show ${bridgeName} 2>/dev/null`,
-                  );
-                  if (bridgeRecovered.code === 0) {
-                    log.say(
-                      `├── Bridge ${bridgeName} recovered`,
-                      2,
+                  if (recovery.recovered) {
+                    log.say(`├── Bridge ${bridgeName} recovered`, 2);
+                  } else if (recovery.attachedContainers?.length) {
+                    log.warn(
+                      `Bridge ${bridgeName} could not be recovered on ${host}: ${recovery.attachedContainers.length} container(s) attached (${
+                        recovery.attachedContainers.join(", ")
+                      }). Stop them and re-run \`jiji network setup\`.`,
                     );
                   } else {
                     log.warn(
-                      `Bridge ${bridgeName} could not be recovered on ${host}`,
+                      `Bridge ${bridgeName} could not be recovered on ${host}: ${
+                        recovery.failureReason ?? "unknown error"
+                      }`,
                     );
                   }
                 }

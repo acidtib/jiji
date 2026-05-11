@@ -1,14 +1,21 @@
 /**
  * Mock SSH manager for testing commands that execute over SSH
  */
+type MockResponse = {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  code: number | null;
+};
+
 export class MockSSHManager {
   private commands: string[] = [];
   private shouldSucceed = true;
   private host: string;
-  private mockResponses: Map<
-    string,
-    { success: boolean; stdout: string; stderr: string; code: number | null }
-  > = new Map();
+  private mockResponses: Map<string, MockResponse> = new Map();
+  // Sequenced responses: each matching command consumes one entry; the last
+  // entry is retained as a fallback once the sequence is exhausted.
+  private mockSequences: Map<string, MockResponse[]> = new Map();
 
   constructor(host = "test-host", shouldSucceed = true) {
     this.host = host;
@@ -17,14 +24,26 @@ export class MockSSHManager {
 
   addMockResponse(
     commandPattern: string,
-    response: {
-      success: boolean;
-      stdout: string;
-      stderr: string;
-      code: number | null;
-    },
+    response: MockResponse,
   ) {
     this.mockResponses.set(commandPattern, response);
+  }
+
+  /**
+   * Register an ordered sequence of responses for commands matching this
+   * pattern. The Nth match returns the Nth entry; once exhausted, the last
+   * entry is returned for every subsequent match. Use this when a command
+   * needs to behave differently across calls (e.g. an interface check that
+   * fails before a recovery action and succeeds after).
+   */
+  addMockResponseSequence(
+    commandPattern: string,
+    responses: MockResponse[],
+  ) {
+    if (responses.length === 0) {
+      throw new Error("addMockResponseSequence requires at least one response");
+    }
+    this.mockSequences.set(commandPattern, [...responses]);
   }
 
   // Additional methods to match SSHManager interface
@@ -50,6 +69,16 @@ export class MockSSHManager {
     { success: boolean; stdout: string; stderr: string; code: number | null }
   > {
     this.commands.push(command);
+
+    // Sequenced responses take precedence over single-shot responses so
+    // tests that want to switch behaviour mid-run aren't shadowed by a
+    // broader pattern set up earlier.
+    for (const [pattern, queue] of this.mockSequences) {
+      if (command.includes(pattern)) {
+        const response = queue.length > 1 ? queue.shift()! : queue[0];
+        return Promise.resolve(response);
+      }
+    }
 
     // Check for custom mock responses first
     for (const [pattern, response] of this.mockResponses) {

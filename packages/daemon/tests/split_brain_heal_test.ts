@@ -38,7 +38,7 @@ Deno.test("healSplitBrain uses cached endpoints, not Corrosion", async () => {
   assert(
     !fnSection.includes("CorrosionCli") &&
       !fnSection.includes("CorrosionClient") &&
-      !fnSection.includes("from \"./corrosion"),
+      !fnSection.includes('from "./corrosion'),
     "healSplitBrain must not depend on Corrosion (it's the broken thing)",
   );
 });
