@@ -77,4 +77,6 @@ pub struct Cli {
 pub enum Commands {
     #[command(about = "Create config stub in .jiji/deploy.yml")]
     Init,
+    #[command(about = "Show jiji version")]
+    Version,
 }

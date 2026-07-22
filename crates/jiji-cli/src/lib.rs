@@ -38,6 +38,9 @@ pub async fn run() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Version) => {
+            commands::version::run();
+        }
         None => {
             Cli::command().print_help().ok();
             println!();
