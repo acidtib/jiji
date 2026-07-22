@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "jiji_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "jiji"
 path = "src/main.rs"
+
+# Thin wrapper around the same jiji_cli::run(), auto-discovered from src/bin/jiji_dev.rs, so
+# `mise run install-dev` can install a local test build side by side with the real `jiji` on
+# PATH without overwriting it.
 
 [dependencies]
 jiji-core.workspace = true

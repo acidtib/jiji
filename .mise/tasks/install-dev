@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Build and install jiji_dev to ~/.local/bin, without touching the real jiji binary"
+#MISE dir="{{config_root}}"
+set -e
+
+cargo build --bin jiji_dev
+mkdir -p "$HOME/.local/bin"
+cp target/debug/jiji_dev "$HOME/.local/bin/jiji_dev"
+echo "Installed jiji_dev to $HOME/.local/bin/jiji_dev"
