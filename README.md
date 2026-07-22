@@ -7,6 +7,13 @@
 Deploy containerized apps across servers with simplicity, speed, and
 portability.
 
+> **Status:** Jiji is being rewritten from Deno/TypeScript to Rust,
+> piece by piece. Only `jiji init` is implemented in the new Rust CLI so far;
+> the rest of the command surface described below is the target, not what's
+> currently built. See
+> [docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md](docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md)
+> for the rewrite plan.
+
 ## Features
 
 - **Zero downtime deployments** with health checks and automatic rollback
@@ -17,22 +24,8 @@ portability.
 
 ## Installation
 
-### From JSR
-
-```bash
-deno install --allow-all --name jiji jsr:@jiji/cli
-```
-
-### Linux/macOS
-
-```bash
-curl -fsSL https://get.jiji.run/install.sh | sh
-```
-
-### Windows
-
-Download from [releases](https://github.com/acidtib/jiji/releases) and add to
-PATH.
+Build from source (see Development below). Prebuilt binaries and the install
+script are not yet updated for the Rust rewrite.
 
 ## Quick Start
 
@@ -51,26 +44,26 @@ jiji deploy --build
 
 ## Commands
 
-| Command                 | Description                               |
-| ----------------------- | ----------------------------------------- |
-| `jiji init`             | Create config stub in `.jiji/deploy.yml`  |
-| `jiji build`            | Build container images                    |
-| `jiji deploy`           | Deploy services to servers                |
-| `jiji services logs`    | View service logs                         |
-| `jiji services restart` | Restart services                          |
-| `jiji services remove`  | Remove services                           |
-| `jiji services prune`   | Clean up old images                       |
-| `jiji proxy logs`       | View kamal-proxy logs                     |
-| `jiji server init`      | Initialize servers with container runtime |
-| `jiji server exec`      | Execute commands on servers               |
-| `jiji server teardown`  | Remove all jiji components from servers   |
-| `jiji registry setup`   | Setup container registry                  |
-| `jiji network status`   | Show private network status               |
-| `jiji network dns`      | Show DNS records                          |
-| `jiji network gc`       | Garbage collect stale records             |
-| `jiji audit`            | Show deployment audit trail               |
-| `jiji lock`             | Manage deployment locks                   |
-| `jiji secrets print`    | Print resolved secrets for debugging      |
+| Command                 | Description                               | Status      |
+| ------------------------ | ----------------------------------------- | ----------- |
+| `jiji init`              | Create config stub in `.jiji/deploy.yml`  | Rust        |
+| `jiji build`              | Build container images                    | not yet ported |
+| `jiji deploy`             | Deploy services to servers                | not yet ported |
+| `jiji services logs`     | View service logs                         | not yet ported |
+| `jiji services restart`  | Restart services                          | not yet ported |
+| `jiji services remove`   | Remove services                           | not yet ported |
+| `jiji services prune`    | Clean up old images                       | not yet ported |
+| `jiji proxy logs`        | View kamal-proxy logs                     | not yet ported |
+| `jiji server init`       | Initialize servers with container runtime | not yet ported |
+| `jiji server exec`       | Execute commands on servers               | not yet ported |
+| `jiji server teardown`   | Remove all jiji components from servers   | not yet ported |
+| `jiji registry setup`    | Setup container registry                  | not yet ported |
+| `jiji network status`    | Show private network status               | not yet ported |
+| `jiji network dns`       | Show DNS records                          | not yet ported |
+| `jiji network gc`        | Garbage collect stale records              | not yet ported |
+| `jiji audit`              | Show deployment audit trail                | not yet ported |
+| `jiji lock`               | Manage deployment locks                    | not yet ported |
+| `jiji secrets print`     | Print resolved secrets for debugging       | not yet ported |
 
 ### Global Options
 
@@ -130,7 +123,8 @@ services:
         - DATABASE_URL
 ```
 
-See [src/jiji.yml](src/jiji.yml) for complete configuration reference.
+See [crates/jiji-config/src/jiji.yml](crates/jiji-config/src/jiji.yml) for the
+complete configuration reference (also the template `jiji init` writes).
 
 ## Documentation
 
@@ -138,28 +132,29 @@ Detailed guides in [docs/](docs/):
 
 ## Development
 
+This is a Cargo workspace with four crates in `crates/`: `jiji-core`,
+`jiji-tui`, `jiji-config`, `jiji-cli` (binary name `jiji`).
+
 ```bash
-# Run CLI
-deno task run
+# Run the CLI
+cargo run -- init
 
 # Run tests
-deno task test
-
-# Run single test
-deno test --allow-all tests/deploy_plan_test.ts
+cargo test
 
 # Format and lint
-deno task fmt
-deno task lint
+cargo fmt
+cargo clippy --all-targets --all-features
 
-# Run all checks
-deno task check
+# Build a debug binary
+cargo build
 
-# Build binary
-deno task build
-
-# Install to /usr/local/bin
-deno task install
+# Or via mise (wraps the same cargo commands)
+mise run build
+mise run test
+mise run fmt
+mise run lint
+mise run check
 ```
 
 ## License

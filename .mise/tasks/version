@@ -1,29 +1,25 @@
 #!/usr/bin/env bash
-#MISE description="Show or bump version across all packages"
+#MISE description="Show or bump the workspace version"
 #MISE dir="{{config_root}}"
 set -e
 
-VERSION_FILES=(
-  "./packages/cli/src/version.ts"
-  "./packages/daemon/src/version.ts"
-)
-MEMBER_CONFIGS=(
-  "./packages/cli/deno.json"
-  "./packages/dns/deno.json"
-  "./packages/daemon/deno.json"
-  "./packages/shared/deno.json"
-)
+CARGO_TOML="./Cargo.toml"
 
 get_current_version() {
-  sed -n 's/.*VERSION = ["\x27]\([^"\x27]*\)["\x27].*/\1/p' "${VERSION_FILES[0]}"
+  sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' "$CARGO_TOML"
 }
 
-update_version_files() {
+update_version() {
   local version="$1"
-  for vfile in "${VERSION_FILES[@]}"; do
-    printf 'export const VERSION = "%s";\n' "$version" > "$vfile"
-    echo "Updated $vfile"
-  done
+  awk -v v="$version" '
+    /^\[workspace\.package\]/ { in_block=1 }
+    /^\[/ && !/^\[workspace\.package\]/ { in_block=0 }
+    in_block && /^version = / { print "version = \"" v "\""; next }
+    { print }
+  ' "$CARGO_TOML" > "${CARGO_TOML}.tmp" && mv "${CARGO_TOML}.tmp" "$CARGO_TOML"
+  echo "Updated $CARGO_TOML"
+  cargo update --workspace --quiet
+  echo "Updated Cargo.lock"
 }
 
 increment_patch() {
@@ -37,16 +33,6 @@ increment_patch() {
   fi
 
   echo "${major}.${minor}.$((patch + 1))"
-}
-
-update_deno_configs() {
-  local version="$1"
-  for config in "${MEMBER_CONFIGS[@]}"; do
-    local tmp
-    tmp=$(mktemp)
-    jq --arg v "$version" '.version = $v' "$config" > "$tmp" && mv "$tmp" "$config"
-    echo "Updated $config"
-  done
 }
 
 # No arguments — show current version
@@ -67,9 +53,7 @@ if [[ "$1" == "--bump" ]]; then
 
   echo "Updating version from $current to $new_version"
 
-  update_version_files "$new_version"
-
-  update_deno_configs "$new_version"
+  update_version "$new_version"
 
   echo "Version updated to $new_version"
   exit 0
