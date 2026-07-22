@@ -1,0 +1,23 @@
+[package]
+name = "jiji-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "jiji"
+path = "src/main.rs"
+
+[dependencies]
+jiji-core.workspace = true
+jiji-tui.workspace = true
+jiji-config.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

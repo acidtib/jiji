@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jiji-core",
+    "crates/jiji-tui",
+    "crates/jiji-config",
+    "crates/jiji-cli",
+]
+
+[workspace.package]
+version = "0.4.8"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+jiji-core = { path = "crates/jiji-core" }
+jiji-tui = { path = "crates/jiji-tui" }
+jiji-config = { path = "crates/jiji-config" }
+
+thiserror = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+owo-colors = "4"
+dialoguer = "0.11"
+indicatif = "0.17"
+tempfile = "3"
