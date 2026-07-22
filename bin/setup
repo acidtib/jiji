@@ -13,27 +13,27 @@ info()  { echo -e "${GREEN}==>${NC} $1"; }
 warn()  { echo -e "${YELLOW}==>${NC} $1"; }
 error() { echo -e "${RED}==>${NC} $1" >&2; }
 
-REQUIRED_DENO_MAJOR=2
+REQUIRED_CARGO_MAJOR=1
 
-# Check for deno
-if ! command -v deno &> /dev/null; then
-  error "deno is not installed."
-  echo "  Install it from https://deno.land or via mise:"
-  echo "    mise install deno"
+# Check for cargo
+if ! command -v cargo &> /dev/null; then
+  error "cargo is not installed."
+  echo "  Install it from https://rustup.rs or via mise:"
+  echo "    mise install rust"
   exit 1
 fi
 
-# Check deno version
-DENO_VERSION=$(deno --version | head -1 | sed 's/deno //')
-DENO_MAJOR=$(echo "$DENO_VERSION" | cut -d. -f1)
+# Check cargo version
+CARGO_VERSION=$(cargo --version | head -1 | sed 's/cargo //' | cut -d' ' -f1)
+CARGO_MAJOR=$(echo "$CARGO_VERSION" | cut -d. -f1)
 
-if [ "$DENO_MAJOR" -lt "$REQUIRED_DENO_MAJOR" ]; then
-  error "deno $REQUIRED_DENO_MAJOR.x+ is required (found $DENO_VERSION)."
-  echo "  Update with: mise install deno or deno upgrade"
+if [ "$CARGO_MAJOR" -lt "$REQUIRED_CARGO_MAJOR" ]; then
+  error "cargo $REQUIRED_CARGO_MAJOR.x+ is required (found $CARGO_VERSION)."
+  echo "  Update with: rustup update or mise install rust"
   exit 1
 fi
 
-info "deno $DENO_VERSION"
+info "cargo $CARGO_VERSION"
 
 # Check for mise (optional but recommended)
 if command -v mise &> /dev/null; then
@@ -44,8 +44,8 @@ else
   echo "  Install it from https://mise.jdx.dev"
 fi
 
-# Install deno dependencies
-info "Installing deno dependencies..."
-deno install --allow-scripts=npm:cpu-features,npm:ssh2
+# Fetch cargo dependencies
+info "Fetching cargo dependencies..."
+cargo fetch
 
 info "Setup complete!"
