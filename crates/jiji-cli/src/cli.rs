@@ -79,4 +79,15 @@ pub enum Commands {
     Init,
     #[command(about = "Show jiji version")]
     Version,
+    #[command(about = "Server management")]
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServerCommands {
+    #[command(about = "Check for and install the configured container engine on each server")]
+    Setup,
 }

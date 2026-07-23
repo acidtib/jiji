@@ -21,6 +21,7 @@ path = "src/main.rs"
 jiji-core.workspace = true
 jiji-tui.workspace = true
 jiji-config.workspace = true
+jiji-ssh.workspace = true
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
@@ -30,3 +31,5 @@ serde_yaml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+russh.workspace = true
+rand = "0.10"
