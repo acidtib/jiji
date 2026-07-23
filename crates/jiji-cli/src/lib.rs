@@ -1,7 +1,15 @@
 mod cli;
 mod commands;
+mod container_ops;
+mod container_runtime;
+mod deploy_transaction;
 mod engine;
+mod env_resolution;
+mod health_check;
+mod mounts;
+mod network_guard;
 mod proxy;
+mod proxy_routes;
 pub mod service_network;
 mod ssh_adapter;
 
@@ -44,6 +52,32 @@ pub async fn run() {
         }
         Some(Commands::Version) => {
             commands::version::run();
+        }
+        Some(Commands::Deploy { build, skip_proxy }) => {
+            if let Err(err) = commands::deploy::run(
+                cli.environment.as_deref(),
+                cli.config_file.as_deref(),
+                cli.hosts.as_deref(),
+                cli.services.as_deref(),
+                cli.version_arg.as_deref(),
+                *build,
+                *skip_proxy,
+                cli.host_env,
+            )
+            .await
+            {
+                println!();
+                jiji_tui::Ui::error(&format!("Deploy failed: {err}"));
+                if err.downcast_ref::<jiji_config::ConfigError>().is_some() {
+                    jiji_tui::Ui::say(
+                        "Configuration validation failed. Please check your deploy config and try again.",
+                        1,
+                    );
+                } else {
+                    jiji_tui::Ui::say("Please check the error above and try again", 1);
+                }
+                std::process::exit(1);
+            }
         }
         Some(Commands::Server { command }) => match command {
             ServerCommands::Setup => {

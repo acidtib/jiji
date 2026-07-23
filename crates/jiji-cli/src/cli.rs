@@ -22,7 +22,7 @@ pub struct Cli {
         long = "version",
         value_name = "VERSION",
         global = true,
-        help = "Run commands against a specific app version"
+        help = "Run commands against a specific app version (e.g. `jiji deploy --version 1.2.3`)"
     )]
     pub version_arg: Option<String>,
 
@@ -79,6 +79,13 @@ pub enum Commands {
     Init,
     #[command(about = "Show jiji version")]
     Version,
+    #[command(about = "Deploy configured services across their target servers")]
+    Deploy {
+        #[arg(long, help = "Build images before deploying (not yet implemented)")]
+        build: bool,
+        #[arg(long, help = "Skip kamal-proxy route activation")]
+        skip_proxy: bool,
+    },
     #[command(about = "Server management")]
     Server {
         #[command(subcommand)]
