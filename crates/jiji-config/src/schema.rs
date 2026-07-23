@@ -174,11 +174,28 @@ pub struct Ssh {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Network {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_cluster_cidr")]
-    pub cluster_cidr: String,
+    #[serde(default)]
+    pub management_cidr: Option<String>,
+    #[serde(default)]
+    pub container_cidr: Option<String>,
+}
+
+impl Network {
+    pub fn management_cidr(&self) -> &str {
+        self.management_cidr
+            .as_deref()
+            .unwrap_or(jiji_core::DEFAULT_MANAGEMENT_CIDR)
+    }
+
+    pub fn container_cidr(&self) -> &str {
+        self.container_cidr
+            .as_deref()
+            .unwrap_or(jiji_core::DEFAULT_CONTAINER_CIDR)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -399,10 +416,6 @@ fn default_pool_idle_timeout() -> u32 {
 
 fn default_dns_retries() -> u32 {
     3
-}
-
-fn default_cluster_cidr() -> String {
-    jiji_core::DEFAULT_CLUSTER_CIDR.to_string()
 }
 
 fn default_retain() -> u32 {

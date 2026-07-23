@@ -21,6 +21,7 @@ path = "src/main.rs"
 jiji-core.workspace = true
 jiji-tui.workspace = true
 jiji-config.workspace = true
+jiji-network.workspace = true
 jiji-ssh.workspace = true
 clap.workspace = true
 tokio.workspace = true
@@ -28,6 +29,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

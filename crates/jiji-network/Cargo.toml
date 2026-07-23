@@ -1,0 +1,15 @@
+[package]
+name = "jiji-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jiji-core.workspace = true
+jiji-config.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true

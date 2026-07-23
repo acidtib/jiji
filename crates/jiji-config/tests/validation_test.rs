@@ -138,3 +138,26 @@ fn shipped_template_parses_and_validates_cleanly() {
         result.errors
     );
 }
+
+#[test]
+fn split_network_cidrs_parse_and_validate() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: docker
+servers:
+  web:
+    host: 203.0.113.10
+services:
+  app:
+    image: nginx:latest
+    hosts: [web]
+network:
+  management_cidr: 198.18.0.0/16
+  container_cidr: 100.64.0.0/10
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}

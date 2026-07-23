@@ -1007,11 +1007,13 @@ dependencies = [
  "clap",
  "jiji-config",
  "jiji-core",
+ "jiji-network",
  "jiji-ssh",
  "jiji-tui",
  "rand",
  "russh",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
@@ -1033,6 +1035,18 @@ dependencies = [
 name = "jiji-core"
 version = "0.4.8"
 dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jiji-network"
+version = "0.4.8"
+dependencies = [
+ "jiji-config",
+ "jiji-core",
+ "serde",
+ "serde_yaml",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

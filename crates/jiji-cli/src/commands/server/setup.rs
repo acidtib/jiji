@@ -2,6 +2,7 @@ use jiji_config::{load_config, validate_config, NamedServer};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::commands::network;
 use crate::engine::{self, EngineStatus};
 use crate::ssh_adapter;
 
@@ -121,6 +122,14 @@ pub async fn run(
         }
         anyhow::bail!("Server setup failed for {} server(s)", failures.len());
     }
+
+    network::setup::run(environment, config_file, hosts)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Container engine setup succeeded, but complete network setup failed: {error}"
+            )
+        })?;
 
     Ui::success("\nAll servers are ready.");
     Ok(())

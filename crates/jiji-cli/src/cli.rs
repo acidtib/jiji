@@ -84,10 +84,23 @@ pub enum Commands {
         #[command(subcommand)]
         command: ServerCommands,
     },
+    #[command(about = "Private network management")]
+    Network {
+        #[command(subcommand)]
+        command: NetworkCommands,
+    },
 }
 
 #[derive(Subcommand)]
 pub enum ServerCommands {
-    #[command(about = "Check for and install the configured container engine on each server")]
+    #[command(about = "Install the container engine and complete private network on each server")]
     Setup,
+}
+
+#[derive(Subcommand)]
+pub enum NetworkCommands {
+    #[command(about = "Install or repair the complete private network")]
+    Setup,
+    #[command(about = "Print the deterministic private network plan without changing hosts")]
+    Plan,
 }

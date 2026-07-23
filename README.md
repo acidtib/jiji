@@ -8,9 +8,9 @@ Deploy containerized apps across servers with simplicity, speed, and
 portability.
 
 > **Status:** Jiji is being rewritten from Deno/TypeScript to Rust,
-> piece by piece. Only `jiji init` is implemented in the new Rust CLI so far;
-> the rest of the command surface described below is the target, not what's
-> currently built. See
+> piece by piece. The Rust CLI currently implements `init`, `server setup`,
+> `network plan`, and transactional `network setup`; the remaining command
+> surface described below is the target. See
 > [docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md](docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md)
 > for the rewrite plan.
 
@@ -35,8 +35,8 @@ jiji init
 
 # Edit .jiji/deploy.yml with your servers and services
 
-# Initialize servers (installs container runtime, networking)
-jiji server init
+# Initialize servers (installs container runtime and complete networking)
+jiji server setup
 
 # Build and deploy
 jiji deploy --build
@@ -54,13 +54,12 @@ jiji deploy --build
 | `jiji services remove`   | Remove services                           | not yet ported |
 | `jiji services prune`    | Clean up old images                       | not yet ported |
 | `jiji proxy logs`        | View kamal-proxy logs                     | not yet ported |
-| `jiji server init`       | Initialize servers with container runtime | not yet ported |
+| `jiji server setup`      | Install container runtime and private network | Rust |
 | `jiji server exec`       | Execute commands on servers               | not yet ported |
 | `jiji server teardown`   | Remove all jiji components from servers   | not yet ported |
 | `jiji registry setup`    | Setup container registry                  | not yet ported |
-| `jiji network status`    | Show private network status               | not yet ported |
-| `jiji network dns`       | Show DNS records                          | not yet ported |
-| `jiji network gc`        | Garbage collect stale records              | not yet ported |
+| `jiji network plan`      | Print the deterministic private network plan | Rust |
+| `jiji network setup`     | Install, update, or repair the private network | Rust |
 | `jiji audit`              | Show deployment audit trail                | not yet ported |
 | `jiji lock`               | Manage deployment locks                    | not yet ported |
 | `jiji secrets print`     | Print resolved secrets for debugging       | not yet ported |

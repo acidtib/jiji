@@ -273,10 +273,9 @@ ssh:
 #
 # Network Architecture:
 # - WireGuard: Creates encrypted mesh VPN between all servers
-# - Corrosion: Distributed CRDT database for service registry (gossip protocol)
-# - jiji-dns: DNS server for service discovery (resolves <project>-<service>.jiji to container IPs)
-# - Dual-stack: IPv4 (10.210.0.0/16) for containers, IPv6 (fdcc::/16) for management
-# - Automatic: Containers are auto-registered on deploy, auto-unregistered on remove
+# - WireGuard management addresses and routed container addresses use separate IPv4 ranges
+# - jiji-dns resolves <project>-<service>.jiji from the compiled deployment plan
+# - Container addresses are assigned by jiji and remain stable across identical deployments
 #
 # Use Cases:
 # - Microservices communication without exposing ports publicly
@@ -289,14 +288,12 @@ ssh:
 #   # Enable private networking (default: true)
 #   enabled: true
 #
-#   # Cluster CIDR for container networking
-#   # Each server gets a /24 subnet (254 usable IPs per server)
-#   # Default: 10.210.0.0/16 (supports 256 servers)
-#   cluster_cidr: "10.210.0.0/16"
+#   # Optional, non-overlapping address ranges
+#   management_cidr: "198.18.0.0/16"
+#   container_cidr: "100.64.0.0/10"
 #
 #   # Note: Service domain is always 'jiji' - containers reach each other via <project>-<service>.jiji
-#   # Note: Service discovery method is always 'corrosion' (distributed CRDT-based)
-#   # Note: Corrosion gossip port (31280) and API port (31220) are not configurable
+#   # Jiji validates that these ranges do not overlap.
 #
 # Network Configuration Examples:
 # ==============================
@@ -304,12 +301,14 @@ ssh:
 # Example 1: Basic Setup (Recommended)
 # network:
 #   enabled: true
-#   cluster_cidr: "10.210.0.0/16"
+#   management_cidr: "198.18.0.0/16"
+#   container_cidr: "100.64.0.0/10"
 #
 # Example 2: Custom CIDR for Existing Network
 # network:
 #   enabled: true
-#   cluster_cidr: "172.20.0.0/16"    # Avoid conflicts with existing networks
+#   management_cidr: "172.20.0.0/20"
+#   container_cidr: "172.21.0.0/16"
 #
 # Example 3: Disable Networking
 # network:

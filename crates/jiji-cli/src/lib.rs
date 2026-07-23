@@ -1,10 +1,11 @@
 mod cli;
 mod commands;
 mod engine;
+pub mod service_network;
 mod ssh_adapter;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Commands, ServerCommands};
+use cli::{Cli, Commands, NetworkCommands, ServerCommands};
 use tracing_subscriber::EnvFilter;
 
 /// Shared entrypoint for both the `jiji` and `jiji_dev` binaries (see `src/main.rs` and
@@ -62,6 +63,31 @@ pub async fn run() {
                     } else {
                         jiji_tui::Ui::say("Please check the error above and try again", 1);
                     }
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Network { command }) => match command {
+            NetworkCommands::Setup => {
+                if let Err(err) = commands::network::setup::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Network setup failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or configuration error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Plan => {
+                if let Err(err) = commands::network::plan::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                ) {
+                    jiji_tui::Ui::error(&format!("Network planning failed: {err}"));
                     std::process::exit(1);
                 }
             }

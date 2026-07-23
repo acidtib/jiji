@@ -90,11 +90,14 @@ impl server::Handler for TestServer {
 
         // Commands with no canned response (e.g. the many install-step shell commands a test
         // doesn't care about individually) succeed with empty output by default.
-        let response = self
-            .responses
-            .get(&command)
-            .cloned()
-            .unwrap_or_else(|| success(""));
+        let response = if command.contains("if test -L /etc/jiji/network/current") {
+            success("-\n-\n")
+        } else {
+            self.responses
+                .get(&command)
+                .cloned()
+                .unwrap_or_else(|| success(""))
+        };
 
         if !response.stdout.is_empty() {
             session.data(channel, response.stdout)?;
@@ -154,6 +157,14 @@ fn failure() -> CannedResponse {
     }
 }
 
+fn add_network_setup_responses(responses: &mut HashMap<String, CannedResponse>) {
+    responses.insert("id -u".to_string(), success("0\n"));
+    responses.insert(
+        "test -s /etc/jiji/network/public.key && cat /etc/jiji/network/public.key".to_string(),
+        success("test-wireguard-public-key\n"),
+    );
+}
+
 fn write_config(
     dir: &std::path::Path,
     addr: SocketAddr,
@@ -207,6 +218,7 @@ async fn reports_an_already_installed_engine() {
         "docker --version".to_string(),
         success("Docker version 99.0.0, build abcdef\n"),
     );
+    add_network_setup_responses(&mut responses);
 
     let addr = spawn_test_server(client_key.public_key().clone(), responses).await;
 
@@ -251,6 +263,7 @@ async fn installs_a_missing_engine() {
         "docker --version".to_string(),
         success("Docker version 99.0.0, build abcdef\n"),
     );
+    add_network_setup_responses(&mut responses);
     // Every install command not explicitly listed defaults to success (empty CannedResponse).
 
     let addr = spawn_test_server(client_key.public_key().clone(), responses).await;

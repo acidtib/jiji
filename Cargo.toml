@@ -4,6 +4,7 @@ members = [
     "crates/jiji-core",
     "crates/jiji-tui",
     "crates/jiji-config",
+    "crates/jiji-network",
     "crates/jiji-ssh",
     "crates/jiji-cli",
 ]
@@ -17,12 +18,14 @@ license = "MIT"
 jiji-core = { path = "crates/jiji-core" }
 jiji-tui = { path = "crates/jiji-tui" }
 jiji-config = { path = "crates/jiji-config" }
+jiji-network = { path = "crates/jiji-network" }
 jiji-ssh = { path = "crates/jiji-ssh" }
 
 thiserror = "1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs"] }
 tracing = "0.1"
