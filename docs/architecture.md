@@ -34,7 +34,7 @@ across multiple servers using a command line interface.
 - **CLI Framework**: Cliffy
 - **SSH**: SSH2/node-ssh
 - **Container Runtime**: Docker or Podman
-- **Networking**: WireGuard, jiji-dns, Corrosion (CRDT database)
+- **Networking**: WireGuard, routed container bridges, dnsmasq, nftables
 
 ### Architecture Principles
 
@@ -81,9 +81,9 @@ across multiple servers using a command line interface.
 │  └──────────────┘  └──────────────┘  └──────────────────┘ │
 │                                                           │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│  │  jiji-dns    │  │  Corrosion   │  │  Service         │ │
-│  │  DNS         │  │  Distributed │  │  Monitoring      │ │
-│  │  Resolution  │  │  CRDT DB     │  │  & Logs          │ │
+│  │  dnsmasq     │  │  nftables    │  │  Service         │ │
+│  │  Compiled    │  │  Stable VIP  │  │  Monitoring      │ │
+│  │  .jiji DNS   │  │  Cutover     │  │  & Logs          │ │
 │  └──────────────┘  └──────────────┘  └──────────────────┘ │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -284,50 +284,34 @@ Container Query: "myapp-api.jiji"
          │
          V
 ┌──────────────────┐
-│ Container DNS    │ Configured via daemon.json
-│ /etc/resolv.conf │ nameserver 10.210.0.1
+│ Container DNS    │ Local jiji bridge resolver
+│ /etc/resolv.conf │ search domain: jiji
 └────────┬─────────┘
          │
          V
 ┌────────────────┐
-│   jiji-dns     │  Listens on 10.210.0.1:53
-│   10.210.0.1   │  In-memory DNS cache
+│    dnsmasq     │  Compiled from deploy.yml
+│  static zone   │  Returns stable service VIPs
 └────────┬───────┘
          │
-         │ Real-time subscription (NDJSON stream)
+         │ VIP packet
          V
 ┌────────────────┐
-│   Corrosion    │  CRDT database
-│  Distributed   │  Synced across all servers
-│   SQLite       │  Containers + health status
+│   nftables     │  Host-local atomic map
+│ service NAT    │  VIP -> active backend A/B
 └────────┬───────┘
          │
-         │ Returns: ["10.210.0.3", "10.210.1.2"] (healthy only)
+         │ Routed through WireGuard when remote
          V
 ┌────────────────┐
-│  DNS Response  │  Healthy container IPs
-│  A records     │  Client side load balancing
+│ Active service │  Fixed backend address
+│   container    │  Docker or Podman
 └────────────────┘
 ```
 
-jiji-dns maintains a streaming HTTP connection to Corrosion's
-`/v1/subscriptions` endpoint. Container changes (add/remove/health updates) are
-pushed in real-time, eliminating polling delays.
-
-### IPv4 vs IPv6 Usage
-
-**IPv4 (10.210.0.0/16):**
-
-- WireGuard tunnel IPs
-- Container IPs
-- Service to service communication
-- DNS resolution
-
-**IPv6 (fdcc::/16):**
-
-- Corrosion management communication only
-- Derived deterministically from WireGuard public keys
-- Not used for container traffic
+DNS represents configured topology. Deployment health checks gate the
+host-local VIP switch, so unhealthy candidates never become active without
+requiring live health data in DNS.
 
 ## Configuration System
 
@@ -631,8 +615,7 @@ User Command
 **Firewall Rules**:
 
 - Only required ports opened
-- WireGuard: UDP 31820
-- Corrosion: TCP 31280
+- WireGuard: UDP 51820 between configured server public IPs
 - HTTP/HTTPS: TCP 80/443
 
 **Container Isolation**:

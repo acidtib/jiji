@@ -148,7 +148,7 @@ jiji server init
 # This will:
 # - Install Docker/Podman
 # - Setup private networking (WireGuard)
-# - Install service discovery (Corrosion, jiji-dns)
+# - Install WireGuard, routed container networking, compiled DNS, and service VIPs
 # - Configure firewall rules
 ```
 
@@ -850,10 +850,10 @@ jiji server exec "ping api.jiji"
 jiji server exec "ip route show | grep jiji0"
 ```
 
-**Check network status:**
+**Inspect the compiled network plan:**
 
 ```bash
-jiji network status
+jiji network plan
 ```
 
 ## Audit Trail

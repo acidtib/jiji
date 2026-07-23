@@ -390,26 +390,18 @@ using WireGuard VPN mesh network with automatic service discovery.
 
 ```yaml
 network:
-  # Enable private networking (default: true)
   enabled: true
-
-  # Cluster CIDR for container networking (default: 10.210.0.0/16)
-  # Each server gets a /24 subnet (254 usable IPs per server)
-  cluster_cidr: "10.210.0.0/16"
+  management_cidr: "198.18.0.0/16"
+  container_cidr: "100.64.0.0/10"
+  host_prefix: 21
 ```
 
-**Hardcoded values (not configurable):**
-
-The following network settings are hardcoded and cannot be changed:
-
-| Setting               | Value       | Description                                                |
-| --------------------- | ----------- | ---------------------------------------------------------- |
-| Service domain        | `jiji`      | Containers reach each other via `{project}-{service}.jiji` |
-| Discovery method      | `corrosion` | Distributed CRDT-based service discovery                   |
-| WireGuard port        | `31820`     | UDP port for WireGuard VPN                                 |
-| Corrosion gossip port | `31280`     | TCP port for CRDT gossip protocol                          |
-| Corrosion API port    | `31220`     | TCP port for Corrosion HTTP API                            |
-| DNS port              | `53`        | jiji-dns listens on standard DNS port                      |
+| Setting | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enable the compiled private network |
+| `management_cidr` | `198.18.0.0/16` | WireGuard host-address pool |
+| `container_cidr` | `100.64.0.0/10` | Routed container-address pool |
+| `host_prefix` | `21` | Per-host container subnet size |
 
 **Note:** The `.jiji` domain is internal only and not customizable. All service
 discovery uses this domain (e.g., `myapp-api.jiji`, `myapp-database.jiji`).
@@ -417,30 +409,16 @@ discovery uses this domain (e.g., `myapp-api.jiji`, `myapp-database.jiji`).
 ### Network Architecture
 
 - **WireGuard**: Encrypted mesh VPN between all servers
-- **Corrosion**: Distributed CRDT database for service registry (gossip
-  protocol)
-- **jiji-dns**: DNS server for service discovery (resolves
-  `<project>-<service>.jiji` to container IPs via real-time Corrosion
-  subscriptions)
-- **Dual stack**: IPv4 (10.210.0.0/16) for containers, IPv6 (fdcc::/16) for
-  management
-- **Automatic**: Containers auto registered on deploy, auto unregistered on
-  remove
+- **Routed bridges**: One deterministic IPv4 container subnet per server
+- **Compiled DNS**: dnsmasq serves stable VIPs derived from the complete config
+- **Service NAT**: nftables atomically maps each VIP to backend A or B
+- **No coordinator**: No database, gossip service, or reconciliation daemon
 
 ### IP Allocation
 
-```
-Cluster CIDR: 10.210.0.0/16 (configurable)
-├── Server 0: 10.210.0.0/24
-│   ├── WireGuard IP: 10.210.0.1
-│   ├── Management IP: fdcc:xxxx:... (IPv6, derived from pubkey)
-│   └── Containers: 10.210.0.2 - 10.210.0.254
-├── Server 1: 10.210.1.0/24
-│   ├── WireGuard IP: 10.210.1.1
-│   ├── Management IP: fdcc:xxxx:... (IPv6, derived from pubkey)
-│   └── Containers: 10.210.1.2 - 10.210.1.254
-└── Server N: 10.210.N.0/24 (up to 256 servers with /16)
-```
+Jiji deterministically assigns each server a management address and container
+subnet. Each service endpoint receives a stable VIP and two alternating
+backend addresses. Run `jiji network plan` to inspect the complete allocation.
 
 ### Service Discovery Example
 
@@ -465,7 +443,9 @@ services:
       - server3
 ```
 
-Containers can communicate via DNS (format: `{project}-{service}.jiji`):
+Containers can communicate through the aggregate
+`{project}-{service}.jiji` name or a server-specific
+`{project}-{service}-{server}.jiji` name:
 
 ```bash
 # From api container, connect to database
@@ -473,10 +453,14 @@ DATABASE_URL: postgresql://user:pass@myapp-database.jiji:5432/myapp
 
 # From database container, connect to api
 API_URL: http://myapp-api.jiji:3000
+
+# Reach only the api replica on server1
+API_SERVER1_URL: http://myapp-api-server1.jiji:3000
 ```
 
-DNS automatically resolves to all healthy container IPs for that service,
-providing client side load balancing.
+DNS resolves to stable service VIPs. For replicas it returns one VIP per
+configured endpoint through the aggregate name and one VIP through each
+server-specific name.
 
 ### Custom Network Configuration
 
@@ -485,7 +469,9 @@ providing client side load balancing.
 ```yaml
 network:
   enabled: true
-  cluster_cidr: "172.20.0.0/16" # Use different CIDR
+  management_cidr: "198.19.0.0/16"
+  container_cidr: "172.16.0.0/12"
+  host_prefix: 21
 ```
 
 **Disable networking:**
@@ -1061,7 +1047,9 @@ ssh:
 
 network:
   enabled: true
-  cluster_cidr: "10.210.0.0/16"
+  management_cidr: "198.18.0.0/16"
+  container_cidr: "100.64.0.0/10"
+  host_prefix: 21
 
 environment:
   APP_ENV: production

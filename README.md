@@ -7,12 +7,13 @@
 Deploy containerized apps across servers with simplicity, speed, and
 portability.
 
-> **Status:** Jiji is being rewritten from Deno/TypeScript to Rust,
-> piece by piece. The Rust CLI currently implements `init`, `server setup`,
-> `network plan`, and transactional `network setup`; the remaining command
-> surface described below is the target. See
-> [docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md](docs/superpowers/specs/2026-07-22-rust-rewrite-init-design.md)
-> for the rewrite plan.
+> **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
+> CLI implements `init`, `server setup`, `network plan`/`network setup`,
+> `deploy`, and `server teardown` (see the command table below for the full
+> current picture). `--build` and `--engine` are stubbed with actionable
+> errors rather than silently no-op'ing; a few operational commands
+> (`services`, `proxy logs`, `registry setup`, `audit`, `lock`, `secrets
+> print`, `server exec`) are not started yet.
 
 ## Features
 
@@ -38,8 +39,12 @@ jiji init
 # Initialize servers (installs container runtime and complete networking)
 jiji server setup
 
-# Build and deploy
-jiji deploy --build
+# Deploy (services must reference an already-published `image:` for now --
+# `--build` is not implemented yet)
+jiji deploy
+
+# Tear down everything jiji installed on selected servers
+jiji server teardown
 ```
 
 ## Commands
@@ -47,22 +52,22 @@ jiji deploy --build
 | Command                 | Description                               | Status      |
 | ------------------------ | ----------------------------------------- | ----------- |
 | `jiji init`              | Create config stub in `.jiji/deploy.yml`  | Rust        |
-| `jiji build`              | Build container images                    | not yet ported |
-| `jiji deploy`             | Deploy services to servers                | not yet ported |
-| `jiji services logs`     | View service logs                         | not yet ported |
-| `jiji services restart`  | Restart services                          | not yet ported |
-| `jiji services remove`   | Remove services                           | not yet ported |
-| `jiji services prune`    | Clean up old images                       | not yet ported |
-| `jiji proxy logs`        | View kamal-proxy logs                     | not yet ported |
+| `jiji build`              | Build container images                    | not yet implemented |
+| `jiji deploy`             | Deploy services to servers                | Rust (`--build` not yet implemented) |
+| `jiji services logs`     | View service logs                         | not yet implemented |
+| `jiji services restart`  | Restart services                          | not yet implemented |
+| `jiji services remove`   | Remove services                           | not yet implemented |
+| `jiji services prune`    | Clean up old images                       | not yet implemented |
+| `jiji proxy logs`        | View kamal-proxy logs                     | not yet implemented |
 | `jiji server setup`      | Install container runtime and private network | Rust |
-| `jiji server exec`       | Execute commands on servers               | not yet ported |
-| `jiji server teardown`   | Remove all jiji components from servers   | not yet ported |
-| `jiji registry setup`    | Setup container registry                  | not yet ported |
+| `jiji server exec`       | Execute commands on servers               | not yet implemented |
+| `jiji server teardown`   | Remove all jiji components from servers   | Rust (`--engine` not yet implemented) |
+| `jiji registry setup`    | Setup container registry                  | not yet implemented |
 | `jiji network plan`      | Print the deterministic private network plan | Rust |
 | `jiji network setup`     | Install, update, or repair the private network | Rust |
-| `jiji audit`              | Show deployment audit trail                | not yet ported |
-| `jiji lock`               | Manage deployment locks                    | not yet ported |
-| `jiji secrets print`     | Print resolved secrets for debugging       | not yet ported |
+| `jiji audit`              | Show deployment audit trail                | not yet implemented |
+| `jiji lock`               | Manage deployment locks                    | not yet implemented |
+| `jiji secrets print`     | Print resolved secrets for debugging       | not yet implemented |
 
 ### Global Options
 
@@ -101,9 +106,9 @@ servers:
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # `image:` must already be published -- `jiji deploy --build` is not
+    # implemented yet.
+    image: ghcr.io/yourname/myapp-web:latest
     hosts:
       - server1
       - server2
@@ -127,12 +132,15 @@ complete configuration reference (also the template `jiji init` writes).
 
 ## Documentation
 
-Detailed guides in [docs/](docs/):
+Detailed guides in [docs/](docs/), see [docs/README.md](docs/README.md) for
+the full index: architecture, configuration reference, network reference
+(WireGuard/DNS), deployment guide, and troubleshooting.
 
 ## Development
 
-This is a Cargo workspace with four crates in `crates/`: `jiji-core`,
-`jiji-tui`, `jiji-config`, `jiji-cli` (binary name `jiji`).
+This is a Cargo workspace with six crates in `crates/`: `jiji-core`,
+`jiji-tui`, `jiji-config`, `jiji-network`, `jiji-ssh`, `jiji-cli` (binary name
+`jiji`, plus a `jiji_dev` binary for local iteration).
 
 ```bash
 # Run the CLI

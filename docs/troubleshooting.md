@@ -432,16 +432,17 @@ No recent handshake times
 
 2. **Verify firewall allows WireGuard:**
    ```bash
-   # Allow UDP 31820
-   jiji server exec "sudo ufw allow 31820/udp"
+   # Allow UDP 51820 between configured server public IPs
+   jiji server exec "sudo ufw allow 51820/udp"
 
    # Verify rule
-   jiji server exec "sudo ufw status | grep 31820"
+   jiji server exec "sudo ufw status | grep 51820"
    ```
 
-3. **Check network status:**
+3. **Inspect and repair the compiled network:**
    ```bash
-   jiji network status
+   jiji network plan
+   jiji network setup
    ```
 
 4. **Restart WireGuard:**
@@ -477,10 +478,8 @@ ping: api.jiji: Name or service not known
 
 3. **Verify DNS configuration:**
    ```bash
-   # Check daemon DNS config
-   jiji server exec "cat /etc/docker/daemon.json"
-
-   # Should include DNS servers
+   jiji server exec "readlink -f /etc/jiji/network/dns-current"
+   jiji server exec "dnsmasq --test --conf-file=/etc/jiji/network/dns-current/dns.conf"
    ```
 
 4. **Test DNS resolution:**
@@ -489,9 +488,9 @@ ping: api.jiji: Name or service not known
    jiji server exec "docker exec <container> nslookup api.jiji"
    ```
 
-5. **Check Corrosion:**
+5. **Repair compiled networking:**
    ```bash
-   jiji server exec "sudo systemctl status jiji-corrosion"
+   jiji network setup
    ```
 
 ### Container Can't Reach Other Containers
@@ -859,7 +858,7 @@ OOM (Out of Memory) errors
 # Global verbose flag
 jiji --verbose deploy
 jiji --verbose build
-jiji --verbose network status
+jiji --verbose network setup
 
 # Shows detailed SSH operations, command execution, etc.
 ```
@@ -899,14 +898,15 @@ jiji server exec "bash" --interactive --hosts server1.example.com
 ### Network Diagnostics
 
 ```bash
-# Check network status
-jiji network status
+# Inspect and repair network state
+jiji network plan
+jiji network setup
 
 # WireGuard status
 jiji server exec "sudo wg show jiji0"
 
-# DNS test
-jiji server exec "dig @10.210.0.1 api.jiji"
+# DNS test from a managed container
+jiji server exec "docker exec <container> getent hosts <project>-api.jiji"
 
 # Routing table
 jiji server exec "ip route show | grep jiji0"

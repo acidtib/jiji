@@ -1,171 +1,102 @@
 # Jiji Private Network Reference
 
-Quick reference for Jiji's private networking features.
+Jiji creates a coordinator-free private network between configured servers.
+WireGuard carries encrypted host-to-host traffic, each host owns a routed
+container subnet, dnsmasq serves compiled `.jiji` records, and nftables maps
+stable service VIPs to active container backends.
 
-## Overview
+Corrosion and the former reconciliation daemon are not part of this
+architecture.
 
-Jiji creates a secure mesh network between servers using:
-
-- **WireGuard** - Encrypted VPN tunnels between servers
-- **Corrosion** - Distributed CRDT database for service discovery
-- **jiji-dns** - DNS server with real-time Corrosion subscriptions
-
-## Network Commands
+## Commands
 
 ```bash
-# View network topology and status
-jiji network status
+# Print the deterministic plan without changing hosts
+jiji network plan
 
-# Show DNS records for all services
-jiji network dns
+# Install, update, or repair the complete network
+jiji network setup
 
-# Inspect a specific container
-jiji network inspect --container <id>
-
-# Garbage collect stale records
-jiji network gc              # Dry run (default)
-jiji network gc --force      # Actually delete
-
-# Database operations
-jiji network db stats        # Show database statistics
-jiji network db query "SQL"  # Execute raw SQL query
-
-# Tear down network infrastructure
-jiji network teardown
+# The full server setup includes the same network workflow
+jiji server setup
 ```
 
-## IP Allocation
+`--hosts` limits which hosts are changed, but planning always uses the complete
+configured topology.
 
-```
-Cluster CIDR: 10.210.0.0/16 (configurable)
-├── Server 0: 10.210.0.0/24
-│   ├── WireGuard IP: 10.210.0.1
-│   └── Containers: 10.210.0.2 - 10.210.0.254
-├── Server 1: 10.210.1.0/24
-│   ├── WireGuard IP: 10.210.1.1
-│   └── Containers: 10.210.1.2 - 10.210.1.254
-└── Server N: 10.210.N.0/24 (up to 255 servers)
-```
-
-## DNS Resolution
-
-### Service Names
-
-Format: `<project>-<service>.<domain>`
-
-| Pattern                               | Example                  | Description                        |
-| ------------------------------------- | ------------------------ | ---------------------------------- |
-| `{project}-{service}.jiji`            | `myapp-api.jiji`         | All healthy containers for service |
-| `{project}-{service}-{instance}.jiji` | `myapp-api-primary.jiji` | Specific instance                  |
-
-### Resolution Flow
-
-```
-Container queries "myapp-api.jiji"
-  -> jiji-dns (port 53 on WireGuard IP)
-  -> Corrosion subscription (real-time container data)
-  -> Returns healthy container IPs
-  -> Client-side load balancing
-```
-
-Non-`.jiji` queries are forwarded to system resolvers.
-
-## Service Files
-
-| Component          | Location                          |
-| ------------------ | --------------------------------- |
-| WireGuard config   | `/etc/wireguard/jiji0.conf`       |
-| WireGuard service  | `wg-quick@jiji0.service`          |
-| Corrosion config   | `/opt/jiji/corrosion/config.toml` |
-| Corrosion database | `/opt/jiji/corrosion/state.db`    |
-| Corrosion service  | `jiji-corrosion.service`          |
-| jiji-dns binary    | `/opt/jiji/dns/jiji-dns`          |
-| jiji-dns service   | `jiji-dns.service`                |
-
-### Daemon DNS Configuration
-
-Docker: `/etc/docker/daemon.json`
-
-```json
-{
-  "dns": ["10.210.0.1"],
-  "dns-search": ["jiji"]
-}
-```
-
-Podman: `/etc/containers/containers.conf`
-
-```ini
-[network]
-dns_servers = ["10.210.0.1"]
-dns_searches = ["jiji"]
-```
-
-## Verification Commands
-
-```bash
-# WireGuard status
-sudo wg show jiji0
-
-# Check peer connectivity
-sudo wg show jiji0 | grep "latest handshake"
-
-# Test DNS resolution
-dig @10.210.0.1 myapp-api.jiji
-
-# View jiji-dns logs
-journalctl -u jiji-dns -f
-
-# View Corrosion logs
-journalctl -u jiji-corrosion -f
-
-# Check container DNS config
-docker exec <container> cat /etc/resolv.conf
-
-# Test cross-server connectivity
-docker exec <container> ping 10.210.1.10
-```
-
-## Firewall Rules
-
-Required ports:
-
-| Port  | Protocol | Purpose          |
-| ----- | -------- | ---------------- |
-| 31820 | UDP      | WireGuard tunnel |
-| 31280 | TCP      | Corrosion gossip |
-
-```bash
-# UFW examples
-ufw allow 31820/udp
-ufw allow 31280/tcp
-```
-
-## Troubleshooting
-
-| Issue                      | Solution                                |
-| -------------------------- | --------------------------------------- |
-| No peer handshakes         | Check firewall allows UDP 31820         |
-| DNS not resolving          | Check `systemctl status jiji-dns`       |
-| Service names not working  | Check daemon DNS config                 |
-| Stale DNS records          | Run `jiji network gc --force`           |
-| Container can't ping peers | Verify routes: `ip route \| grep jiji0` |
-
-## Configuration
-
-In `.jiji/deploy.yml`:
+## Default address ranges
 
 ```yaml
 network:
   enabled: true
-  cluster_cidr: "10.210.0.0/16" # Optional, this is default
+  management_cidr: 198.18.0.0/16
+  container_cidr: 100.64.0.0/10
+  host_prefix: 21
 ```
 
-**Note:** The service domain is always `jiji` and cannot be changed. All
-services are accessible via `{project}-{service}.jiji` DNS names.
+Management addresses and per-host container subnets are deterministic. Each
+service endpoint receives a stable VIP plus backend addresses A and B.
+Containers use the inactive backend during replacement. After health checks
+pass, jiji atomically moves the VIP to that backend.
 
-## Limits
+## DNS
 
-- Max servers: 255 (with /16 cluster CIDR)
-- Max containers per server: 253
-- DNS TTL: 60 seconds (configurable in jiji-dns)
+The aggregate name `{project}-{service}.jiji` resolves to the stable VIPs for
+all configured replicas. The name `{project}-{service}-{server}.jiji` resolves
+only to that server replica's stable VIP. Both forms are compiled from
+`deploy.yml`. DNS contains desired topology, not runtime health state.
+
+Containers are started with the local jiji resolver, the `jiji` search domain,
+and `ndots:1`. Queries outside `.jiji` are forwarded through the host resolver.
+
+## Installed files
+
+| Component | Location |
+| --- | --- |
+| Selected network generation | `/etc/jiji/network/current` |
+| Retained network generations | `/etc/jiji/network/generations/` |
+| WireGuard config | `/etc/wireguard/jiji0.conf` |
+| Selected DNS generation | `/etc/jiji/network/dns-current` |
+| Retained DNS generations | `/etc/jiji/network/dns-generations/` |
+| Selected service VIP mapping | `/etc/jiji/network/service-nat-current` |
+| WireGuard service | `wg-quick@jiji0.service` |
+| Bridge restoration service | `jiji-network-restore.service` |
+| VIP restoration service | `jiji-service-nat.service` |
+| Static DNS service | `jiji-dns.service` |
+
+## Required firewall access
+
+Allow UDP port `51820` between the configured server public IP addresses.
+Container subnets are routed only through WireGuard. Corrosion gossip and API
+ports are not used.
+
+## Verification
+
+```bash
+sudo wg show jiji0
+ip route show dev jiji0
+systemctl status jiji-network-restore jiji-service-nat jiji-dns
+readlink -f /etc/jiji/network/current
+readlink -f /etc/jiji/network/dns-current
+docker exec <container> getent hosts <project>-<service>.jiji
+```
+
+Use `podman exec` instead of `docker exec` when Podman is selected.
+
+## Reboot behavior
+
+WireGuard and the jiji systemd units restore the selected local generations.
+Containers restart with their assigned backend addresses according to their
+engine restart policy. No coordination service, SSH connection, jiji command,
+or redeployment is required when topology has not changed.
+
+Podman keeps its bridge only while a container is attached. Jiji installs a
+minimal local `jiji-network-anchor` container at reserved address `.3` and
+orders `podman-restart.service` after bridge restoration. The anchor uses a
+local static BusyBox rootfs and does not pull an image.
+
+## Repair
+
+Run `jiji network setup`. It stages and validates a complete generation on
+every selected host before activation. If activation or verification fails,
+all attempted hosts return to their previous retained generations.
