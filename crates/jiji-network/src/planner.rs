@@ -93,6 +93,10 @@ pub struct ServerPlan {
     pub container_subnet: Ipv4Cidr,
     pub bridge_gateway: Ipv4Addr,
     pub dns_address: Ipv4Addr,
+    /// Fixed address for the kamal-proxy container, reserved below `FIRST_CONTAINER_OFFSET` so it
+    /// can never collide with a service endpoint address, and pinned explicitly (rather than left
+    /// to IPAM auto-assignment) so it can never collide with `dns_address` either.
+    pub proxy_address: Ipv4Addr,
     pub wireguard_port: u16,
     pub peers: Vec<WireGuardPeerPlan>,
     pub routes: Vec<RoutePlan>,
@@ -214,6 +218,12 @@ impl NetworkPlanner {
                     dns_address: container_subnet
                         .address(2)
                         .expect("a /20 has a DNS address"),
+                    // Offset 3 is reserved by the Podman bridge's `jiji-network-anchor` keepalive
+                    // container (`BridgeProvisioner::render_podman_network`); use the next offset
+                    // so the two reservations can never collide.
+                    proxy_address: container_subnet
+                        .address(4)
+                        .expect("a /20 has a proxy address"),
                     wireguard_port: WIREGUARD_PORT,
                     peers: Vec::new(),
                     routes: Vec::new(),
@@ -689,6 +699,7 @@ network:
                 assert!(offset < server.container_subnet.address_count() - 1);
                 assert_ne!(address, server.bridge_gateway);
                 assert_ne!(address, server.dns_address);
+                assert_ne!(address, server.proxy_address);
                 assert!(
                     all_addresses.insert((endpoint.server.clone(), address)),
                     "endpoint addresses must be unique per server"

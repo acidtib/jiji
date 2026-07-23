@@ -137,6 +137,8 @@ fi
     }
 
     fn render_podman_network(&self) -> String {
+        // Offset 3. `ServerPlan::proxy_address` (offset 4) is reserved right after this one so the
+        // two addresses can never collide; keep them in sync if either offset ever changes.
         let anchor_address = self
             .server
             .container_subnet

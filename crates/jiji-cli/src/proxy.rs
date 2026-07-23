@@ -15,14 +15,22 @@ pub enum ProxyStatus {
     Started,
 }
 
+/// The private-network addresses kamal-proxy needs. Always both-or-neither: absent when
+/// `network.enabled` is false, present (and pinned) otherwise.
+#[derive(Debug, Clone, Copy)]
+pub struct ProxyNetwork {
+    pub dns_address: Ipv4Addr,
+    pub proxy_address: Ipv4Addr,
+}
+
 pub async fn ensure_proxy(
     session: &SshSession,
     engine: ContainerEngine,
-    dns_address: Option<Ipv4Addr>,
+    network: Option<ProxyNetwork>,
 ) -> anyhow::Result<ProxyStatus> {
     ensure_network(session, engine).await?;
 
-    let fingerprint = config_fingerprint(engine, dns_address);
+    let fingerprint = config_fingerprint(engine, network);
     if is_current_and_running(session, engine, &fingerprint).await? {
         return Ok(ProxyStatus::AlreadyRunning);
     }
@@ -52,7 +60,7 @@ pub async fn ensure_proxy(
         );
     }
 
-    let command = run_command(engine, dns_address, &fingerprint);
+    let command = run_command(engine, network, &fingerprint);
     run_required(session, &command, "start kamal-proxy").await?;
     wait_until_running(session, engine).await?;
 
@@ -93,11 +101,14 @@ async fn is_current_and_running(
 
 fn run_command(
     engine: ContainerEngine,
-    dns_address: Option<Ipv4Addr>,
+    network: Option<ProxyNetwork>,
     fingerprint: &str,
 ) -> String {
-    let dns = dns_address.map_or_else(String::new, |address| {
-        format!(" --dns {address} --dns-search jiji --dns-option ndots:1")
+    let network_args = network.map_or_else(String::new, |network| {
+        format!(
+            " --ip {} --dns {} --dns-search jiji --dns-option ndots:1",
+            network.proxy_address, network.dns_address
+        )
     });
     let runtime = match engine {
         ContainerEngine::Docker => {
@@ -116,7 +127,7 @@ fn run_command(
     };
 
     format!(
-        "{engine} run --name {CONTAINER_NAME} --network jiji{dns} --detach \
+        "{engine} run --name {CONTAINER_NAME} --network jiji{network_args} --detach \
          --restart unless-stopped --label jiji.managed=true \
          --label jiji.proxy-config={fingerprint} \
          --volume {CONFIG_VOLUME}:/home/kamal-proxy/.config/kamal-proxy \
@@ -127,10 +138,13 @@ fn run_command(
     )
 }
 
-fn config_fingerprint(engine: ContainerEngine, dns_address: Option<Ipv4Addr>) -> String {
+fn config_fingerprint(engine: ContainerEngine, network: Option<ProxyNetwork>) -> String {
     format!(
-        "v1-{engine}-{}",
-        dns_address.map_or_else(|| "none".to_string(), |address| address.to_string())
+        "v2-{engine}-{}",
+        network.map_or_else(
+            || "none".to_string(),
+            |network| format!("{}-{}", network.proxy_address, network.dns_address)
+        )
     )
 }
 
@@ -178,27 +192,42 @@ fn is_missing_container_error(stderr: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn network(proxy_address: &str, dns_address: &str) -> ProxyNetwork {
+        ProxyNetwork {
+            proxy_address: proxy_address.parse().unwrap(),
+            dns_address: dns_address.parse().unwrap(),
+        }
+    }
+
     #[test]
-    fn docker_run_uses_the_fork_and_local_dns() {
+    fn docker_run_pins_the_proxy_address_and_uses_local_dns() {
         let command = run_command(
             ContainerEngine::Docker,
-            Some("10.0.16.2".parse().unwrap()),
-            "v1-docker-10.0.16.2",
+            Some(network("10.0.16.3", "10.0.16.2")),
+            "v2-docker-10.0.16.3-10.0.16.2",
         );
 
         assert!(command.contains("ghcr.io/acidtib/kamal-proxy:jiji"));
-        assert!(command.contains("--network jiji --dns 10.0.16.2"));
+        assert!(command.contains("--network jiji --ip 10.0.16.3 --dns 10.0.16.2"));
         assert!(command.contains("--publish 80:8080 --publish 443:8443"));
         assert!(command.contains("/var/run/docker.sock:/var/run/docker.sock"));
         assert!(command.contains("--restart unless-stopped"));
     }
 
     #[test]
+    fn no_network_omits_ip_and_dns_flags() {
+        let command = run_command(ContainerEngine::Docker, None, "v2-docker-none");
+        assert!(command.contains("--network jiji --detach"));
+        assert!(!command.contains("--ip"));
+        assert!(!command.contains("--dns"));
+    }
+
+    #[test]
     fn podman_run_has_command_health_check_access() {
         let command = run_command(
             ContainerEngine::Podman,
-            Some("10.0.32.2".parse().unwrap()),
-            "v1-podman-10.0.32.2",
+            Some(network("10.0.32.3", "10.0.32.2")),
+            "v2-podman-10.0.32.3-10.0.32.2",
         );
 
         assert!(command.contains("--privileged --user root --pid=host --cgroupns=host"));

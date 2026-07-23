@@ -201,10 +201,12 @@ pub async fn run(
             if !serves_proxy {
                 continue;
             }
-            let dns_address = Some(plan.servers[server_name].dns_address);
-            if let Err(error) =
-                proxy::ensure_proxy(session, config.builder.engine, dns_address).await
-            {
+            let server_plan = &plan.servers[server_name];
+            let network = Some(proxy::ProxyNetwork {
+                dns_address: server_plan.dns_address,
+                proxy_address: server_plan.proxy_address,
+            });
+            if let Err(error) = proxy::ensure_proxy(session, config.builder.engine, network).await {
                 close_all(&sessions).await;
                 return Err(error.context(format!("kamal-proxy is not ready on '{server_name}'")));
             }
