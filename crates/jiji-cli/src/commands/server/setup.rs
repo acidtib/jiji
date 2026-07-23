@@ -1,9 +1,11 @@
-use jiji_config::{load_config, validate_config, NamedServer};
+use jiji_config::{load_config, validate_config, Config, NamedServer, Ssh};
+use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::network;
 use crate::engine::{self, EngineStatus};
+use crate::proxy::{self, ProxyStatus};
 use crate::ssh_adapter;
 
 pub async fn run(
@@ -131,7 +133,72 @@ pub async fn run(
             )
         })?;
 
+    setup_proxies(&config, &servers, &ssh).await?;
+
     Ui::success("\nAll servers are ready.");
+    Ok(())
+}
+
+async fn setup_proxies(
+    config: &Config,
+    servers: &[(String, NamedServer)],
+    ssh: &Ssh,
+) -> anyhow::Result<()> {
+    let plan = NetworkPlanner::new()
+        .plan(config)
+        .map_err(|error| anyhow::anyhow!("Could not build the proxy network plan: {error}"))?;
+    let dns_enabled = plan.enabled;
+
+    Ui::section("Configuring Kamal Proxy:");
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let mut connect_operations = Vec::with_capacity(servers.len());
+    for (name, server) in servers {
+        connect_operations.push(ssh_adapter::connect_options(name, server, ssh)?);
+    }
+    let operations: Vec<_> = connect_operations
+        .into_iter()
+        .map(|options| move || async move { SshSession::connect(&options).await })
+        .collect();
+    let connections = pool.execute_concurrent(operations).await;
+
+    let mut failures = Vec::new();
+    for ((name, _), connection) in servers.iter().zip(connections) {
+        let session = match connection {
+            Ok(session) => session,
+            Err(error) => {
+                failures.push((name.clone(), error.to_string()));
+                continue;
+            }
+        };
+        let dns_address = dns_enabled.then_some(plan.servers[name].dns_address);
+        match proxy::ensure_proxy(&session, config.builder.engine, dns_address).await {
+            Ok(ProxyStatus::AlreadyRunning) => {
+                Ui::say(
+                    &format!("{name}: kamal-proxy already configured and running"),
+                    1,
+                );
+            }
+            Ok(ProxyStatus::Started) => {
+                Ui::say(&format!("{name}: kamal-proxy configured and running"), 1);
+            }
+            Err(error) => {
+                Ui::error(&format!("{name}: {error}"));
+                failures.push((name.clone(), error.to_string()));
+            }
+        }
+        session.close().await;
+    }
+
+    if !failures.is_empty() {
+        for (name, error) in &failures {
+            Ui::say(&format!("{name}: {error}"), 1);
+        }
+        anyhow::bail!(
+            "Kamal proxy setup failed for {} server(s). Fix the reported hosts and retry `jiji server setup`.",
+            failures.len()
+        );
+    }
+
     Ok(())
 }
 

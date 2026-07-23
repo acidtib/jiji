@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod engine;
+mod proxy;
 pub mod service_network;
 mod ssh_adapter;
 

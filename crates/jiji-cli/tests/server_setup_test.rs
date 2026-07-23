@@ -92,6 +92,8 @@ impl server::Handler for TestServer {
         // doesn't care about individually) succeed with empty output by default.
         let response = if command.contains("if test -L /etc/jiji/network/current") {
             success("-\n-\n")
+        } else if command.contains("inspect kamal-proxy --format '{{.State.Status}}'") {
+            success("running\n")
         } else {
             self.responses
                 .get(&command)
@@ -245,6 +247,10 @@ async fn reports_an_already_installed_engine() {
     assert!(stdout.contains("connected"), "stdout: {stdout}");
     assert!(
         stdout.contains("docker already installed (Docker version 99.0.0, build abcdef)"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kamal-proxy configured and running"),
         "stdout: {stdout}"
     );
 }
