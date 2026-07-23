@@ -95,25 +95,28 @@ VIP address, up front, from config alone. There is no rename step.
 Flow (`crates/jiji-cli/src/deploy_transaction.rs`, orchestrated by
 `commands/deploy.rs`):
 
-1. `network_guard::verify_generation` — refuse to deploy against a stale
-   network install.
-2. `service_network::prepare_cutover` — read the currently active slot from
+1. Compare the installed network generation across every configured server.
+   If any host is stale, transactionally reconcile the full cluster before
+   changing images, proxy routes, or service containers.
+2. `network_guard::verify_generation` — recheck the selected endpoint's host
+   immediately before its service transaction as a final race-condition guard.
+3. `service_network::prepare_cutover` — read the currently active slot from
    `/etc/jiji/network/service-nat-current/active-slots`; the candidate always
    goes on the *other* (inactive) slot.
-3. Stage mounts (`mounts.rs`) and environment (`env_resolution.rs`, via a
+4. Stage mounts (`mounts.rs`) and environment (`env_resolution.rs`, via a
    remote `--env-file`, never inline `-e KEY=VALUE`, so secrets never appear
    in a logged command).
-4. Create and start the candidate container
+5. Create and start the candidate container
    (`container_runtime::build_run` + `container_ops::create_and_start`) at
    its own fixed backend address — the VIP still points at the old backend.
-5. Health-check the candidate directly (`health_check.rs`), never through the
+6. Health-check the candidate directly (`health_check.rs`), never through the
    VIP.
-6. `service_network::commit_after_health_check` re-runs the same health
+7. `service_network::commit_after_health_check` re-runs the same health
    command as the authoritative gate, then flips the VIP (nftables DNAT) to
    the new backend.
-7. Activate/verify kamal-proxy routes (`proxy_routes.rs`); roll back the VIP
+8. Activate/verify kamal-proxy routes (`proxy_routes.rs`); roll back the VIP
    and remove the candidate if that fails.
-8. Stop and remove the previous slot's container.
+9. Stop and remove the previous slot's container.
 
 If health checks fail, the previous container is never touched and keeps
 serving traffic through the still-unflipped VIP.

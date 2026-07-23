@@ -75,20 +75,56 @@ pub async fn run(
     apply(&config, &plan, &target_names).await
 }
 
+pub(crate) async fn reconcile_for_deploy(
+    config: &Config,
+    plan: &NetworkPlan,
+) -> anyhow::Result<()> {
+    let target_names = plan.servers.keys().cloned().collect::<BTreeSet<_>>();
+    let hosts = connect_all(config).await?;
+    let mut stale_hosts = Vec::new();
+    for host in &hosts {
+        match crate::network_guard::generation_is_current(&host.session, plan).await {
+            Ok(true) => {}
+            Ok(false) => stale_hosts.push(host.name.clone()),
+            Err(error) => {
+                close_all(&hosts).await;
+                return Err(error).with_context(|| {
+                    format!(
+                        "Could not inspect the installed network generation on '{}'. Restore SSH access and retry `jiji deploy`.",
+                        host.name
+                    )
+                });
+            }
+        }
+    }
+
+    if stale_hosts.is_empty() {
+        close_all(&hosts).await;
+        return Ok(());
+    }
+
+    Ui::section("Network Reconciliation:");
+    Ui::say(
+        &format!(
+            "Network topology changed; applying generation {} to all configured servers.",
+            &plan.generation[..12]
+        ),
+        1,
+    );
+    print_network_requirements();
+    let result = apply_connected(config, plan, &target_names, &hosts).await;
+    close_all(&hosts).await;
+    result.context(format!(
+        "Automatic network reconciliation failed for stale host(s): {}. Fix the reported network error and retry `jiji deploy`.",
+        stale_hosts.join(", ")
+    ))
+}
+
 async fn apply(
     config: &Config,
     plan: &NetworkPlan,
     target_names: &BTreeSet<String>,
 ) -> anyhow::Result<()> {
-    if config.servers.is_empty() {
-        anyhow::bail!("No servers are configured. Add at least one server and retry.");
-    }
-    let ssh = config.ssh.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No `ssh:` section is configured. Add at least `ssh.user:` before running network setup."
-        )
-    })?;
-
     Ui::say(
         &format!(
             "Applying generation {} to: {}",
@@ -97,14 +133,22 @@ async fn apply(
         ),
         1,
     );
-    Ui::say(
-        "All configured servers must be reachable during initial WireGuard key enrollment.",
-        1,
-    );
-    Ui::say(
-        "WireGuard UDP port 51820 must be allowed between the configured server public IPs.",
-        1,
-    );
+    print_network_requirements();
+    let hosts = connect_all(config).await?;
+    let result = apply_connected(config, plan, target_names, &hosts).await;
+    close_all(&hosts).await;
+    result
+}
+
+async fn connect_all(config: &Config) -> anyhow::Result<Vec<ConnectedHost>> {
+    if config.servers.is_empty() {
+        anyhow::bail!("No servers are configured. Add at least one server and retry.");
+    }
+    let ssh = config.ssh.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No `ssh:` section is configured. Add at least `ssh.user:` before running network setup."
+        )
+    })?;
 
     let mut configured_servers: Vec<(String, NamedServer)> =
         config.servers.clone().into_iter().collect();
@@ -145,10 +189,18 @@ async fn apply(
             "Could not reach every configured server. Restore SSH access and retry network setup."
         );
     }
+    Ok(hosts)
+}
 
-    let result = apply_connected(config, plan, target_names, &hosts).await;
-    close_all(&hosts).await;
-    result
+fn print_network_requirements() {
+    Ui::say(
+        "All configured servers must be reachable during initial WireGuard key enrollment.",
+        1,
+    );
+    Ui::say(
+        "WireGuard UDP port 51820 must be allowed between the configured server public IPs.",
+        1,
+    );
 }
 
 async fn apply_connected(

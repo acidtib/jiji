@@ -109,9 +109,17 @@ impl server::Handler for TestServer {
             .expect("received mutex poisoned")
             .push(command.clone());
 
+        let occurrence = self
+            .received
+            .lock()
+            .expect("received mutex poisoned")
+            .iter()
+            .filter(|received| *received == &command)
+            .count();
         let response = self
             .responses
-            .get(&command)
+            .get(&format!("{command}#{occurrence}"))
+            .or_else(|| self.responses.get(&command))
             .cloned()
             .unwrap_or_else(|| success(""));
 
@@ -240,6 +248,9 @@ fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
 const ACTIVE_SLOTS_PATH: &str = "cat /etc/jiji/network/service-nat-current/active-slots";
 const GENERATION_PATH: &str = "cat /etc/jiji/network/generation 2>/dev/null || true";
 const MKTEMP_COMMAND: &str = "mktemp -d /etc/jiji/network/service-nat-generations/cutover.XXXXXX";
+const PUBLIC_KEY_COMMAND: &str =
+    "test -s /etc/jiji/network/public.key && cat /etc/jiji/network/public.key";
+const CAPTURE_GENERATIONS_COMMAND: &str = "set -eu; if test -L /etc/jiji/network/current; then readlink -f /etc/jiji/network/current; else printf '%s\\n' -; fi; if test -L /etc/jiji/network/dns-current; then readlink -f /etc/jiji/network/dns-current; else printf '%s\\n' -; fi";
 
 fn inspect_status_command(engine: &str, name: &str) -> String {
     format!("{engine} inspect {name} --format '{{{{.State.Status}}}}'")
@@ -254,26 +265,61 @@ fn image_inspect_command(engine: &str, image: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn network_generation_mismatch_blocks_before_any_container_commands() {
+async fn network_generation_mismatch_triggers_reconciliation_before_container_commands() {
     let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
     let mut responses = HashMap::new();
     responses.insert(GENERATION_PATH.to_string(), success("stale-generation\n"));
+    responses.insert(
+        format!("{GENERATION_PATH}#2"),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert("id -u".to_string(), success("0\n"));
+    responses.insert(
+        PUBLIC_KEY_COMMAND.to_string(),
+        success("test-wireguard-public-key\n"),
+    );
+    responses.insert(CAPTURE_GENERATIONS_COMMAND.to_string(), success("-\n-\n"));
+    responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
+    responses.insert(
+        image_inspect_command("docker", "example/web:latest"),
+        success(""),
+    );
+    responses.insert(
+        readiness_health_command("docker", "demo-web-a"),
+        success(""),
+    );
+    responses.insert(
+        MKTEMP_COMMAND.to_string(),
+        success("/etc/jiji/network/service-nat-generations/cutover.auto123\n"),
+    );
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
 
     let output = run_jiji_deploy(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(!output.status.success(), "expected non-zero exit");
-    assert!(stderr.contains("network generation"), "stderr: {stderr}");
-    assert!(stderr.contains("stale-generation"), "stderr: {stderr}");
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.contains("Network topology changed"),
+        "stdout: {stdout}"
+    );
 
     let received = harness.received.lock().unwrap().clone();
     assert!(received.contains(&GENERATION_PATH.to_string()));
+    let activation = received
+        .iter()
+        .position(|command| command.contains("systemctl restart jiji-dns.service"))
+        .expect("network generation should be activated");
+    let container = received
+        .iter()
+        .position(|command| command.contains("run --name"))
+        .expect("container should be created");
     assert!(
-        !received.iter().any(|c| c.contains("run --name")),
-        "no container should have been created: {received:?}"
+        activation < container,
+        "network must activate first: {received:?}"
     );
 }
 

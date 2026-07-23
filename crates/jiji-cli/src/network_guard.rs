@@ -9,9 +9,17 @@ fn generation_mismatch_message(server_name: &str, installed: &str, expected: &st
     )
 }
 
-/// `deploy` must never repair the host network implicitly -- network repair stays owned by
-/// `server setup`/`network setup`. This only compares the installed generation (written by
-/// `network/setup.rs::activate_host` at the same path) against the locally compiled plan.
+pub async fn generation_is_current(
+    session: &SshSession,
+    plan: &NetworkPlan,
+) -> anyhow::Result<bool> {
+    let command = format!("cat {NETWORK_GENERATION_PATH} 2>/dev/null || true");
+    let result = session.execute(&command).await?;
+    Ok(result.stdout.trim() == plan.generation)
+}
+
+/// This remains as a final defense against changing the network between reconciliation and
+/// deploying an endpoint.
 pub async fn verify_generation(
     session: &SshSession,
     plan: &NetworkPlan,
