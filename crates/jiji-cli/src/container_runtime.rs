@@ -65,9 +65,16 @@ pub fn render_ports(ports: &[String]) -> Vec<String> {
     args
 }
 
-/// A bind mount (source starts with `/` or `.`) passes through unchanged. A named volume gets
-/// prefixed with the service name (not the project name) so volumes from different services
-/// never collide: `web_storage:/data` -> `-v myservice-web_storage:/data`.
+/// A bind mount source starts with `/` or `.`; anything else names a named (engine-managed)
+/// volume. Shared with `crate::volume_teardown` so candidate-name computation there can never
+/// drift from what deploy actually renders here.
+pub fn is_named_volume_source(source: &str) -> bool {
+    !(source.starts_with('/') || source.starts_with('.'))
+}
+
+/// A bind mount passes through unchanged. A named volume gets prefixed with the service name (not
+/// the project name) so volumes from different services never collide: `web_storage:/data` ->
+/// `-v myservice-web_storage:/data`.
 pub fn render_volumes(volumes: &[String], service_name: &str) -> Vec<String> {
     let mut args = Vec::with_capacity(volumes.len() * 2);
     for volume in volumes {
@@ -77,10 +84,10 @@ pub fn render_volumes(volumes: &[String], service_name: &str) -> Vec<String> {
             continue;
         };
         let (source, rest) = volume.split_at(colon);
-        if source.starts_with('/') || source.starts_with('.') {
-            args.push(volume.clone());
-        } else {
+        if is_named_volume_source(source) {
             args.push(format!("{service_name}-{source}{rest}"));
+        } else {
+            args.push(volume.clone());
         }
     }
     args
@@ -254,6 +261,15 @@ mod tests {
             rendered,
             vec!["-v", "/data:/data", "-v", "./relative:/data"]
         );
+    }
+
+    #[test]
+    fn is_named_volume_source_agrees_with_render_volumes_rule() {
+        assert!(!is_named_volume_source("/data"));
+        assert!(!is_named_volume_source("./relative"));
+        assert!(!is_named_volume_source("../parent"));
+        assert!(is_named_volume_source("web_storage"));
+        assert!(is_named_volume_source("justaname"));
     }
 
     #[test]

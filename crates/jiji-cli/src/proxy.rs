@@ -4,9 +4,12 @@ use std::time::Duration;
 use jiji_config::ContainerEngine;
 use jiji_ssh::SshSession;
 
-const CONTAINER_NAME: &str = "kamal-proxy";
+pub(crate) const CONTAINER_NAME: &str = "kamal-proxy";
 const IMAGE: &str = "ghcr.io/acidtib/kamal-proxy:jiji";
-const CONFIG_VOLUME: &str = "kamal-proxy-config";
+// `pub(crate)`: reused by `crate::proxy_teardown` to clean these up when kamal-proxy itself is
+// torn down (no project needs it anymore).
+pub(crate) const CONFIG_VOLUME: &str = "kamal-proxy-config";
+pub(crate) const CERTS_DIR: &str = "/etc/jiji/certs";
 const INTERNAL_HTTP_PORT: u16 = 8080;
 const INTERNAL_HTTPS_PORT: u16 = 8443;
 
@@ -37,7 +40,7 @@ pub async fn ensure_proxy(
 
     run_required(
         session,
-        "mkdir -p /etc/jiji/certs",
+        &format!("mkdir -p {CERTS_DIR}"),
         "create certificate directory",
     )
     .await?;
@@ -131,7 +134,7 @@ fn run_command(
          --restart unless-stopped --label jiji.managed=true \
          --label jiji.proxy-config={fingerprint} \
          --volume {CONFIG_VOLUME}:/home/kamal-proxy/.config/kamal-proxy \
-         --volume /etc/jiji/certs:/jiji-certs:ro{runtime} \
+         --volume {CERTS_DIR}:/jiji-certs:ro{runtime} \
          --publish 80:{INTERNAL_HTTP_PORT} --publish 443:{INTERNAL_HTTPS_PORT} \
          {IMAGE} kamal-proxy run --http-port {INTERNAL_HTTP_PORT} \
          --https-port {INTERNAL_HTTPS_PORT}"

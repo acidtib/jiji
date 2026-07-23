@@ -201,6 +201,16 @@ pub fn redacted_summary(resolved: &ResolvedEnvironment) -> Vec<String> {
         .collect()
 }
 
+/// Root of the per-project host-side staging tree (`env/`, and `mounts.rs`'s `files/`/
+/// `directories/`). Intentionally a *relative* path: it resolves against the SSH login's default
+/// working directory (its home directory), matching `stage_env_file` and
+/// `mounts::remote_mount_base`'s own convention. `crate::commands::server::teardown` removes this
+/// whole tree, since it's deploy-generated staging data (including secrets in `stage_env_file`'s
+/// case), not user-facing persistent storage.
+pub fn project_staging_dir(project: &str) -> String {
+    format!(".jiji/{project}")
+}
+
 /// Writes `.jiji/{project}/env/{service}-{server}.env` (mode 0600) on the remote host via the
 /// same stdin-pipe pattern `network/setup.rs::write_staged_file` uses, so no secret value is ever
 /// embedded in a command string. Rejects any value containing a literal newline, since the

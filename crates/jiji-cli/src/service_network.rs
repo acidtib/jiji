@@ -109,6 +109,24 @@ pub async fn rollback_cutover(
     }
 }
 
+/// Clears every active-slot entry belonging to `project` (identity prefix `"{project}:"`),
+/// leaving other projects' mappings on a shared host untouched. The teardown counterpart to
+/// `reconcile_slots`, which trims to the current project's own plan instead.
+pub async fn deactivate_project(
+    session: &SshSession,
+    plan: &NetworkPlan,
+    project: &str,
+) -> Result<(), ServiceRuntimeError> {
+    let mut state = load_active_slots(session).await?;
+    let before = state.render();
+    let prefix = format!("{project}:");
+    state.retain(|identity| !identity.starts_with(&prefix));
+    if state.render() == before {
+        return Ok(());
+    }
+    persist_state(session, plan, &state).await
+}
+
 pub async fn reconcile_slots(
     session: &SshSession,
     plan: &NetworkPlan,
@@ -271,5 +289,27 @@ mod tests {
         state.activate("removed:api:app", BackendSlot::A);
         state.retain(|identity| identity == "demo:web:app");
         assert_eq!(state.render(), "demo:web:app=a\n");
+    }
+
+    #[test]
+    fn deactivate_project_predicate_clears_only_the_matching_prefix() {
+        let mut state = ActiveSlotState::default();
+        state.activate("demo:web:app", BackendSlot::A);
+        state.activate("demo:redis:app", BackendSlot::B);
+        state.activate("other:web:app", BackendSlot::A);
+        let prefix = "demo:".to_string();
+        state.retain(|identity| !identity.starts_with(&prefix));
+        assert_eq!(state.render(), "other:web:app=a\n");
+    }
+
+    #[test]
+    fn deactivate_project_prefix_never_matches_a_similarly_named_project() {
+        // "demo" must not clear "demo-extended:..." -- the trailing ':' in the prefix guards this.
+        let mut state = ActiveSlotState::default();
+        state.activate("demo:web:app", BackendSlot::A);
+        state.activate("demo-extended:web:app", BackendSlot::A);
+        let prefix = "demo:".to_string();
+        state.retain(|identity| !identity.starts_with(&prefix));
+        assert_eq!(state.render(), "demo-extended:web:app=a\n");
     }
 }

@@ -1,3 +1,3 @@
-mod bridge;
+pub(crate) mod bridge;
 pub mod plan;
 pub mod setup;

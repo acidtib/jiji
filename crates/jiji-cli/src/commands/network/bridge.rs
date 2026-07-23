@@ -4,6 +4,10 @@ use anyhow::Context;
 use jiji_config::ContainerEngine;
 use jiji_network::{NetworkPlan, ServerPlan};
 
+/// Podman's bridge-keepalive container (see `render_podman_network`), reused by
+/// `crate::network_teardown` to remove it before removing the `jiji` network itself.
+pub(crate) const NETWORK_ANCHOR_CONTAINER_NAME: &str = "jiji-network-anchor";
+
 pub struct BridgeProvisioner<'a> {
     engine: ContainerEngine,
     plan: &'a NetworkPlan,

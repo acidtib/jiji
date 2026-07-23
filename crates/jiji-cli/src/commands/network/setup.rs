@@ -15,10 +15,11 @@ use sha2::{Digest, Sha256};
 use super::bridge::BridgeProvisioner;
 use crate::ssh_adapter;
 
-const PRIVATE_KEY_PATH: &str = "/etc/jiji/network/private.key";
-const PUBLIC_KEY_PATH: &str = "/etc/jiji/network/public.key";
-const WIREGUARD_CONFIG_PATH: &str = "/etc/wireguard/jiji0.conf";
-const NETWORK_DIR: &str = "/etc/jiji/network";
+// `pub(crate)`: reused as-is by `crate::network_teardown`, the inverse of this module.
+pub(crate) const PRIVATE_KEY_PATH: &str = "/etc/jiji/network/private.key";
+pub(crate) const PUBLIC_KEY_PATH: &str = "/etc/jiji/network/public.key";
+pub(crate) const WIREGUARD_CONFIG_PATH: &str = "/etc/wireguard/jiji0.conf";
+pub(crate) const NETWORK_DIR: &str = "/etc/jiji/network";
 const NETWORK_GENERATIONS: &str = "/etc/jiji/network/generations";
 const NETWORK_CURRENT: &str = "/etc/jiji/network/current";
 const SERVICE_NAT_GENERATIONS: &str = "/etc/jiji/network/service-nat-generations";

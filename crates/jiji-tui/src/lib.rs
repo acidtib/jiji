@@ -1,4 +1,4 @@
-use dialoguer::Confirm;
+use dialoguer::{Confirm, Input};
 use indicatif::{ProgressBar, ProgressStyle};
 use jiji_core::Result;
 use owo_colors::OwoColorize;
@@ -46,6 +46,18 @@ impl Ui {
             .default(default)
             .interact()
             .map_err(|e| jiji_core::JijiError::Other(e.to_string()))
+    }
+
+    /// Requires the user to type `expected` verbatim (exact match, no case/whitespace folding).
+    /// For irreversible multi-host operations where a yes/no prompt is too easy to reflexively
+    /// accept.
+    pub fn confirm_typed(prompt: &str, expected: &str) -> Result<bool> {
+        let input: String = Input::new()
+            .with_prompt(prompt)
+            .allow_empty(true)
+            .interact_text()
+            .map_err(|e| jiji_core::JijiError::Other(e.to_string()))?;
+        Ok(input == expected)
     }
 
     pub fn spinner(message: &str) -> SpinnerGuard {

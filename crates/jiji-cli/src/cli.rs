@@ -102,6 +102,22 @@ pub enum Commands {
 pub enum ServerCommands {
     #[command(about = "Install the container engine and complete private network on each server")]
     Setup,
+    #[command(
+        about = "Remove jiji-managed applications and the private network from selected servers"
+    )]
+    Teardown {
+        #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Also remove jiji-owned named volumes for this project")]
+        volumes: bool,
+        #[arg(
+            long,
+            help = "Uninstall the container engine after teardown (not yet implemented)"
+        )]
+        engine: bool,
+        #[arg(long, help = "Print the teardown plan without changing any host")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
