@@ -11,9 +11,9 @@ pub enum ImageOutcome {
     RetainedInUseBy(Vec<String>),
 }
 
-/// Distinct `image:` references configured for the project's services. There is no build/tag
-/// pipeline (`deploy --build` is stubbed), so an exact string match against configured image
-/// references is the only safe way to identify a candidate -- never a glob against image names.
+/// Distinct `image:` references configured for the project's services. Build-produced tags are
+/// intentionally excluded until retained-image pruning can identify them safely. Never use a glob
+/// against image names here.
 pub fn compute_candidates(config: &Config) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();

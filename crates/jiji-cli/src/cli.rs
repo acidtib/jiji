@@ -81,10 +81,28 @@ pub enum Commands {
     Version,
     #[command(about = "Deploy configured services across their target servers")]
     Deploy {
-        #[arg(long, help = "Build images before deploying (not yet implemented)")]
+        #[arg(long, help = "Build images before deploying")]
         build: bool,
+        #[arg(
+            long,
+            help = "Build without using the cache (only relevant with --build)"
+        )]
+        no_cache: bool,
         #[arg(long, help = "Skip kamal-proxy route activation")]
         skip_proxy: bool,
+    },
+    #[command(about = "Build and push images for services with `build:` configured")]
+    Build {
+        #[arg(long, help = "Build without using the cache")]
+        no_cache: bool,
+        #[arg(long, overrides_with = "no_push", help = "Push built images (default)")]
+        push: bool,
+        #[arg(
+            long,
+            overrides_with = "push",
+            help = "Build without pushing (single-architecture only)"
+        )]
+        no_push: bool,
     },
     #[command(about = "Server management")]
     Server {
@@ -110,11 +128,6 @@ pub enum ServerCommands {
         yes: bool,
         #[arg(long, help = "Also remove jiji-owned named volumes for this project")]
         volumes: bool,
-        #[arg(
-            long,
-            help = "Uninstall the container engine after teardown (not yet implemented)"
-        )]
-        engine: bool,
         #[arg(long, help = "Print the teardown plan without changing any host")]
         dry_run: bool,
     },

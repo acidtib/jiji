@@ -158,9 +158,8 @@ project still has routes) -> VIP/NAT state -> the whole network layer
 (`env_resolution::project_staging_dir`, holds staged `.env` files with
 resolved secrets and uploaded mount content). Ownership discovery is by
 `jiji.managed`/`jiji.project` labels for containers, and config-computed exact
-names (never a glob) for volumes/images/proxy routes. `--engine`
-(whole-engine uninstall) and `-S`/`--services` are explicitly rejected/stubbed
-rather than silently ignored.
+names (never a glob) for volumes/images/proxy routes. `-S`/`--services` is
+explicitly rejected rather than silently ignored.
 
 ### SSH Connection Management
 
@@ -310,11 +309,6 @@ section tracks what's landed and what's still deferred.
 
 ## Explicitly deferred (stubbed with an actionable error, not silently skipped)
 
-- `--build` on `jiji deploy` — image build/push/registry auth. Services must
-  reference an already-published `image:`.
-- `--engine` on `jiji server teardown` — whole-engine uninstall with
-  unrelated-resource safety checks (distro-aware package removal plus an
-  "is this host otherwise empty" check).
 - Retained-image pruning (`service.retain`) — meaningless without a
   build/tag pipeline to distinguish "old" from "current" images.
 - External `SecretsAdapter` (e.g. a Doppler-style adapter) — schema-only,

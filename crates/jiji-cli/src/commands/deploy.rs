@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use jiji_config::{load_config, validate_config, NamedServer};
@@ -8,7 +9,10 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
-use crate::{container_runtime, env_resolution, proxy, ssh_adapter};
+use crate::{
+    build_engine, build_plan, container_runtime, env_resolution, proxy, registry, ssh_adapter,
+    version_tag,
+};
 
 const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -20,15 +24,14 @@ pub async fn run(
     services: Option<&str>,
     version: Option<&str>,
     build: bool,
+    no_cache: bool,
     skip_proxy: bool,
     host_env: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Deploy:");
 
-    if build {
-        anyhow::bail!(
-            "`--build` is not implemented yet. Set `image:` directly on each service and omit --build."
-        );
+    if no_cache && !build {
+        Ui::warn("--no-cache has no effect without --build");
     }
 
     let start = std::env::current_dir()?;
@@ -79,8 +82,83 @@ pub async fn run(
     );
 
     let project_root = env_resolution::project_root_from_config_path(&path);
+    let (loaded_env, loaded_from) =
+        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
+    if let Some(loaded_from) = &loaded_from {
+        Ui::say(
+            &format!("Environment loaded from: {}", loaded_from.display()),
+            1,
+        );
+    }
 
     let mut images: BTreeMap<String, String> = BTreeMap::new();
+    let selected_service_names: BTreeSet<String> = selected
+        .iter()
+        .map(|endpoint| endpoint.service.clone())
+        .collect();
+    let services_to_build: BTreeSet<String> = selected_service_names
+        .iter()
+        .filter(|name| {
+            build
+                && config
+                    .services
+                    .get(*name)
+                    .is_some_and(|service| service.build.is_some())
+        })
+        .cloned()
+        .collect();
+    let mut registry_password = None;
+    if build && services_to_build.is_empty() {
+        Ui::warn("--build was passed, but no selected service has `build:` configured");
+    }
+    if !services_to_build.is_empty() {
+        build_plan::check_scope_guards(&config.builder)?;
+        let git = version_tag::gather_git_status().await;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let (build_version, warning) = version_tag::resolve_version_tag(version, git.as_ref(), now);
+        if let Some(warning) = warning {
+            Ui::warn(&warning);
+        }
+        version_tag::validate_or_bail(&build_version)?;
+        let build_services: Vec<String> = services_to_build.iter().cloned().collect();
+        let build_plan =
+            build_plan::compute_plan(&config, &config.project, &build_services, &build_version)?;
+        for entry in &build_plan {
+            if let Some(error) = build_engine::multi_arch_requires_push(&entry.platforms, true) {
+                anyhow::bail!("Service '{}': {error}", entry.service_name);
+            }
+        }
+        let raw_password = config.builder.registry.password.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "`jiji deploy --build` requires `builder.registry.password` so deploy hosts can pull the built image."
+            )
+        })?;
+        if config.builder.registry.username.is_none() {
+            anyhow::bail!(
+                "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
+            );
+        }
+        let password = registry::resolve_registry_password(raw_password, &loaded_env, host_env)?;
+        Ui::section("Registry Login:");
+        registry::login_local(config.builder.engine, &config.builder.registry, &password).await?;
+        Ui::section("Building:");
+        for entry in &build_plan {
+            Ui::say(&entry.service_name, 1);
+            build_plan::build_one(
+                entry,
+                config.builder.engine,
+                no_cache,
+                true,
+                &config.project,
+                &project_root,
+            )
+            .await
+            .with_context(|| format!("Build failed for service '{}'", entry.service_name))?;
+            images.insert(entry.service_name.clone(), entry.version_ref.clone());
+        }
+        registry_password = Some(password);
+    }
+
     for endpoint in &selected {
         if images.contains_key(&endpoint.service) {
             continue;
@@ -91,11 +169,15 @@ pub async fn run(
                 endpoint.service
             )
         })?;
-        let image = service.image.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Service '{}' has no `image:` configured. `--build` is not implemented yet, so an already-published image reference is required.",
+        let image = service.image.as_deref().ok_or_else(|| match &service.build {
+            Some(_) => anyhow::anyhow!(
+                "Service '{}' has no `image:` configured, but has `build:` configured. Pass `--build` to build and push it, or set `image:` directly.",
                 endpoint.service
-            )
+            ),
+            None => anyhow::anyhow!(
+                "Service '{}' has no `image:` configured. Set an image reference before deploying.",
+                endpoint.service
+            ),
         })?;
         let resolved =
             container_runtime::resolve_image_reference(image, version).with_context(|| {
@@ -104,14 +186,6 @@ pub async fn run(
         images.insert(endpoint.service.clone(), resolved);
     }
 
-    let (loaded_env, loaded_from) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
-    if let Some(loaded_from) = &loaded_from {
-        Ui::say(
-            &format!("Environment loaded from: {}", loaded_from.display()),
-            1,
-        );
-    }
     let shared_env = config.environment.clone().unwrap_or_default();
     let mut resolved_envs: BTreeMap<String, env_resolution::ResolvedEnvironment> = BTreeMap::new();
     for endpoint in &selected {
@@ -185,6 +259,27 @@ pub async fn run(
             "Could not connect to server(s): {}. Restore SSH access and retry.",
             connection_failures.join(", ")
         );
+    }
+
+    if let Some(password) = registry_password.as_deref() {
+        Ui::section("Registry Login:");
+        let hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
+        for server_name in hosts {
+            let session = sessions.get(&server_name).expect("connected above");
+            if let Err(error) = registry::login_remote(
+                session,
+                config.builder.engine,
+                &config.builder.registry,
+                password,
+            )
+            .await
+            {
+                close_all(&sessions).await;
+                return Err(error.context(format!(
+                    "Registry login failed on deploy host '{server_name}'"
+                )));
+            }
+        }
     }
 
     if !skip_proxy {
@@ -355,4 +450,15 @@ async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     for session in sessions.values() {
         session.close().await;
     }
+}
+
+fn hosts_serving_build_configured_services(
+    selected: &[&ServiceEndpointPlan],
+    services_to_build: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    selected
+        .iter()
+        .filter(|endpoint| services_to_build.contains(&endpoint.service))
+        .map(|endpoint| endpoint.server.clone())
+        .collect()
 }

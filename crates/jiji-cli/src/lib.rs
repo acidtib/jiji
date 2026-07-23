@@ -1,3 +1,5 @@
+mod build_engine;
+mod build_plan;
 mod cli;
 mod commands;
 mod container_ops;
@@ -7,15 +9,18 @@ mod engine;
 mod env_resolution;
 mod health_check;
 mod image_teardown;
+mod local_exec;
 mod mounts;
 mod network_guard;
 mod network_teardown;
 mod proxy;
 mod proxy_routes;
 mod proxy_teardown;
+mod registry;
 pub mod service_network;
 mod ssh_adapter;
 mod teardown_plan;
+mod version_tag;
 mod volume_teardown;
 
 use clap::{CommandFactory, Parser};
@@ -58,7 +63,11 @@ pub async fn run() {
         Some(Commands::Version) => {
             commands::version::run();
         }
-        Some(Commands::Deploy { build, skip_proxy }) => {
+        Some(Commands::Deploy {
+            build,
+            no_cache,
+            skip_proxy,
+        }) => {
             if let Err(err) = commands::deploy::run(
                 cli.environment.as_deref(),
                 cli.config_file.as_deref(),
@@ -66,6 +75,7 @@ pub async fn run() {
                 cli.services.as_deref(),
                 cli.version_arg.as_deref(),
                 *build,
+                *no_cache,
                 *skip_proxy,
                 cli.host_env,
             )
@@ -81,6 +91,28 @@ pub async fn run() {
                 } else {
                     jiji_tui::Ui::say("Please check the error above and try again", 1);
                 }
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Build {
+            no_cache,
+            push: _,
+            no_push,
+        }) => {
+            if let Err(err) = commands::build::run(
+                cli.environment.as_deref(),
+                cli.config_file.as_deref(),
+                cli.services.as_deref(),
+                cli.version_arg.as_deref(),
+                *no_cache,
+                *no_push,
+                cli.host_env,
+            )
+            .await
+            {
+                println!();
+                jiji_tui::Ui::error(&format!("Build failed: {err}"));
+                jiji_tui::Ui::say("Please check the error above and try again", 1);
                 std::process::exit(1);
             }
         }
@@ -109,7 +141,6 @@ pub async fn run() {
             ServerCommands::Teardown {
                 yes,
                 volumes,
-                engine,
                 dry_run,
             } => {
                 if let Err(err) = commands::server::teardown::run(
@@ -119,7 +150,6 @@ pub async fn run() {
                     cli.services.as_deref(),
                     *yes,
                     *volumes,
-                    *engine,
                     *dry_run,
                 )
                 .await

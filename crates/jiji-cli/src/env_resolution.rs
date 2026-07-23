@@ -156,17 +156,9 @@ pub fn resolve_environment(
     let mut secret_keys = BTreeSet::new();
     let mut missing = Vec::new();
     for name in &env.secrets {
-        if let Some(value) = loaded.get(name) {
-            values.insert(name.clone(), value.clone());
+        if let Some(value) = resolve_secret_name(name, loaded, allow_host_env) {
+            values.insert(name.clone(), value);
             secret_keys.insert(name.clone());
-        } else if allow_host_env {
-            match std::env::var(name) {
-                Ok(value) => {
-                    values.insert(name.clone(), value);
-                    secret_keys.insert(name.clone());
-                }
-                Err(_) => missing.push(name.clone()),
-            }
         } else {
             missing.push(name.clone());
         }
@@ -183,6 +175,23 @@ pub fn resolve_environment(
         values,
         secret_keys,
     })
+}
+
+pub fn resolve_secret_name(
+    name: &str,
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> Option<String> {
+    loaded
+        .get(name)
+        .cloned()
+        .or_else(|| allow_host_env.then(|| std::env::var(name).ok()).flatten())
+}
+
+pub fn is_bare_all_caps_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// Renders `KEY=value` for clear vars and `KEY=<redacted>` for secrets -- safe to print in debug

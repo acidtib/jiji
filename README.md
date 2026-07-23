@@ -9,9 +9,8 @@ portability.
 
 > **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
 > CLI implements `init`, `server setup`, `network plan`/`network setup`,
-> `deploy`, and `server teardown` (see the command table below for the full
-> current picture). `--build` and `--engine` are stubbed with actionable
-> errors rather than silently no-op'ing; a few operational commands
+> `build`, `deploy`, and `server teardown` (see the command table below for the
+> full current picture). A few operational commands
 > (`services`, `proxy logs`, `registry setup`, `audit`, `lock`, `secrets
 > print`, `server exec`) are not started yet.
 
@@ -39,9 +38,8 @@ jiji init
 # Initialize servers (installs container runtime and complete networking)
 jiji server setup
 
-# Deploy (services must reference an already-published `image:` for now --
-# `--build` is not implemented yet)
-jiji deploy
+# Build and deploy services with `build:` configuration
+jiji deploy --build
 
 # Tear down everything jiji installed on selected servers
 jiji server teardown
@@ -52,8 +50,8 @@ jiji server teardown
 | Command                 | Description                               | Status      |
 | ------------------------ | ----------------------------------------- | ----------- |
 | `jiji init`              | Create config stub in `.jiji/deploy.yml`  | Rust        |
-| `jiji build`              | Build container images                    | not yet implemented |
-| `jiji deploy`             | Deploy services to servers                | Rust (`--build` not yet implemented) |
+| `jiji build`             | Build container images                    | Rust        |
+| `jiji deploy`            | Deploy services to servers                | Rust        |
 | `jiji services logs`     | View service logs                         | not yet implemented |
 | `jiji services restart`  | Restart services                          | not yet implemented |
 | `jiji services remove`   | Remove services                           | not yet implemented |
@@ -61,7 +59,7 @@ jiji server teardown
 | `jiji proxy logs`        | View kamal-proxy logs                     | not yet implemented |
 | `jiji server setup`      | Install container runtime and private network | Rust |
 | `jiji server exec`       | Execute commands on servers               | not yet implemented |
-| `jiji server teardown`   | Remove all jiji components from servers   | Rust (`--engine` not yet implemented) |
+| `jiji server teardown`   | Remove all jiji components from servers   | Rust |
 | `jiji registry setup`    | Setup container registry                  | not yet implemented |
 | `jiji network plan`      | Print the deterministic private network plan | Rust |
 | `jiji network setup`     | Install, update, or repair the private network | Rust |

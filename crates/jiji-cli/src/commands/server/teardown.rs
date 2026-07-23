@@ -42,19 +42,9 @@ pub async fn run(
     services: Option<&str>,
     yes: bool,
     remove_volumes: bool,
-    engine_flag: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Server Teardown:");
-
-    // Highest-risk, highest-complexity part of the doc's spec (distro-aware package removal plus
-    // an "is this host otherwise empty" check with an entirely different query shape); deferred
-    // to a follow-up, mirroring how `jiji deploy` stubs `--build`.
-    if engine_flag {
-        anyhow::bail!(
-            "--engine is not implemented yet. Run `jiji server teardown` first to remove jiji-managed resources, then uninstall the container engine manually or with your host's package manager."
-        );
-    }
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);

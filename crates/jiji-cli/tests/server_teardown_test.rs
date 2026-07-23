@@ -475,24 +475,6 @@ async fn one_unreachable_host_does_not_hide_a_successful_host() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn engine_flag_bails_before_any_ssh_command() {
-    let (dir, key_path, client_key) = setup_test_dir();
-    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
-    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
-
-    let output = run_jiji_teardown(&config_path, &["-y", "--engine"]);
-    assert!(!output.status.success(), "expected non-zero exit");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not implemented yet"), "stderr: {stderr}");
-
-    let received = harness.received.lock().unwrap().clone();
-    assert!(
-        received.is_empty(),
-        "expected zero SSH commands: {received:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn services_flag_is_rejected_before_any_ssh_command() {
     let (dir, key_path, client_key) = setup_test_dir();
     let (harness, addr) = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
