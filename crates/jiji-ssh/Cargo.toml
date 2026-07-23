@@ -1,0 +1,14 @@
+[package]
+name = "jiji-ssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+russh.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync", "macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+rand = "0.10"

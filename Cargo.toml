@@ -4,6 +4,7 @@ members = [
     "crates/jiji-core",
     "crates/jiji-tui",
     "crates/jiji-config",
+    "crates/jiji-ssh",
     "crates/jiji-cli",
 ]
 
@@ -16,6 +17,7 @@ license = "MIT"
 jiji-core = { path = "crates/jiji-core" }
 jiji-tui = { path = "crates/jiji-tui" }
 jiji-config = { path = "crates/jiji-config" }
+jiji-ssh = { path = "crates/jiji-ssh" }
 
 thiserror = "1"
 anyhow = "1"
@@ -29,3 +31,4 @@ owo-colors = "4"
 dialoguer = "0.11"
 indicatif = "0.17"
 tempfile = "3"
+russh = "0.62"
