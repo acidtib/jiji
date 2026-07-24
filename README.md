@@ -9,10 +9,11 @@ portability.
 
 > **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
 > CLI implements `init`, `server setup`, `network plan`/`network setup`,
-> `build`, `deploy`, `server teardown`, `server exec`, `registry
-> login`/`logout`, and `registry teardown` (see the command table below for
-> the full current picture). A few operational commands (`services`,
-> `proxy logs`, `audit`, `lock`, `secrets print`) are not started yet.
+> `build`, `deploy`, `server teardown`, `server exec`, `proxy restart`,
+> `proxy logs`, `registry
+> login`/`logout`, `registry teardown`, and `secrets print` (see the command
+> table below for the full current picture). A few operational commands
+> (`services`, `audit`, `lock`) are not started yet.
 
 ## Features
 
@@ -61,19 +62,19 @@ jiji registry teardown
 | `jiji services restart`  | Restart services                          | not yet implemented |
 | `jiji services remove`   | Remove services                           | not yet implemented |
 | `jiji services prune`    | Clean up old images                       | not yet implemented |
-| `jiji proxy logs`        | View kamal-proxy logs                     | not yet implemented |
+| `jiji proxy restart`     | Pull and recreate kamal-proxy             | Rust |
+| `jiji proxy logs`        | View or follow kamal-proxy logs           | Rust |
 | `jiji server setup`      | Install container runtime and private network | Rust |
 | `jiji server exec`       | Run a command, or an interactive shell, on one server | Rust |
 | `jiji server teardown`   | Remove all jiji components from servers   | Rust |
 | `jiji registry login`    | Authenticate the local machine and/or servers to the configured registry | Rust |
 | `jiji registry logout`   | Remove registry credentials from the local machine and/or servers | Rust |
-| `jiji registry setup`    | Setup container registry                  | not yet implemented |
 | `jiji registry teardown` | Safely remove the local registry container | Rust |
 | `jiji network plan`      | Print the deterministic private network plan | Rust |
 | `jiji network setup`     | Install, update, or repair the private network | Rust |
 | `jiji audit`              | Show deployment audit trail                | not yet implemented |
 | `jiji lock`               | Manage deployment locks                    | not yet implemented |
-| `jiji secrets print`     | Print resolved secrets for debugging       | not yet implemented |
+| `jiji secrets print`     | Print resolved secrets for debugging       | Rust |
 
 ### Global Options
 

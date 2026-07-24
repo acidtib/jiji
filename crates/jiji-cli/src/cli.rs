@@ -119,10 +119,37 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegistryCommands,
     },
+    #[command(about = "Kamal-proxy management")]
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCommands,
+    },
     #[command(about = "Secrets management")]
     Secrets {
         #[command(subcommand)]
         command: SecretsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProxyCommands {
+    #[command(about = "Pull and recreate kamal-proxy on selected servers")]
+    Restart,
+    #[command(about = "View kamal-proxy logs on selected servers")]
+    Logs {
+        #[arg(short = 'n', long, value_name = "N", help = "Number of lines to show")]
+        lines: Option<u32>,
+        #[arg(
+            short = 's',
+            long,
+            value_name = "TIMESTAMP",
+            help = "Show logs since this timestamp or relative duration"
+        )]
+        since: Option<String>,
+        #[arg(short = 'g', long, value_name = "PATTERN", help = "Filter log lines")]
+        grep: Option<String>,
+        #[arg(short = 'f', long, help = "Follow logs (requires exactly one host)")]
+        follow: bool,
     },
 }
 

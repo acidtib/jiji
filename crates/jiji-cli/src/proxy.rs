@@ -30,11 +30,12 @@ pub async fn ensure_proxy(
     session: &SshSession,
     engine: ContainerEngine,
     network: Option<ProxyNetwork>,
+    force: bool,
 ) -> anyhow::Result<ProxyStatus> {
     ensure_network(session, engine).await?;
 
     let fingerprint = config_fingerprint(engine, network);
-    if is_current_and_running(session, engine, &fingerprint).await? {
+    if !force && is_current_and_running(session, engine, &fingerprint).await? {
         return Ok(ProxyStatus::AlreadyRunning);
     }
 
@@ -56,7 +57,7 @@ pub async fn ensure_proxy(
         .await?;
     if !remove.success && !is_missing_container_error(&remove.stderr) {
         anyhow::bail!(
-            "Could not replace kamal-proxy on {}: {}. Remove the existing '{}' container and retry `jiji server setup`.",
+            "Could not replace kamal-proxy on {}: {}. Remove the existing '{}' container and retry the command.",
             session.host(),
             remove.stderr.trim(),
             CONTAINER_NAME
@@ -168,7 +169,7 @@ async fn wait_until_running(session: &SshSession, engine: ContainerEngine) -> an
         .execute(&format!("{engine} logs --tail 20 {CONTAINER_NAME}"))
         .await?;
     anyhow::bail!(
-        "kamal-proxy did not become ready on {} within 30 seconds. Inspect it with `{engine} logs {CONTAINER_NAME}` and retry `jiji server setup`. Recent logs: {}",
+        "kamal-proxy did not become ready on {} within 30 seconds. Inspect it with `{engine} logs {CONTAINER_NAME}` and retry the command. Recent logs: {}",
         session.host(),
         logs.stdout.trim()
     )
@@ -178,7 +179,7 @@ async fn run_required(session: &SshSession, command: &str, action: &str) -> anyh
     let result = session.execute(command).await?;
     if !result.success {
         anyhow::bail!(
-            "Could not {action} on {}: {}. Fix the host error and retry `jiji server setup`.",
+            "Could not {action} on {}: {}. Fix the host error and retry the command.",
             session.host(),
             result.stderr.trim()
         );

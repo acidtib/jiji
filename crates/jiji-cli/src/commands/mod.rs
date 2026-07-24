@@ -2,6 +2,7 @@ pub mod build;
 pub mod deploy;
 pub mod init;
 pub mod network;
+pub mod proxy;
 pub mod registry;
 pub mod secrets;
 pub mod server;

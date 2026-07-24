@@ -175,7 +175,7 @@ async fn setup_proxies(
             dns_address: server_plan.dns_address,
             proxy_address: server_plan.proxy_address,
         });
-        match proxy::ensure_proxy(&session, config.builder.engine, network).await {
+        match proxy::ensure_proxy(&session, config.builder.engine, network, false).await {
             Ok(ProxyStatus::AlreadyRunning) => {
                 Ui::say(
                     &format!("{name}: kamal-proxy already configured and running"),

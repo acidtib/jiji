@@ -24,7 +24,10 @@ mod version_tag;
 mod volume_teardown;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Commands, NetworkCommands, RegistryCommands, SecretsCommands, ServerCommands};
+use cli::{
+    Cli, Commands, NetworkCommands, ProxyCommands, RegistryCommands, SecretsCommands,
+    ServerCommands,
+};
 use tracing_subscriber::EnvFilter;
 
 /// Shared entrypoint for both the `jiji` and `jiji_dev` binaries (see `src/main.rs` and
@@ -267,6 +270,47 @@ pub async fn run() {
                     println!();
                     jiji_tui::Ui::error(&format!("Registry teardown failed: {err}"));
                     jiji_tui::Ui::say("Fix the reported local registry error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Proxy { command }) => match command {
+            ProxyCommands::Restart => {
+                if let Err(err) = commands::proxy::restart::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Proxy restart failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            ProxyCommands::Logs {
+                lines,
+                since,
+                grep,
+                follow,
+            } => {
+                if let Err(err) = commands::proxy::logs::run(commands::proxy::logs::LogsOptions {
+                    environment: cli.environment.as_deref(),
+                    config_file: cli.config_file.as_deref(),
+                    hosts: cli.hosts.as_deref(),
+                    services: cli.services.as_deref(),
+                    lines: *lines,
+                    since: since.as_deref(),
+                    grep: grep.as_deref(),
+                    follow: *follow,
+                })
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Proxy logs failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
                     std::process::exit(1);
                 }
             }

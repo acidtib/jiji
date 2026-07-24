@@ -155,6 +155,17 @@ each host as an immutable, symlink-swapped "generation":
   (`ServerPlan::proxy_address`) so it can never collide with the DNS alias
   address.
 
+Docker/Podman's own IPAM has no knowledge of jiji's reserved addresses
+(`ServerPlan::dns_address`, `proxy_address`, backend slots): `dnsmasq` runs as
+a host-level systemd service, not a container, so the engine can and will
+hand out the DNS address to an ad-hoc container started on the `jiji` bridge
+without an explicit `--ip` (confirmed live: `docker run --network jiji
+nginx:alpine` got assigned the DNS address and silently broke resolution for
+that container). Every jiji-managed container avoids this because
+`container_runtime`/`proxy.rs` always pin `--ip` explicitly — any new code
+that runs a container on the `jiji` network (debug tooling, health-check
+sidecars, etc.) must do the same.
+
 ### `jiji server teardown` (inverse of `server setup`)
 
 `crates/jiji-cli/src/commands/server/teardown.rs` orchestrates the inverse of
@@ -391,6 +402,11 @@ section tracks what's landed and what's still deferred.
   env-var-reference resolution at all — `commands/secrets/print.rs` flags
   this gap explicitly in its own output rather than implying those fields
   resolve when they don't.
+- `jiji proxy restart` / `jiji proxy logs` — unconditionally re-pull and
+  recreate the shared per-host kamal-proxy container, or read its logs from
+  selected hosts (`--follow` requires exactly one). Restart preserves the
+  named configuration volume and bypasses the config-fingerprint no-op so a
+  changed moving image tag is picked up. Log filters are shell-quoted.
 
 ## Explicitly deferred (stubbed with an actionable error, not silently skipped)
 
@@ -399,8 +415,8 @@ section tracks what's landed and what's still deferred.
 - External `SecretsAdapter` (e.g. a Doppler-style adapter) — schema-only,
   `.env` files and host-env fallback are implemented, no adapter
   implementations exist.
-- `jiji services logs/restart/remove/prune`, `jiji proxy logs`, `jiji audit`,
-  `jiji lock` — not started.
+- `jiji services logs/restart/remove/prune`, `jiji audit`, `jiji lock` — not
+  started.
 
 ## Reference Archives
 

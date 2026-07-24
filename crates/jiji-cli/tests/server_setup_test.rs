@@ -29,6 +29,7 @@ struct TestServer {
     authorized_key: PublicKey,
     responses: HashMap<String, CannedResponse>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
+    received: Arc<Mutex<Vec<String>>>,
 }
 
 impl server::Server for TestServer {
@@ -87,6 +88,10 @@ impl server::Handler for TestServer {
             .expect("pending mutex poisoned")
             .remove(&channel)
             .unwrap_or_default();
+        self.received
+            .lock()
+            .expect("received mutex poisoned")
+            .push(command.clone());
 
         // Commands with no canned response (e.g. the many install-step shell commands a test
         // doesn't care about individually) succeed with empty output by default.
@@ -117,7 +122,7 @@ impl server::Handler for TestServer {
 async fn spawn_test_server(
     authorized_key: PublicKey,
     responses: HashMap<String, CannedResponse>,
-) -> SocketAddr {
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let config = Arc::new(server::Config {
         auth_rejection_time: Duration::from_millis(50),
         keys: vec![PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate host key")],
@@ -129,10 +134,12 @@ async fn spawn_test_server(
         .expect("bind test listener");
     let addr = listener.local_addr().expect("read listener addr");
 
+    let received = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses,
         pending: Arc::new(Mutex::new(HashMap::new())),
+        received: Arc::clone(&received),
     };
 
     tokio::spawn(async move {
@@ -140,7 +147,7 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    addr
+    (addr, received)
 }
 
 fn success(stdout: &str) -> CannedResponse {
@@ -210,6 +217,27 @@ fn run_jiji_server_setup(config_path: &std::path::Path) -> std::process::Output 
         .expect("run jiji server setup")
 }
 
+fn run_jiji_proxy_restart(config_path: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("proxy")
+        .arg("restart")
+        .arg("-c")
+        .arg(config_path)
+        .output()
+        .expect("run jiji proxy restart")
+}
+
+fn run_jiji_proxy_logs(config_path: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("proxy")
+        .arg("logs")
+        .args(args)
+        .arg("-c")
+        .arg(config_path)
+        .output()
+        .expect("run jiji proxy logs")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_an_already_installed_engine() {
     let client_key =
@@ -222,7 +250,7 @@ async fn reports_an_already_installed_engine() {
     );
     add_network_setup_responses(&mut responses);
 
-    let addr = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, _) = spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -272,7 +300,7 @@ async fn installs_a_missing_engine() {
     add_network_setup_responses(&mut responses);
     // Every install command not explicitly listed defaults to success (empty CannedResponse).
 
-    let addr = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, _) = spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -298,6 +326,95 @@ async fn installs_a_missing_engine() {
         stdout.contains("docker installed (Docker version 99.0.0, build abcdef)"),
         "stdout: {stdout}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_restart_forces_pull_remove_and_recreate() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("docker network inspect jiji".to_string(), success(""));
+    responses.insert(
+        "docker inspect kamal-proxy --format '{{.State.Status}}'".to_string(),
+        success("running\n"),
+    );
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_proxy_restart(&config_path);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let commands = received.lock().expect("received mutex poisoned");
+    assert!(commands
+        .iter()
+        .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"));
+    assert!(commands
+        .iter()
+        .any(|command| command == "docker container rm -f kamal-proxy"));
+    assert!(commands
+        .iter()
+        .any(|command| command.starts_with("docker run --name kamal-proxy ")));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| command.contains("index .Config.Labels \"jiji.proxy-config\"")),
+        "force restart must skip the fingerprint inspection"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_logs_sends_quoted_filters_and_prints_host_output() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let command =
+        "docker logs --timestamps --since='1 hour ago' kamal-proxy | grep -- 'can'\\''t; echo bad'";
+    let mut responses = HashMap::new();
+    responses.insert(command.to_string(), success("matched proxy line\n"));
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_proxy_logs(
+        &config_path,
+        &["--since", "1 hour ago", "--grep", "can't; echo bad"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("web1:"), "stdout: {stdout}");
+    assert!(stdout.contains("matched proxy line"), "stdout: {stdout}");
+    assert!(received
+        .lock()
+        .expect("received mutex poisoned")
+        .iter()
+        .any(|received| received == command));
 }
 
 #[tokio::test(flavor = "multi_thread")]

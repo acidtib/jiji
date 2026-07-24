@@ -452,6 +452,41 @@ The command shows:
 - Registry password status
 - Warnings about missing values
 
+### Restarting kamal-proxy
+
+Pull the current kamal-proxy image and recreate the shared proxy container on
+every configured server:
+
+```bash
+jiji proxy restart
+
+# Restart only matching hosts
+jiji -H 'web-*' proxy restart
+```
+
+The named proxy configuration volume is preserved, so active routes remain
+configured. Each selected host has a brief interruption while its proxy
+container is recreated.
+
+### Proxy Logs
+
+Show the latest 100 kamal-proxy log lines from every configured server:
+
+```bash
+jiji proxy logs
+jiji -H web-1 proxy logs --lines 200
+jiji proxy logs --since 1h --grep ERROR
+```
+
+Following logs requires exactly one selected host:
+
+```bash
+jiji -H web-1 proxy logs --follow
+```
+
+Both commands operate on host-level proxy infrastructure and reject
+`-S`/`--services`.
+
 **Using host environment fallback:**
 
 If secrets are set as environment variables on your machine (common in CI/CD),
