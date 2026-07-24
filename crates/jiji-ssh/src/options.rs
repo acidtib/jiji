@@ -22,6 +22,9 @@ pub struct ConnectOptions {
     pub keys_only: bool,
     pub connect_timeout: Duration,
     pub command_timeout: Duration,
+    /// Ordered jump hosts. The first is reached directly, then each subsequent host and the
+    /// final target are reached through a `direct-tcpip` channel on the preceding connection.
+    pub proxy_jump: Vec<ConnectOptions>,
 }
 
 impl ConnectOptions {
@@ -36,6 +39,7 @@ impl ConnectOptions {
             keys_only: false,
             connect_timeout: Duration::from_secs(30),
             command_timeout: Duration::from_secs(300),
+            proxy_jump: Vec::new(),
         }
     }
 }

@@ -129,6 +129,53 @@ ssh:
 }
 
 #[test]
+fn ssh_user_may_come_from_enabled_ssh_config() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+servers:
+  web:
+    host: production
+services:
+  app:
+    image: nginx:latest
+    hosts:
+      - web
+ssh:
+  config: true
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn every_server_may_define_its_own_ssh_user() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+servers:
+  web:
+    host: 10.0.0.1
+    user: deploy
+services:
+  app:
+    image: nginx:latest
+    hosts:
+      - web
+ssh:
+  port: 22
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
 fn shipped_template_parses_and_validates_cleanly() {
     let raw = parse(TEMPLATE);
     let result = validate_yaml(&raw);

@@ -9,8 +9,8 @@ portability.
 
 > **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
 > CLI implements `init`, `server setup`, `network plan`/`network setup`,
-> `build`, `deploy`, and `server teardown` (see the command table below for the
-> full current picture). A few operational commands
+> `build`, `deploy`, `server teardown`, and `registry teardown` (see the
+> command table below for the full current picture). A few operational commands
 > (`services`, `proxy logs`, `registry setup`, `audit`, `lock`, `secrets
 > print`, `server exec`) are not started yet.
 
@@ -19,6 +19,8 @@ portability.
 - **Zero downtime deployments** with health checks and automatic rollback
 - **Private networking** via WireGuard mesh with automatic DNS service discovery
 - **Multi server support** with parallel SSH execution
+- **SSH config and ProxyJump support** without invoking an SSH subprocess
+- **Local registry deployments** through per-host reverse SSH tunnels
 - **Container engine agnostic** works with Docker or Podman
 - **kamal-proxy integration** for HTTP/HTTPS routing and SSL termination
 
@@ -43,6 +45,9 @@ jiji deploy --build
 
 # Tear down everything jiji installed on selected servers
 jiji server teardown
+
+# Remove a local registry container when it is no longer needed
+jiji registry teardown
 ```
 
 ## Commands
@@ -61,6 +66,7 @@ jiji server teardown
 | `jiji server exec`       | Execute commands on servers               | not yet implemented |
 | `jiji server teardown`   | Remove all jiji components from servers   | Rust |
 | `jiji registry setup`    | Setup container registry                  | not yet implemented |
+| `jiji registry teardown` | Safely remove the local registry container | Rust |
 | `jiji network plan`      | Print the deterministic private network plan | Rust |
 | `jiji network setup`     | Install, update, or repair the private network | Rust |
 | `jiji audit`              | Show deployment audit trail                | not yet implemented |
@@ -104,8 +110,8 @@ servers:
 
 services:
   web:
-    # `image:` must already be published -- `jiji deploy --build` is not
-    # implemented yet.
+    # Use a published image, or replace this with `build:` and run
+    # `jiji deploy --build`.
     image: ghcr.io/yourname/myapp-web:latest
     hosts:
       - server1

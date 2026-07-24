@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use jiji_config::{ContainerEngine, Registry};
+use jiji_config::{ContainerEngine, Registry, RegistryType};
 use jiji_ssh::SshSession;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::{sleep, Duration};
 
 use crate::{env_resolution, local_exec};
 
@@ -12,6 +15,8 @@ const NAMESPACED_HOSTS: &[&str] = &[
     "registry-1.docker.io",
     "index.docker.io",
 ];
+pub const LOCAL_REGISTRY_NAME: &str = "jiji-registry";
+pub const LOCAL_REGISTRY_IMAGE: &str = "registry:2";
 
 pub fn full_image_name(
     registry: &Registry,
@@ -19,6 +24,12 @@ pub fn full_image_name(
     service: &str,
     tag: &str,
 ) -> anyhow::Result<String> {
+    if registry.kind == RegistryType::Local {
+        return Ok(format!(
+            "localhost:{}/{project}-{service}:{tag}",
+            registry.port
+        ));
+    }
     let server = registry.server.as_deref().ok_or_else(|| {
         anyhow::anyhow!("Remote registry has no `server:` configured. Set builder.registry.server.")
     })?;
@@ -35,6 +46,194 @@ pub fn full_image_name(
         Some(namespace) => format!("{server}/{namespace}/{project}-{service}:{tag}"),
         None => format!("{server}/{project}-{service}:{tag}"),
     })
+}
+
+pub fn render_local_registry_inspect() -> Vec<String> {
+    vec![
+        "container".into(),
+        "inspect".into(),
+        "--format".into(),
+        r#"{{index .Config.Labels "jiji.managed"}}|{{index .Config.Labels "jiji.resource"}}|{{index .Config.Labels "jiji.registry.port"}}|{{.State.Running}}"#.into(),
+        LOCAL_REGISTRY_NAME.into(),
+    ]
+}
+
+pub fn render_local_registry_run(port: u16) -> Vec<String> {
+    vec![
+        "run".into(),
+        "-d".into(),
+        "--restart".into(),
+        "unless-stopped".into(),
+        "--name".into(),
+        LOCAL_REGISTRY_NAME.into(),
+        "--label".into(),
+        "jiji.managed=true".into(),
+        "--label".into(),
+        "jiji.resource=registry".into(),
+        "--label".into(),
+        format!("jiji.registry.port={port}"),
+        "-p".into(),
+        format!("127.0.0.1:{port}:5000"),
+        LOCAL_REGISTRY_IMAGE.into(),
+    ]
+}
+
+pub fn render_local_registry_start() -> Vec<String> {
+    vec!["start".into(), LOCAL_REGISTRY_NAME.into()]
+}
+
+pub fn render_local_registry_remove() -> Vec<String> {
+    vec![
+        "container".into(),
+        "rm".into(),
+        "-f".into(),
+        LOCAL_REGISTRY_NAME.into(),
+    ]
+}
+
+pub async fn ensure_local_registry(
+    engine: ContainerEngine,
+    registry: &Registry,
+) -> anyhow::Result<()> {
+    if registry.kind != RegistryType::Local {
+        return Ok(());
+    }
+    if !local_exec::command_exists(&engine.to_string()).await {
+        anyhow::bail!(
+            "Container engine '{engine}' was not found locally. Install it or update builder.engine."
+        );
+    }
+
+    match local_registry_state(engine, registry.port).await? {
+        Some(false) => {
+            run_local_registry_command(
+                engine,
+                render_local_registry_start(),
+                "start the local registry",
+            )
+            .await?;
+        }
+        Some(true) => {}
+        None => {
+            run_local_registry_command(
+                engine,
+                render_local_registry_run(registry.port),
+                "create the local registry",
+            )
+            .await?;
+        }
+    }
+
+    wait_for_registry(registry.port).await
+}
+
+pub async fn local_registry_state(
+    engine: ContainerEngine,
+    expected_port: u16,
+) -> anyhow::Result<Option<bool>> {
+    let inspect = local_exec::run_captured(
+        &engine.to_string(),
+        &render_local_registry_inspect(),
+        None,
+        None,
+    )
+    .await?;
+    if inspect.success {
+        return parse_local_registry_running(&inspect.stdout, expected_port).map(Some);
+    }
+    let stderr = inspect.stderr.to_ascii_lowercase();
+    if stderr.contains("no such container")
+        || stderr.contains("no container with name or id")
+        || stderr.contains("does not exist")
+    {
+        return Ok(None);
+    }
+    anyhow::bail!(
+        "Could not inspect local registry container '{LOCAL_REGISTRY_NAME}' with {engine} (exit {:?}): {}. Restore local engine access and retry.",
+        inspect.code,
+        inspect.stderr.trim()
+    )
+}
+
+pub async fn remove_local_registry(
+    engine: ContainerEngine,
+    expected_port: u16,
+) -> anyhow::Result<()> {
+    if local_registry_state(engine, expected_port).await?.is_none() {
+        return Ok(());
+    }
+    run_local_registry_command(
+        engine,
+        render_local_registry_remove(),
+        "remove the local registry",
+    )
+    .await
+}
+
+fn parse_local_registry_running(output: &str, expected_port: u16) -> anyhow::Result<bool> {
+    let fields: Vec<&str> = output.trim().split('|').collect();
+    if fields.len() != 4
+        || fields[0] != "true"
+        || fields[1] != "registry"
+        || fields[2].parse::<u16>() != Ok(expected_port)
+    {
+        anyhow::bail!(
+            "Container '{LOCAL_REGISTRY_NAME}' already exists but is not Jiji's registry on port {expected_port}. Rename or remove that container, then retry."
+        );
+    }
+    match fields[3] {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => anyhow::bail!(
+            "Could not determine whether local registry container '{LOCAL_REGISTRY_NAME}' is running. Inspect or remove that container, then retry."
+        ),
+    }
+}
+
+async fn run_local_registry_command(
+    engine: ContainerEngine,
+    args: Vec<String>,
+    action: &str,
+) -> anyhow::Result<()> {
+    let result = local_exec::run_captured(&engine.to_string(), &args, None, None).await?;
+    if !result.success {
+        anyhow::bail!(
+            "Could not {action} with {engine} (exit {:?}): {}. Fix the local container or port conflict and retry.",
+            result.code,
+            result.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+async fn wait_for_registry(port: u16) -> anyhow::Result<()> {
+    for _ in 0..30 {
+        if registry_responds(port).await {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!(
+        "Local registry did not become ready at http://127.0.0.1:{port}/v2/. Inspect container '{LOCAL_REGISTRY_NAME}', fix it, and retry."
+    )
+}
+
+async fn registry_responds(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)).await else {
+        return false;
+    };
+    if stream
+        .write_all(b"GET /v2/ HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = [0_u8; 64];
+    let Ok(read) = stream.read(&mut response).await else {
+        return false;
+    };
+    response[..read].starts_with(b"HTTP/1.0 200") || response[..read].starts_with(b"HTTP/1.1 200")
 }
 
 pub fn render_login_command(engine: ContainerEngine, server: &str, username: &str) -> String {
@@ -147,6 +346,33 @@ mod tests {
         assert_eq!(
             full_image_name(&registry("registry.example.com", None), "demo", "web", "v1").unwrap(),
             "registry.example.com/demo-web:v1"
+        );
+    }
+
+    #[test]
+    fn local_registry_names_and_lifecycle_commands_are_loopback_only() {
+        let local = Registry {
+            kind: RegistryType::Local,
+            port: 31270,
+            server: None,
+            username: None,
+            password: None,
+        };
+        assert_eq!(
+            full_image_name(&local, "demo", "web", "v1").unwrap(),
+            "localhost:31270/demo-web:v1"
+        );
+        let run = render_local_registry_run(31270);
+        assert!(run.contains(&"127.0.0.1:31270:5000".to_string()));
+        assert!(run.contains(&"jiji.resource=registry".to_string()));
+        assert!(!run.iter().any(|arg| arg == "0.0.0.0:31270:5000"));
+        assert!(parse_local_registry_running("true|registry|31270|true\n", 31270).unwrap());
+        assert!(!parse_local_registry_running("true|registry|31270|false\n", 31270).unwrap());
+        assert!(parse_local_registry_running("false|registry|31270|true\n", 31270).is_err());
+        assert!(parse_local_registry_running("true|registry|5000|true\n", 31270).is_err());
+        assert_eq!(
+            render_local_registry_remove(),
+            ["container", "rm", "-f", "jiji-registry"]
         );
     }
 

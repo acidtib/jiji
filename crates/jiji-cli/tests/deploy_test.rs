@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +16,7 @@ use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session};
 use russh::{Channel, ChannelId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[derive(Clone, Default)]
@@ -48,6 +50,8 @@ struct TestServer {
     /// Every command received, in order -- lets tests assert on absence/ordering, not just on
     /// the final canned outcome of one command.
     received: Arc<Mutex<Vec<String>>>,
+    forwards: Arc<Mutex<Vec<(String, u32)>>>,
+    cancelled_forwards: Arc<Mutex<Vec<(String, u32)>>>,
 }
 
 impl server::Server for TestServer {
@@ -91,6 +95,32 @@ impl server::Handler for TestServer {
             .insert(channel, String::from_utf8_lossy(data).into_owned());
         session.channel_success(channel)?;
         Ok(())
+    }
+
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        self.forwards
+            .lock()
+            .expect("forwards mutex poisoned")
+            .push((address.to_string(), *port));
+        Ok(true)
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        self.cancelled_forwards
+            .lock()
+            .expect("cancelled forwards mutex poisoned")
+            .push((address.to_string(), port));
+        Ok(true)
     }
 
     async fn channel_eof(
@@ -139,6 +169,8 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    forwards: Arc<Mutex<Vec<(String, u32)>>>,
+    cancelled_forwards: Arc<Mutex<Vec<(String, u32)>>>,
 }
 
 async fn spawn_test_server(
@@ -157,11 +189,15 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let forwards = Arc::new(Mutex::new(Vec::new()));
+    let cancelled_forwards = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        forwards: forwards.clone(),
+        cancelled_forwards: cancelled_forwards.clone(),
     };
 
     tokio::spawn(async move {
@@ -169,7 +205,12 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        forwards,
+        cancelled_forwards,
+    }
 }
 
 /// A single service ("web", image "example/web:latest") on a single server ("app").
@@ -534,4 +575,183 @@ async fn podman_first_deployment_uses_podman_commands_only() {
     let received = harness.received.lock().unwrap().clone();
     assert!(received.iter().any(|c| c.starts_with("podman run")));
     assert!(!received.iter().any(|c| c.starts_with("docker")));
+}
+
+async fn run_local_registry_deploy(
+    pull_succeeds: bool,
+) -> (
+    std::process::Output,
+    u16,
+    Vec<(String, u32)>,
+    Vec<(String, u32)>,
+    Vec<String>,
+) {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let registry_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind registry");
+    let registry_port = registry_listener
+        .local_addr()
+        .expect("registry address")
+        .port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = registry_listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0_u8; 256];
+                let _ = stream.read(&mut request).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await;
+            });
+        }
+    });
+
+    let fake_bin = dir.path().join("bin");
+    std::fs::create_dir(&fake_bin).expect("create fake bin");
+    let docker = fake_bin.join("docker");
+    std::fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"container\" ] && [ \"$2\" = \"inspect\" ]; then printf 'true|registry|{registry_port}|true\\n'; exit 0; fi\nexit 0\n"
+        ),
+    )
+    .expect("write fake docker");
+    let mut permissions = std::fs::metadata(&docker)
+        .expect("docker metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&docker, permissions).expect("make fake docker executable");
+
+    let config = format!(
+        r#"
+project: demo
+builder:
+  engine: docker
+  registry:
+    type: local
+    port: {registry_port}
+servers:
+  app:
+    host: {host}
+    port: {ssh_port}
+    keys: [{key_path}]
+services:
+  web:
+    build: .
+    hosts: [app]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        host = "127.0.0.1",
+        ssh_port = 0,
+        key_path = key_path.display(),
+    );
+    let generation_config: Config = serde_yaml::from_str(&config).expect("parse generation config");
+    let generation = NetworkPlanner::new()
+        .plan(&generation_config)
+        .expect("network plan")
+        .generation;
+
+    let mut responses = HashMap::new();
+    responses.insert(
+        GENERATION_PATH.to_string(),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success(""));
+    responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
+    responses.insert(
+        readiness_health_command("docker", "demo-web-a"),
+        success(""),
+    );
+    responses.insert(
+        MKTEMP_COMMAND.to_string(),
+        success("/etc/jiji/network/service-nat-generations/cutover.local123\n"),
+    );
+    if !pull_succeeds {
+        responses.insert(
+            format!("docker pull localhost:{registry_port}/demo-web:v1"),
+            failure(),
+        );
+    }
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let config = config.replace("port: 0", &format!("port: {}", harness.addr.port()));
+    let config_path = dir.path().join("deploy-local.yml");
+    std::fs::write(&config_path, config).expect("write local registry config");
+
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));
+    let output = command
+        .arg("deploy")
+        .arg("-c")
+        .arg(&config_path)
+        .arg("--build")
+        .arg("--version")
+        .arg("v1")
+        .env(
+            "PATH",
+            std::env::join_paths(
+                std::iter::once(fake_bin.as_path()).chain(
+                    std::env::split_paths(&existing_path)
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(std::path::PathBuf::as_path),
+                ),
+            )
+            .expect("join PATH"),
+        )
+        .output()
+        .expect("run local registry deploy");
+
+    let forwards = harness
+        .forwards
+        .lock()
+        .expect("forwards mutex poisoned")
+        .clone();
+    let cancelled = harness
+        .cancelled_forwards
+        .lock()
+        .expect("cancelled forwards mutex poisoned")
+        .clone();
+    let received = harness
+        .received
+        .lock()
+        .expect("received mutex poisoned")
+        .clone();
+    (output, registry_port, forwards, cancelled, received)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_registry_build_opens_a_loopback_reverse_tunnel_before_deploy() {
+    let (output, registry_port, forwards, cancelled, received) =
+        run_local_registry_deploy(true).await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        forwards,
+        vec![("127.0.0.1".to_string(), u32::from(registry_port))]
+    );
+    assert_eq!(cancelled, forwards);
+    assert!(received
+        .iter()
+        .any(|command| { command.contains(&format!("localhost:{registry_port}/demo-web:v1")) }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_pull_after_tunnel_setup_cancels_the_forward_and_stops_deploy() {
+    let (output, registry_port, forwards, cancelled, received) =
+        run_local_registry_deploy(false).await;
+    assert!(!output.status.success());
+    assert_eq!(
+        forwards,
+        vec![("127.0.0.1".to_string(), u32::from(registry_port))]
+    );
+    assert_eq!(cancelled, forwards);
+    assert!(!received
+        .iter()
+        .any(|command| command.contains("run --name")));
 }

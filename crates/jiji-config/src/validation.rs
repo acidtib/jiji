@@ -1,4 +1,4 @@
-use crate::schema::Config;
+use crate::schema::{Config, SshConfigFiles};
 
 #[derive(Debug, Clone)]
 pub struct ValidationError {
@@ -108,13 +108,25 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     }
 
     if let Some(ssh) = &config.ssh {
-        match &ssh.user {
-            Some(user) if !user.trim().is_empty() => {}
-            _ => errors.push(ValidationError {
+        let user_can_come_from_config = !matches!(ssh.config, SshConfigFiles::Enabled(false));
+        let every_server_has_user = config.servers.values().all(|server| {
+            server
+                .user
+                .as_deref()
+                .is_some_and(|user| !user.trim().is_empty())
+        });
+        if ssh
+            .user
+            .as_deref()
+            .is_none_or(|user| user.trim().is_empty())
+            && !user_can_come_from_config
+            && !every_server_has_user
+        {
+            errors.push(ValidationError {
                 path: "ssh.user".to_string(),
-                message: "Missing required configuration: 'user' in ssh".to_string(),
+                message: "Missing SSH user. Set `ssh.user`, set `user` on every server, or enable `ssh.config` with matching `User` entries.".to_string(),
                 code: "MISSING_FIELD",
-            }),
+            });
         }
         if ssh.port == 0 {
             errors.push(ValidationError {

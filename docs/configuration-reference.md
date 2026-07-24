@@ -315,16 +315,6 @@ ssh:
   # Or with port: bastion.example.com:2222
 ```
 
-**ProxyCommand (advanced):**
-
-```yaml
-ssh:
-  user: deploy
-  proxy_command: "ssh -W %h:%p user@proxy.example.com"
-  # %h = target hostname
-  # %p = target port
-```
-
 ### SSH Config File Support
 
 Load SSH configuration from `~/.ssh/config` to leverage existing setups:
@@ -356,10 +346,11 @@ ssh:
 **What gets inherited:**
 
 - Host specific settings (wildcards supported)
-- ProxyJump/ProxyCommand
-- IdentityFile (private keys)
-- Connection timeouts
-- SSH options
+- HostName, User, Port, and IdentityFile
+- ProxyJump
+- ConnectTimeout and IdentitiesOnly
+
+Unsupported `ProxyCommand` entries are reported before connecting.
 
 **Note:** Jiji configuration takes precedence over SSH config file settings.
 

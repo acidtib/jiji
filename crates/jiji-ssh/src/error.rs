@@ -39,6 +39,21 @@ pub enum SshError {
         timeout_secs: u64,
     },
 
+    #[error(
+        "Could not {action} through SSH host {host}: {source}. Verify `AllowTcpForwarding yes`, ensure the remote port is available, and retry."
+    )]
+    Forward {
+        host: String,
+        action: String,
+        #[source]
+        source: russh::Error,
+    },
+
+    #[error(
+        "SSH host {host} returned invalid allocated forwarding port {port}. Configure a fixed unprivileged port and retry."
+    )]
+    InvalidForwardPort { host: String, port: u32 },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

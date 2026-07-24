@@ -24,7 +24,7 @@ mod version_tag;
 mod volume_teardown;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Commands, NetworkCommands, ServerCommands};
+use cli::{Cli, Commands, NetworkCommands, RegistryCommands, ServerCommands};
 use tracing_subscriber::EnvFilter;
 
 /// Shared entrypoint for both the `jiji` and `jiji_dev` binaries (see `src/main.rs` and
@@ -189,6 +189,23 @@ pub async fn run() {
                     cli.config_file.as_deref(),
                 ) {
                     jiji_tui::Ui::error(&format!("Network planning failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Registry { command }) => match command {
+            RegistryCommands::Teardown { yes, dry_run } => {
+                if let Err(err) = commands::registry::teardown::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    *yes,
+                    *dry_run,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Registry teardown failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported local registry error and retry", 1);
                     std::process::exit(1);
                 }
             }

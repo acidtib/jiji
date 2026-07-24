@@ -114,6 +114,22 @@ pub enum Commands {
         #[command(subcommand)]
         command: NetworkCommands,
     },
+    #[command(about = "Local registry management")]
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RegistryCommands {
+    #[command(about = "Remove the Jiji-managed local registry container")]
+    Teardown {
+        #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show what would be removed without changing anything")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]

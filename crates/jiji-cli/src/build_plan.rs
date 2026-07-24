@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use jiji_config::{Builder, Config, ContainerEngine, RegistryType};
+use jiji_config::{Builder, Config, ContainerEngine};
 
 use crate::{build_engine, registry};
 
@@ -14,11 +14,6 @@ pub struct BuildPlanEntry {
 }
 
 pub fn check_scope_guards(builder: &Builder) -> anyhow::Result<()> {
-    if builder.registry.kind == RegistryType::Local {
-        anyhow::bail!(
-            "Local registries are not implemented yet. Configure `builder.registry.type: remote` and set its server."
-        );
-    }
     if !builder.local {
         anyhow::bail!(
             "Remote builders are not implemented yet. Set `builder.local: true`; builds currently run on this machine."
@@ -116,6 +111,7 @@ pub async fn build_one(
     push: bool,
     project: &str,
     project_root: &Path,
+    local_registry: bool,
 ) -> anyhow::Result<()> {
     build_engine::build_and_push(
         engine,
@@ -127,6 +123,7 @@ pub async fn build_one(
         project,
         &entry.service_name,
         project_root,
+        local_registry,
     )
     .await
 }

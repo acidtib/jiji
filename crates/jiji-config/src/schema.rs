@@ -133,6 +133,7 @@ impl Default for SshConfigFiles {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ssh {
     /// Not `String`: kept optional at the schema level so a config missing `ssh.user` still
     /// parses. `crate::validation` reports the clean "missing configuration" error instead of a
@@ -153,8 +154,6 @@ pub struct Ssh {
     pub options: HashMap<String, String>,
     #[serde(default)]
     pub proxy: Option<String>,
-    #[serde(default)]
-    pub proxy_command: Option<String>,
     #[serde(default)]
     pub keys: Option<Vec<String>>,
     #[serde(default)]

@@ -6,6 +6,7 @@ use jiji_config::{BuildValue, Config, ContainerEngine, Service};
 use crate::local_exec;
 
 pub const BUILDX_BUILDER_NAME: &str = "jiji-builder";
+pub const LOCAL_BUILDX_BUILDER_NAME: &str = "jiji-builder-local";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedBuildConfig {
@@ -98,28 +99,35 @@ pub fn render_single_arch_build(
     args
 }
 
-pub fn render_push(tag: &str) -> Vec<String> {
-    vec!["push".into(), tag.into()]
+pub fn render_push(engine: ContainerEngine, local_registry: bool, tag: &str) -> Vec<String> {
+    let mut args = vec!["push".into()];
+    // Docker treats localhost/127.0.0.0-8 registries as insecure automatically; Podman does not
+    // and refuses plain HTTP unless told to skip TLS verification.
+    if engine == ContainerEngine::Podman && local_registry {
+        args.push("--tls-verify=false".into());
+    }
+    args.push(tag.into());
+    args
 }
 
-pub fn render_buildx_inspect() -> Vec<String> {
-    vec![
-        "buildx".into(),
-        "inspect".into(),
-        BUILDX_BUILDER_NAME.into(),
-    ]
+pub fn render_buildx_inspect(builder_name: &str) -> Vec<String> {
+    vec!["buildx".into(), "inspect".into(), builder_name.into()]
 }
 
-pub fn render_buildx_create() -> Vec<String> {
-    vec![
+pub fn render_buildx_create(builder_name: &str, host_network: bool) -> Vec<String> {
+    let mut args = vec![
         "buildx".into(),
         "create".into(),
         "--name".into(),
-        BUILDX_BUILDER_NAME.into(),
+        builder_name.into(),
         "--driver".into(),
         "docker-container".into(),
-        "--bootstrap".into(),
-    ]
+    ];
+    if host_network {
+        args.extend(["--driver-opt".into(), "network=host".into()]);
+    }
+    args.push("--bootstrap".into());
+    args
 }
 
 pub fn render_buildx_build(
@@ -127,12 +135,13 @@ pub fn render_buildx_build(
     no_cache: bool,
     platforms: &[String],
     tags: &[String],
+    builder_name: &str,
 ) -> Vec<String> {
     let mut args = vec![
         "buildx".into(),
         "build".into(),
         "--builder".into(),
-        BUILDX_BUILDER_NAME.into(),
+        builder_name.into(),
         "--platform".into(),
         platforms.join(","),
     ];
@@ -168,14 +177,14 @@ pub fn render_podman_arch_build(
     args
 }
 
-pub fn render_manifest_push(manifest: &str, tag: &str) -> Vec<String> {
-    vec![
-        "manifest".into(),
-        "push".into(),
-        "--all".into(),
-        manifest.into(),
-        format!("docker://{tag}"),
-    ]
+pub fn render_manifest_push(manifest: &str, tag: &str, local_registry: bool) -> Vec<String> {
+    let mut args = vec!["manifest".into(), "push".into(), "--all".into()];
+    if local_registry {
+        args.push("--tls-verify=false".into());
+    }
+    args.push(manifest.into());
+    args.push(format!("docker://{tag}"));
+    args
 }
 
 async fn stream(engine: ContainerEngine, args: Vec<String>, cwd: &Path) -> anyhow::Result<()> {
@@ -200,6 +209,7 @@ pub async fn build_and_push(
     project: &str,
     service_name: &str,
     cwd: &Path,
+    local_registry: bool,
 ) -> anyhow::Result<()> {
     if let Some(error) = multi_arch_requires_push(platforms, push) {
         anyhow::bail!(error);
@@ -214,20 +224,34 @@ pub async fn build_and_push(
             stream(engine, render_single_arch_build(build, no_cache, tags), cwd).await?;
             if push {
                 for tag in tags {
-                    stream(engine, render_push(tag), cwd).await?;
+                    stream(engine, render_push(engine, local_registry, tag), cwd).await?;
                 }
             }
         }
         (BuildStrategy::MultiArch, ContainerEngine::Docker) => {
-            let inspect =
-                local_exec::run_captured("docker", &render_buildx_inspect(), None, Some(cwd))
-                    .await?;
+            let builder_name = if local_registry {
+                LOCAL_BUILDX_BUILDER_NAME
+            } else {
+                BUILDX_BUILDER_NAME
+            };
+            let inspect = local_exec::run_captured(
+                "docker",
+                &render_buildx_inspect(builder_name),
+                None,
+                Some(cwd),
+            )
+            .await?;
             if !inspect.success {
-                stream(engine, render_buildx_create(), cwd).await?;
+                stream(
+                    engine,
+                    render_buildx_create(builder_name, local_registry),
+                    cwd,
+                )
+                .await?;
             }
             stream(
                 engine,
-                render_buildx_build(build, no_cache, platforms, tags),
+                render_buildx_build(build, no_cache, platforms, tags, builder_name),
                 cwd,
             )
             .await?;
@@ -247,7 +271,12 @@ pub async fn build_and_push(
                 .await?;
             }
             for tag in tags {
-                stream(engine, render_manifest_push(&manifest, tag), cwd).await?;
+                stream(
+                    engine,
+                    render_manifest_push(&manifest, tag, local_registry),
+                    cwd,
+                )
+                .await?;
             }
         }
     }
@@ -294,12 +323,27 @@ mod tests {
             false,
             &["linux/arm64".into(), "linux/amd64".into()],
             &["repo/app:v1".into()],
+            BUILDX_BUILDER_NAME,
         );
         assert_eq!(args[5], "linux/arm64,linux/amd64");
         assert_eq!(args.last().unwrap(), ".");
         assert!(args.contains(&"--push".into()));
         assert_eq!(
-            render_manifest_push("local-manifest", "repo/app:v1"),
+            render_buildx_create(LOCAL_BUILDX_BUILDER_NAME, true),
+            [
+                "buildx",
+                "create",
+                "--name",
+                "jiji-builder-local",
+                "--driver",
+                "docker-container",
+                "--driver-opt",
+                "network=host",
+                "--bootstrap"
+            ]
+        );
+        assert_eq!(
+            render_manifest_push("local-manifest", "repo/app:v1", false),
             [
                 "manifest",
                 "push",
@@ -307,6 +351,29 @@ mod tests {
                 "local-manifest",
                 "docker://repo/app:v1"
             ]
+        );
+        assert_eq!(
+            render_manifest_push("local-manifest", "repo/app:v1", true),
+            [
+                "manifest",
+                "push",
+                "--all",
+                "--tls-verify=false",
+                "local-manifest",
+                "docker://repo/app:v1"
+            ]
+        );
+        assert_eq!(
+            render_push(ContainerEngine::Docker, true, "localhost:31270/app:v1"),
+            ["push", "localhost:31270/app:v1"]
+        );
+        assert_eq!(
+            render_push(ContainerEngine::Podman, true, "localhost:31270/app:v1"),
+            ["push", "--tls-verify=false", "localhost:31270/app:v1"]
+        );
+        assert_eq!(
+            render_push(ContainerEngine::Podman, false, "ghcr.io/acme/app:v1"),
+            ["push", "ghcr.io/acme/app:v1"]
         );
     }
 

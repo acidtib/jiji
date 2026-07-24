@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, NamedServer};
+use jiji_config::{load_config, validate_config, NamedServer, RegistryType};
 use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
@@ -130,19 +130,32 @@ pub async fn run(
                 anyhow::bail!("Service '{}': {error}", entry.service_name);
             }
         }
-        let raw_password = config.builder.registry.password.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "`jiji deploy --build` requires `builder.registry.password` so deploy hosts can pull the built image."
-            )
-        })?;
-        if config.builder.registry.username.is_none() {
-            anyhow::bail!(
-                "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
-            );
+        match config.builder.registry.kind {
+            RegistryType::Local => {
+                Ui::section("Local Registry:");
+                registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
+                    .await?;
+            }
+            RegistryType::Remote => {
+                let raw_password =
+                    config.builder.registry.password.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "`jiji deploy --build` requires `builder.registry.password` so deploy hosts can pull the built image."
+                        )
+                    })?;
+                if config.builder.registry.username.is_none() {
+                    anyhow::bail!(
+                        "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
+                    );
+                }
+                let password =
+                    registry::resolve_registry_password(raw_password, &loaded_env, host_env)?;
+                Ui::section("Registry Login:");
+                registry::login_local(config.builder.engine, &config.builder.registry, &password)
+                    .await?;
+                registry_password = Some(password);
+            }
         }
-        let password = registry::resolve_registry_password(raw_password, &loaded_env, host_env)?;
-        Ui::section("Registry Login:");
-        registry::login_local(config.builder.engine, &config.builder.registry, &password).await?;
         Ui::section("Building:");
         for entry in &build_plan {
             Ui::say(&entry.service_name, 1);
@@ -153,12 +166,12 @@ pub async fn run(
                 true,
                 &config.project,
                 &project_root,
+                config.builder.registry.kind == RegistryType::Local,
             )
             .await
             .with_context(|| format!("Build failed for service '{}'", entry.service_name))?;
             images.insert(entry.service_name.clone(), entry.version_ref.clone());
         }
-        registry_password = Some(password);
     }
 
     for endpoint in &selected {
@@ -229,14 +242,18 @@ pub async fn run(
     named_servers.sort_by(|a, b| a.0.cmp(&b.0));
 
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
-    let mut connect_operations = Vec::with_capacity(named_servers.len());
+    let mut connect_options = BTreeMap::new();
     for (name, server) in &named_servers {
-        connect_operations.push(ssh_adapter::connect_options(name, server, &ssh)?);
+        connect_options.insert(
+            name.clone(),
+            ssh_adapter::connect_options(name, server, &ssh)?,
+        );
     }
 
     Ui::section("Connecting:");
-    let operations: Vec<_> = connect_operations
-        .into_iter()
+    let operations: Vec<_> = named_servers
+        .iter()
+        .map(|(name, _)| connect_options.get(name).expect("inserted above").clone())
         .map(|options| move || async move { SshSession::connect(&options).await })
         .collect();
     let connections = pool.execute_concurrent(operations).await;
@@ -263,6 +280,50 @@ pub async fn run(
         );
     }
 
+    let mut tunnel_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
+    if !services_to_build.is_empty() && config.builder.registry.kind == RegistryType::Local {
+        Ui::section("Registry Tunnels:");
+        let hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
+        for server_name in hosts {
+            let options = connect_options.get(&server_name).expect("connected above");
+            let session = match SshSession::connect(options).await {
+                Ok(session) => Arc::new(session),
+                Err(error) => {
+                    close_all(&tunnel_sessions).await;
+                    close_all(&sessions).await;
+                    return Err(anyhow::Error::new(error).context(format!(
+                        "Could not open a dedicated registry tunnel connection to deploy host '{server_name}'"
+                    )));
+                }
+            };
+            match session
+                .start_reverse_forward(
+                    "127.0.0.1",
+                    config.builder.registry.port,
+                    config.builder.registry.port,
+                )
+                .await
+            {
+                Ok(_) => Ui::say(
+                    &format!(
+                        "{server_name}: remote localhost:{} -> local registry",
+                        config.builder.registry.port
+                    ),
+                    1,
+                ),
+                Err(error) => {
+                    session.close().await;
+                    close_all(&tunnel_sessions).await;
+                    close_all(&sessions).await;
+                    return Err(anyhow::Error::new(error).context(format!(
+                        "Could not expose the local registry to deploy host '{server_name}'"
+                    )));
+                }
+            }
+            tunnel_sessions.insert(server_name, session);
+        }
+    }
+
     if let Some(password) = registry_password.as_deref() {
         Ui::section("Registry Login:");
         let hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
@@ -276,11 +337,37 @@ pub async fn run(
             )
             .await
             {
+                close_all(&tunnel_sessions).await;
                 close_all(&sessions).await;
                 return Err(error.context(format!(
                     "Registry login failed on deploy host '{server_name}'"
                 )));
             }
+        }
+    }
+
+    if !services_to_build.is_empty() {
+        Ui::section("Pulling Built Images:");
+        let mut pulled = BTreeSet::new();
+        for endpoint in &selected {
+            if !services_to_build.contains(&endpoint.service)
+                || !pulled.insert((endpoint.server.clone(), endpoint.service.clone()))
+            {
+                continue;
+            }
+            let session = sessions.get(&endpoint.server).expect("connected above");
+            let image = images.get(&endpoint.service).expect("built above");
+            if let Err(error) =
+                crate::container_ops::pull_image(session, config.builder.engine, image).await
+            {
+                close_all(&tunnel_sessions).await;
+                close_all(&sessions).await;
+                return Err(error.context(format!(
+                    "Could not pull newly built image for service '{}' on deploy host '{}'",
+                    endpoint.service, endpoint.server
+                )));
+            }
+            Ui::say(&format!("{}: {image}", endpoint.server), 1);
         }
     }
 
@@ -304,6 +391,7 @@ pub async fn run(
                 proxy_address: server_plan.proxy_address,
             });
             if let Err(error) = proxy::ensure_proxy(session, config.builder.engine, network).await {
+                close_all(&tunnel_sessions).await;
                 close_all(&sessions).await;
                 return Err(error.context(format!("kamal-proxy is not ready on '{server_name}'")));
             }
@@ -374,6 +462,7 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+    close_all(&tunnel_sessions).await;
     close_all(&sessions).await;
 
     Ui::section("Deployment Summary:");

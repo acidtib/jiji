@@ -100,3 +100,8 @@ local static BusyBox rootfs and does not pull an image.
 Run `jiji network setup`. It stages and validates a complete generation on
 every selected host before activation. If activation or verification fails,
 all attempted hosts return to their previous retained generations.
+
+`jiji deploy` checks every configured host before making deployment changes.
+When it detects a stale generation, it automatically applies the complete
+network plan to the full cluster using the same transactional setup path.
+The explicit command remains available for network-only maintenance.

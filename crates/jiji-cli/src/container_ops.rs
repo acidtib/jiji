@@ -21,7 +21,23 @@ pub async fn ensure_image(
     if image_exists(session, engine, image).await? {
         return Ok(());
     }
-    let command = format!("{engine} pull {image}");
+    pull_image(session, engine, image).await
+}
+
+pub async fn pull_image(
+    session: &SshSession,
+    engine: ContainerEngine,
+    image: &str,
+) -> anyhow::Result<()> {
+    // The local registry is always plain HTTP on loopback (`localhost:<port>/...`, see
+    // registry::full_image_name). Docker treats loopback registries as insecure automatically;
+    // Podman does not and refuses plain HTTP without this flag.
+    let tls_verify_flag = if engine == ContainerEngine::Podman && image.starts_with("localhost:") {
+        " --tls-verify=false"
+    } else {
+        ""
+    };
+    let command = format!("{engine} pull{tls_verify_flag} {image}");
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)
 }
@@ -152,18 +168,28 @@ async fn list_by_label_filter(
     Ok(parse_container_summary_lines(&result.stdout))
 }
 
+/// `ps --format`'s `.Labels` field means different things on the two engines: on Docker it's a
+/// flat display string (not indexable, needs the dedicated `.Label "key"` function), on Podman
+/// it's a real `map[string]string` (`.Label` doesn't exist on Podman's reporter struct at all,
+/// needs `index .Labels "key"`) -- confirmed live against both real Docker and real Podman.
+fn label_template(engine: ContainerEngine, key: &str) -> String {
+    match engine {
+        ContainerEngine::Docker => format!("{{{{.Label \"{key}\"}}}}"),
+        ContainerEngine::Podman => format!("{{{{index .Labels \"{key}\"}}}}"),
+    }
+}
+
 /// `|` separates fields (never collapsed by an empty label value, unlike whitespace); it can't
-/// appear in a container name or in a label value jiji itself sets. `ps --format`'s `.Labels`
-/// field is a flat display string on both engines (not a map), so extracting one label's value
-/// needs the dedicated `.Label "key"` template function -- confirmed live against real Docker;
-/// `index .Labels "key"` fails with "cannot index slice/array with type string".
+/// appear in a container name or in a label value jiji itself sets.
 fn render_list_by_label_filter_command(engine: ContainerEngine, project: Option<&str>) -> String {
     let project_filter = project
         .map(|project| format!(" --filter label=jiji.project={project}"))
         .unwrap_or_default();
     format!(
-        "{engine} ps -a --filter label=jiji.managed=true{project_filter} --format \
-         '{{{{.Names}}}}|{{{{.Label \"jiji.project\"}}}}|{{{{.Label \"jiji.service\"}}}}|{{{{.Label \"jiji.server\"}}}}|{{{{.State}}}}'"
+        "{engine} ps -a --filter label=jiji.managed=true{project_filter} --format '{{{{.Names}}}}|{}|{}|{}|{{{{.State}}}}'",
+        label_template(engine, "jiji.project"),
+        label_template(engine, "jiji.service"),
+        label_template(engine, "jiji.server"),
     )
 }
 
@@ -251,8 +277,10 @@ pub async fn volume_attached_projects(
     engine: ContainerEngine,
     name: &str,
 ) -> anyhow::Result<Vec<Option<String>>> {
-    let command =
-        format!("{engine} ps -a --filter volume={name} --format '{{{{.Label \"jiji.project\"}}}}'");
+    let command = format!(
+        "{engine} ps -a --filter volume={name} --format '{}'",
+        label_template(engine, "jiji.project")
+    );
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
     Ok(result.stdout.lines().map(non_empty_line).collect())
@@ -398,6 +426,17 @@ mod tests {
         let without_project = render_list_by_label_filter_command(ContainerEngine::Docker, None);
         assert!(without_project.contains("--filter label=jiji.managed=true"));
         assert!(!without_project.contains("--filter label=jiji.project"));
+    }
+
+    #[test]
+    fn label_filter_command_uses_the_right_template_function_per_engine() {
+        let docker = render_list_by_label_filter_command(ContainerEngine::Docker, None);
+        assert!(docker.contains(r#"{{.Label "jiji.project"}}"#));
+        assert!(!docker.contains(".Labels"));
+
+        let podman = render_list_by_label_filter_command(ContainerEngine::Podman, None);
+        assert!(podman.contains(r#"{{index .Labels "jiji.project"}}"#));
+        assert!(!podman.contains(r#".Label ""#));
     }
 
     #[test]

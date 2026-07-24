@@ -129,13 +129,6 @@ Error: Could not establish proxy connection through bastion.example.com
      proxy: deploy@bastion.example.com
    ```
 
-4. **Use ProxyCommand for advanced scenarios:**
-   ```yaml
-   ssh:
-     user: deploy
-     proxy_command: "ssh -W %h:%p deploy@bastion.example.com"
-   ```
-
 ### Too Many Authentication Failures
 
 **Symptoms:**

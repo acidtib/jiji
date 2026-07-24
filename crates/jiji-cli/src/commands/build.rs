@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config};
+use jiji_config::{load_config, validate_config, RegistryType};
 use jiji_tui::Ui;
 
 use crate::{build_engine, build_plan, env_resolution, registry, version_tag};
@@ -59,30 +59,40 @@ pub async fn run(
 
     let project_root = env_resolution::project_root_from_config_path(&path);
     if push {
-        let (loaded, loaded_from) = env_resolution::load_env_file(
-            &project_root,
-            environment,
-            config.secrets_path.as_deref(),
-        )?;
-        if let Some(path) = loaded_from {
-            Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
-        }
-        match (
-            config.builder.registry.username.as_deref(),
-            config.builder.registry.password.as_deref(),
-        ) {
-            (Some(_), Some(raw)) => {
-                let password = registry::resolve_registry_password(raw, &loaded, host_env)?;
-                registry::login_local(
-                    config.builder.engine,
-                    &config.builder.registry,
-                    &password,
-                )
-                .await?;
+        match config.builder.registry.kind {
+            RegistryType::Local => {
+                Ui::section("Local Registry:");
+                registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
+                    .await?;
             }
-            _ => Ui::warn(
-                "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",
-            ),
+            RegistryType::Remote => {
+                let (loaded, loaded_from) = env_resolution::load_env_file(
+                    &project_root,
+                    environment,
+                    config.secrets_path.as_deref(),
+                )?;
+                if let Some(path) = loaded_from {
+                    Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
+                }
+                match (
+                    config.builder.registry.username.as_deref(),
+                    config.builder.registry.password.as_deref(),
+                ) {
+                    (Some(_), Some(raw)) => {
+                        let password =
+                            registry::resolve_registry_password(raw, &loaded, host_env)?;
+                        registry::login_local(
+                            config.builder.engine,
+                            &config.builder.registry,
+                            &password,
+                        )
+                        .await?;
+                    }
+                    _ => Ui::warn(
+                        "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",
+                    ),
+                }
+            }
         }
     }
 
@@ -96,6 +106,7 @@ pub async fn run(
             push,
             &config.project,
             &project_root,
+            config.builder.registry.kind == RegistryType::Local,
         )
         .await
         .with_context(|| format!("Build failed for service '{}'", entry.service_name))?;

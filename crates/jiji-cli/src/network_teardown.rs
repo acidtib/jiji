@@ -83,19 +83,32 @@ pub enum NetworkRemovalOutcome {
     RetainedAttached(usize),
 }
 
-/// Removes the Podman keepalive anchor (if applicable) and then the `jiji` bridge/engine network
-/// itself, but only when nothing remains attached. `kamal_proxy_still_running` short-circuits
-/// straight to a retained outcome, since a still-running kamal-proxy is itself attached to `jiji`
-/// and network removal would fail regardless of anything else.
+/// Removes the Podman keepalive anchor container, if present. Must run before
+/// `stop_and_disable_units`: `jiji-network-restore.service` is what creates and starts the
+/// `--restart unless-stopped` anchor, so its `conmon` process ends up inside that unit's own
+/// cgroup. Stopping the unit while the anchor is still alive makes systemd's default
+/// `KillMode=control-group` wait out the stop timeout and SIGKILL conmon instead of returning
+/// immediately, stalling teardown by roughly a minute.
+pub async fn remove_anchor_if_present(
+    session: &SshSession,
+    engine: ContainerEngine,
+) -> anyhow::Result<bool> {
+    if engine != ContainerEngine::Podman {
+        return Ok(false);
+    }
+    container_ops::remove_if_present(session, engine, NETWORK_ANCHOR_CONTAINER_NAME).await
+}
+
+/// Removes the `jiji` bridge/engine network itself, but only when nothing remains attached.
+/// `kamal_proxy_still_running` short-circuits straight to a retained outcome, since a
+/// still-running kamal-proxy is itself attached to `jiji` and network removal would fail
+/// regardless of anything else. Call `remove_anchor_if_present` first: leaving the anchor
+/// attached would otherwise always count as attachment.
 pub async fn remove_bridge_and_engine_network(
     session: &SshSession,
     engine: ContainerEngine,
     kamal_proxy_still_running: bool,
 ) -> anyhow::Result<NetworkRemovalOutcome> {
-    if engine == ContainerEngine::Podman {
-        container_ops::remove_if_present(session, engine, NETWORK_ANCHOR_CONTAINER_NAME).await?;
-    }
-
     let attached =
         container_ops::network_attachment_count(session, engine, BRIDGE_NETWORK_NAME, &[]).await?;
     if kamal_proxy_still_running || attached > 0 {
