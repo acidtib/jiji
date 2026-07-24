@@ -448,6 +448,13 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
         !received.iter().any(|c| c.contains("rm -f")),
         "nothing should be removed on a first deployment: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")
+                && c.contains("install -d -m 0700 .jiji/demo")),
+        "a successful deploy should append an audit entry: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

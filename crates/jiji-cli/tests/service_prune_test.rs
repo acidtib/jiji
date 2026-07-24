@@ -250,6 +250,12 @@ async fn prune_removes_images_past_the_retained_count() {
     assert!(received.contains(&"docker rmi id1".to_string()));
     assert!(!received.contains(&"docker rmi id2".to_string()));
     assert!(!received.contains(&"docker rmi id3".to_string()));
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "a successful prune should append an audit entry: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

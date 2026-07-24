@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use jiji_tui::Ui;
 
 use super::{close_all, connect_targets, read_all};
+use crate::audit::{self, AuditStatus};
 use crate::lock::{self, LockInfo};
 
 pub async fn run(
@@ -120,6 +121,17 @@ pub async fn run(
         );
     }
 
+    for name in &acquired {
+        let session = targets.sessions.get(name).expect("connected above");
+        audit::record(
+            session,
+            &targets.project,
+            "lock_acquire",
+            AuditStatus::Success,
+            format!("\"{message}\" by {}", lock::current_user()),
+        )
+        .await;
+    }
     close_all(&targets.sessions).await;
     Ui::success("\nDeployment lock acquired.");
     Ui::say(&format!("Message: {message}"), 1);

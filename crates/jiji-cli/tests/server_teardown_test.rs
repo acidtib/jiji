@@ -340,6 +340,13 @@ async fn full_successful_teardown_reports_fully_torn_down() {
         received.iter().any(|c| c.contains("rm -rf .jiji/demo")),
         "the project's staged env/mount directory should have been removed: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "a successful teardown should still append a final audit entry, recreating the staging \
+         directory it just removed with nothing but this one record: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

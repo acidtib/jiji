@@ -300,6 +300,12 @@ async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
         !received.iter().any(|c| c.contains("volume rm")),
         "volumes must not be touched without --volumes: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "a successful remove should append an audit entry: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

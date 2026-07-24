@@ -7,7 +7,7 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::deploy::select_target_endpoints;
-use crate::{container_ops, registry, ssh_adapter};
+use crate::{audit, container_ops, registry, ssh_adapter};
 
 #[derive(Debug)]
 enum PruneStepResult {
@@ -168,6 +168,35 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(operations).await;
+
+    let server_by_identity: BTreeMap<String, String> = prunable
+        .iter()
+        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+        .collect();
+    let endpoint_outcomes = results.iter().map(|(identity, outcome)| {
+        let succeeded = match outcome {
+            Ok(steps) => !steps
+                .iter()
+                .any(|(_, result)| matches!(result, PruneStepResult::Failed { .. })),
+            Err(_) => false,
+        };
+        (
+            identity.clone(),
+            server_by_identity
+                .get(identity)
+                .expect("every pruned identity was selected above")
+                .clone(),
+            succeeded,
+        )
+    });
+    audit::record_endpoints_by_server(
+        &sessions,
+        &plan.project,
+        "service_prune",
+        None,
+        endpoint_outcomes,
+    )
+    .await;
     close_all(&sessions).await;
 
     Ui::section("Prune Summary:");

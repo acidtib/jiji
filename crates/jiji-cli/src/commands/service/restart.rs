@@ -10,7 +10,7 @@ use jiji_tui::Ui;
 use crate::commands::deploy::{select_target_endpoints, DEFAULT_MAX_DIR_UPLOAD_BYTES};
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
 use crate::{
-    container_ops, container_runtime, env_resolution, proxy, service_network, ssh_adapter,
+    audit, container_ops, container_runtime, env_resolution, proxy, service_network, ssh_adapter,
 };
 
 /// Zero-downtime slot cycle: builds on the exact same `deploy_endpoint` primitive `jiji deploy`
@@ -304,6 +304,29 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+
+    let server_by_identity: BTreeMap<String, String> = selected
+        .iter()
+        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+        .collect();
+    let endpoint_outcomes = results.iter().flatten().map(|(identity, outcome)| {
+        (
+            identity.clone(),
+            server_by_identity
+                .get(identity)
+                .expect("every restarted identity was selected above")
+                .clone(),
+            matches!(outcome, EndpointOutcome::Deployed { .. }),
+        )
+    });
+    audit::record_endpoints_by_server(
+        &sessions,
+        &plan.project,
+        "service_restart",
+        None,
+        endpoint_outcomes,
+    )
+    .await;
     close_all(&sessions).await;
 
     Ui::section("Restart Summary:");

@@ -1,3 +1,4 @@
+mod audit;
 mod build_engine;
 mod build_plan;
 mod cli;
@@ -495,6 +496,31 @@ pub async fn run() {
                 }
             }
         },
+        Some(Commands::Audit {
+            lines,
+            grep,
+            status,
+            json,
+            follow,
+        }) => {
+            if let Err(err) = commands::audit::run(
+                cli.environment.as_deref(),
+                cli.config_file.as_deref(),
+                cli.hosts.as_deref(),
+                cli.services.as_deref(),
+                *lines,
+                grep.as_deref(),
+                status.as_deref(),
+                *json,
+                *follow,
+            )
+            .await
+            {
+                println!();
+                jiji_tui::Ui::error(&format!("Audit failed: {err}"));
+                std::process::exit(1);
+            }
+        }
         None => {
             Cli::command().print_help().ok();
             println!();

@@ -344,6 +344,12 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
         received.contains(&format!("docker rm -f {old_name}")),
         "old slot should have been removed: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "a successful rollback should append an audit entry: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

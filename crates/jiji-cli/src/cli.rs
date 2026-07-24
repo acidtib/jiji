@@ -139,6 +139,38 @@ pub enum Commands {
         #[command(subcommand)]
         command: LockCommands,
     },
+    #[command(about = "Show the deployment audit trail")]
+    Audit {
+        #[arg(
+            short = 'n',
+            long,
+            value_name = "N",
+            default_value_t = 20,
+            help = "Number of entries to show per server"
+        )]
+        lines: u32,
+        #[arg(
+            short = 'g',
+            long,
+            value_name = "PATTERN",
+            help = "Filter entries by action or message"
+        )]
+        grep: Option<String>,
+        #[arg(
+            long,
+            value_name = "STATUS",
+            help = "Filter by status: success or failed"
+        )]
+        status: Option<String>,
+        #[arg(long, help = "Output entries as newline-delimited JSON")]
+        json: bool,
+        #[arg(
+            short = 'f',
+            long,
+            help = "Follow the audit trail as new entries are appended (requires exactly one host)"
+        )]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand)]

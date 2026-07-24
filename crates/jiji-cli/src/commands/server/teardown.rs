@@ -6,6 +6,7 @@ use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::audit::{self, AuditStatus};
 use crate::teardown_plan::ServerTeardownPlan;
 use crate::{
     container_ops, env_resolution, image_teardown, network_teardown, proxy_teardown,
@@ -240,6 +241,27 @@ pub async fn run(
                 }
             }
         }
+        // Written after teardown, deliberately: teardown's own "project staging directory"
+        // step (above) already `rm -rf`s `.jiji/{project}` -- the same directory audit entries
+        // live under -- since it holds plaintext secrets. Recording here recreates that
+        // directory containing nothing but this one entry, which is the intended outcome: a
+        // forensic record that this project's remote state was torn down survives the teardown
+        // that produced it, without resurrecting any of the secret-bearing scratch data it held.
+        let failed = steps
+            .iter()
+            .any(|(_, result)| matches!(result, TeardownStepResult::Failed { .. }));
+        audit::record(
+            session,
+            &project,
+            "server_teardown",
+            if failed {
+                AuditStatus::Failed
+            } else {
+                AuditStatus::Success
+            },
+            format!("{} step(s)", steps.len()),
+        )
+        .await;
         outcomes.insert(name.clone(), HostTeardownOutcome::Completed { steps });
     }
 

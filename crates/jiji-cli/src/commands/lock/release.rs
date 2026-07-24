@@ -1,6 +1,7 @@
 use jiji_tui::Ui;
 
 use super::{close_all, connect_targets, read_all};
+use crate::audit::{self, AuditStatus};
 use crate::lock;
 
 pub async fn run(
@@ -34,18 +35,29 @@ pub async fn run(
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;
-    close_all(&targets.sessions).await;
 
     let mut failures = Vec::new();
     for (name, result) in names.iter().zip(results) {
         match result {
-            Ok(()) => Ui::say(&format!("{name}: lock released"), 1),
+            Ok(()) => {
+                Ui::say(&format!("{name}: lock released"), 1);
+                let session = targets.sessions.get(name).expect("connected above");
+                audit::record(
+                    session,
+                    &targets.project,
+                    "lock_release",
+                    AuditStatus::Success,
+                    format!("released by {}", lock::current_user()),
+                )
+                .await;
+            }
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
                 failures.push(name.clone());
             }
         }
     }
+    close_all(&targets.sessions).await;
 
     if !failures.is_empty() {
         anyhow::bail!(

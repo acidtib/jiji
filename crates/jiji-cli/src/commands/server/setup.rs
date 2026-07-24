@@ -3,6 +3,7 @@ use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::audit::{self, AuditStatus};
 use crate::commands::network;
 use crate::engine::{self, EngineStatus};
 use crate::proxy::{self, ProxyStatus};
@@ -175,18 +176,46 @@ async fn setup_proxies(
             bridge_name: server_plan.bridge_name.clone(),
             proxy_address: server_plan.proxy_address,
         });
+        // Written here, not earlier: engine install and network setup each already bailed the
+        // whole command on any per-host failure before reaching this final phase, so a host that
+        // gets this far already succeeded at every earlier step -- this proxy result is the last
+        // thing standing between "setup succeeded" and "setup failed" for this host.
         match proxy::ensure_proxy(&session, config.builder.engine, network, false).await {
             Ok(ProxyStatus::AlreadyRunning) => {
                 Ui::say(
                     &format!("{name}: kamal-proxy already configured and running"),
                     1,
                 );
+                audit::record(
+                    &session,
+                    &config.project,
+                    "server_setup",
+                    AuditStatus::Success,
+                    "engine, network, and kamal-proxy configured",
+                )
+                .await;
             }
             Ok(ProxyStatus::Started) => {
                 Ui::say(&format!("{name}: kamal-proxy configured and running"), 1);
+                audit::record(
+                    &session,
+                    &config.project,
+                    "server_setup",
+                    AuditStatus::Success,
+                    "engine, network, and kamal-proxy configured",
+                )
+                .await;
             }
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
+                audit::record(
+                    &session,
+                    &config.project,
+                    "server_setup",
+                    AuditStatus::Failed,
+                    format!("kamal-proxy setup failed: {error}"),
+                )
+                .await;
                 failures.push((name.clone(), error.to_string()));
             }
         }

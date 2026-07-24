@@ -254,7 +254,7 @@ async fn reports_an_already_installed_engine() {
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, _) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -284,6 +284,14 @@ async fn reports_an_already_installed_engine() {
     assert!(
         stdout.contains("kamal-proxy configured and running"),
         "stdout: {stdout}"
+    );
+    assert!(
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/testproject/audit.log")),
+        "a successful server setup should append an audit entry"
     );
 }
 

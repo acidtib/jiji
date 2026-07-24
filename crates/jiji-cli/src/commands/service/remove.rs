@@ -8,7 +8,8 @@ use jiji_tui::Ui;
 
 use crate::commands::deploy::select_target_endpoints;
 use crate::{
-    container_ops, container_runtime, proxy_routes, service_network, ssh_adapter, volume_teardown,
+    audit, container_ops, container_runtime, proxy_routes, service_network, ssh_adapter,
+    volume_teardown,
 };
 
 #[derive(Debug)]
@@ -277,6 +278,32 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(operations).await;
+
+    let server_by_identity: BTreeMap<String, String> = selected
+        .iter()
+        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+        .collect();
+    let endpoint_outcomes = results.iter().map(|(identity, steps)| {
+        let succeeded = !steps
+            .iter()
+            .any(|(_, result)| matches!(result, RemoveStepResult::Failed { .. }));
+        (
+            identity.clone(),
+            server_by_identity
+                .get(identity)
+                .expect("every removed identity was selected above")
+                .clone(),
+            succeeded,
+        )
+    });
+    audit::record_endpoints_by_server(
+        &sessions,
+        &plan.project,
+        "service_remove",
+        None,
+        endpoint_outcomes,
+    )
+    .await;
     close_all(&sessions).await;
 
     Ui::section("Remove Summary:");

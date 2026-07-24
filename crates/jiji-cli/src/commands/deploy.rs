@@ -8,6 +8,7 @@ use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::audit;
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
 use crate::{
     build_engine, build_plan, container_runtime, env_resolution, proxy, registry, ssh_adapter,
@@ -488,6 +489,26 @@ pub async fn run(
 
     let results = pool.execute_concurrent(service_futures).await;
     close_all(&tunnel_sessions).await;
+
+    // One audit entry per server, summarizing every endpoint deployed on it during this run --
+    // written before `close_all(&sessions)` below, since the audit write needs the same SSH
+    // session the deploy itself just used.
+    let server_by_identity: BTreeMap<String, String> = selected
+        .iter()
+        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+        .collect();
+    let endpoint_outcomes = results.iter().flatten().map(|(identity, outcome)| {
+        (
+            identity.clone(),
+            server_by_identity
+                .get(identity)
+                .expect("every deployed identity was selected above")
+                .clone(),
+            matches!(outcome, EndpointOutcome::Deployed { .. }),
+        )
+    });
+    audit::record_endpoints_by_server(&sessions, &plan.project, "deploy", None, endpoint_outcomes)
+        .await;
     close_all(&sessions).await;
 
     Ui::section("Deployment Summary:");

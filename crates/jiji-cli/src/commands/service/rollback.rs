@@ -9,7 +9,7 @@ use jiji_tui::Ui;
 
 use crate::commands::deploy::{select_target_endpoints, DEFAULT_MAX_DIR_UPLOAD_BYTES};
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
-use crate::{container_runtime, env_resolution, proxy, registry, ssh_adapter, version_tag};
+use crate::{audit, container_runtime, env_resolution, proxy, registry, ssh_adapter, version_tag};
 
 /// Zero-downtime slot cycle onto a specific, already-published image tag: builds on the same
 /// `deploy_endpoint` primitive `jiji deploy`/`jiji service restart` use (candidate placement,
@@ -273,6 +273,29 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+
+    let server_by_identity: BTreeMap<String, String> = selected
+        .iter()
+        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+        .collect();
+    let endpoint_outcomes = results.iter().flatten().map(|(identity, outcome)| {
+        (
+            identity.clone(),
+            server_by_identity
+                .get(identity)
+                .expect("every rolled-back identity was selected above")
+                .clone(),
+            matches!(outcome, EndpointOutcome::Deployed { .. }),
+        )
+    });
+    audit::record_endpoints_by_server(
+        &sessions,
+        &plan.project,
+        "service_rollback",
+        Some(&format!("version '{version}'")),
+        endpoint_outcomes,
+    )
+    .await;
     close_all(&sessions).await;
 
     Ui::section("Rollback Summary:");

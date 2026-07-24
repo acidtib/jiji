@@ -344,6 +344,12 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
         received.contains(&format!("docker rm -f {old_name}")),
         "old slot should have been removed: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "a successful restart should append an audit entry: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
