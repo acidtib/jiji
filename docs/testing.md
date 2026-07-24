@@ -122,16 +122,16 @@ Quiet mode suppresses host headers and reduces verbosity for clean output:
 
 ```bash
 # Test quiet mode with logs
-jiji services logs --services web --quiet
+jiji service logs --services web --quiet
 
 # Verify output has no host headers
 # Expected: Only log lines, no [server1.example.com] headers
 
 # Test quiet mode with grep
-jiji services logs --services web --grep "ERROR" --quiet | wc -l
+jiji service logs --services web --grep "ERROR" --quiet | wc -l
 
 # Combine with other tools
-jiji services logs --services web --quiet | grep -i "warning" | sort | uniq
+jiji service logs --services web --quiet | grep -i "warning" | sort | uniq
 ```
 
 **What to verify:**
@@ -154,7 +154,7 @@ jiji deploy --services "web,api,worker"
 jiji server exec "docker ps | grep myproject"
 
 # Remove only one service
-jiji services remove --services "worker"
+jiji service remove --services "worker"
 
 # Verify worker is removed but web and api still running
 jiji server exec "docker ps | grep myproject"
@@ -180,10 +180,10 @@ jiji server exec "ls -la .jiji/"
 
 ```bash
 # Without confirmation (prompts)
-jiji services remove --services "worker"
+jiji service remove --services "worker"
 
 # With confirmation flag (no prompt)
-jiji services remove --services "worker" --confirmed
+jiji service remove --services "worker" --yes
 ```
 
 ## Testing Port Forwarding for Local Registry
@@ -331,10 +331,10 @@ jiji deploy
 jiji server exec "docker ps | grep test-web"
 
 # 5. Test logs
-jiji services logs --services test-web --lines 10
+jiji service logs --services test-web --lines 10
 
 # 6. Test partial removal
-jiji services remove --services test-web --confirmed
+jiji service remove --services test-web --yes
 
 # 7. Verify removed
 ! jiji server exec "docker ps | grep test-web"

@@ -2,29 +2,37 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, ContainerEngine, NamedServer, Service};
-use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
+use jiji_config::{load_config, validate_config, NamedServer, Service};
+use jiji_network::{NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::deploy::{select_target_endpoints, DEFAULT_MAX_DIR_UPLOAD_BYTES};
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
-use crate::{
-    container_ops, container_runtime, env_resolution, proxy, service_network, ssh_adapter,
-};
+use crate::{container_runtime, env_resolution, proxy, registry, ssh_adapter, version_tag};
 
-/// Zero-downtime slot cycle: builds on the exact same `deploy_endpoint` primitive `jiji deploy`
-/// uses (candidate placement, health check, VIP cutover, proxy route activation, old-slot
-/// cleanup), reusing whatever image is already configured/running rather than building or
-/// bumping a version -- restart's whole point is to cycle the container in place.
+/// Zero-downtime slot cycle onto a specific, already-published image tag: builds on the same
+/// `deploy_endpoint` primitive `jiji deploy`/`jiji service restart` use (candidate placement,
+/// health check, VIP cutover, proxy route activation, old-slot cleanup), but unlike restart
+/// (which reuses whatever is already running) the target image is always the caller-supplied
+/// `--version`, resolved purely from configuration -- no build, no registry push, no per-endpoint
+/// SSH round trip to discover a current image, since the target is fully determined up front.
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
     hosts: Option<&str>,
     services: Option<&str>,
+    version: Option<&str>,
     host_env: bool,
 ) -> anyhow::Result<()> {
-    Ui::section("Service Restart:");
+    Ui::section("Service Rollback:");
+
+    let version = version.ok_or_else(|| {
+        anyhow::anyhow!(
+            "`jiji service rollback` requires a target version. Pass `--version <tag>` naming a previously built and pushed image tag."
+        )
+    })?;
+    version_tag::validate_or_bail(version)?;
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -45,7 +53,7 @@ pub async fn run(
 
     let ssh = config.ssh.clone().ok_or_else(|| {
         anyhow::anyhow!(
-            "No `ssh:` section configured in {}. Add at least `ssh.user:` before running service restart.",
+            "No `ssh:` section configured in {}. Add at least `ssh.user:` before running service rollback.",
             path.display()
         )
     })?;
@@ -55,14 +63,14 @@ pub async fn run(
         .context("Could not build the private network plan")?;
     if !plan.enabled {
         anyhow::bail!(
-            "Private networking is disabled in configuration; `jiji service restart` requires it. Enable `network.enabled` and run `jiji server setup`."
+            "Private networking is disabled in configuration; `jiji service rollback` requires it. Enable `network.enabled` and run `jiji server setup`."
         );
     }
 
     let selected = select_target_endpoints(&plan, hosts, services)?;
     Ui::say(
         &format!(
-            "Restarting {} endpoint(s): {}",
+            "Rolling back {} endpoint(s) to version '{version}': {}",
             selected.len(),
             selected
                 .iter()
@@ -73,8 +81,30 @@ pub async fn run(
         1,
     );
 
-    // Restart still performs a VIP cutover, so the installed network generation must be current
-    // first -- same precondition `jiji deploy` enforces.
+    // Resolved purely from configuration before any network I/O, so a bad `image:`/`build:` setup
+    // (e.g. an already-tagged image with no room for `--version`) fails fast instead of after
+    // reconciling the network or connecting to hosts.
+    Ui::section("Resolving Images:");
+    let selected_service_names: BTreeSet<String> = selected
+        .iter()
+        .map(|endpoint| endpoint.service.clone())
+        .collect();
+    let mut images: BTreeMap<String, String> = BTreeMap::new();
+    for service_name in &selected_service_names {
+        let service = config.services.get(service_name).expect("checked above");
+        let image = resolve_rollback_image(
+            &config.builder.registry,
+            &config.project,
+            service_name,
+            service,
+            version,
+        )?;
+        Ui::say(&format!("{service_name}: {image}"), 1);
+        images.insert(service_name.clone(), image);
+    }
+
+    // Rollback still performs a VIP cutover, so the installed network generation must be current
+    // first -- same precondition `jiji deploy`/`jiji service restart` enforce.
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
 
     let project_root = env_resolution::project_root_from_config_path(&path);
@@ -89,25 +119,14 @@ pub async fn run(
 
     let shared_env = config.environment.clone().unwrap_or_default();
     let mut resolved_envs: BTreeMap<String, env_resolution::ResolvedEnvironment> = BTreeMap::new();
-    for endpoint in &selected {
-        if resolved_envs.contains_key(&endpoint.service) {
-            continue;
-        }
-        let service = config.services.get(&endpoint.service).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Service '{}' is not defined in configuration",
-                endpoint.service
-            )
-        })?;
+    for service_name in &selected_service_names {
+        let service = config.services.get(service_name).expect("checked above");
         let merged = env_resolution::merge_environment(&shared_env, &service.environment);
         let resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
             .with_context(|| {
-                format!(
-                    "Could not resolve environment for service '{}'",
-                    endpoint.service
-                )
+                format!("Could not resolve environment for service '{service_name}'")
             })?;
-        resolved_envs.insert(endpoint.service.clone(), resolved);
+        resolved_envs.insert(service_name.clone(), resolved);
     }
 
     let server_names: BTreeSet<String> = selected.iter().map(|e| e.server.clone()).collect();
@@ -189,58 +208,8 @@ pub async fn run(
         }
     }
 
-    // Resolved per endpoint identity, not per service: a build-only service's currently-running
-    // image is discovered by inspecting that specific replica's active container, so different
-    // replicas of the same service could in principle be restarted from different images if a
-    // prior deploy only reached some of them. Run concurrently through the same pool used for
-    // connecting/restarting -- each lookup is an independent SSH round trip.
-    Ui::section("Resolving Images:");
+    Ui::section("Rolling Back:");
     let engine = config.builder.engine;
-    let mut image_operations = Vec::with_capacity(selected.len());
-    for endpoint in &selected {
-        let identity = endpoint.identity.clone();
-        let endpoint = (*endpoint).clone();
-        let session = sessions
-            .get(&endpoint.server)
-            .expect("connected above")
-            .clone();
-        let plan_for_image = plan.clone();
-        let service = config
-            .services
-            .get(&endpoint.service)
-            .expect("checked above")
-            .clone();
-        image_operations.push(move || async move {
-            let result =
-                resolve_restart_image(&session, engine, &plan_for_image, &endpoint, &service).await;
-            (identity, result)
-        });
-    }
-    let image_results = pool.execute_concurrent(image_operations).await;
-
-    let mut images: BTreeMap<String, String> = BTreeMap::new();
-    let mut image_failures = Vec::new();
-    for (identity, result) in image_results {
-        match result {
-            Ok(image) => {
-                Ui::say(&format!("{identity}: {image}"), 1);
-                images.insert(identity, image);
-            }
-            Err(error) => {
-                Ui::error(&format!("{identity}: {error}"));
-                image_failures.push(error.to_string());
-            }
-        }
-    }
-    if !image_failures.is_empty() {
-        close_all(&sessions).await;
-        anyhow::bail!(
-            "Could not resolve the restart image for {} endpoint(s); see the errors above.",
-            image_failures.len()
-        );
-    }
-
-    Ui::section("Restarting:");
     let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
     for endpoint in &selected {
         endpoints_by_service
@@ -278,7 +247,7 @@ pub async fn run(
                 }
                 let session = sessions.get(&endpoint.server).expect("connected above");
                 let server = &plan.servers[&endpoint.server];
-                let image = images.get(&endpoint.identity).expect("resolved above");
+                let image = images.get(&service_name).expect("resolved above");
                 let ctx = EndpointDeploymentContext {
                     session,
                     plan: &plan,
@@ -306,13 +275,16 @@ pub async fn run(
     let results = pool.execute_concurrent(service_futures).await;
     close_all(&sessions).await;
 
-    Ui::section("Restart Summary:");
+    Ui::section("Rollback Summary:");
     let mut failures = 0usize;
     for outcomes in &results {
         for (identity, outcome) in outcomes {
             match outcome {
                 EndpointOutcome::Deployed { candidate_slot } => {
-                    Ui::say(&format!("{identity}: restarted (slot {candidate_slot})"), 1);
+                    Ui::say(
+                        &format!("{identity}: rolled back to '{version}' (slot {candidate_slot})"),
+                        1,
+                    );
                 }
                 EndpointOutcome::Failed { error } => {
                     Ui::error(&format!("{identity}: {error}"));
@@ -329,45 +301,43 @@ pub async fn run(
     }
 
     if failures > 0 {
-        anyhow::bail!("Restart failed for {failures} endpoint(s); see the summary above.");
+        anyhow::bail!("Rollback failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success("\nRestart completed.");
+    Ui::success("\nRollback completed.");
     Ok(())
 }
 
-async fn resolve_restart_image(
-    session: &SshSession,
-    engine: ContainerEngine,
-    plan: &NetworkPlan,
-    endpoint: &ServiceEndpointPlan,
+/// Resolves the exact image reference for `--version` without touching the builder or registry --
+/// a build-configured service's versioned tag is fully determined by `builder.registry` + project +
+/// service name (the same reference `jiji build`/`jiji deploy --build` would have already pushed),
+/// and a static `image:` service just gets `--version` applied the same way `jiji deploy --version`
+/// does. Trusts that the requested tag was already published; if it wasn't, the candidate container
+/// fails to start/pull and is reported as a normal deploy failure below, not a rollback-specific one.
+fn resolve_rollback_image(
+    registry_config: &jiji_config::Registry,
+    project: &str,
+    service_name: &str,
     service: &Service,
+    version: &str,
 ) -> anyhow::Result<String> {
-    if let Some(image) = &service.image {
-        return container_runtime::resolve_image_reference(image, None);
-    }
-
-    let active_slot = service_network::load_active_slots(session, plan)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?
-        .active_slot(&endpoint.identity);
-    let Some(slot) = active_slot else {
-        anyhow::bail!(
-            "Service '{}' has no `image:` configured and no running container on '{}' to restart from. Deploy it first with `jiji deploy --build`.",
-            endpoint.service,
-            endpoint.server
+    if service.build.is_some() {
+        return registry::full_image_name(registry_config, project, service_name, version).map_err(
+            |error| {
+                anyhow::anyhow!(
+                    "Could not resolve rollback image for service '{service_name}': {error}"
+                )
+            },
         );
-    };
-    let container = container_runtime::container_name(&plan.project, &endpoint.service, slot);
-    container_ops::inspect_image_ref(session, engine, &container)
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Service '{}' is marked active on '{}' but its container '{container}' could not be inspected (missing, or the container engine could not be reached). Repair it manually (or reconcile the VIP mapping) before retrying `jiji service restart`.",
-                endpoint.service,
-                endpoint.server
-            )
-        })
+    }
+    let image = service.image.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Service '{service_name}' has no `image:` or `build:` configured. Set one before rolling back."
+        )
+    })?;
+    container_runtime::resolve_image_reference(image, Some(version)).map_err(|error| {
+        anyhow::anyhow!("Could not resolve rollback image for service '{service_name}': {error}")
+    })
 }
 
 async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {

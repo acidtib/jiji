@@ -222,6 +222,10 @@ pub enum ServiceCommands {
     },
     #[command(about = "Restart running services with a zero-downtime slot cycle")]
     Restart,
+    #[command(
+        about = "Roll back services to a previously built image via a zero-downtime slot cycle (requires --version)"
+    )]
+    Rollback,
     #[command(about = "Remove services from servers")]
     Remove {
         #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]

@@ -23,15 +23,24 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
     println!("generation {}", plan.generation);
     println!("management {}", plan.management_cidr);
     println!("containers {}", plan.container_cidr);
+    println!(
+        "project {} wireguard-interface={} bridge-interface={} bridge-network={} wireguard-port={}",
+        plan.project,
+        jiji_network::wireguard_interface_name(&plan.project),
+        jiji_network::bridge_interface_name(&plan.project),
+        jiji_network::bridge_network_name(&plan.project),
+        jiji_network::wireguard_port(&plan.project),
+    );
     for server in plan.servers.values() {
         println!(
-            "server {} host={} management={} subnet={} gateway={} dns={}",
+            "server {} host={} management={} subnet={} gateway={} dns={} proxy={}",
             server.name,
             server.public_host,
             server.management_address,
             server.container_subnet,
             server.bridge_gateway,
-            server.dns_address
+            server.dns_address,
+            server.proxy_address
         );
     }
     for endpoint in plan.endpoints.values() {

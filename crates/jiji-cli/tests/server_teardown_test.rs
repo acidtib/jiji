@@ -409,7 +409,11 @@ async fn container_removal_failure_prevents_network_removal() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn another_projects_container_blocks_the_host_entirely() {
+async fn another_projects_container_is_left_untouched_not_blocking() {
+    // Once the network layer is per-project isolated, another project's containers on the same
+    // host is the normal, expected case (see the network-isolation design notes) -- teardown must
+    // proceed and remove only this project's own resources, surfacing the other project's
+    // presence as an informational notice rather than refusing to run.
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
     responses.insert(
@@ -424,16 +428,28 @@ async fn another_projects_container_blocks_the_host_entirely() {
     let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
 
     let output = run_jiji_teardown(&config_path, &["-y"]);
-    assert!(!output.status.success(), "expected non-zero exit");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("blocked"), "stdout: {stdout}");
+    assert!(
+        output.status.success(),
+        "expected success, stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!stdout.contains("blocked"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("other-web-a") && stdout.contains("left untouched"),
+        "expected an informational notice about the other project's container, stdout: {stdout}"
+    );
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
-        !received
+        !received.iter().any(|c| c.contains("other-web-a")),
+        "another project's container must never be named in a remote command: {received:?}"
+    );
+    assert!(
+        received
             .iter()
-            .any(|c| c.contains("rm -f") || c.contains("network rm")),
-        "a blocked host must never receive a destructive command: {received:?}"
+            .any(|c| c.contains("rm -rf /etc/jiji/network")),
+        "this project's own compiled network state should still be removed: {received:?}"
     );
 }
 

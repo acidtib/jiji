@@ -410,7 +410,7 @@ pub async fn run(
             }
             let server_plan = &plan.servers[server_name];
             let network = Some(proxy::ProxyNetwork {
-                dns_address: server_plan.dns_address,
+                bridge_name: server_plan.bridge_name.clone(),
                 proxy_address: server_plan.proxy_address,
             });
             if let Err(error) =

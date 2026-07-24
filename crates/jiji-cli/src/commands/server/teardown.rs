@@ -24,10 +24,7 @@ enum HostTeardownOutcome {
     Unreachable {
         error: String,
     },
-    Blocked {
-        blockers: Vec<String>,
-    },
-    /// Dry run only: successfully discovered and not blocked, but never executed.
+    /// Dry run only: successfully discovered, but never executed.
     Planned,
     Completed {
         steps: Vec<(String, TeardownStepResult)>,
@@ -160,20 +157,13 @@ pub async fn run(
             .await
         {
             Ok(plan) => {
-                if teardown_plan::has_blockers(&plan) {
-                    for blocker in &plan.blockers {
-                        Ui::warn(&format!("{name}: {blocker}"));
-                    }
-                    outcomes.insert(
-                        name.clone(),
-                        HostTeardownOutcome::Blocked {
-                            blockers: plan.blockers.clone(),
-                        },
-                    );
-                } else {
-                    Ui::say(&teardown_plan::render_summary(&plan), 1);
-                    plans.insert(name.clone(), plan);
+                for notice in teardown_plan::render_other_project_notices(
+                    &plan.network.other_project_containers,
+                ) {
+                    Ui::warn(&format!("{name}: {notice}"));
                 }
+                Ui::say(&teardown_plan::render_summary(&plan), 1);
+                plans.insert(name.clone(), plan);
             }
             Err(error) => {
                 Ui::error(&format!(
@@ -409,43 +399,54 @@ async fn execute_host_teardown(
         ));
     }
 
-    let kamal_proxy_still_running =
-        match proxy_teardown::teardown_proxy_container_if_unused(session, engine).await {
-            Ok(proxy_teardown::ProxyContainerOutcome::Removed) => {
-                steps.push((
-                    "kamal-proxy container".to_string(),
-                    TeardownStepResult::Removed,
-                ));
-                false
-            }
-            Ok(proxy_teardown::ProxyContainerOutcome::AlreadyAbsent) => {
-                steps.push((
-                    "kamal-proxy container".to_string(),
-                    TeardownStepResult::AlreadyAbsent,
-                ));
-                false
-            }
-            Ok(proxy_teardown::ProxyContainerOutcome::RetainedInUseBy(routes)) => {
-                steps.push((
-                    "kamal-proxy container".to_string(),
-                    TeardownStepResult::Retained {
-                        reason: format!("still serving route(s): {}", routes.join(", ")),
-                    },
-                ));
-                true
-            }
-            Err(error) => {
-                steps.push((
-                    "kamal-proxy container".to_string(),
-                    TeardownStepResult::Failed {
-                        error: error.to_string(),
-                    },
-                ));
-                // Unknown state: assume it's still in use rather than risk tearing down the
-                // network out from under a proxy we couldn't verify.
-                true
-            }
-        };
+    match proxy_teardown::teardown_proxy_container_if_unused(session, engine).await {
+        Ok(proxy_teardown::ProxyContainerOutcome::Removed) => {
+            steps.push((
+                "kamal-proxy container".to_string(),
+                TeardownStepResult::Removed,
+            ));
+        }
+        Ok(proxy_teardown::ProxyContainerOutcome::AlreadyAbsent) => {
+            steps.push((
+                "kamal-proxy container".to_string(),
+                TeardownStepResult::AlreadyAbsent,
+            ));
+        }
+        Ok(proxy_teardown::ProxyContainerOutcome::RetainedInUseBy(routes)) => {
+            steps.push((
+                "kamal-proxy container".to_string(),
+                TeardownStepResult::Retained {
+                    reason: format!("still serving route(s): {}", routes.join(", ")),
+                },
+            ));
+        }
+        Err(error) => {
+            steps.push((
+                "kamal-proxy container".to_string(),
+                TeardownStepResult::Failed {
+                    error: error.to_string(),
+                },
+            ));
+        }
+    }
+
+    // kamal-proxy may still be running for other projects (it's shared/multi-homed, see
+    // `crate::proxy`'s notes), in which case the step above retained it rather than removing it
+    // -- either way, it must be disconnected from *this* project's bridge specifically before the
+    // bridge itself can be removed. Tolerant of kamal-proxy being absent or already disconnected.
+    let bridge_name = jiji_network::bridge_network_name(project);
+    match crate::proxy::disconnect_bridge_if_attached(session, engine, &bridge_name).await {
+        Ok(was_attached) => steps.push((
+            "kamal-proxy network attachment".to_string(),
+            present_or_absent(was_attached),
+        )),
+        Err(error) => steps.push((
+            "kamal-proxy network attachment".to_string(),
+            TeardownStepResult::Failed {
+                error: error.to_string(),
+            },
+        )),
+    }
 
     // A prior teardown run may have already removed /etc/jiji/network entirely, in which case
     // there is no active-slots file left to read -- `installed_generation` (read from that same
@@ -487,7 +488,7 @@ async fn execute_host_teardown(
     // Must run before stopping jiji-network-restore.service: that unit is what starts the Podman
     // anchor container, so its conmon process lives in the unit's cgroup until the anchor is gone.
     // Disabling the unit first stalls teardown for roughly a minute waiting on a control-group kill.
-    match network_teardown::remove_anchor_if_present(session, engine).await {
+    match network_teardown::remove_anchor_if_present(session, engine, project).await {
         Ok(was_present) => steps.push((
             "podman network anchor container".to_string(),
             present_or_absent(was_present),
@@ -500,7 +501,7 @@ async fn execute_host_teardown(
         )),
     }
 
-    if let Err(error) = network_teardown::stop_and_disable_units(session, engine).await {
+    if let Err(error) = network_teardown::stop_and_disable_units(session, engine, project).await {
         steps.push((
             "network systemd units".to_string(),
             TeardownStepResult::Failed {
@@ -514,7 +515,7 @@ async fn execute_host_teardown(
         ));
     }
 
-    if let Err(error) = network_teardown::remove_wireguard(session).await {
+    if let Err(error) = network_teardown::remove_wireguard(session, project).await {
         steps.push((
             "wireguard configuration".to_string(),
             TeardownStepResult::Failed {
@@ -528,7 +529,7 @@ async fn execute_host_teardown(
         ));
     }
 
-    if let Err(error) = network_teardown::remove_nftables(session).await {
+    if let Err(error) = network_teardown::remove_nftables(session, project).await {
         steps.push((
             "service-nat nftables table".to_string(),
             TeardownStepResult::Failed {
@@ -542,13 +543,7 @@ async fn execute_host_teardown(
         ));
     }
 
-    match network_teardown::remove_bridge_and_engine_network(
-        session,
-        engine,
-        kamal_proxy_still_running,
-    )
-    .await
-    {
+    match network_teardown::remove_bridge_and_engine_network(session, engine, project).await {
         Ok(network_teardown::NetworkRemovalOutcome::Removed) => steps.push((
             "jiji bridge network".to_string(),
             TeardownStepResult::Removed,
@@ -571,7 +566,7 @@ async fn execute_host_teardown(
         )),
     }
 
-    if let Err(error) = network_teardown::remove_compiled_state(session).await {
+    if let Err(error) = network_teardown::remove_compiled_state(session, project).await {
         steps.push((
             "compiled network state".to_string(),
             TeardownStepResult::Failed {
@@ -599,7 +594,7 @@ fn present_or_absent(was_present: bool) -> TeardownStepResult {
 /// Prints the final per-host bucket and returns a non-zero exit (via `Err`) if any host wasn't
 /// fully torn down. A `Retained` step is a safe, sometimes-expected outcome (e.g. a shared
 /// kamal-proxy still serving another project) and never counts as a failure by itself; only
-/// `Failed` steps, blocked hosts, and unreachable hosts do.
+/// `Failed` steps and unreachable hosts do.
 fn print_summary_and_exit(outcomes: &BTreeMap<String, HostTeardownOutcome>) -> anyhow::Result<()> {
     Ui::section("Teardown Summary:");
     let mut failures = 0usize;
@@ -607,10 +602,6 @@ fn print_summary_and_exit(outcomes: &BTreeMap<String, HostTeardownOutcome>) -> a
         match outcome {
             HostTeardownOutcome::Unreachable { error } => {
                 Ui::error(&format!("{name}: unreachable ({error})"));
-                failures += 1;
-            }
-            HostTeardownOutcome::Blocked { blockers } => {
-                Ui::warn(&format!("{name}: blocked ({} blocker(s))", blockers.len()));
                 failures += 1;
             }
             HostTeardownOutcome::Planned => {

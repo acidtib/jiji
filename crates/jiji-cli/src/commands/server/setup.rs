@@ -172,7 +172,7 @@ async fn setup_proxies(
         };
         let server_plan = &plan.servers[name];
         let network = dns_enabled.then_some(proxy::ProxyNetwork {
-            dns_address: server_plan.dns_address,
+            bridge_name: server_plan.bridge_name.clone(),
             proxy_address: server_plan.proxy_address,
         });
         match proxy::ensure_proxy(&session, config.builder.engine, network, false).await {

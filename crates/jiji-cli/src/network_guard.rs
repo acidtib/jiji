@@ -1,7 +1,12 @@
 use jiji_network::NetworkPlan;
 use jiji_ssh::SshSession;
 
-const NETWORK_GENERATION_PATH: &str = "/etc/jiji/network/generation";
+fn network_generation_path(project: &str) -> String {
+    format!(
+        "{}/generation",
+        crate::commands::network::setup::network_dir(&jiji_network::systemd_unit_slug(project))
+    )
+}
 
 fn generation_mismatch_message(server_name: &str, installed: &str, expected: &str) -> String {
     format!(
@@ -13,7 +18,8 @@ pub async fn generation_is_current(
     session: &SshSession,
     plan: &NetworkPlan,
 ) -> anyhow::Result<bool> {
-    let command = format!("cat {NETWORK_GENERATION_PATH} 2>/dev/null || true");
+    let path = network_generation_path(&plan.project);
+    let command = format!("cat {path} 2>/dev/null || true");
     let result = session.execute(&command).await?;
     Ok(result.stdout.trim() == plan.generation)
 }
@@ -25,7 +31,8 @@ pub async fn verify_generation(
     plan: &NetworkPlan,
     server_name: &str,
 ) -> anyhow::Result<()> {
-    let command = format!("cat {NETWORK_GENERATION_PATH} 2>/dev/null || true");
+    let path = network_generation_path(&plan.project);
+    let command = format!("cat {path} 2>/dev/null || true");
     let result = session.execute(&command).await?;
     let installed = result.stdout.trim();
     if installed == plan.generation {

@@ -42,7 +42,13 @@ pub async fn run(
         anyhow::bail!("No servers are configured. Add a `servers:` entry and retry.");
     }
 
-    Ui::warn("Restarting kamal-proxy briefly interrupts every proxy route on each selected host.");
+    Ui::warn(
+        "Restarting kamal-proxy briefly interrupts every proxy route on each selected host. \
+         kamal-proxy is shared across every jiji project on a host: recreating it also drops \
+         any other project's network attachment, which is restored the next time that project \
+         runs `jiji deploy`/`jiji server setup`/`jiji proxy restart`, but its routes are \
+         unreachable until then.",
+    );
     let mut operations = Vec::with_capacity(selected.len());
     for server_plan in selected {
         let name = server_plan.name.clone();
@@ -52,7 +58,7 @@ pub async fn run(
         let options = ssh_adapter::connect_options(&name, &named_server, &ssh)?;
         let engine = config.builder.engine;
         let network = plan.enabled.then_some(proxy::ProxyNetwork {
-            dns_address: server_plan.dns_address,
+            bridge_name: server_plan.bridge_name.clone(),
             proxy_address: server_plan.proxy_address,
         });
         operations.push(move || async move {

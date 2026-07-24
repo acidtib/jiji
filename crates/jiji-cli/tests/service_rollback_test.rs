@@ -1,6 +1,7 @@
-//! Integration tests for `jiji service restart`, run as a real subprocess against a real,
-//! in-process SSH server (mirroring `deploy_test.rs`'s pattern, since restart is built directly
-//! on the same `deploy_endpoint` primitive as `jiji deploy`).
+//! Integration tests for `jiji service rollback`, run as a real subprocess against a real,
+//! in-process SSH server (mirroring `service_restart_test.rs`'s pattern, since rollback is built
+//! directly on the same `deploy_endpoint` primitive as `jiji deploy`/`jiji service restart`, just
+//! with the target image resolved from `--version` instead of whatever is currently running).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -60,7 +61,7 @@ impl server::Handler for TestServer {
     type Error = russh::Error;
 
     async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if *key == self.authorized_key {
+        Ok(if &self.authorized_key == key {
             Auth::Accept
         } else {
             Auth::reject()
@@ -162,7 +163,9 @@ async fn spawn_test_server(
     Harness { addr, received }
 }
 
-/// A single service ("web", image "example/web:latest") on a single server ("app").
+/// A single service ("web", untagged image "example/web") on a single server ("app") -- untagged
+/// so `--version` has a tag to apply (a service whose `image:` already carries an explicit tag has
+/// nothing for rollback to roll back to, and is rejected the same way `jiji deploy --version` is).
 fn config_yaml(addr: SocketAddr, key_path: &std::path::Path) -> String {
     format!(
         r#"
@@ -176,7 +179,7 @@ servers:
       - {key_path}
 services:
   web:
-    image: example/web:latest
+    image: example/web
     hosts: [app]
 ssh:
   user: tester
@@ -188,8 +191,8 @@ ssh:
     )
 }
 
-/// A build-only service (no static `image:`) -- restart must discover its currently running
-/// image from the active container instead of resolving one from config.
+/// A build-only service (no static `image:`) -- rollback must resolve the versioned tag purely
+/// from `builder.registry` + project + service name, never by inspecting a running container.
 fn config_yaml_build_only(addr: SocketAddr, key_path: &std::path::Path) -> String {
     format!(
         r#"
@@ -230,14 +233,16 @@ fn plan_generation(addr: SocketAddr) -> String {
     plan.generation
 }
 
-fn run_jiji_service_restart(config_path: &std::path::Path) -> std::process::Output {
+fn run_jiji_service_rollback(config_path: &std::path::Path, version: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("service")
-        .arg("restart")
+        .arg("rollback")
+        .arg("--version")
+        .arg(version)
         .arg("-c")
         .arg(config_path)
         .output()
-        .expect("run jiji service restart")
+        .expect("run jiji service rollback")
 }
 
 fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
@@ -289,10 +294,6 @@ fn inspect_status_command(name: &str) -> String {
     format!("docker inspect {name} --format '{{{{.State.Status}}}}'")
 }
 
-fn inspect_image_command(name: &str) -> String {
-    format!("docker inspect {name} --format '{{{{.Config.Image}}}}'")
-}
-
 fn readiness_health_command(name: &str) -> String {
     format!("docker inspect {name} --format '{{{{.State.Status}}}}' | grep -qx running")
 }
@@ -302,43 +303,42 @@ fn image_inspect_command(image: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
+async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service() {
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
 
     let old_name = "demo-web-a";
     let candidate_name = "demo-web-b";
+    let target_image = "example/web:v1.2.3";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
     responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(inspect_status_command(old_name), success("running\n"));
     responses.insert(inspect_status_command(candidate_name), failure());
-    responses.insert(image_inspect_command("example/web:latest"), success(""));
+    responses.insert(image_inspect_command(target_image), success(""));
     responses.insert(readiness_health_command(candidate_name), success(""));
     responses.insert(mktemp_command(), cutover_generation_path("abc123"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path));
 
-    let output = run_jiji_service_restart(&config_path);
+    let output = run_jiji_service_rollback(&config_path, "v1.2.3");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains(target_image), "stdout: {stdout}");
     assert!(
-        stdout.contains("demo:web:app: restarted (slot b)"),
+        stdout.contains("demo:web:app: rolled back to 'v1.2.3' (slot b)"),
         "stdout: {stdout}"
     );
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
-        received
-            .iter()
-            .any(|c| c.contains("docker run") && c.contains(candidate_name)),
-        "candidate should have been created: {received:?}"
-    );
-    assert!(
-        received.contains(&format!("docker stop {old_name}")),
-        "old slot should have been stopped: {received:?}"
+        received.iter().any(|c| c.contains("docker run")
+            && c.contains(candidate_name)
+            && c.contains(target_image)),
+        "candidate should have been created from the requested version, not the currently running \
+         image: {received:?}"
     );
     assert!(
         received.contains(&format!("docker rm -f {old_name}")),
@@ -347,61 +347,104 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn restart_resolves_the_image_from_the_active_container_for_a_build_only_service() {
+async fn rollback_resolves_a_build_only_service_from_the_registry_without_inspecting_a_container() {
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
 
-    let old_name = "demo-web-a";
-    let candidate_name = "demo-web-b";
-    let running_image = "example/web:git-abc123";
+    let candidate_name = "demo-web-a";
+    // Default registry is local, port 31270 -- see `jiji-config::schema::default_registry_port`.
+    let target_image = "localhost:31270/demo-web:v9";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
-    responses.insert(
-        inspect_image_command(old_name),
-        success(&format!("{running_image}\n")),
-    );
-    responses.insert(inspect_status_command(old_name), success("running\n"));
+    responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command(candidate_name), failure());
-    responses.insert(image_inspect_command(running_image), success(""));
+    responses.insert(image_inspect_command(target_image), success(""));
     responses.insert(readiness_health_command(candidate_name), success(""));
     responses.insert(mktemp_command(), cutover_generation_path("def456"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), &config_yaml_build_only(harness.addr, &key_path));
 
-    let output = run_jiji_service_restart(&config_path);
+    let output = run_jiji_service_rollback(&config_path, "v9");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
-    assert!(stdout.contains(running_image), "stdout: {stdout}");
+    assert!(stdout.contains(target_image), "stdout: {stdout}");
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("docker inspect demo-web-a --format '{{.Config.Image}}'")),
+        "rollback must never discover an image by inspecting a running container -- the whole \
+         point is deploying a specific requested version: {received:?}"
+    );
+    assert!(
         received.iter().any(|c| c.contains("docker run")
             && c.contains(candidate_name)
-            && c.contains(running_image)),
-        "candidate should have been created from the discovered image: {received:?}"
+            && c.contains(target_image)),
+        "candidate should have been created from the registry-resolved version: {received:?}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn restart_fails_actionably_when_a_build_only_service_has_no_active_container() {
+async fn rollback_without_a_version_fails_actionably() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
+    let harness = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
+    let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path));
 
-    let mut responses = HashMap::new();
-    responses.insert(generation_path(), success(&format!("{generation}\n")));
-    responses.insert(active_slots_path(), success(""));
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("service")
+        .arg("rollback")
+        .arg("-c")
+        .arg(&config_path)
+        .output()
+        .expect("run jiji service rollback");
 
-    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
-    let config_path = write_config(dir.path(), &config_yaml_build_only(harness.addr, &key_path));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--version"), "stderr: {stderr}");
 
-    let output = run_jiji_service_restart(&config_path);
+    // No SSH round trip should have happened at all -- the missing --version check must fail
+    // before connecting to any host.
+    assert!(harness.received.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rollback_rejects_a_service_whose_image_already_has_an_explicit_tag() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let harness = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
+    let config_path = write_config(
+        dir.path(),
+        &format!(
+            r#"
+project: demo
+builder: {{ engine: docker }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    hosts: [app]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+            ip = harness.addr.ip(),
+            port = harness.addr.port(),
+            key_path = key_path.display(),
+        ),
+    );
+
+    let output = run_jiji_service_rollback(&config_path, "v1.2.3");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no running container") && stderr.contains("jiji deploy --build"),
+        stderr.contains("already has an explicit tag"),
         "stderr: {stderr}"
     );
 }

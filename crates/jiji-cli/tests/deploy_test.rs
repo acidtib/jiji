@@ -286,12 +286,52 @@ fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
     (dir, key_path, client_key)
 }
 
-const ACTIVE_SLOTS_PATH: &str = "cat /etc/jiji/network/service-nat-current/active-slots";
-const GENERATION_PATH: &str = "cat /etc/jiji/network/generation 2>/dev/null || true";
-const MKTEMP_COMMAND: &str = "mktemp -d /etc/jiji/network/service-nat-generations/cutover.XXXXXX";
-const PUBLIC_KEY_COMMAND: &str =
-    "test -s /etc/jiji/network/public.key && cat /etc/jiji/network/public.key";
-const CAPTURE_GENERATIONS_COMMAND: &str = "set -eu; if test -L /etc/jiji/network/current; then readlink -f /etc/jiji/network/current; else printf '%s\\n' -; fi; if test -L /etc/jiji/network/dns-current; then readlink -f /etc/jiji/network/dns-current; else printf '%s\\n' -; fi";
+/// Every test config in this file uses `project: demo` (see `config_yaml`), so every project-scoped
+/// remote path/name can be derived from that one fixed slug.
+fn slug() -> String {
+    jiji_network::systemd_unit_slug("demo")
+}
+
+fn network_dir() -> String {
+    format!("/etc/jiji/network/{}", slug())
+}
+
+fn active_slots_path() -> String {
+    format!("cat {}/service-nat-current/active-slots", network_dir())
+}
+
+fn generation_path() -> String {
+    format!("cat {}/generation 2>/dev/null || true", network_dir())
+}
+
+fn mktemp_command() -> String {
+    format!(
+        "mktemp -d {}/service-nat-generations/cutover.XXXXXX",
+        network_dir()
+    )
+}
+
+fn public_key_command() -> String {
+    let dir = network_dir();
+    format!("test -s {dir}/public.key && cat {dir}/public.key")
+}
+
+fn capture_generations_command() -> String {
+    let dir = network_dir();
+    format!(
+        "set -eu; if test -L {dir}/current; then readlink -f {dir}/current; else printf '%s\\n' -; fi; if test -L {dir}/dns-current; then readlink -f {dir}/dns-current; else printf '%s\\n' -; fi"
+    )
+}
+
+/// `service_network::persist_state` validates that `mktemp`'s reported path actually starts with
+/// this project's `service-nat-generations/` prefix, so the canned stdout for `mktemp_command()`
+/// must be project-scoped too, not just its own command key.
+fn cutover_generation_path(suffix: &str) -> CannedResponse {
+    success(&format!(
+        "{}/service-nat-generations/cutover.{suffix}\n",
+        network_dir()
+    ))
+}
 
 fn inspect_status_command(engine: &str, name: &str) -> String {
     format!("{engine} inspect {name} --format '{{{{.State.Status}}}}'")
@@ -310,17 +350,14 @@ async fn network_generation_mismatch_triggers_reconciliation_before_container_co
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
     let mut responses = HashMap::new();
-    responses.insert(GENERATION_PATH.to_string(), success("stale-generation\n"));
+    responses.insert(generation_path(), success("stale-generation\n"));
     responses.insert(
-        format!("{GENERATION_PATH}#2"),
+        format!("{}#2", generation_path()),
         success(&format!("{generation}\n")),
     );
     responses.insert("id -u".to_string(), success("0\n"));
-    responses.insert(
-        PUBLIC_KEY_COMMAND.to_string(),
-        success("test-wireguard-public-key\n"),
-    );
-    responses.insert(CAPTURE_GENERATIONS_COMMAND.to_string(), success("-\n-\n"));
+    responses.insert(public_key_command(), success("test-wireguard-public-key\n"));
+    responses.insert(capture_generations_command(), success("-\n-\n"));
     responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
     responses.insert(
         image_inspect_command("docker", "example/web:latest"),
@@ -330,10 +367,7 @@ async fn network_generation_mismatch_triggers_reconciliation_before_container_co
         readiness_health_command("docker", "demo-web-a"),
         success(""),
     );
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.auto123\n"),
-    );
+    responses.insert(mktemp_command(), cutover_generation_path("auto123"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
@@ -349,10 +383,12 @@ async fn network_generation_mismatch_triggers_reconciliation_before_container_co
     );
 
     let received = harness.received.lock().unwrap().clone();
-    assert!(received.contains(&GENERATION_PATH.to_string()));
+    assert!(received.contains(&generation_path()));
     let activation = received
         .iter()
-        .position(|command| command.contains("systemctl restart jiji-dns.service"))
+        .position(|command| {
+            command.contains(&format!("systemctl restart jiji-dns-{}.service", slug()))
+        })
         .expect("network generation should be activated");
     let container = received
         .iter()
@@ -373,11 +409,8 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
 
     let candidate_name = "demo-web-a";
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success(""));
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
         image_inspect_command("docker", "example/web:latest"),
@@ -387,10 +420,7 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
         readiness_health_command("docker", candidate_name),
         success(""),
     );
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.abc123\n"),
-    );
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
@@ -428,11 +458,8 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     let old_name = "demo-web-a";
     let candidate_name = "demo-web-b";
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success("demo:web:app=a\n"));
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(
         inspect_status_command("docker", old_name),
         success("running\n"),
@@ -446,10 +473,7 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
         readiness_health_command("docker", candidate_name),
         success(""),
     );
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.def456\n"),
-    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
@@ -490,11 +514,8 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
     let old_name = "demo-web-a";
     let candidate_name = "demo-web-b";
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success("demo:web:app=a\n"));
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(
         inspect_status_command("docker", old_name),
         success("running\n"),
@@ -543,11 +564,8 @@ async fn podman_first_deployment_uses_podman_commands_only() {
 
     let candidate_name = "demo-web-a";
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success(""));
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("podman", candidate_name), failure());
     responses.insert(
         image_inspect_command("podman", "example/web:latest"),
@@ -557,10 +575,7 @@ async fn podman_first_deployment_uses_podman_commands_only() {
         readiness_health_command("podman", candidate_name),
         success(""),
     );
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.ghi789\n"),
-    );
+    responses.insert(mktemp_command(), cutover_generation_path("ghi789"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "podman");
@@ -654,20 +669,14 @@ ssh:
         .generation;
 
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success(""));
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
     responses.insert(
         readiness_health_command("docker", "demo-web-a"),
         success(""),
     );
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.local123\n"),
-    );
+    responses.insert(mktemp_command(), cutover_generation_path("local123"));
     if !pull_succeeds {
         responses.insert(
             format!("docker pull localhost:{registry_port}/demo-web:v1"),
@@ -763,10 +772,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 
     let lock_path = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
     let mut responses = HashMap::new();
-    responses.insert(
-        GENERATION_PATH.to_string(),
-        success(&format!("{generation}\n")),
-    );
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
     responses.insert(
         lock_path.to_string(),
         success(

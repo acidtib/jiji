@@ -95,7 +95,7 @@ impl server::Handler for TestServer {
 
         // Commands with no canned response (e.g. the many install-step shell commands a test
         // doesn't care about individually) succeed with empty output by default.
-        let response = if command.contains("if test -L /etc/jiji/network/current") {
+        let response = if command.contains("if test -L ") && command.contains("/current") {
             success("-\n-\n")
         } else if command.contains("inspect kamal-proxy --format '{{.State.Status}}'") {
             success("running\n")
@@ -168,8 +168,12 @@ fn failure() -> CannedResponse {
 
 fn add_network_setup_responses(responses: &mut HashMap<String, CannedResponse>) {
     responses.insert("id -u".to_string(), success("0\n"));
+    let dir = format!(
+        "/etc/jiji/network/{}",
+        jiji_network::systemd_unit_slug("testproject")
+    );
     responses.insert(
-        "test -s /etc/jiji/network/public.key && cat /etc/jiji/network/public.key".to_string(),
+        format!("test -s {dir}/public.key && cat {dir}/public.key"),
         success("test-wireguard-public-key\n"),
     );
 }
@@ -333,7 +337,6 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     let client_key =
         PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
     let mut responses = HashMap::new();
-    responses.insert("docker network inspect jiji".to_string(), success(""));
     responses.insert(
         "docker inspect kamal-proxy --format '{{.State.Status}}'".to_string(),
         success("running\n"),
@@ -352,6 +355,11 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     .expect("write key file");
     let config_path = write_config(dir.path(), addr, &key_path);
 
+    let config: jiji_config::Config =
+        serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let plan = jiji_network::NetworkPlanner::new().plan(&config).unwrap();
+    let server_plan = &plan.servers["web1"];
+
     let output = run_jiji_proxy_restart(&config_path);
     assert!(
         output.status.success(),
@@ -365,14 +373,23 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     assert!(commands
         .iter()
         .any(|command| command == "docker container rm -f kamal-proxy"));
-    assert!(commands
-        .iter()
-        .any(|command| command.starts_with("docker run --name kamal-proxy ")));
+    assert!(commands.iter().any(|command| command.starts_with(&format!(
+        "docker run --name kamal-proxy --network {} --ip {} ",
+        server_plan.bridge_name, server_plan.proxy_address
+    ))));
     assert!(
         !commands
             .iter()
             .any(|command| command.contains("index .Config.Labels \"jiji.proxy-config\"")),
         "force restart must skip the fingerprint inspection"
+    );
+    assert!(
+        commands.iter().any(|command| command
+            == &format!(
+                "docker network connect --ip {} {} kamal-proxy",
+                server_plan.proxy_address, server_plan.bridge_name
+            )),
+        "kamal-proxy should be attached to this project's bridge after recreation: {commands:?}"
     );
 }
 

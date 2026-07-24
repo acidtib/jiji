@@ -200,7 +200,7 @@ jiji deploy --build
 jiji server exec "podman ps"
 
 # Follow logs
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 
 # Check health endpoint
 curl https://myapp.example.com/health
@@ -276,7 +276,7 @@ app.get("/health", (req, res) => {
 
 ```bash
 # Follow logs during deployment
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 
 # In another terminal, watch containers
 watch -n 1 'jiji server exec "podman ps | grep web"'
@@ -649,7 +649,28 @@ deployment fails, the old container continues serving traffic.
 **Manual rollback:**
 
 ```bash
-# Redeploy previous version
+# Roll back to a previously built and pushed version (does not rebuild)
+jiji service rollback --version v1.2.2
+
+# Roll back a specific service, or only on specific hosts
+jiji service rollback --services web --version v1.2.2
+jiji service rollback --services web --hosts server1.example.com --version v1.2.2
+```
+
+`jiji service rollback` runs the same zero-downtime slot cycle as `jiji
+deploy`/`jiji service restart` (health check, VIP cutover, old-slot cleanup),
+but targets the exact image tag you pass with `--version` instead of building
+a new one. For a service with `build:` configured, it resolves that tag
+straight from `builder.registry` (no rebuild, trusting the tag was already
+pushed by an earlier `jiji build`/`jiji deploy --build`); for a service with a
+static, untagged `image:`, `--version` is appended the same way `jiji deploy
+--version` applies it.
+
+You can also redeploy an older version through `jiji deploy --version
+<tag>`, or rebuild from an older commit entirely:
+
+```bash
+# Redeploy previous version through the normal deploy path
 jiji deploy --version v1.2.2
 
 # Or rebuild from previous git commit
@@ -661,33 +682,33 @@ jiji deploy --build
 
 ```bash
 # Restart all instances of a service
-jiji services restart --services web
+jiji service restart --services web
 
 # Restart on specific host
-jiji services restart --services web --hosts server1.example.com
+jiji service restart --services web --hosts server1.example.com
 ```
 
 ### View Logs
 
 ```bash
 # View recent logs
-jiji services logs --services web --lines 100
+jiji service logs --services web --lines 100
 
 # Follow logs in real-time
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 
 # Filter for errors
-jiji services logs --services web --grep "ERROR" --since "1h"
+jiji service logs --services web --grep "ERROR" --since "1h"
 ```
 
 ### Clean Up Old Images
 
 ```bash
 # Remove old image versions (keeps last 5)
-jiji services prune
+jiji service prune
 
 # Keep more versions
-jiji services prune --retain 10
+jiji service prune --retain 10
 
 # Auto pruning runs after successful deployments
 ```
@@ -757,7 +778,7 @@ Watch logs during deployment:
 jiji deploy --build
 
 # Terminal 2: Follow logs
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 ```
 
 ### 6. Use Deployment Locks
@@ -824,7 +845,7 @@ jiji --verbose deploy
 **Check logs:**
 
 ```bash
-jiji services logs --services web --lines 200
+jiji service logs --services web --lines 200
 ```
 
 **Check container status:**
@@ -849,7 +870,7 @@ jiji server exec "docker logs <container-id>"
 jiji server exec "curl -I http://localhost:3000/health"
 
 # Check container logs during health check
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 ```
 
 **Common issues:**
@@ -865,9 +886,9 @@ If deployment fails:
 1. **Old container keeps running** (zero downtime)
 2. **Check logs** to identify issue
 3. **Fix and redeploy**, or
-4. **Deploy previous version**:
+4. **Roll back to the previous version**:
    ```bash
-   jiji deploy --version v1.2.2
+   jiji service rollback --version v1.2.2
    ```
 
 ### Network Issues

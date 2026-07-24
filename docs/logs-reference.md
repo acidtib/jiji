@@ -7,7 +7,7 @@ proxy. This guide covers all available logging features and common use cases.
 
 Jiji offers two main logging commands:
 
-- **`jiji services logs`** - View logs from your deployed services
+- **`jiji service logs`** - View logs from your deployed services
 - **`jiji proxy logs`** - View logs from kamal-proxy
 
 Both commands support filtering, searching, and real-time log following across
@@ -15,20 +15,20 @@ multiple servers.
 
 ## Service Logs
 
-The `jiji services logs` command fetches logs from containerized services
+The `jiji service logs` command fetches logs from containerized services
 deployed with Jiji.
 
 ### Basic Usage
 
 ```bash
 # View logs from a specific service
-jiji services logs --services web
+jiji service logs --services web
 
 # View logs from multiple services
-jiji services logs --services "web,api,worker"
+jiji service logs --services "web,api,worker"
 
 # View logs from services matching a pattern
-jiji services logs --services "web*"
+jiji service logs --services "web*"
 ```
 
 ### Options
@@ -39,13 +39,13 @@ Target specific services. Supports comma separated values and wildcards.
 
 ```bash
 # Single service
-jiji services logs --services web
+jiji service logs --services web
 
 # Multiple services
-jiji services logs --services "web,api"
+jiji service logs --services "web,api"
 
 # Wildcard pattern
-jiji services logs --services "api-*"
+jiji service logs --services "api-*"
 ```
 
 **Required**: You must specify either `--services` or `--container-id`.
@@ -57,10 +57,10 @@ or `--grep` is specified.
 
 ```bash
 # Show last 50 lines
-jiji services logs --services web --lines 50
+jiji service logs --services web --lines 50
 
 # Show last 200 lines
-jiji services logs --services api --lines 200
+jiji service logs --services api --lines 200
 ```
 
 #### `--since` (or `-s`)
@@ -69,12 +69,12 @@ Show logs since a timestamp or relative time.
 
 ```bash
 # Absolute timestamp (ISO 8601)
-jiji services logs --services web --since "2023-01-01T00:00:00Z"
+jiji service logs --services web --since "2023-01-01T00:00:00Z"
 
 # Relative time
-jiji services logs --services web --since "30m"  # Last 30 minutes
-jiji services logs --services web --since "2h"   # Last 2 hours
-jiji services logs --services web --since "1d"   # Last 1 day
+jiji service logs --services web --since "30m"  # Last 30 minutes
+jiji service logs --services web --since "2h"   # Last 2 hours
+jiji service logs --services web --since "1d"   # Last 1 day
 ```
 
 #### `--grep` (or `-g`)
@@ -83,13 +83,13 @@ Filter log lines using grep pattern matching.
 
 ```bash
 # Show only error lines
-jiji services logs --services web --grep "ERROR"
+jiji service logs --services web --grep "ERROR"
 
 # Filter for specific request IDs
-jiji services logs --services api --grep "request_id=abc123"
+jiji service logs --services api --grep "request_id=abc123"
 
 # Case insensitive search
-jiji services logs --services web --grep "warning" --grep-options "-i"
+jiji service logs --services web --grep "warning" --grep-options "-i"
 ```
 
 #### `--grep-options`
@@ -98,13 +98,13 @@ Additional options to pass to grep.
 
 ```bash
 # Case insensitive search
-jiji services logs --services web --grep "error" --grep-options "-i"
+jiji service logs --services web --grep "error" --grep-options "-i"
 
 # Invert match (show lines NOT matching pattern)
-jiji services logs --services web --grep "health" --grep-options "-v"
+jiji service logs --services web --grep "health" --grep-options "-v"
 
 # Extended regex
-jiji services logs --services web --grep "ERROR|WARN" --grep-options "-E"
+jiji service logs --services web --grep "ERROR|WARN" --grep-options "-E"
 ```
 
 #### `--follow` (or `-f`)
@@ -114,10 +114,10 @@ Follow logs in real-time from the primary server (or specific host set by
 
 ```bash
 # Follow logs from web service
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 
 # Follow logs from a specific host
-jiji services logs --services api --follow --hosts "server1.example.com"
+jiji service logs --services api --follow --hosts "server1.example.com"
 ```
 
 **Note**: Press `Ctrl+C`, `Ctrl+D`, or `Ctrl+\` to exit follow mode.
@@ -128,7 +128,7 @@ Fetch logs from a specific container by ID, bypassing service configuration.
 
 ```bash
 # View logs from a specific container
-jiji services logs --container-id abc123def456
+jiji service logs --container-id abc123def456
 ```
 
 Useful for debugging containers that aren't part of your managed services.
@@ -139,13 +139,13 @@ Target specific hosts. Supports comma separated values and wildcards.
 
 ```bash
 # Specific host
-jiji services logs --services web --hosts "server1.example.com"
+jiji service logs --services web --hosts "server1.example.com"
 
 # Multiple hosts
-jiji services logs --services web --hosts "server1.example.com,server2.example.com"
+jiji service logs --services web --hosts "server1.example.com,server2.example.com"
 
 # Wildcard pattern
-jiji services logs --services web --hosts "server*.example.com"
+jiji service logs --services web --hosts "server*.example.com"
 ```
 
 #### `--quiet` (or `-q`)
@@ -155,13 +155,13 @@ verbosity.
 
 ```bash
 # Quiet mode - only show log content
-jiji services logs --services web --quiet
+jiji service logs --services web --quiet
 
 # Combine with grep for clean output
-jiji services logs --services api --grep "ERROR" --quiet
+jiji service logs --services api --grep "ERROR" --quiet
 
 # Useful for piping to other commands
-jiji services logs --services web --quiet | grep -i "warning" | wc -l
+jiji service logs --services web --quiet | grep -i "warning" | wc -l
 ```
 
 **What quiet mode does:**
@@ -194,40 +194,40 @@ With quiet mode:
 
 ```bash
 # Find all errors in the last hour
-jiji services logs --services web --since "1h" --grep "ERROR"
+jiji service logs --services web --since "1h" --grep "ERROR"
 
 # Find errors with context (5 lines before/after)
-jiji services logs --services api --grep "ERROR" --grep-options "-C 5"
+jiji service logs --services api --grep "ERROR" --grep-options "-C 5"
 ```
 
 #### Monitoring Specific Requests
 
 ```bash
 # Track a request by ID
-jiji services logs --services api --grep "request_id=abc123"
+jiji service logs --services api --grep "request_id=abc123"
 
 # Monitor authentication attempts
-jiji services logs --services auth --grep "authentication"
+jiji service logs --services auth --grep "authentication"
 ```
 
 #### Checking Recent Deployments
 
 ```bash
 # View logs since last deployment
-jiji services logs --services web --since "10m"
+jiji service logs --services web --since "10m"
 
 # Follow logs during deployment
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 ```
 
 #### Comparing Logs Across Servers
 
 ```bash
 # View logs from all servers
-jiji services logs --services web
+jiji service logs --services web
 
 # View logs from specific server
-jiji services logs --services web --hosts "server1.example.com"
+jiji service logs --services web --hosts "server1.example.com"
 ```
 
 #### Scripting and Automation
@@ -236,16 +236,16 @@ Use quiet mode for clean output suitable for parsing:
 
 ```bash
 # Count errors in the last hour
-jiji services logs --services web --since "1h" --grep "ERROR" --quiet | wc -l
+jiji service logs --services web --since "1h" --grep "ERROR" --quiet | wc -l
 
 # Extract specific fields
-jiji services logs --services api --quiet | awk '{print $4}'
+jiji service logs --services api --quiet | awk '{print $4}'
 
 # Monitor for specific patterns
-jiji services logs --services web --follow --grep "FATAL" --quiet
+jiji service logs --services web --follow --grep "FATAL" --quiet
 
 # Save logs to file without headers
-jiji services logs --services web --quiet > logs.txt
+jiji service logs --services web --quiet > logs.txt
 ```
 
 ## Proxy Logs
@@ -340,24 +340,24 @@ All logs include timestamps from Docker/Podman in ISO 8601 format:
 
 ```bash
 # Instead of calculating exact timestamps
-jiji services logs --services web --since "30m"
+jiji service logs --services web --since "30m"
 
 # Not this
-jiji services logs --services web --since "2023-12-22T14:00:00Z"
+jiji service logs --services web --since "2023-12-22T14:00:00Z"
 ```
 
 ### 2. Combine Filters for Precision
 
 ```bash
 # Find errors in the last hour from a specific service
-jiji services logs --services api --since "1h" --grep "ERROR"
+jiji service logs --services api --since "1h" --grep "ERROR"
 ```
 
 ### 3. Use Follow Mode During Debugging
 
 ```bash
 # Watch logs in real-time while reproducing an issue
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 ```
 
 ### 4. Check Proxy Logs for Routing Issues
@@ -373,7 +373,7 @@ jiji proxy logs --grep "your-service-name"
 
 ```bash
 # Get just the most recent entries
-jiji services logs --services web --lines 20
+jiji service logs --services web --lines 20
 ```
 
 ## Troubleshooting
@@ -418,35 +418,35 @@ If you get permission errors:
 
 ```bash
 # 1. Check recent deployment logs
-jiji services logs --services web --since "5m"
+jiji service logs --services web --since "5m"
 
 # 2. Look for errors
-jiji services logs --services web --grep "ERROR"
+jiji service logs --services web --grep "ERROR"
 
 # 3. Check proxy routing
 jiji proxy logs --grep "web"
 
 # 4. Follow logs in real time
-jiji services logs --services web --follow
+jiji service logs --services web --follow
 ```
 
 ### Multi Service Debugging
 
 ```bash
 # Check all api services for errors
-jiji services logs --services "api*" --grep "ERROR"
+jiji service logs --services "api*" --grep "ERROR"
 
 # Compare logs across different servers
-jiji services logs --services web --hosts "server1.example.com"
-jiji services logs --services web --hosts "server2.example.com"
+jiji service logs --services web --hosts "server1.example.com"
+jiji service logs --services web --hosts "server2.example.com"
 ```
 
 ### Production Monitoring
 
 ```bash
 # Monitor critical errors
-jiji services logs --services "web,api,worker" --grep "CRITICAL\|FATAL" --grep-options "-E" --follow
+jiji service logs --services "web,api,worker" --grep "CRITICAL\|FATAL" --grep-options "-E" --follow
 
 # Track specific feature usage
-jiji services logs --services api --grep "feature_flag=new_checkout" --since "1h"
+jiji service logs --services api --grep "feature_flag=new_checkout" --since "1h"
 ```

@@ -18,8 +18,6 @@ pub struct ServerTeardownPlan {
     /// Whether `env_resolution::project_staging_dir` exists on this host (staged env files and
     /// uploaded mount content from past deploys).
     pub project_directory_exists: bool,
-    /// Non-empty means this host is skipped entirely: nothing destructive is attempted.
-    pub blockers: Vec<String>,
 }
 
 /// Fully read-only: label-filtered container listing, existence checks for volume/image/route
@@ -58,7 +56,6 @@ pub async fn discover(
     }
 
     let network = network_teardown::discover(session, engine, project).await?;
-    let blockers = render_blockers(&network.other_project_containers);
     let project_directory_exists = project_directory_exists(session, project).await?;
 
     Ok(ServerTeardownPlan {
@@ -69,7 +66,6 @@ pub async fn discover(
         images,
         network,
         project_directory_exists,
-        blockers,
     })
 }
 
@@ -78,21 +74,24 @@ async fn project_directory_exists(session: &SshSession, project: &str) -> anyhow
     Ok(session.execute(&command).await?.success)
 }
 
-fn render_blockers(other_project_containers: &[container_ops::ContainerSummary]) -> Vec<String> {
+/// Informational only, not a blocker: another jiji project's containers on the same host is the
+/// normal, expected case now that the network layer is per-project isolated (this project's
+/// teardown only ever touches its own labeled containers/images/network subtree). Surfaced so an
+/// operator knows the host isn't fully empty after this teardown, not to make them stop and tear
+/// the other project down first.
+pub fn render_other_project_notices(
+    other_project_containers: &[container_ops::ContainerSummary],
+) -> Vec<String> {
     other_project_containers
         .iter()
         .map(|container| {
             format!(
-                "another jiji project's container '{}' (project '{}') is still present on this host; tear that project down first, or remove it manually",
+                "another jiji project's container '{}' (project '{}') is also present on this host and will be left untouched",
                 container.name,
                 container.project.as_deref().unwrap_or("unlabeled")
             )
         })
         .collect()
-}
-
-pub fn has_blockers(plan: &ServerTeardownPlan) -> bool {
-    !plan.blockers.is_empty()
 }
 
 pub fn render_summary(plan: &ServerTeardownPlan) -> String {
@@ -136,28 +135,29 @@ mod tests {
     }
 
     #[test]
-    fn other_project_container_is_a_blocker() {
-        let blockers = render_blockers(&[container("other-web-a", Some("other"))]);
-        assert_eq!(blockers.len(), 1);
-        assert!(blockers[0].contains("other"));
+    fn other_project_container_produces_an_informational_notice_not_a_blocker() {
+        let notices = render_other_project_notices(&[container("other-web-a", Some("other"))]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("other"));
+        assert!(notices[0].contains("left untouched"));
     }
 
     #[test]
-    fn render_blockers_trusts_its_input_and_never_panics_on_an_unlabeled_container() {
-        // render_blockers does no filtering of its own -- excluding kamal-proxy (jiji.managed=true
-        // but no jiji.project label) from ever reaching here is
+    fn render_other_project_notices_trusts_its_input_and_never_panics_on_an_unlabeled_container() {
+        // Does no filtering of its own -- excluding kamal-proxy (jiji.managed=true but no
+        // jiji.project label) from ever reaching here is
         // container_ops::list_other_project_containers's job (see its own test:
         // list_other_project_containers_excludes_the_named_project_and_unlabeled_containers,
         // confirmed live). This only guards that an unlabeled entry, if it ever did arrive, would
         // render descriptively rather than panicking.
-        let blockers = render_blockers(&[container("kamal-proxy", None)]);
-        assert_eq!(blockers.len(), 1);
-        assert!(blockers[0].contains("unlabeled"));
+        let notices = render_other_project_notices(&[container("kamal-proxy", None)]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("unlabeled"));
     }
 
     #[test]
-    fn no_other_project_containers_means_no_blockers() {
-        assert!(render_blockers(&[]).is_empty());
+    fn no_other_project_containers_means_no_notices() {
+        assert!(render_other_project_notices(&[]).is_empty());
     }
 
     fn empty_plan(server_name: &str) -> ServerTeardownPlan {
@@ -172,7 +172,6 @@ mod tests {
                 other_project_containers: Vec::new(),
             },
             project_directory_exists: false,
-            blockers: Vec::new(),
         }
     }
 
@@ -195,13 +194,5 @@ mod tests {
         let mut plan = empty_plan("app");
         plan.network.installed_generation = Some("abc123".to_string());
         assert!(render_summary(&plan).contains("private network"));
-    }
-
-    #[test]
-    fn has_blockers_reflects_blocker_list() {
-        let mut plan = empty_plan("app");
-        assert!(!has_blockers(&plan));
-        plan.blockers.push("blocked".to_string());
-        assert!(has_blockers(&plan));
     }
 }

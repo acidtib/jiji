@@ -231,8 +231,30 @@ fn run_jiji_service_remove(
     command.output().expect("run jiji service remove")
 }
 
-const ACTIVE_SLOTS_PATH: &str = "cat /etc/jiji/network/service-nat-current/active-slots";
-const MKTEMP_COMMAND: &str = "mktemp -d /etc/jiji/network/service-nat-generations/cutover.XXXXXX";
+fn network_dir() -> String {
+    format!(
+        "/etc/jiji/network/{}",
+        jiji_network::systemd_unit_slug("demo")
+    )
+}
+
+fn active_slots_path() -> String {
+    format!("cat {}/service-nat-current/active-slots", network_dir())
+}
+
+fn mktemp_command() -> String {
+    format!(
+        "mktemp -d {}/service-nat-generations/cutover.XXXXXX",
+        network_dir()
+    )
+}
+
+fn cutover_generation_path(suffix: &str) -> CannedResponse {
+    success(&format!(
+        "{}/service-nat-generations/cutover.{suffix}\n",
+        network_dir()
+    ))
+}
 
 fn inspect_status_command(name: &str) -> String {
     format!("docker inspect {name} --format '{{{{.State.Status}}}}'")
@@ -242,11 +264,8 @@ fn inspect_status_command(name: &str) -> String {
 async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success("demo:web:app=a\n"));
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.abc123\n"),
-    );
+    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
     responses.insert(inspect_status_command("demo-web-a"), success("running\n"));
     responses.insert(inspect_status_command("demo-web-b"), failure());
 
@@ -287,11 +306,8 @@ async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
 async fn remove_with_volumes_flag_removes_named_volumes() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success("demo:web:app=a\n"));
-    responses.insert(
-        MKTEMP_COMMAND.to_string(),
-        success("/etc/jiji/network/service-nat-generations/cutover.def456\n"),
-    );
+    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
     responses.insert(inspect_status_command("demo-web-a"), failure());
     responses.insert(inspect_status_command("demo-web-b"), failure());
     responses.insert(

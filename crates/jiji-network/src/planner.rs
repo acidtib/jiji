@@ -1,3 +1,4 @@
+use crate::naming::{self, stable_hash};
 use crate::{Ipv4Cidr, NetworkPlanError};
 use jiji_config::Config;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,6 @@ pub const CONTAINER_SERVER_PREFIX: u8 = 21;
 const SERVER_BUCKET_CAPACITY: usize = 8;
 const ENDPOINT_BUCKET_CAPACITY: usize = 16;
 const FIRST_CONTAINER_OFFSET: u64 = 16;
-const WIREGUARD_PORT: u16 = 51820;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkPlan {
@@ -98,6 +98,17 @@ pub struct ServerPlan {
     /// to IPAM auto-assignment) so it can never collide with `dns_address` either.
     pub proxy_address: Ipv4Addr,
     pub wireguard_port: u16,
+    /// Project-scoped WireGuard interface name (see `naming::wireguard_interface_name`) -- one
+    /// per project, shared by every server in that project's plan, distinct from every other
+    /// project's, so multiple projects can coexist on one host without colliding.
+    pub wireguard_interface: String,
+    /// Project-scoped kernel bridge device name (`naming::bridge_interface_name`), distinct from
+    /// `bridge_name` below: this one is passed to `--opt com.docker.network.bridge.name=`/
+    /// `--interface-name` and is therefore subject to Linux's 15-char interface name limit.
+    pub bridge_interface: String,
+    /// Project-scoped Docker/Podman logical network name (`naming::bridge_network_name`),
+    /// unconstrained length, used everywhere else a network name is needed.
+    pub bridge_name: String,
     pub peers: Vec<WireGuardPeerPlan>,
     pub routes: Vec<RoutePlan>,
     pub firewall: FirewallPlan,
@@ -119,8 +130,6 @@ pub struct RoutePlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirewallPlan {
-    pub wireguard_interface: String,
-    pub bridge_interface: String,
     pub local_container_subnet: Ipv4Cidr,
     pub remote_container_subnets: Vec<Ipv4Cidr>,
 }
@@ -188,7 +197,16 @@ impl NetworkPlanner {
             });
         }
 
-        let server_identities: Vec<String> = config.servers.keys().cloned().collect();
+        // Widened from plain server name to `{project}:{server_name}` so two independent
+        // projects' server-slot assignments (and therefore subnets/management addresses) are
+        // computed independently of each other -- this is what lets multiple projects share a
+        // host's address space without any coordination between them (see naming.rs's doc
+        // comment and the project's network-isolation design notes for the full rationale).
+        let server_identities: Vec<String> = config
+            .servers
+            .keys()
+            .map(|name| format!("{}:{name}", config.project))
+            .collect();
         let server_slot_assignments = allocate_bucketed(
             &server_identities,
             server_slots,
@@ -196,8 +214,17 @@ impl NetworkPlanner {
             "servers",
         )?;
 
+        let wireguard_interface = naming::wireguard_interface_name(&config.project);
+        let bridge_interface = naming::bridge_interface_name(&config.project);
+        let bridge_name = naming::bridge_network_name(&config.project);
+        let wireguard_port = naming::wireguard_port(&config.project);
+
         let mut base_servers = BTreeMap::new();
-        for (name, slot) in server_slot_assignments {
+        for (identity, slot) in server_slot_assignments {
+            let name = identity
+                .strip_prefix(&format!("{}:", config.project))
+                .expect("identity was built with this exact prefix above")
+                .to_string();
             let named_server = &config.servers[&name];
             let container_subnet = container_cidr
                 .subnet(CONTAINER_SERVER_PREFIX, slot)
@@ -224,12 +251,13 @@ impl NetworkPlanner {
                     proxy_address: container_subnet
                         .address(4)
                         .expect("a /20 has a proxy address"),
-                    wireguard_port: WIREGUARD_PORT,
+                    wireguard_port,
+                    wireguard_interface: wireguard_interface.clone(),
+                    bridge_interface: bridge_interface.clone(),
+                    bridge_name: bridge_name.clone(),
                     peers: Vec::new(),
                     routes: Vec::new(),
                     firewall: FirewallPlan {
-                        wireguard_interface: "jiji0".to_string(),
-                        bridge_interface: "jiji".to_string(),
                         local_container_subnet: container_subnet,
                         remote_container_subnets: Vec::new(),
                     },
@@ -383,7 +411,7 @@ fn plan_dns(endpoints: &BTreeMap<String, ServiceEndpointPlan>) -> BTreeMap<Strin
 fn populate_server_networks(
     mut servers: BTreeMap<String, ServerPlan>,
 ) -> BTreeMap<String, ServerPlan> {
-    let snapshots: Vec<(String, String, Ipv4Addr, Ipv4Cidr)> = servers
+    let snapshots: Vec<(String, String, Ipv4Addr, Ipv4Cidr, u16)> = servers
         .values()
         .map(|server| {
             (
@@ -391,18 +419,21 @@ fn populate_server_networks(
                 server.public_host.clone(),
                 server.management_address,
                 server.container_subnet,
+                server.wireguard_port,
             )
         })
         .collect();
 
     for server in servers.values_mut() {
-        for (name, public_host, management_address, container_subnet) in &snapshots {
+        let wireguard_interface = server.wireguard_interface.clone();
+        for (name, public_host, management_address, container_subnet, wireguard_port) in &snapshots
+        {
             if name == &server.name {
                 continue;
             }
             server.peers.push(WireGuardPeerPlan {
                 server: name.clone(),
-                endpoint: format!("{public_host}:{WIREGUARD_PORT}"),
+                endpoint: format!("{public_host}:{wireguard_port}"),
                 management_address: *management_address,
                 allowed_ips: vec![
                     Ipv4Cidr::new(*management_address, 32)
@@ -412,7 +443,7 @@ fn populate_server_networks(
             });
             server.routes.push(RoutePlan {
                 destination: *container_subnet,
-                interface: "jiji0".to_string(),
+                interface: wireguard_interface.clone(),
             });
             server
                 .firewall
@@ -458,15 +489,6 @@ fn allocate_bucketed(
     Ok(assignments)
 }
 
-fn stable_hash(value: &[u8]) -> u64 {
-    let digest = Sha256::digest(value);
-    u64::from_be_bytes(
-        digest[..8]
-            .try_into()
-            .expect("SHA-256 has at least 8 bytes"),
-    )
-}
-
 fn generation_checksum(
     enabled: bool,
     project: &str,
@@ -487,6 +509,10 @@ fn generation_checksum(
         hash_field(&mut hasher, &server.public_host);
         hash_field(&mut hasher, &server.management_address.to_string());
         hash_field(&mut hasher, &server.container_subnet.to_string());
+        hash_field(&mut hasher, &server.wireguard_interface);
+        hash_field(&mut hasher, &server.bridge_interface);
+        hash_field(&mut hasher, &server.bridge_name);
+        hash_field(&mut hasher, &server.wireguard_port.to_string());
         for peer in &server.peers {
             hash_field(&mut hasher, &peer.server);
             hash_field(&mut hasher, &peer.endpoint);
@@ -847,6 +873,91 @@ network:
             NetworkPlanner::new().plan(&too_small_management),
             Err(NetworkPlanError::ManagementRangeTooSmall { .. })
         ));
+    }
+
+    #[test]
+    fn wireguard_bridge_and_port_are_project_scoped_shared_across_servers_and_change_on_rename() {
+        let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
+        let app = &plan.servers["app"];
+        let data = &plan.servers["data"];
+
+        assert_eq!(app.wireguard_interface, data.wireguard_interface);
+        assert_eq!(app.bridge_interface, data.bridge_interface);
+        assert_eq!(app.bridge_name, data.bridge_name);
+        assert_eq!(app.wireguard_port, data.wireguard_port);
+        assert_eq!(
+            app.wireguard_interface,
+            naming::wireguard_interface_name("demo")
+        );
+        assert_eq!(app.bridge_interface, naming::bridge_interface_name("demo"));
+        assert_eq!(app.bridge_name, naming::bridge_network_name("demo"));
+        assert_eq!(app.wireguard_port, naming::wireguard_port("demo"));
+
+        let mut renamed = base_config();
+        renamed.project = "other".to_string();
+        let renamed_plan = NetworkPlanner::new().plan(&renamed).unwrap();
+        let renamed_app = &renamed_plan.servers["app"];
+        assert_ne!(app.wireguard_interface, renamed_app.wireguard_interface);
+        assert_ne!(app.bridge_interface, renamed_app.bridge_interface);
+        assert_ne!(app.bridge_name, renamed_app.bridge_name);
+    }
+
+    #[test]
+    fn two_projects_with_identical_default_cidrs_usually_produce_different_server_subnets() {
+        // Not a guarantee (see the project's network-isolation design notes for the real,
+        // acknowledged collision odds) -- this is a spot check that the widened bucket key
+        // actually varies the result per project, not a proof of collision-freedom.
+        let a = config(
+            r#"
+project: project-a
+builder: { engine: docker }
+servers:
+  app: { host: 203.0.113.10 }
+services: {}
+"#,
+        );
+        let b = config(
+            r#"
+project: project-b
+builder: { engine: docker }
+servers:
+  app: { host: 203.0.113.10 }
+services: {}
+"#,
+        );
+        let plan_a = NetworkPlanner::new().plan(&a).unwrap();
+        let plan_b = NetworkPlanner::new().plan(&b).unwrap();
+        assert_ne!(
+            plan_a.servers["app"].container_subnet,
+            plan_b.servers["app"].container_subnet
+        );
+    }
+
+    #[test]
+    fn widened_server_slot_key_preserves_bucket_stability_across_projects() {
+        // A second project's servers must never be able to reslot a first project's server --
+        // trivially true since `plan()` never sees another project's config, but this guards
+        // against a future refactor accidentally introducing any shared state between plans.
+        let a = base_config();
+        let plan_a = NetworkPlanner::new().plan(&a).unwrap();
+
+        let unrelated = config(
+            r#"
+project: totally-unrelated
+builder: { engine: docker }
+servers:
+  app: { host: 198.51.100.5 }
+  extra: { host: 198.51.100.6 }
+  more: { host: 198.51.100.7 }
+services: {}
+"#,
+        );
+        let _ = NetworkPlanner::new().plan(&unrelated).unwrap();
+        let plan_a_again = NetworkPlanner::new().plan(&a).unwrap();
+        assert_eq!(
+            plan_a.servers["app"].container_subnet,
+            plan_a_again.servers["app"].container_subnet
+        );
     }
 
     #[test]

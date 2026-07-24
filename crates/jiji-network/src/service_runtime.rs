@@ -135,6 +135,9 @@ pub struct NetworkedContainerRun {
     pub image: String,
     pub address: Ipv4Addr,
     pub dns_address: Ipv4Addr,
+    /// This project's bridge network name (`ServerPlan::bridge_name`), not the shared literal
+    /// `"jiji"` -- every project has its own bridge, see `naming::bridge_network_name`.
+    pub bridge_name: String,
     pub extra_args: Vec<String>,
     pub command: Vec<String>,
 }
@@ -154,6 +157,7 @@ impl NetworkedContainerRun {
             image: image.into(),
             address: endpoint.backend_addresses[slot.index()],
             dns_address: server.dns_address,
+            bridge_name: server.bridge_name.clone(),
             extra_args: Vec::new(),
             command: Vec::new(),
         }
@@ -166,7 +170,7 @@ impl NetworkedContainerRun {
             "--name".to_string(),
             self.container_name.clone(),
             "--network".to_string(),
-            "jiji".to_string(),
+            self.bridge_name.clone(),
             "--ip".to_string(),
             self.address.to_string(),
             "--dns".to_string(),
@@ -220,9 +224,10 @@ impl ServiceNatArtifacts {
         } else {
             format!("\t\telements = {{ {} }}\n", elements.join(", "))
         };
+        let table = crate::naming::service_nat_table_name(&plan.project);
         let nftables = format!(
-            "delete table ip jiji_service_nat\n\
-             table ip jiji_service_nat {{\n\
+            "delete table ip {table}\n\
+             table ip {table} {{\n\
              \tmap backends {{\n\
              \t\ttype ipv4_addr : ipv4_addr\n\
              {elements}\
@@ -344,7 +349,10 @@ services:
                     slot,
                 )
                 .shell_command();
-                assert!(command.contains("--network jiji"));
+                assert!(command.contains(&format!(
+                    "--network {}",
+                    crate::naming::bridge_network_name("demo")
+                )));
                 assert!(command.contains(&format!(
                     "--ip {}",
                     endpoint.backend_addresses[slot.index()]
@@ -391,9 +399,10 @@ services:
         assert!(artifacts
             .nftables
             .contains("dnat ip to ip daddr map @backends"));
-        assert!(artifacts
-            .nftables
-            .starts_with("delete table ip jiji_service_nat\n"));
+        assert!(artifacts.nftables.starts_with(&format!(
+            "delete table ip {}\n",
+            crate::naming::service_nat_table_name("demo")
+        )));
         assert!(!artifacts.nftables.contains("flush table"));
         assert_eq!(artifacts.state, "demo:web:app=b\n");
     }

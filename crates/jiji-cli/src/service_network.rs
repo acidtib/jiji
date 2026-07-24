@@ -3,10 +3,25 @@ use jiji_network::{
 };
 use jiji_ssh::{CommandResult, SshSession};
 
-const CURRENT_STATE_PATH: &str = "/etc/jiji/network/service-nat-current/active-slots";
-const GENERATIONS_PATH: &str = "/etc/jiji/network/service-nat-generations";
-const CURRENT_LINK_PATH: &str = "/etc/jiji/network/service-nat-current";
-const RESTORE_COMMAND: &str = "/etc/jiji/network/restore-service-nat.sh";
+fn network_dir(project: &str) -> String {
+    crate::commands::network::setup::network_dir(&jiji_network::systemd_unit_slug(project))
+}
+
+fn current_state_path(project: &str) -> String {
+    format!("{}/service-nat-current/active-slots", network_dir(project))
+}
+
+fn generations_path(project: &str) -> String {
+    format!("{}/service-nat-generations", network_dir(project))
+}
+
+fn current_link_path(project: &str) -> String {
+    format!("{}/service-nat-current", network_dir(project))
+}
+
+fn restore_command(project: &str) -> String {
+    format!("{}/restore-service-nat.sh", network_dir(project))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedServiceCutover {
@@ -31,9 +46,11 @@ impl PreparedServiceCutover {
 
 pub async fn load_active_slots(
     session: &SshSession,
+    plan: &NetworkPlan,
 ) -> Result<ActiveSlotState, ServiceRuntimeError> {
+    let path = current_state_path(&plan.project);
     let result = session
-        .execute(&format!("cat {CURRENT_STATE_PATH}"))
+        .execute(&format!("cat {path}"))
         .await
         .map_err(|error| ServiceRuntimeError::Remote(error.to_string()))?;
     if !result.success {
@@ -48,9 +65,10 @@ pub async fn load_active_slots(
 
 pub async fn deployment_slot(
     session: &SshSession,
+    plan: &NetworkPlan,
     endpoint_identity: &str,
 ) -> Result<BackendSlot, ServiceRuntimeError> {
-    Ok(load_active_slots(session)
+    Ok(load_active_slots(session, plan)
         .await?
         .deployment_slot(endpoint_identity))
 }
@@ -65,7 +83,7 @@ pub async fn prepare_cutover(
             identity: endpoint_identity.to_string(),
         });
     }
-    let state = load_active_slots(session).await?;
+    let state = load_active_slots(session, plan).await?;
     Ok(prepare_cutover_from_state(&state, endpoint_identity))
 }
 
@@ -117,7 +135,7 @@ pub async fn deactivate_project(
     plan: &NetworkPlan,
     project: &str,
 ) -> Result<(), ServiceRuntimeError> {
-    let mut state = load_active_slots(session).await?;
+    let mut state = load_active_slots(session, plan).await?;
     let before = state.render();
     let prefix = format!("{project}:");
     state.retain(|identity| !identity.starts_with(&prefix));
@@ -132,7 +150,7 @@ pub async fn reconcile_slots(
     plan: &NetworkPlan,
     server_name: &str,
 ) -> Result<(), ServiceRuntimeError> {
-    let mut state = load_active_slots(session).await?;
+    let mut state = load_active_slots(session, plan).await?;
     let before = state.render();
     state.retain(|identity| {
         plan.endpoints
@@ -158,7 +176,7 @@ pub async fn activate_slot(
             identity: endpoint_identity.to_string(),
         });
     }
-    let mut state = load_active_slots(session).await?;
+    let mut state = load_active_slots(session, plan).await?;
     state.activate(endpoint_identity, slot);
     persist_state(session, plan, &state).await
 }
@@ -168,7 +186,7 @@ pub(crate) async fn deactivate_slot(
     plan: &NetworkPlan,
     endpoint_identity: &str,
 ) -> Result<(), ServiceRuntimeError> {
-    let mut state = load_active_slots(session).await?;
+    let mut state = load_active_slots(session, plan).await?;
     state.deactivate(endpoint_identity);
     persist_state(session, plan, &state).await
 }
@@ -179,15 +197,19 @@ async fn persist_state(
     state: &ActiveSlotState,
 ) -> Result<(), ServiceRuntimeError> {
     let artifacts = ServiceNatArtifacts::render(plan, state)?;
+    let generations_path = generations_path(&plan.project);
+    let current_link_path = current_link_path(&plan.project);
+    let restore_command = restore_command(&plan.project);
+    let table = jiji_network::service_nat_table_name(&plan.project);
 
-    let create = format!("mktemp -d {GENERATIONS_PATH}/cutover.XXXXXX");
+    let create = format!("mktemp -d {generations_path}/cutover.XXXXXX");
     let result = session
         .execute(&create)
         .await
         .map_err(|error| ServiceRuntimeError::Remote(error.to_string()))?;
     ensure_success(session, &create, &result)?;
     let generation = result.stdout.trim();
-    if !generation.starts_with(&format!("{GENERATIONS_PATH}/cutover."))
+    if !generation.starts_with(&format!("{generations_path}/cutover."))
         || generation.contains(char::is_whitespace)
     {
         return Err(ServiceRuntimeError::Remote(format!(
@@ -211,11 +233,11 @@ async fn persist_state(
 
     let activate = format!(
         "set -eu; \
-         nft add table ip jiji_service_nat 2>/dev/null || true; \
+         nft add table ip {table} 2>/dev/null || true; \
          nft --check --file {generation}/service-nat.nft; \
-         ln -s {generation} {CURRENT_LINK_PATH}.new; \
-         mv -Tf {CURRENT_LINK_PATH}.new {CURRENT_LINK_PATH}; \
-         {RESTORE_COMMAND}"
+         ln -s {generation} {current_link_path}.new; \
+         mv -Tf {current_link_path}.new {current_link_path}; \
+         {restore_command}"
     );
     let result = session
         .execute(&activate)

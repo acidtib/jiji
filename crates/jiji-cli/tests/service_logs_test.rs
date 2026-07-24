@@ -242,13 +242,18 @@ fn run_jiji_service_logs(
     command.output().expect("run jiji service logs")
 }
 
-const ACTIVE_SLOTS_PATH: &str = "cat /etc/jiji/network/service-nat-current/active-slots";
+fn active_slots_path() -> String {
+    format!(
+        "cat /etc/jiji/network/{}/service-nat-current/active-slots",
+        jiji_network::systemd_unit_slug("demo")
+    )
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_reads_the_active_slot_container_for_a_configured_service() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success("demo:web:app=a\n"));
+    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(
         "docker logs --timestamps --tail=100 demo-web-a".to_string(),
         success("hello from web\n"),
@@ -264,7 +269,7 @@ async fn logs_reads_the_active_slot_container_for_a_configured_service() {
     assert!(stdout.contains("hello from web"), "stdout: {stdout}");
 
     let received = harness.received.lock().unwrap().clone();
-    assert!(received.contains(&ACTIVE_SLOTS_PATH.to_string()));
+    assert!(received.contains(&active_slots_path()));
     assert!(received
         .iter()
         .any(|c| c == "docker logs --timestamps --tail=100 demo-web-a"));
@@ -274,7 +279,7 @@ async fn logs_reads_the_active_slot_container_for_a_configured_service() {
 async fn logs_skips_a_service_with_no_active_container_instead_of_failing() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(ACTIVE_SLOTS_PATH.to_string(), success(""));
+    responses.insert(active_slots_path(), success(""));
 
     let (_harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path));
@@ -306,7 +311,7 @@ async fn logs_container_id_bypasses_active_slot_resolution() {
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
-        !received.contains(&ACTIVE_SLOTS_PATH.to_string()),
+        !received.contains(&active_slots_path()),
         "--container-id must not resolve an active slot: {received:?}"
     );
 }

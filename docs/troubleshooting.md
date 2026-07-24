@@ -330,7 +330,7 @@ Container did not become healthy in time
 
 3. **View container logs:**
    ```bash
-   jiji services logs --services web --lines 200
+   jiji service logs --services web --lines 200
    ```
 
 4. **Check container is running:**
@@ -358,7 +358,7 @@ Error: Container exited with code 1
 
 1. **Check container logs:**
    ```bash
-   jiji services logs --services web --lines 100
+   jiji service logs --services web --lines 100
 
    # Or check directly on server
    jiji server exec "docker logs <container-id>"
@@ -368,7 +368,7 @@ Error: Container exited with code 1
    - **Missing environment variables:**
      ```bash
      # Verify env vars are set
-     jiji services logs --services web | grep "environment"
+     jiji service logs --services web | grep "environment"
      ```
 
    - **Port already in use:**
@@ -571,7 +571,7 @@ Docker shows container in restart loop
 
 1. **Check logs for errors:**
    ```bash
-   jiji services logs --services web --lines 500
+   jiji service logs --services web --lines 500
    ```
 
 2. **Check resource limits:**
@@ -862,7 +862,7 @@ OOM (Out of Memory) errors
 
 3. **Clean up old images:**
    ```bash
-   jiji services prune
+   jiji service prune
    jiji server exec "docker system prune -f"
    ```
 
@@ -961,7 +961,7 @@ jiji --verbose deploy
 
 ```bash
 # Remove existing project
-jiji services remove --confirmed
+jiji service remove --yes
 
 # Or use different project name
 ```
@@ -1009,7 +1009,7 @@ jiji build
 jiji server exec "docker rm -f <container-name>"
 
 # Or remove service
-jiji services remove --services <service-name>
+jiji service remove --services <service-name>
 ```
 
 ## Getting Help

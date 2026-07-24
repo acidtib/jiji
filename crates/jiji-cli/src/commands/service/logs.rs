@@ -122,7 +122,7 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
     for endpoint in &selected {
         let session = sessions.get(&endpoint.server).expect("connected above");
         if !active_slots_cache.contains_key(&endpoint.server) {
-            match service_network::load_active_slots(session).await {
+            match service_network::load_active_slots(session, &plan).await {
                 Ok(state) => {
                     active_slots_cache.insert(endpoint.server.clone(), state);
                 }
@@ -200,7 +200,7 @@ async fn follow_endpoint(
     grep: Option<&str>,
     grep_options: Option<&str>,
 ) -> anyhow::Result<()> {
-    let active_slot = service_network::load_active_slots(session)
+    let active_slot = service_network::load_active_slots(session, plan)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?
         .active_slot(&endpoint.identity);

@@ -362,6 +362,23 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
+            ServiceCommands::Rollback => {
+                if let Err(err) = commands::service::rollback::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    cli.version_arg.as_deref(),
+                    cli.host_env,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service rollback failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
             ServiceCommands::Remove { yes, volumes } => {
                 if let Err(err) = commands::service::remove::run(
                     cli.environment.as_deref(),
