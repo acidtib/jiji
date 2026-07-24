@@ -194,6 +194,47 @@ pub async fn run() {
             }
         },
         Some(Commands::Registry { command }) => match command {
+            RegistryCommands::Login {
+                skip_local,
+                skip_remote,
+            } => {
+                if let Err(err) = commands::registry::login::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    cli.host_env,
+                    *skip_local,
+                    *skip_remote,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Registry login failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported registry or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            RegistryCommands::Logout {
+                skip_local,
+                skip_remote,
+            } => {
+                if let Err(err) = commands::registry::logout::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *skip_local,
+                    *skip_remote,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Registry logout failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported registry or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
             RegistryCommands::Teardown { yes, dry_run } => {
                 if let Err(err) = commands::registry::teardown::run(
                     cli.environment.as_deref(),

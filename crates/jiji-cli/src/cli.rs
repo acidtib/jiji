@@ -114,7 +114,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: NetworkCommands,
     },
-    #[command(about = "Local registry management")]
+    #[command(about = "Registry management")]
     Registry {
         #[command(subcommand)]
         command: RegistryCommands,
@@ -123,6 +123,24 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum RegistryCommands {
+    #[command(
+        about = "Authenticate the local machine and/or configured servers to the configured registry"
+    )]
+    Login {
+        #[arg(long, help = "Do not authenticate the local development machine")]
+        skip_local: bool,
+        #[arg(long, help = "Do not authenticate any configured server")]
+        skip_remote: bool,
+    },
+    #[command(
+        about = "Remove registry credentials from the local machine and/or configured servers"
+    )]
+    Logout {
+        #[arg(long, help = "Do not log out the local development machine")]
+        skip_local: bool,
+        #[arg(long, help = "Do not log out any configured server")]
+        skip_remote: bool,
+    },
     #[command(about = "Remove the Jiji-managed local registry container")]
     Teardown {
         #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]

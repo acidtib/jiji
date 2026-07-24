@@ -68,6 +68,11 @@ load_config() -> validate_config() -> build NetworkPlan (if needed) ->
 select hosts (NetworkPlan::select_hosts) -> connect via SshPool -> execute -> close sessions
 ```
 
+`NetworkPlan::select_hosts` matches `-H`/`--hosts` filters against each
+server's `host:` address (`ServerPlan.public_host`), never its config key
+name — `-H app1` only matches a server literally named `app1` if its `host:`
+value is `app1`; otherwise pass the actual address/pattern.
+
 `crates/jiji-cli/src/lib.rs::run()` is the shared entrypoint for both the
 `jiji` and `jiji_dev` binaries; it dispatches on `Commands`/`ServerCommands`/
 `NetworkCommands` and prints a consistent error shape for every command.
@@ -166,18 +171,20 @@ explicitly rejected rather than silently ignored.
 
 ### SSH Connection Management
 
-`jiji-ssh` is built on **russh** (pure-Rust async SSH client — no subprocess,
+`jiji-ssh` is built on **russh** (pure-Rust async SSH client, no subprocess,
 no libssh FFI). `SshSession::execute`/`execute_with_input` enforce
 `connect_timeout`/`command_timeout`. `SshPool` (semaphore-based) provides
 `execute_concurrent`/`execute_batched`/`execute_with_error_collection` for
 running independent SSH operations across many hosts without overloading any
-one server. `crates/jiji-cli/src/ssh_adapter.rs` adapts
-`jiji_config::{NamedServer, Ssh}` into `jiji_ssh::ConnectOptions`.
+one server. `SshSession` supports stream-backed nested sessions for ProxyJump
+and loopback-bound reverse TCP forwarding with explicit cancellation.
+`crates/jiji-cli/src/ssh_adapter.rs` resolves supported OpenSSH config fields
+and adapts `jiji_config::{NamedServer, Ssh}` into `jiji_ssh::ConnectOptions`.
 
 ### Naming Conventions
 
-- **Images**: whatever `image:` (or, once implemented, a future build/tag
-  pipeline) resolves to — `--build` is not implemented yet.
+- **Images**: explicit `image:` references, or versioned references produced by
+  `jiji build` / `jiji deploy --build` from each service's `build:` config.
 - **Containers**: `{project}-{service}-{a|b}` (permanent per backend slot, no
   rename).
 - **Proxy targets**: `{project}-{service}-{app_port}` (per-server local route
@@ -218,13 +225,29 @@ Pure-function logic (command rendering, naming rules, config-derived
 candidates) gets plain `#[cfg(test)] mod tests` unit tests co-located in the
 same file — no SSH involved.
 
+Local (non-SSH) engine invocations are tested against a fake `docker`/
+`podman` executable placed first on `PATH` that logs argv and stdin to files
+for assertions (see `registry_teardown_test.rs`, `registry_auth_test.rs`) —
+use this instead of the SSH-mock pattern when the command never leaves the
+local machine.
+
 **Important:** this mock-SSH suite is necessary but not sufficient. Several
-real bugs (Docker's `ps --format` `.Labels` being a flat string rather than a
-map; kamal-proxy always emitting ANSI color codes even non-interactively;
-etc.) only ever surfaced against real hosts. Live-test CLI-command-rendering
-work against a real Docker (and ideally Podman) host before considering it
-done — `cargo test` passing is not sufficient evidence for anything that
-shells out to `docker`/`podman`/`kamal-proxy`/`systemctl`/`nft`.
+real bugs only ever surfaced against real hosts: Docker's `ps --format`
+`.Labels` being a flat string rather than a map (and the Podman inverse:
+`.Label "key"` doesn't exist on Podman's `ps` reporter, it needs
+`index .Labels "key"`); kamal-proxy always emitting ANSI color codes even
+non-interactively; Podman refusing to push/pull the local loopback registry
+over plain HTTP unless `--tls-verify=false` is passed, where Docker trusts
+`localhost` registries by default; and `jiji-network-restore.service`
+stalling `server teardown` by about a minute under Podman because that
+unit's `ExecStart` is what starts the `--restart unless-stopped` network
+anchor container, so its `conmon` process lives in the unit's own cgroup and
+`systemctl disable --now` waits out its stop timeout before SIGKILLing it —
+fixed by removing the anchor before disabling the unit
+(`network_teardown::remove_anchor_if_present`). Live-test CLI-command-
+rendering work against a real Docker (and ideally Podman) host before
+considering it done — `cargo test` passing is not sufficient evidence for
+anything that shells out to `docker`/`podman`/`kamal-proxy`/`systemctl`/`nft`.
 
 ## Writing style
 
@@ -303,7 +326,18 @@ section tracks what's landed and what's still deferred.
   the deterministic network plan (idempotent, rollback on partial failure).
 - `jiji deploy` — full zero-downtime deploy (see architecture section above):
   mounts, env/secrets, health checks, VIP cutover, kamal-proxy routing,
-  `-H`/`-S` filtering, `stop_first`.
+  `-H`/`-S` filtering, `stop_first`, optional image builds, and automatic
+  network reconciliation.
+- `jiji build` and `jiji deploy --build` — local Docker/Podman builds,
+  multi-architecture publishing, remote registries, and a loopback-only local
+  registry exposed to deployment hosts through temporary reverse SSH tunnels.
+- `jiji registry login` / `jiji registry logout` — authenticate or clear
+  credentials on the local machine and/or `-H`-selected servers
+  (`--skip-local`/`--skip-remote`), password delivered over stdin only,
+  idempotent logout, local-registry no-op, per-target result aggregation.
+- `jiji registry teardown` — validates ownership and configured port before
+  removing the exact local `jiji-registry` container, with `--dry-run` and
+  typed or `--yes` confirmation.
 - `jiji server teardown` — full inverse of `server setup` (see architecture
   section above), including `--dry-run`, `--volumes`, typed project-name
   confirmation.
@@ -312,16 +346,16 @@ section tracks what's landed and what's still deferred.
 
 ## Explicitly deferred (stubbed with an actionable error, not silently skipped)
 
-- Retained-image pruning (`service.retain`) — meaningless without a
-  build/tag pipeline to distinguish "old" from "current" images.
+- Retained-image pruning (`service.retain`) — build tags now exist, but pruning
+  and safe current-image preservation are not implemented.
 - External `SecretsAdapter` (e.g. a Doppler-style adapter) — schema-only,
   `.env` files and host-env fallback are implemented, no adapter
   implementations exist.
-- `jiji services logs/restart/remove/prune`, `jiji proxy logs`,
-  `jiji registry setup`, `jiji audit`, `jiji lock`, `jiji secrets print`,
-  `jiji server exec` — not started.
-- SSH: ProxyJump/ProxyCommand tunneling, `~/.ssh/config` parsing, interactive
-  PTY shell, streaming exec, SFTP upload/download, DNS-retry-with-backoff.
+- `jiji services logs/restart/remove/prune`, `jiji proxy logs`, `jiji audit`,
+  `jiji lock`, `jiji secrets print`, `jiji server exec` — not started.
+- SSH: ProxyCommand, interactive PTY shell, streaming exec, SFTP
+  upload/download, and DNS-retry-with-backoff. ProxyJump, reverse TCP
+  forwarding, and supported `~/.ssh/config` fields are implemented.
 
 ## Reference Archives
 

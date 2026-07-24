@@ -236,8 +236,40 @@ async fn registry_responds(port: u16) -> bool {
     response[..read].starts_with(b"HTTP/1.0 200") || response[..read].starts_with(b"HTTP/1.1 200")
 }
 
+/// Quotes a config-derived value for safe interpolation into a remote shell command string.
+/// POSIX single-quoting: wrap in `'...'`, and turn any embedded `'` into `'\''` (close the
+/// quote, emit an escaped literal quote, reopen the quote). Safe for any byte sequence.
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Registry server and username, resolved together since login requires both.
+pub struct LoginCredentials<'a> {
+    pub server: &'a str,
+    pub username: &'a str,
+}
+
+pub fn require_server(registry: &Registry) -> anyhow::Result<&str> {
+    registry
+        .server
+        .as_deref()
+        .context("Remote registry has no `server:` configured. Set builder.registry.server.")
+}
+
+pub fn require_login_credentials(registry: &Registry) -> anyhow::Result<LoginCredentials<'_>> {
+    let server = require_server(registry)?;
+    let username = registry.username.as_deref().context(
+        "Registry login requires `builder.registry.username`. Configure it or use a public registry.",
+    )?;
+    Ok(LoginCredentials { server, username })
+}
+
 pub fn render_login_command(engine: ContainerEngine, server: &str, username: &str) -> String {
-    format!("{engine} login {server} --username {username} --password-stdin")
+    format!(
+        "{engine} login {} --username {} --password-stdin",
+        shell_quote(server),
+        shell_quote(username)
+    )
 }
 
 pub fn render_login_args(server: &str, username: &str) -> Vec<String> {
@@ -248,6 +280,14 @@ pub fn render_login_args(server: &str, username: &str) -> Vec<String> {
         username.into(),
         "--password-stdin".into(),
     ]
+}
+
+pub fn render_logout_command(engine: ContainerEngine, server: &str) -> String {
+    format!("{engine} logout {}", shell_quote(server))
+}
+
+pub fn render_logout_args(server: &str) -> Vec<String> {
+    vec!["logout".into(), server.into()]
 }
 
 pub fn resolve_registry_password(
@@ -270,23 +310,18 @@ pub async fn login_local(
     registry: &Registry,
     password: &str,
 ) -> anyhow::Result<()> {
-    let server = registry
-        .server
-        .as_deref()
-        .context("Remote registry has no `server:` configured. Set builder.registry.server.")?;
-    let username = registry.username.as_deref().context(
-        "Registry login requires `builder.registry.username`. Configure it or use a public registry.",
-    )?;
+    let credentials = require_login_credentials(registry)?;
     let result = local_exec::run_captured(
         &engine.to_string(),
-        &render_login_args(server, username),
+        &render_login_args(credentials.server, credentials.username),
         Some(password.as_bytes()),
         None,
     )
     .await?;
     if !result.success {
         anyhow::bail!(
-            "Registry login to '{server}' failed (exit {:?}): {}. Verify the registry credentials and retry.",
+            "Registry login to '{}' failed (exit {:?}): {}. Verify the registry credentials and retry.",
+            credentials.server,
             result.code,
             result.stderr.trim()
         );
@@ -300,26 +335,76 @@ pub async fn login_remote(
     registry: &Registry,
     password: &str,
 ) -> anyhow::Result<()> {
-    let server = registry
-        .server
-        .as_deref()
-        .context("Remote registry has no `server:` configured. Set builder.registry.server.")?;
-    let username = registry.username.as_deref().context(
-        "Registry login requires `builder.registry.username`. Configure it or use a public registry.",
-    )?;
+    let credentials = require_login_credentials(registry)?;
     let result = session
         .execute_with_input(
-            &render_login_command(engine, server, username),
+            &render_login_command(engine, credentials.server, credentials.username),
             password.as_bytes(),
         )
         .await?;
     if !result.success {
         anyhow::bail!(
-            "Registry login to '{server}' failed on a deploy host: {}. Verify the credentials and retry.",
+            "Registry login to '{}' failed on a deploy host: {}. Verify the credentials and retry.",
+            credentials.server,
             result.stderr.trim()
         );
     }
     Ok(())
+}
+
+/// Outcome of a logout attempt, distinguishing a genuine logout from an engine reporting the
+/// target was already logged out (both are success from the caller's point of view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthOutcome {
+    LoggedOut,
+    AlreadyLoggedOut,
+}
+
+/// Classifies a logout command's result. Docker's `logout` always exits 0. Podman's `logout`
+/// exits nonzero with a "not logged in" style message when there were no stored credentials --
+/// that case is idempotent success, not a failure.
+fn classify_logout(success: bool, stderr: &str) -> Option<AuthOutcome> {
+    if success {
+        return Some(AuthOutcome::LoggedOut);
+    }
+    if stderr.to_ascii_lowercase().contains("not logged in") {
+        return Some(AuthOutcome::AlreadyLoggedOut);
+    }
+    None
+}
+
+pub async fn logout_local(
+    engine: ContainerEngine,
+    registry: &Registry,
+) -> anyhow::Result<AuthOutcome> {
+    let server = require_server(registry)?;
+    let result =
+        local_exec::run_captured(&engine.to_string(), &render_logout_args(server), None, None)
+            .await?;
+    classify_logout(result.success, &result.stderr).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Registry logout from '{server}' failed (exit {:?}): {}. Verify local engine access and retry.",
+            result.code,
+            result.stderr.trim()
+        )
+    })
+}
+
+pub async fn logout_remote(
+    session: &SshSession,
+    engine: ContainerEngine,
+    registry: &Registry,
+) -> anyhow::Result<AuthOutcome> {
+    let server = require_server(registry)?;
+    let result = session
+        .execute(&render_logout_command(engine, server))
+        .await?;
+    classify_logout(result.success, &result.stderr).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Registry logout from '{server}' failed on a deploy host: {}. Verify engine access and retry.",
+            result.stderr.trim()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -380,7 +465,7 @@ mod tests {
     fn login_rendering_uses_stdin_and_real_argv() {
         assert_eq!(
             render_login_command(ContainerEngine::Docker, "ghcr.io", "alice"),
-            "docker login ghcr.io --username alice --password-stdin"
+            "docker login 'ghcr.io' --username 'alice' --password-stdin"
         );
         assert_eq!(
             render_login_args("ghcr.io", "alice"),
@@ -395,6 +480,38 @@ mod tests {
     }
 
     #[test]
+    fn logout_rendering_uses_real_argv_and_quoted_remote_command() {
+        assert_eq!(
+            render_logout_command(ContainerEngine::Podman, "ghcr.io"),
+            "podman logout 'ghcr.io'"
+        );
+        assert_eq!(render_logout_args("ghcr.io"), ["logout", "ghcr.io"]);
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_hostile_registry_values() {
+        assert_eq!(shell_quote("ghcr.io"), "'ghcr.io'");
+        assert_eq!(
+            shell_quote("evil'; rm -rf / #"),
+            r#"'evil'\''; rm -rf / #'"#
+        );
+        assert_eq!(
+            render_login_command(ContainerEngine::Docker, "host'; touch pwned #", "u'ser"),
+            "docker login 'host'\\''; touch pwned #' --username 'u'\\''ser' --password-stdin"
+        );
+    }
+
+    #[test]
+    fn logout_classification_treats_not_logged_in_as_idempotent_success() {
+        assert_eq!(classify_logout(true, ""), Some(AuthOutcome::LoggedOut));
+        assert_eq!(
+            classify_logout(false, "Error: not logged into ghcr.io\n"),
+            Some(AuthOutcome::AlreadyLoggedOut)
+        );
+        assert_eq!(classify_logout(false, "permission denied"), None);
+    }
+
+    #[test]
     fn password_resolution_distinguishes_names_from_literals() {
         let loaded = BTreeMap::from([("TOKEN".into(), "secret".into())]);
         assert_eq!(
@@ -406,5 +523,22 @@ mod tests {
             "literal-value"
         );
         assert!(resolve_registry_password("MISSING", &loaded, false).is_err());
+    }
+
+    #[test]
+    fn missing_credentials_produce_actionable_errors() {
+        let no_server = Registry {
+            kind: RegistryType::Remote,
+            port: 443,
+            server: None,
+            username: None,
+            password: None,
+        };
+        assert!(require_server(&no_server).is_err());
+        assert!(require_login_credentials(&no_server).is_err());
+
+        let no_username = registry("ghcr.io", None);
+        assert!(require_server(&no_username).is_ok());
+        assert!(require_login_credentials(&no_username).is_err());
     }
 }

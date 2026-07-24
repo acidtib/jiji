@@ -210,6 +210,12 @@ Error: Failed to authenticate with registry: 401 Unauthorized
    jiji registry logout
    jiji registry login
    ```
+   Both commands act on the local machine and every configured server by
+   default. Use `--skip-local` or `--skip-remote` to target only one side, and
+   `-H`/`--hosts` to limit which servers are touched. Each command attempts
+   every requested target even if one fails, then reports a per-target result
+   and exits nonzero if any target failed -- check the per-target lines above
+   the summary to see which host still needs attention.
 
 3. **Check environment variable:**
    ```bash

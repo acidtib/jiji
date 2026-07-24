@@ -87,35 +87,59 @@ builder:
 
 ### Registry Commands
 
+`jiji build` and `jiji deploy --build` perform registry setup automatically.
+Remote registries are authenticated locally before pushing and on selected
+deployment hosts before pulling. Local registries require no credentials.
+
+Authenticate or clear credentials explicitly with:
+
 ```bash
-# Login to registry (locally and on remote servers)
 jiji registry login
+jiji registry login --skip-local
+jiji registry login --skip-remote
 
-# Login with flags
-jiji registry login --skip-remote  # Skip remote server authentication
-jiji registry login --skip-local   # Skip local authentication
-
-# Logout from registry
 jiji registry logout
-
-# Logout with flags
-jiji registry logout --skip-remote  # Skip remote server logout
-jiji registry logout --skip-local   # Skip local logout
-
-# Remove local registry container or logout
-jiji registry remove
+jiji registry logout --skip-local
+jiji registry logout --skip-remote
 ```
 
-### Local vs Remote Operations
+By default both commands act on two targets, in order: the local development
+machine, then every server selected by `-H`/`--hosts` (all configured servers
+when `-H` is omitted). `--skip-local` and `--skip-remote` each remove one side;
+passing both is rejected before anything runs. `-S`/`--services` is rejected:
+registry credentials belong to a host's container engine, not an individual
+service.
 
-Jiji distinguishes between local and remote registry operations:
+`jiji registry login` requires `builder.registry.server`, `username`, and
+`password` to be configured; the password is resolved the same way as for
+`build`/`deploy` (a literal value, or an ALL_CAPS secret name looked up in the
+selected `.env` file, with host-environment fallback only via `--host-env`).
+The password is sent to the container engine over stdin only -- it is never
+placed in a command string, logged, or printed. `jiji registry logout` only
+requires `builder.registry.server` and is idempotent: an engine reporting the
+target was already logged out (for example Podman's `not logged into ...`) is
+treated as success, not a failure.
 
-- **Local**: Authentication on your development machine (where you run `jiji`
-  commands)
-- **Remote**: Authentication on deployment servers (where containers run)
+Both commands attempt every requested target even if one fails, then exit
+nonzero if any target failed, with a per-target error above the summary line.
+SSH connections are only opened when at least one remote target is requested;
+`--skip-remote` never requires an `ssh:` section.
 
-Use `--skip-local` or `--skip-remote` flags to control where authentication
-happens.
+A configured local registry needs no authentication: both commands report
+that immediately and exit successfully without starting the registry, opening
+tunnels, or running any container-engine command.
+
+Remove the local registry container with:
+
+```bash
+jiji registry teardown
+jiji registry teardown --dry-run
+jiji registry teardown --yes
+```
+
+Teardown verifies the Jiji ownership label and configured port before removing
+the exact `jiji-registry` container. It refuses to remove a conflicting
+container.
 
 ### Benefits
 
@@ -193,11 +217,19 @@ Jiji automatically creates SSH reverse tunnels when:
 jiji deploy
 
 # Jiji automatically:
-# 1. Establishes SSH connection to remote servers
-# 2. Creates reverse tunnel: remote:31270 -> local:31270
-# 3. Remote servers pull from localhost:31270
-# 4. Tunnel is torn down after deployment
+# 1. Starts or reuses the loopback-bound jiji-registry container
+# 2. Builds and pushes versioned images to localhost:31270
+# 3. Establishes SSH connections to selected deployment servers
+# 4. Creates reverse tunnels: remote 127.0.0.1:31270 -> local 127.0.0.1:31270
+# 5. Forces each deployment server to pull the newly built image
+# 6. Tears the tunnels down after deployment
 ```
+
+The registry container is named `jiji-registry` and labeled as Jiji-managed.
+If that name belongs to another container, or its recorded port differs from
+the configured port, Jiji stops and asks you to resolve the conflict. The
+registry remains running for later builds, while SSH tunnels exist only for
+the deployment session.
 
 ### Manual Port Forward
 
@@ -236,9 +268,12 @@ builder:
 2. Check SSH allows port forwarding:
    ```bash
    # On remote server /etc/ssh/sshd_config
-   GatewayPorts yes
    AllowTcpForwarding yes
    ```
+
+Jiji binds the forwarded registry port to remote `127.0.0.1`. `GatewayPorts`
+is not required and should not be enabled solely for Jiji because it can expose
+forwarded services on non-loopback interfaces.
 3. Verify tunnel is established:
    ```bash
    # On remote server
