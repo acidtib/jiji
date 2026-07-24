@@ -24,7 +24,7 @@ mod version_tag;
 mod volume_teardown;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Commands, NetworkCommands, RegistryCommands, ServerCommands};
+use cli::{Cli, Commands, NetworkCommands, RegistryCommands, SecretsCommands, ServerCommands};
 use tracing_subscriber::EnvFilter;
 
 /// Shared entrypoint for both the `jiji` and `jiji_dev` binaries (see `src/main.rs` and
@@ -267,6 +267,22 @@ pub async fn run() {
                     println!();
                     jiji_tui::Ui::error(&format!("Registry teardown failed: {err}"));
                     jiji_tui::Ui::say("Fix the reported local registry error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Secrets { command }) => match command {
+            SecretsCommands::Print { show_values } => {
+                if let Err(err) = commands::secrets::print::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.services.as_deref(),
+                    cli.host_env,
+                    *show_values,
+                ) {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Secrets print failed: {err}"));
+                    jiji_tui::Ui::say("Fix the configuration error above and retry", 1);
                     std::process::exit(1);
                 }
             }

@@ -379,6 +379,18 @@ section tracks what's landed and what's still deferred.
   primitive rather than replacing `mounts.rs`'s existing upload path),
   pooled concurrent execution. Every item from the SSH deferred-features
   plan is implemented as of this line.
+- `jiji secrets print` — non-fatal `.env`/host-env resolution status
+  (`[SET]`/`[MISSING]`, `--show-values` to reveal, `-S` to filter services)
+  for every secret-shaped reference in configuration. Only
+  `environment.secrets` (project + per-service) and `builder.registry.password`
+  are actually resolved from `.env`/host-env by any runtime code path;
+  `ssh.key_passphrase`/`key_data`, `servers.*.host`, proxy SSL certs, build
+  args, and `${VAR}` command interpolation are scanned and reported for
+  visibility only (matching the POC's scan coverage) since the current SSH/
+  proxy/build code paths use those fields as literal values with no
+  env-var-reference resolution at all — `commands/secrets/print.rs` flags
+  this gap explicitly in its own output rather than implying those fields
+  resolve when they don't.
 
 ## Explicitly deferred (stubbed with an actionable error, not silently skipped)
 
@@ -388,7 +400,7 @@ section tracks what's landed and what's still deferred.
   `.env` files and host-env fallback are implemented, no adapter
   implementations exist.
 - `jiji services logs/restart/remove/prune`, `jiji proxy logs`, `jiji audit`,
-  `jiji lock`, `jiji secrets print` — not started.
+  `jiji lock` — not started.
 
 ## Reference Archives
 

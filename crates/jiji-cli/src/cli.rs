@@ -119,6 +119,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegistryCommands,
     },
+    #[command(about = "Secrets management")]
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -147,6 +152,15 @@ pub enum RegistryCommands {
         yes: bool,
         #[arg(long, help = "Show what would be removed without changing anything")]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SecretsCommands {
+    #[command(about = "Print resolved secrets for debugging")]
+    Print {
+        #[arg(long, help = "Show actual secret values (use with caution)")]
+        show_values: bool,
     },
 }
 
