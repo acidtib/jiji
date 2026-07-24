@@ -10,6 +10,7 @@ mod env_resolution;
 mod health_check;
 mod image_teardown;
 mod local_exec;
+mod lock;
 mod mounts;
 mod network_guard;
 mod network_teardown;
@@ -25,7 +26,7 @@ mod volume_teardown;
 
 use clap::{CommandFactory, Parser};
 use cli::{
-    Cli, Commands, NetworkCommands, ProxyCommands, RegistryCommands, SecretsCommands,
+    Cli, Commands, LockCommands, NetworkCommands, ProxyCommands, RegistryCommands, SecretsCommands,
     ServerCommands, ServiceCommands,
 };
 use tracing_subscriber::EnvFilter;
@@ -407,6 +408,72 @@ pub async fn run() {
                     println!();
                     jiji_tui::Ui::error(&format!("Secrets print failed: {err}"));
                     jiji_tui::Ui::say("Fix the configuration error above and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Lock { command }) => match command {
+            LockCommands::Acquire {
+                message,
+                timeout,
+                force,
+            } => {
+                if let Err(err) = commands::lock::acquire::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    message,
+                    *timeout,
+                    *force,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Lock acquire failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            LockCommands::Release => {
+                if let Err(err) = commands::lock::release::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Lock release failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            LockCommands::Status { json } => {
+                if let Err(err) = commands::lock::status::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *json,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Lock status failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            LockCommands::Show => {
+                if let Err(err) = commands::lock::show::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Lock show failed: {err}"));
                     std::process::exit(1);
                 }
             }

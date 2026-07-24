@@ -134,6 +134,38 @@ pub enum Commands {
         #[command(subcommand)]
         command: SecretsCommands,
     },
+    #[command(about = "Deployment lock management")]
+    Lock {
+        #[command(subcommand)]
+        command: LockCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LockCommands {
+    #[command(about = "Acquire a deployment lock to prevent concurrent deployments")]
+    Acquire {
+        #[arg(help = "Lock message describing why the lock was acquired")]
+        message: String,
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            default_value_t = 300,
+            help = "Wait up to this many seconds for an existing lock to be released before giving up"
+        )]
+        timeout: u64,
+        #[arg(long, help = "Force acquire even if already locked (use with caution)")]
+        force: bool,
+    },
+    #[command(about = "Release the deployment lock")]
+    Release,
+    #[command(about = "Check current lock status")]
+    Status {
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
+    #[command(about = "Show detailed lock information")]
+    Show,
 }
 
 #[derive(Subcommand)]

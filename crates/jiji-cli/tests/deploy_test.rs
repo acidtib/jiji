@@ -755,3 +755,42 @@ async fn failed_pull_after_tunnel_setup_cancels_the_forward_and_stops_deploy() {
         .iter()
         .any(|command| command.contains("run --name")));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_bails_when_deployment_lock_is_held() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let lock_path = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
+    let mut responses = HashMap::new();
+    responses.insert(
+        GENERATION_PATH.to_string(),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert(
+        lock_path.to_string(),
+        success(
+            r#"{"message":"Deploying v1.2.3","acquired_at":1000000000,"acquired_by":"alice","pid":123}"#,
+        ),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("Deployment lock is held"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("Deploying v1.2.3"), "stderr: {stderr}");
+    assert!(stderr.contains("alice"), "stderr: {stderr}");
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.contains("run --name")),
+        "no container should be touched while the lock is held: {received:?}"
+    );
+}

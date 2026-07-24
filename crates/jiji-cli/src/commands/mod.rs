@@ -1,6 +1,7 @@
 pub mod build;
 pub mod deploy;
 pub mod init;
+pub mod lock;
 pub mod network;
 pub mod proxy;
 pub mod registry;

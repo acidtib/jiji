@@ -280,6 +280,29 @@ pub async fn run(
         );
     }
 
+    Ui::section("Checking Deployment Lock:");
+    let mut locked_hosts = Vec::new();
+    for (name, session) in &sessions {
+        if let Some(info) = crate::lock::read_lock(session, &plan.project).await? {
+            locked_hosts.push((name.clone(), info));
+        }
+    }
+    if !locked_hosts.is_empty() {
+        close_all(&sessions).await;
+        let mut detail = String::new();
+        for (name, info) in &locked_hosts {
+            detail.push_str(&format!(
+                "\n  {name}: \"{}\" by {} ({} ago)",
+                info.message,
+                info.acquired_by,
+                crate::lock::format_age(info.age_seconds())
+            ));
+        }
+        anyhow::bail!(
+            "Deployment lock is held on the following server(s):{detail}\nCheck `jiji lock status`, and once it's safe, `jiji lock release` before retrying.",
+        );
+    }
+
     let mut tunnel_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
     if !services_to_build.is_empty() && config.builder.registry.kind == RegistryType::Local {
         Ui::section("Registry Tunnels:");
