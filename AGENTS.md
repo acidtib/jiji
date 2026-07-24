@@ -106,8 +106,8 @@ Flow (`crates/jiji-cli/src/deploy_transaction.rs`, orchestrated by
 2. `network_guard::verify_generation` — recheck the selected endpoint's host
    immediately before its service transaction as a final race-condition guard.
 3. `service_network::prepare_cutover` — read the currently active slot from
-   `/etc/jiji/network/service-nat-current/active-slots`; the candidate always
-   goes on the *other* (inactive) slot.
+   `/etc/jiji/network/{slug}/service-nat-current/active-slots`; the candidate
+   always goes on the *other* (inactive) slot.
 4. Stage mounts (`mounts.rs`) and environment (`env_resolution.rs`, via a
    remote `--env-file`, never inline `-e KEY=VALUE`, so secrets never appear
    in a logged command).
@@ -133,52 +133,84 @@ The POC's Corrosion (CRDT gossip database) is gone. The current design is a
 topology (WireGuard peers, per-server container subnets, VIPs, DNS records)
 from config alone, with no runtime coordinator. `jiji network setup`
 (`crates/jiji-cli/src/commands/network/setup.rs`) writes that compiled plan to
-each host as an immutable, symlink-swapped "generation":
+each host as an immutable, symlink-swapped "generation".
 
-- **WireGuard**: `wg-quick@jiji0.service`, config at
-  `/etc/jiji/network/generations/{gen}/wireguard.conf`, current pointed to by
-  `/etc/wireguard/jiji0.conf`.
-- **Bridge/engine network** (`commands/network/bridge.rs`): a `jiji`
-  docker/podman network with a fixed subnet/gateway; Podman additionally needs
-  a `jiji-network-anchor` keepalive container (Podman removes bridges with no
-  attached containers).
-- **Service VIP routing**: `jiji-service-nat.service` applies an nftables
-  table (`jiji_service_nat`) that DNATs each service's stable VIP to whichever
-  backend slot is currently active — `service_network.rs` is the only thing
-  that ever mutates this state.
-- **DNS**: `jiji-dns.service` execs plain `dnsmasq` against a compiled
-  `dns.conf` (`{project}-{service}.jiji` / `{project}-{service}-{server}.jiji`
-  records) — there is no jiji-authored DNS binary.
+**Per-project isolated, not a host-global singleton.** Every name and path
+below is derived purely from `config.project` (`crates/jiji-network/src/
+naming.rs`) — two independent projects can run `jiji server setup` against
+the same physical host and get two fully independent sets of the following,
+with zero shared/persisted state between them (see "Naming Conventions"
+above for the exact derivation and `docs/network-reference.md` for the
+operator-facing explanation, including the residual hash-collision risk when
+projects share default CIDR ranges):
+
+- **WireGuard**: `wg-quick@{wireguard_interface}.service` (interface name
+  `jiji{8 hex}`, one per project), config at
+  `/etc/jiji/network/{slug}/generations/{gen}/wireguard.conf`, current
+  pointed to by `/etc/wireguard/{wireguard_interface}.conf`. WireGuard port
+  is also per-project (`51820..=55819`), not the fixed `51820`.
+- **Bridge/engine network** (`commands/network/bridge.rs`): a
+  `jiji-{slug}` docker/podman network per project (kernel device name
+  `jijib{7 hex}`, distinct from the logical name because of Linux's 15-char
+  interface limit); Podman additionally needs a `jiji-network-anchor-{slug}`
+  keepalive container per project (Podman removes bridges with no attached
+  containers).
+- **Service VIP routing**: `jiji-service-nat-{slug}.service` applies an
+  nftables table (`jiji_service_nat_{slug_with_underscores}`, one per
+  project) that DNATs each service's stable VIP to whichever backend slot is
+  currently active — `service_network.rs` is the only thing that ever
+  mutates this state.
+- **DNS**: `jiji-dns-{slug}.service` execs plain `dnsmasq` per project
+  against a compiled `dns.conf` (`{project}-{service}.jiji` /
+  `{project}-{service}-{server}.jiji` records) — there is no jiji-authored
+  DNS binary.
 - **kamal-proxy** (`crates/jiji-cli/src/proxy.rs`): a Go reverse proxy
   container (fork `ghcr.io/acidtib/kamal-proxy:jiji`), provisioned per-server
-  by `jiji server setup`, pinned to a deterministic address
-  (`ServerPlan::proxy_address`) so it can never collide with the DNS alias
-  address.
+  by `jiji server setup`. Deliberately the **one genuinely shared,
+  multi-tenant** component: one container per host, **multi-homed** across
+  every project's bridge that has active routes on that host
+  (`network connect --ip <ServerPlan::proxy_address> <bridge_name>
+  kamal-proxy`, idempotent/additive — see `ensure_attached`), routes
+  namespaced per project already. Given no `--dns` at all (unlike service
+  containers): its routing targets are raw backend IPs
+  (`proxy_routes::RouteTarget::address`), never a `.jiji` hostname, and a
+  single resolver can't reliably answer for every attached project's `.jiji`
+  records at once. `commands/server/teardown.rs` disconnects kamal-proxy from
+  a project's bridge (`proxy::disconnect_bridge_if_attached`) before that
+  bridge can be removed, independent of whether kamal-proxy is still running
+  for other projects.
 
 Docker/Podman's own IPAM has no knowledge of jiji's reserved addresses
 (`ServerPlan::dns_address`, `proxy_address`, backend slots): `dnsmasq` runs as
 a host-level systemd service, not a container, so the engine can and will
-hand out the DNS address to an ad-hoc container started on the `jiji` bridge
-without an explicit `--ip` (confirmed live: `docker run --network jiji
-nginx:alpine` got assigned the DNS address and silently broke resolution for
-that container). Every jiji-managed container avoids this because
-`container_runtime`/`proxy.rs` always pin `--ip` explicitly — any new code
-that runs a container on the `jiji` network (debug tooling, health-check
-sidecars, etc.) must do the same.
+hand out the DNS address to an ad-hoc container started on a jiji bridge
+without an explicit `--ip` (confirmed live, pre-isolation, against the old
+shared `jiji` bridge: `docker run --network jiji nginx:alpine` got assigned
+the DNS address and silently broke resolution for that container — the same
+risk applies to any project's `jiji-{slug}` bridge today). Every jiji-managed
+container avoids this because `container_runtime`/`proxy.rs` always pin
+`--ip` explicitly — any new code that runs a container on a jiji bridge
+(debug tooling, health-check sidecars, etc.) must do the same.
 
 ### `jiji server teardown` (inverse of `server setup`)
 
 `crates/jiji-cli/src/commands/server/teardown.rs` orchestrates the inverse of
 everything above: proxy routes -> application containers -> volumes (with
 `--volumes`) -> images -> the shared kamal-proxy container (only when no
-project still has routes) -> VIP/NAT state -> the whole network layer
-(systemd units, WireGuard, nftables, bridge network, compiled
-`/etc/jiji/network` tree) -> the per-project staging directory
+project still has routes) -> VIP/NAT state -> disconnecting kamal-proxy from
+this project's bridge (`proxy::disconnect_bridge_if_attached`, independent of
+whether kamal-proxy is still running for other projects) -> this project's
+own network layer (systemd units, WireGuard, nftables, bridge network,
+compiled `/etc/jiji/network/{slug}` subtree only — never a sibling project's
+subtree on a shared host) -> the per-project staging directory
 (`env_resolution::project_staging_dir`, holds staged `.env` files with
 resolved secrets and uploaded mount content). Ownership discovery is by
 `jiji.managed`/`jiji.project` labels for containers, and config-computed exact
 names (never a glob) for volumes/images/proxy routes. `-S`/`--services` is
-explicitly rejected rather than silently ignored.
+explicitly rejected rather than silently ignored. Another project's
+containers being present on the same host is surfaced as an informational
+notice (`teardown_plan::render_other_project_notices`), not a blocker —
+teardown only ever acts on this project's own labeled resources.
 
 ### SSH Connection Management
 
@@ -213,6 +245,20 @@ remote command, fixed to bail on `None` with an actionable message.
   `{project}-{service}-{server}.jiji` (per-replica).
 - **Ownership labels**: `jiji.managed=true jiji.project=<p> jiji.service=<s>
   jiji.server=<srv> jiji.resource=service` on every service container.
+- **Per-project network identifiers** (`crates/jiji-network/src/naming.rs`,
+  all pure functions of `project:` alone, computed the same way independent
+  of whether any other project shares the host — see
+  `docs/network-reference.md`'s "Multiple projects on one server"): WireGuard
+  interface `jiji{8 hex}` (`wireguard_interface_name`), kernel bridge device
+  `jijib{7 hex}` (`bridge_interface_name`, distinct from the logical bridge
+  name below because Linux interface names are capped at 15 characters),
+  Docker/Podman logical network `jiji-{slug}` (`bridge_network_name`),
+  systemd units `jiji-dns-{slug}.service` / `jiji-service-nat-{slug}.service`
+  / `jiji-network-restore-{slug}.service` (`systemd_unit_slug`), WireGuard
+  port `51820..=55819` (`wireguard_port`), nftables table
+  `jiji_service_nat_{slug_with_underscores}` (`service_nat_table_name`). All
+  remote state lives under `/etc/jiji/network/{slug}/` instead of the old
+  single shared `/etc/jiji/network/`.
 
 ## Key Files
 
@@ -221,6 +267,10 @@ remote command, fixed to bail on `None` with an actionable message.
 - `crates/jiji-config/src/schema.rs` — the full config schema.
 - `crates/jiji-network/src/planner.rs` — `NetworkPlanner`/`NetworkPlan`, the
   deterministic address/topology computation.
+- `crates/jiji-network/src/naming.rs` — every project-derived name (WireGuard
+  interface/port, bridge interface/network name, systemd unit slug, nftables
+  table name); the single source of truth the per-project isolation design
+  depends on.
 - `crates/jiji-network/src/service_runtime.rs` — `BackendSlot`,
   `ActiveSlotState`, `NetworkedContainerRun`, `ServiceNatArtifacts`.
 - `crates/jiji-cli/src/service_network.rs` — VIP cutover primitives
@@ -354,6 +404,10 @@ section tracks what's landed and what's still deferred.
   check, distro-aware install), full network setup, kamal-proxy provisioning.
 - `jiji network plan` / `jiji network setup` — print or transactionally apply
   the deterministic network plan (idempotent, rollback on partial failure).
+  The network layer is per-project isolated (own WireGuard interface/port,
+  bridge, DNS resolver, compiled state tree per project — see "Private
+  Networking" above), so multiple independent projects can share one server;
+  kamal-proxy is the one intentionally shared, multi-homed component.
 - `jiji deploy` — full zero-downtime deploy (see architecture section above):
   mounts, env/secrets, health checks, VIP cutover, kamal-proxy routing,
   `-H`/`-S` filtering, `stop_first`, optional image builds, and automatic
@@ -385,11 +439,9 @@ section tracks what's landed and what's still deferred.
   `execute_streaming_with_input` (stdout/stderr/exit delivered as they
   arrive over an `mpsc::Receiver`), `open_pty` (PTY/interactive-exec
   channels, driven by `jiji server exec`), `sftp_put`/`sftp_get` (via
-  `russh-sftp`, no CLI command consumes this yet — see
-  docs/ssh-deferred-features-plan.md for why it stays a standalone
+  `russh-sftp`, no CLI command consumes this yet — it stays a standalone
   primitive rather than replacing `mounts.rs`'s existing upload path),
-  pooled concurrent execution. Every item from the SSH deferred-features
-  plan is implemented as of this line.
+  pooled concurrent execution.
 - `jiji secrets print` — non-fatal `.env`/host-env resolution status
   (`[SET]`/`[MISSING]`, `--show-values` to reveal, `-S` to filter services)
   for every secret-shaped reference in configuration. Only
@@ -407,16 +459,84 @@ section tracks what's landed and what's still deferred.
   selected hosts (`--follow` requires exactly one). Restart preserves the
   named configuration volume and bypasses the config-fingerprint no-op so a
   changed moving image tag is picked up. Log filters are shell-quoted.
+- `jiji service logs/restart/rollback/remove/prune` — singular `service`, not
+  `services` (the POC name). `logs` tails the currently active slot's
+  container per selected endpoint (`--container-id` bypasses slot resolution
+  entirely for an arbitrary container name; `--follow` requires exactly one
+  target), sharing its command-rendering and streaming code with `proxy
+  logs`. `restart` is a zero-downtime slot cycle built directly on the same
+  `deploy_endpoint` primitive `jiji deploy` uses (health check, VIP cutover,
+  old-slot cleanup), reusing `service.image` when set or otherwise
+  discovering the currently running image by inspecting the active container
+  (for build-only services with no static `image:`). `rollback` is the same
+  `deploy_endpoint` slot cycle but for a caller-supplied `--version`
+  (required) instead of whatever is currently running: a build-configured
+  service resolves the target purely from `builder.registry` + project +
+  service name (no rebuild, no per-endpoint SSH round trip, trusting the tag
+  was already pushed by a prior `jiji build`/`jiji deploy --build`); a
+  static-`image:` service gets `--version` applied the same way `jiji deploy
+  --version` does, and is rejected the same way if the image already carries
+  an explicit tag. `remove` stops/removes both A/B slot containers, removes
+  any proxy routes, and deactivates the endpoint's VIP/NAT mapping;
+  `--volumes` additionally removes the selected services' named volumes.
+  `prune` implements the `service.retain` pruning that was previously
+  deferred: lists each build-configured service's image tags per server
+  (trusting the engine's own newest-first `images` ordering rather than
+  parsing `CreatedAt`), keeps the first `retain` (or `--retain` override),
+  and removes the rest unless still referenced by a container. Services with
+  only a static `image:` (no `build:`) are never pruned.
+- `jiji lock acquire/release/status/show` — a per-project deployment lock at
+  `.jiji/{project}/deploy.lock` on each selected server (relative to the SSH
+  user's home directory, same staging root `env_resolution::project_staging_dir`
+  uses for uploaded env files), holding a message, acquirer, timestamp, and
+  pid (`crates/jiji-cli/src/lock.rs`). `acquire` polls up to `--timeout`
+  seconds (default 300) waiting for an existing lock to clear before giving
+  up, or `--force` to override immediately. `jiji deploy` checks the lock
+  before making any change and refuses to proceed if any selected server is
+  already locked.
+- `jiji audit` — a per-project, per-server, append-only JSONL trail at
+  `.jiji/{project}/audit.log` (same staging root as the lock file and
+  uploaded env files), each line one `{timestamp, action, status, actor,
+  message}` object (`crates/jiji-cli/src/audit.rs`). Writes are best-effort
+  (`audit::record`): a failed audit write is warned, never propagated, so
+  audit logging can never mask or block the outcome of the command it's
+  recording. Reads are `tail -n <lines>` per selected host, with malformed
+  lines silently skipped (an audit line from a future incompatible format,
+  or a rare concurrent-write interleaving, must never make the trail
+  unreadable) rather than resolved from a POC-era `--filter`/`--since`/
+  `--until`/`--raw`/`--aggregate` surface that was more aspirational in the
+  old docs than actually implemented even there — `jiji audit` instead
+  mirrors this codebase's own `service logs`/`proxy logs` flag conventions:
+  `-n/--lines` (default 20), `-g/--grep` (substring on action or message),
+  `--status success|failed`, `--json` (one JSON object per line, with a
+  `host` field added), `-f/--follow` (`tail -f` on the raw file, requires
+  exactly one host, always raw JSON regardless of `--json` since reformatting
+  a streamed byte pipe isn't worth the complexity). `-S`/`--services` is
+  rejected the same way `jiji lock` rejects it: the trail is host-scoped, not
+  service-scoped. Every state-changing command writes to it: `jiji deploy`,
+  `service restart`/`rollback`/`remove`/`prune` (one entry per server via the
+  shared `audit::record_endpoints_by_server` helper, summarizing every
+  endpoint touched on that server during the run; `rollback`'s entries also
+  carry the target `--version`), `jiji lock acquire`/`release`, and `jiji
+  server setup`/`teardown`. `server setup` writes its entry from the final
+  (kamal-proxy) phase, since engine install and network setup each already
+  bail the whole command on any per-host failure before reaching it -- a host
+  that gets that far already succeeded at every earlier step. `server
+  teardown` writes its entry *after* removing the project's staging
+  directory (`.jiji/{project}`, which the audit log itself lives under, and
+  which is removed early since it also holds plaintext secrets) -- this
+  deliberately recreates that directory containing nothing but the one
+  `server_teardown` entry, so a forensic record that the project was torn
+  down survives the teardown that produced it, without resurrecting any
+  secret-bearing scratch data.
 
-## Explicitly deferred (stubbed with an actionable error, not silently skipped)
+## Explicitly deferred (silent no-op today, not an error)
 
-- Retained-image pruning (`service.retain`) — build tags now exist, but pruning
-  and safe current-image preservation are not implemented.
-- External `SecretsAdapter` (e.g. a Doppler-style adapter) — schema-only,
-  `.env` files and host-env fallback are implemented, no adapter
-  implementations exist.
-- `jiji services logs/restart/remove/prune`, `jiji audit`, `jiji lock` — not
-  started.
+- External `SecretsAdapter` (e.g. a Doppler-style adapter) — schema-only:
+  `Config.secrets` parses but no runtime code path reads it, so configuring
+  `secrets:` today changes nothing and produces no warning. `.env` files and
+  host-env fallback are implemented; no adapter implementations exist. See
+  `docs/followup.md` for the concrete integration plan.
 
 ## Reference Archives
 

@@ -27,13 +27,17 @@ advanced deployment patterns.
 
 ### 1. Install Jiji
 
-```bash
-# Linux/MacOS
-curl -fsSL https://get.jiji.run/install.sh | sh
+Prebuilt binaries and an install script are not published yet for the Rust
+rewrite; build from source:
 
-# Or with JSR (Deno)
-deno install --allow-all --name jiji jsr:@jiji/cli
+```bash
+git clone https://github.com/acidtib/jiji.git
+cd jiji
+mise install         # cargo build --release --bin jiji -> ~/.local/bin/jiji
 ```
+
+(or `cargo build --release --bin jiji` directly, then put
+`target/release/jiji` on `PATH`, if you don't use `mise`.)
 
 ### 2. Initialize Configuration
 
@@ -804,8 +808,8 @@ Review audit logs regularly:
 # View recent deployments
 jiji audit
 
-# Filter by service
-jiji audit --filter deploy
+# Filter by action or message
+jiji audit --grep deploy
 
 # View failures
 jiji audit --status failed
@@ -896,14 +900,15 @@ If deployment fails:
 **Test connectivity:**
 
 ```bash
-# Check WireGuard status
-jiji server exec "sudo wg show jiji0"
+# Check WireGuard status (substitute this project's derived interface
+# name, see `jiji network plan`)
+jiji server exec "sudo wg show <wireguard_interface>"
 
 # Test DNS resolution
 jiji server exec "ping api.jiji"
 
 # Verify routing
-jiji server exec "ip route show | grep jiji0"
+jiji server exec "ip route show dev <wireguard_interface>"
 ```
 
 **Inspect the compiled network plan:**
@@ -914,59 +919,55 @@ jiji network plan
 
 ## Audit Trail
 
-Jiji maintains an audit log of all deployments and operations on each server.
+Jiji keeps an append-only audit log per project on each server, at
+`.jiji/{project}/audit.log`. Every state-changing command writes to it:
+`jiji deploy`, `service restart`/`rollback`/`remove`/`prune` (one entry per
+server, summarizing every endpoint touched on it that run), `jiji lock
+acquire`/`release`, and `jiji server setup`/`teardown`. A `server teardown`
+entry survives the teardown that produced it: the project's staging
+directory (which the audit log lives under) is removed early since it also
+holds plaintext secrets, and the final teardown entry recreates that
+directory containing nothing but itself.
 
 ### View Recent Entries
 
 ```bash
-# Show last 20 entries (default)
+# Show last 20 entries per server (default)
 jiji audit
 
 # Show more entries
 jiji audit --lines 50
 
-# Follow in real-time
+# Follow as new entries are appended (requires exactly one host)
 jiji audit --follow
 ```
 
 ### Filter Entries
 
 ```bash
-# Filter by action type
-jiji audit --filter deploy
-jiji audit --filter lock
+# Filter by action or message substring
+jiji audit --grep deploy
+jiji audit --grep web
 
 # Filter by status
 jiji audit --status success
 jiji audit --status failed
-
-# Filter by date range
-jiji audit --since 2024-01-01
-jiji audit --until 2024-01-31
 ```
 
 ### Output Formats
 
 ```bash
-# Raw log format
-jiji audit --raw
-
-# JSON output for scripts
+# JSON output for scripts (one object per line, with a `host` field)
 jiji audit --json
 
 # Target specific hosts
 jiji audit -H server1.example.com
 ```
 
-### Audit Entry Types
+### Audit Entry Fields
 
-| Action              | Description           |
-| ------------------- | --------------------- |
-| `deploy`            | Container deployment  |
-| `deployment_lock`   | Lock acquired         |
-| `deployment_unlock` | Lock released         |
-| `init`              | Server initialization |
-| `remove`            | Service removal       |
+Each entry is `{timestamp, action, status, actor, message}`. Actions
+currently written: `deploy`, `lock_acquire`, `lock_release`.
 
 ## Deployment Locks
 

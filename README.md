@@ -7,14 +7,6 @@
 Deploy containerized apps across servers with simplicity, speed, and
 portability.
 
-> **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
-> CLI implements `init`, `server setup`, `network plan`/`network setup`,
-> `build`, `deploy`, `server teardown`, `server exec`, `proxy restart`,
-> `proxy logs`, `registry login`/`logout`, `registry teardown`, `service
-> logs`/`restart`/`rollback`/`remove`/`prune`, `lock acquire`/`release`/
-> `status`/`show`, and `secrets print` (see the command table below for the
-> full current picture). `jiji audit` is not started yet.
-
 ## Features
 
 - **Zero downtime deployments** with health checks and automatic rollback
@@ -50,32 +42,6 @@ jiji server teardown
 # Remove a local registry container when it is no longer needed
 jiji registry teardown
 ```
-
-## Commands
-
-| Command                 | Description                               | Status      |
-| ------------------------ | ----------------------------------------- | ----------- |
-| `jiji init`              | Create config stub in `.jiji/deploy.yml`  | Rust        |
-| `jiji build`             | Build container images                    | Rust        |
-| `jiji deploy`            | Deploy services to servers                | Rust        |
-| `jiji service logs`      | View service logs                         | Rust |
-| `jiji service restart`   | Restart services with a zero-downtime slot cycle | Rust |
-| `jiji service rollback`  | Roll back services to a previously built `--version` | Rust |
-| `jiji service remove`    | Remove services from servers              | Rust |
-| `jiji service prune`     | Clean up old images                       | Rust |
-| `jiji proxy restart`     | Pull and recreate kamal-proxy             | Rust |
-| `jiji proxy logs`        | View or follow kamal-proxy logs           | Rust |
-| `jiji server setup`      | Install container runtime and private network | Rust |
-| `jiji server exec`       | Run a command, or an interactive shell, on one server | Rust |
-| `jiji server teardown`   | Remove all jiji components from servers   | Rust |
-| `jiji registry login`    | Authenticate the local machine and/or servers to the configured registry | Rust |
-| `jiji registry logout`   | Remove registry credentials from the local machine and/or servers | Rust |
-| `jiji registry teardown` | Safely remove the local registry container | Rust |
-| `jiji network plan`      | Print the deterministic private network plan | Rust |
-| `jiji network setup`     | Install, update, or repair the private network | Rust |
-| `jiji lock acquire/release/status/show` | Manage deployment locks    | Rust |
-| `jiji audit`              | Show deployment audit trail                | not yet implemented |
-| `jiji secrets print`     | Print resolved secrets for debugging       | Rust |
 
 ### Global Options
 
@@ -140,9 +106,7 @@ complete configuration reference (also the template `jiji init` writes).
 
 ## Documentation
 
-Detailed guides in [docs/](docs/), see [docs/README.md](docs/README.md) for
-the full index: architecture, configuration reference, network reference
-(WireGuard/DNS), deployment guide, and troubleshooting.
+Full guides, configuration reference, and troubleshooting: **[jiji.run/docs](https://jiji.run/docs)**
 
 ## Development
 
@@ -174,4 +138,4 @@ mise run check
 
 ## License
 
-jiji is released under the [MIT License](LICENSE)
+Jiji is released under the [MIT License](LICENSE)

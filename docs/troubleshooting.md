@@ -444,9 +444,16 @@ No recent handshake times
 
 **Solutions:**
 
+WireGuard interface names, systemd unit names, and network paths are derived
+per project (`jiji network plan` prints the exact values for your config) --
+substitute `<wireguard_interface>` and `<slug>` below with those values, they
+are not fixed literals like `jiji0`. See
+[Network Reference](network-reference.md#installed-files) for the full
+mapping.
+
 1. **Check WireGuard status:**
    ```bash
-   jiji server exec "sudo wg show jiji0"
+   jiji server exec "sudo wg show <wireguard_interface>"
 
    # Look for "latest handshake" times
    # Should be recent (< 2 minutes)
@@ -454,11 +461,13 @@ No recent handshake times
 
 2. **Verify firewall allows WireGuard:**
    ```bash
-   # Allow UDP 51820 between configured server public IPs
-   jiji server exec "sudo ufw allow 51820/udp"
+   # Allow UDP on this project's WireGuard port (see `jiji network plan`,
+   # derived per project in the range 51820-55819) between configured
+   # server public IPs
+   jiji server exec "sudo ufw allow <wireguard_port>/udp"
 
    # Verify rule
-   jiji server exec "sudo ufw status | grep 51820"
+   jiji server exec "sudo ufw status | grep <wireguard_port>"
    ```
 
 3. **Inspect and repair the compiled network:**
@@ -469,12 +478,12 @@ No recent handshake times
 
 4. **Restart WireGuard:**
    ```bash
-   jiji server exec "sudo systemctl restart wg-quick@jiji0"
+   jiji server exec "sudo systemctl restart wg-quick@<wireguard_interface>"
    ```
 
 5. **Check routing:**
    ```bash
-   jiji server exec "ip route show | grep jiji0"
+   jiji server exec "ip route show dev <wireguard_interface>"
    ```
 
 ### DNS Resolution Failures
@@ -490,18 +499,18 @@ ping: api.jiji: Name or service not known
 
 1. **Check jiji-dns status:**
    ```bash
-   jiji server exec "sudo systemctl status jiji-dns"
+   jiji server exec "sudo systemctl status jiji-dns-<slug>"
    ```
 
 2. **Restart jiji-dns:**
    ```bash
-   jiji server exec "sudo systemctl restart jiji-dns"
+   jiji server exec "sudo systemctl restart jiji-dns-<slug>"
    ```
 
 3. **Verify DNS configuration:**
    ```bash
-   jiji server exec "readlink -f /etc/jiji/network/dns-current"
-   jiji server exec "dnsmasq --test --conf-file=/etc/jiji/network/dns-current/dns.conf"
+   jiji server exec "readlink -f /etc/jiji/network/<slug>/dns-current"
+   jiji server exec "dnsmasq --test --conf-file=/etc/jiji/network/<slug>/dns-current/dns.conf"
    ```
 
 4. **Test DNS resolution:**
@@ -531,13 +540,13 @@ Error: Connection refused when trying to connect to api.jiji
    jiji server exec "sysctl net.ipv4.ip_forward"
    # Should output: net.ipv4.ip_forward = 1
 
-   # Check routes exist
-   jiji server exec "ip route show | grep jiji0"
+   # Check routes exist (substitute this project's derived interface name)
+   jiji server exec "ip route show dev <wireguard_interface>"
    ```
 
 2. **Check iptables rules:**
    ```bash
-   jiji server exec "sudo iptables -L FORWARD -n -v | grep jiji0"
+   jiji server exec "sudo iptables -L FORWARD -n -v | grep <wireguard_interface>"
    ```
 
 3. **Test connectivity:**
@@ -891,19 +900,15 @@ jiji --verbose network setup
 # View all audit entries
 jiji audit
 
-# Filter by action
-jiji audit --filter deploy
-jiji audit --filter init
+# Filter by action or message
+jiji audit --grep deploy
 
 # Filter by status
 jiji audit --status failed
 jiji audit --status success
 
-# Specific host
-jiji audit --host server1.example.com
-
-# Aggregate chronologically
-jiji audit --aggregate
+# Specific host (global flag)
+jiji audit -H server1.example.com
 ```
 
 ### Interactive Server Access
@@ -924,14 +929,15 @@ jiji server exec "bash" --interactive --hosts server1.example.com
 jiji network plan
 jiji network setup
 
-# WireGuard status
-jiji server exec "sudo wg show jiji0"
+# WireGuard status (substitute this project's derived interface name,
+# see `jiji network plan`)
+jiji server exec "sudo wg show <wireguard_interface>"
 
 # DNS test from a managed container
 jiji server exec "docker exec <container> getent hosts <project>-api.jiji"
 
 # Routing table
-jiji server exec "ip route show | grep jiji0"
+jiji server exec "ip route show dev <wireguard_interface>"
 
 # iptables rules
 jiji server exec "sudo iptables -L -n -v"
