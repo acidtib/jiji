@@ -10,6 +10,26 @@ pub enum SshError {
         source: russh::Error,
     },
 
+    #[error(
+        "Could not resolve host {host} after {attempts} attempt(s): {source}. Verify the hostname and DNS configuration, then retry."
+    )]
+    Resolve {
+        host: String,
+        attempts: u32,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "Could not start ProxyCommand `{command}` for {host}: {source}. Verify the command is on PATH and runs standalone, then retry."
+    )]
+    ProxyCommand {
+        host: String,
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Authentication to {user}@{host} failed: {reason}")]
     Auth {
         host: String,
@@ -53,6 +73,25 @@ pub enum SshError {
         "SSH host {host} returned invalid allocated forwarding port {port}. Configure a fixed unprivileged port and retry."
     )]
     InvalidForwardPort { host: String, port: u32 },
+
+    #[error("Could not start a PTY session on {host}: {source}")]
+    Pty {
+        host: String,
+        #[source]
+        source: russh::Error,
+    },
+
+    /// `reason` is a stringified underlying error rather than a `#[source]`-chained one: a single
+    /// SFTP call can fail from either `russh_sftp::client::Error` (the SFTP protocol layer) or
+    /// `std::io::Error` (local file I/O, or the remote `File` handle's `AsyncWrite`/`AsyncRead`
+    /// impl surfacing a transport failure as `io::Error`) -- unifying two heterogeneous error
+    /// types behind one variant, the same reason `Agent(String)` above does the same thing.
+    #[error("SFTP {path} on {host} failed: {reason}")]
+    Sftp {
+        host: String,
+        path: String,
+        reason: String,
+    },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

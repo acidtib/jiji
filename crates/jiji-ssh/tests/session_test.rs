@@ -15,7 +15,7 @@ use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-use jiji_ssh::{ConnectOptions, SshError, SshSession};
+use jiji_ssh::{ConnectOptions, SshError, SshSession, StreamChunk};
 
 type RemoteForwardTasks = Arc<Mutex<HashMap<(String, u32), JoinHandle<()>>>>;
 
@@ -203,6 +203,12 @@ impl server::Handler for TestServer {
             "fail" => {
                 session.extended_data(channel, 1, "boom\n".to_string())?;
                 session.exit_status_request(channel, 7)?;
+            }
+            "multi-chunk" => {
+                session.data(channel, "chunk-1\n".to_string())?;
+                session.data(channel, "chunk-2\n".to_string())?;
+                session.extended_data(channel, 1, "err-chunk\n".to_string())?;
+                session.exit_status_request(channel, 0)?;
             }
             _ => {
                 let mut out = format!("ran: {command}\n");
@@ -581,4 +587,110 @@ async fn occupied_remote_port_is_rejected_with_an_actionable_error() {
     assert!(error.to_string().contains("AllowTcpForwarding yes"));
     session.close().await;
     drop(occupied);
+}
+
+#[tokio::test]
+async fn execute_streaming_delivers_chunks_as_they_arrive_not_as_one_aggregate() {
+    let client_key = generate_client_key();
+    let addr = spawn_test_server(client_key.public_key().clone()).await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = write_key_file(&dir, &client_key);
+    let mut options = base_options(addr);
+    options.keys = vec![key_path];
+    options.keys_only = true;
+    let session = SshSession::connect(&options).await.expect("connect");
+
+    let mut receiver = session
+        .execute_streaming("multi-chunk")
+        .await
+        .expect("start streaming command");
+
+    let mut stdout_chunks = Vec::new();
+    let mut stderr_chunks = Vec::new();
+    let mut exit_code = None;
+    while let Some(item) = receiver.recv().await {
+        match item.expect("no error expected") {
+            StreamChunk::Stdout(data) => {
+                stdout_chunks.push(String::from_utf8_lossy(&data).into_owned())
+            }
+            StreamChunk::Stderr(data) => {
+                stderr_chunks.push(String::from_utf8_lossy(&data).into_owned())
+            }
+            StreamChunk::Exit(code) => exit_code = Some(code),
+        }
+    }
+
+    // Two separate stdout chunks, not one merged string: proves data is forwarded as it arrives.
+    assert_eq!(
+        stdout_chunks,
+        vec!["chunk-1\n".to_string(), "chunk-2\n".to_string()]
+    );
+    assert_eq!(stderr_chunks, vec!["err-chunk\n".to_string()]);
+    assert_eq!(exit_code, Some(0));
+    session.close().await;
+}
+
+#[tokio::test]
+async fn execute_streaming_reports_command_timeout_through_the_channel() {
+    let client_key = generate_client_key();
+    let addr = spawn_test_server(client_key.public_key().clone()).await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = write_key_file(&dir, &client_key);
+    let mut options = base_options(addr);
+    options.keys = vec![key_path];
+    options.keys_only = true;
+    options.command_timeout = Duration::from_millis(100);
+    let session = SshSession::connect(&options).await.expect("connect");
+
+    let mut receiver = session
+        .execute_streaming("hang")
+        .await
+        .expect("start streaming command");
+
+    let item = receiver
+        .recv()
+        .await
+        .expect("channel should yield a timeout error before closing");
+    assert!(matches!(item, Err(SshError::CommandTimeout { .. })));
+    assert!(receiver.recv().await.is_none());
+    session.close().await;
+}
+
+#[tokio::test]
+async fn connects_and_executes_through_a_proxy_command() {
+    // Requires `socat` on PATH to relay the ProxyCommand's stdio to the mock server's TCP
+    // socket. Not a hard dependency of the crate itself (ProxyCommand can be any command a user
+    // configures) -- skip gracefully on environments that don't have it rather than failing CI.
+    if std::process::Command::new("socat")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping connects_and_executes_through_a_proxy_command: socat not on PATH");
+        return;
+    }
+
+    let client_key = generate_client_key();
+    let addr = spawn_test_server(client_key.public_key().clone()).await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = write_key_file(&dir, &client_key);
+
+    // The host in `options` is deliberately not the literal connectable address: %h/%p in the
+    // ProxyCommand are substituted from `options.host`/`options.port`, proving substitution (not
+    // a hardcoded address) drives the actual connection.
+    let mut options = ConnectOptions::new(addr.ip().to_string(), "tester");
+    options.port = addr.port();
+    options.connect_timeout = Duration::from_secs(5);
+    options.command_timeout = Duration::from_secs(5);
+    options.keys = vec![key_path];
+    options.keys_only = true;
+    options.proxy_command = Some("socat - TCP:%h:%p".to_string());
+
+    let session = SshSession::connect(&options)
+        .await
+        .expect("connect through ProxyCommand");
+    let result = session.execute("hostname").await.expect("execute");
+    assert!(result.success);
+    assert!(result.stdout.contains("ran: hostname"));
+    session.close().await;
 }

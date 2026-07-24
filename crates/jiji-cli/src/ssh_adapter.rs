@@ -19,8 +19,6 @@ pub fn connect_options(
     let config = load_ssh_config(&ssh.config)?;
     let params = config.as_ref().map(|config| config.query(&server.host));
 
-    reject_proxy_command(name, params.as_ref())?;
-
     let user = server
         .user
         .clone()
@@ -75,6 +73,11 @@ pub fn connect_options(
             .unwrap_or_else(|| Duration::from_secs(u64::from(ssh.connect_timeout)))
     };
     options.command_timeout = Duration::from_secs(u64::from(ssh.command_timeout));
+    options.dns_retries = ssh.dns_retries;
+    options.proxy_command = ssh
+        .proxy_command
+        .clone()
+        .or_else(|| proxy_command(params.as_ref()));
 
     let proxy_specs = ssh
         .proxy
@@ -84,8 +87,15 @@ pub fn connect_options(
         .unwrap_or_default();
     options.proxy_jump = proxy_specs
         .iter()
-        .map(|spec| jump_options(spec, ssh, config.as_ref(), &options))
+        .enumerate()
+        .map(|(index, spec)| jump_options(spec, ssh, config.as_ref(), &options, index == 0))
         .collect::<anyhow::Result<_>>()?;
+
+    if options.proxy_command.is_some() && !options.proxy_jump.is_empty() {
+        anyhow::bail!(
+            "Server '{name}' has both a ProxyCommand and a ProxyJump chain configured (via `proxy_command`/`proxy`, or their `~/.ssh/config` equivalents). These are mutually exclusive; configure one or the other and retry."
+        );
+    }
 
     Ok(options)
 }
@@ -100,17 +110,23 @@ fn configured_keys(server: &NamedServer, ssh: &Ssh) -> Option<Vec<PathBuf>> {
         .map(|paths| paths.into_iter().map(expand_tilde).collect())
 }
 
+/// Builds one jump hop's `ConnectOptions`. `is_first_hop` controls how `ProxyCommand` is handled:
+/// only the first hop in a chain is ever reached from the local machine (later hops tunnel
+/// through the previous hop's already-established SSH connection), so only the first hop's
+/// `ProxyCommand` can ever fire -- matching real OpenSSH. A `ProxyCommand` configured on a later
+/// hop would silently never run, so it is rejected explicitly instead.
 fn jump_options(
     spec: &str,
     ssh: &Ssh,
     config: Option<&SshConfig>,
     target: &ConnectOptions,
+    is_first_hop: bool,
 ) -> anyhow::Result<ConnectOptions> {
     let jump = parse_jump_spec(spec)?;
     let params = config.map(|config| config.query(&jump.host));
-    if proxy_command(params.as_ref()).is_some() {
+    if !is_first_hop && proxy_command(params.as_ref()).is_some() {
         anyhow::bail!(
-            "ProxyCommand for jump host '{}' is not implemented. Use ProxyJump for the jump host and retry.",
+            "ProxyCommand on jump host '{}' is not supported: only the first hop in a ProxyJump chain can use ProxyCommand. Reorder the chain so it is first, or remove it, and retry.",
             jump.host
         );
     }
@@ -142,6 +158,10 @@ fn jump_options(
         .and_then(|params| params.connect_timeout)
         .unwrap_or(target.connect_timeout);
     options.command_timeout = target.command_timeout;
+    options.dns_retries = target.dns_retries;
+    if is_first_hop {
+        options.proxy_command = proxy_command(params.as_ref());
+    }
     Ok(options)
 }
 
@@ -230,21 +250,16 @@ fn load_ssh_config(selection: &SshConfigFiles) -> anyhow::Result<Option<SshConfi
     Ok(Some(config))
 }
 
-fn reject_proxy_command(name: &str, params: Option<&HostParams>) -> anyhow::Result<()> {
-    if proxy_command(params).is_some() {
-        anyhow::bail!(
-            "Server '{name}' resolves to ProxyCommand, which is not implemented. Configure ProxyJump with `ssh.proxy` or `ProxyJump` in SSH config and retry."
-        );
-    }
-    Ok(())
-}
-
-fn proxy_command(params: Option<&HostParams>) -> Option<&str> {
+/// `ssh2_config` tokenizes every unrecognized directive's value on whitespace (it doesn't know
+/// `ProxyCommand`'s value is a single shell command), so the tokens are rejoined with spaces here.
+/// This loses fidelity for a value that quoted an argument containing spaces, which matches the
+/// project's existing "supported OpenSSH config fields" framing rather than full compatibility.
+fn proxy_command(params: Option<&HostParams>) -> Option<String> {
     params?
         .unsupported_fields
         .get("proxycommand")
-        .and_then(|values| values.first())
-        .map(String::as_str)
+        .filter(|values| !values.is_empty())
+        .map(|values| values.join(" "))
 }
 
 fn identities_only(params: Option<&HostParams>) -> bool {
@@ -300,6 +315,7 @@ mod tests {
             command_timeout: 300,
             options: Default::default(),
             proxy: None,
+            proxy_command: None,
             keys: None,
             key_data: None,
             keys_only: false,
@@ -364,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_proxy_command_with_an_actionable_error() {
+    fn resolves_proxy_command_from_ssh_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config");
         std::fs::write(
@@ -375,7 +391,58 @@ mod tests {
         let mut ssh = ssh(SshConfigFiles::Single(path.display().to_string()));
         ssh.user = Some("deploy".to_string());
 
+        let options = connect_options("app", &server("app"), &ssh).expect("resolve");
+        assert_eq!(options.proxy_command.as_deref(), Some("ssh -W %h:%p jump"));
+    }
+
+    #[test]
+    fn jiji_proxy_command_overrides_ssh_config_proxy_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config");
+        std::fs::write(
+            &path,
+            "Host app\n  User deploy\n  ProxyCommand from-config\n",
+        )
+        .expect("write config");
+        let mut ssh = ssh(SshConfigFiles::Single(path.display().to_string()));
+        ssh.user = Some("deploy".to_string());
+        ssh.proxy_command = Some("from-jiji-yml".to_string());
+
+        let options = connect_options("app", &server("app"), &ssh).expect("resolve");
+        assert_eq!(options.proxy_command.as_deref(), Some("from-jiji-yml"));
+    }
+
+    #[test]
+    fn proxy_command_and_proxy_jump_together_are_rejected() {
+        let mut ssh = ssh(SshConfigFiles::Enabled(false));
+        ssh.user = Some("deploy".to_string());
+        ssh.proxy_command = Some("nc %h %p".to_string());
+        ssh.proxy = Some("bastion.example.com".to_string());
+
         let error = connect_options("app", &server("app"), &ssh).expect_err("reject");
-        assert!(error.to_string().contains("Configure ProxyJump"));
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn proxy_command_on_a_later_jump_hop_is_rejected() {
+        // Exercises `jump_options` directly with `is_first_hop: false` -- a real multi-hop
+        // ProxyJump chain needing ssh-config's comma-separated `ProxyJump` parsing is exercised
+        // end-to-end elsewhere; this test only needs to prove the `is_first_hop` gate itself.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config");
+        std::fs::write(&path, "Host second\n  ProxyCommand nc %h %p\n").expect("write config");
+        let mut file = File::open(&path).expect("open config");
+        let config = SshConfig::default()
+            .parse(
+                &mut BufReader::new(&mut file),
+                ParseRule::ALLOW_UNKNOWN_FIELDS | ParseRule::ALLOW_UNSUPPORTED_FIELDS,
+            )
+            .expect("parse config");
+        let ssh = ssh(SshConfigFiles::Enabled(false));
+        let target = ConnectOptions::new("target.example.com", "deploy");
+
+        let error = jump_options("second", &ssh, Some(&config), &target, false)
+            .expect_err("reject a non-first hop's ProxyCommand");
+        assert!(error.to_string().contains("only the first hop"));
     }
 }

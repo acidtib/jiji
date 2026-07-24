@@ -6,8 +6,11 @@ use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::{decode_secret_key, load_secret_key, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, ChannelOpenFailure, Disconnect};
+use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 
 use crate::error::SshError;
 use crate::options::ConnectOptions;
@@ -19,6 +22,91 @@ pub struct CommandResult {
     pub stderr: String,
     pub success: bool,
     pub code: Option<u32>,
+}
+
+/// One event from a streamed command's channel, in arrival order.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Exit(u32),
+}
+
+/// Outcome of classifying one `ChannelMsg`, shared by both the buffered (`run_command`) and
+/// streaming (`execute_streaming`) drain loops so there is exactly one place that knows which
+/// channel messages matter and what they mean.
+enum DrainStep {
+    Chunk(StreamChunk),
+    Ignore,
+    Done,
+}
+
+fn classify_channel_msg(msg: ChannelMsg) -> DrainStep {
+    match msg {
+        ChannelMsg::Data { data } => DrainStep::Chunk(StreamChunk::Stdout(data.to_vec())),
+        ChannelMsg::ExtendedData { data, .. } => {
+            DrainStep::Chunk(StreamChunk::Stderr(data.to_vec()))
+        }
+        ChannelMsg::ExitStatus { exit_status } => DrainStep::Chunk(StreamChunk::Exit(exit_status)),
+        ChannelMsg::Close => DrainStep::Done,
+        _ => DrainStep::Ignore,
+    }
+}
+
+/// A single event from an open `PtyChannel`. Once a PTY is attached, a remote shell's stdout and
+/// stderr are typically already merged by the remote terminal itself, so both `ChannelMsg::Data`
+/// and `ChannelMsg::ExtendedData` collapse into one `Output` variant here -- callers driving an
+/// interactive terminal don't need (and can't meaningfully use) the distinction once a PTY is in
+/// the picture.
+#[derive(Debug, Clone)]
+pub enum PtyEvent {
+    Output(Vec<u8>),
+    Exit(u32),
+}
+
+/// An open PTY (or plain interactive-exec) channel, returned by `SshSession::open_pty`. Holds no
+/// terminal state of its own -- driving raw mode, local echo, and resize detection is entirely
+/// the caller's responsibility; this only carries bytes and requests across the SSH channel.
+pub struct PtyChannel {
+    channel: Channel<client::Msg>,
+}
+
+impl PtyChannel {
+    /// Sends local input to the remote pty/command.
+    pub async fn send(&self, data: &[u8]) -> Result<(), SshError> {
+        self.channel.data_bytes(data.to_vec()).await?;
+        Ok(())
+    }
+
+    /// Informs the remote pty that the local terminal's size changed.
+    pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), SshError> {
+        self.channel
+            .window_change(u32::from(cols), u32::from(rows), 0, 0)
+            .await?;
+        Ok(())
+    }
+
+    /// Signals no more local input is coming (used for the non-interactive `--interactive`-less
+    /// case, where `send` is never called at all).
+    pub async fn eof(&self) -> Result<(), SshError> {
+        self.channel.eof().await?;
+        Ok(())
+    }
+
+    /// Waits for the next event. Returns `None` once the channel closes.
+    pub async fn recv(&mut self) -> Option<PtyEvent> {
+        loop {
+            let msg = self.channel.wait().await?;
+            match classify_channel_msg(msg) {
+                DrainStep::Chunk(StreamChunk::Stdout(data) | StreamChunk::Stderr(data)) => {
+                    return Some(PtyEvent::Output(data))
+                }
+                DrainStep::Chunk(StreamChunk::Exit(code)) => return Some(PtyEvent::Exit(code)),
+                DrainStep::Ignore => {}
+                DrainStep::Done => return None,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +193,12 @@ pub struct SshSession {
     handle: Handle<ClientHandler>,
     jump_handles: Vec<Handle<ClientHandler>>,
     forward_targets: ForwardTargets,
+    /// Holds any `ProxyCommand` child process alive for the session's lifetime. Never read after
+    /// construction -- it exists purely for its `Drop` side effect: spawned with
+    /// `kill_on_drop(true)`, so the process is killed whichever way this field's `Vec` is dropped,
+    /// including on an early return/panic, with no explicit cleanup needed in `close()`.
+    #[allow(dead_code)]
+    proxy_processes: Vec<tokio::process::Child>,
 }
 
 impl SshSession {
@@ -114,7 +208,9 @@ impl SshSession {
         }
 
         let mut jump_handles = Vec::with_capacity(options.proxy_jump.len());
-        let mut current = connect_tcp(&options.proxy_jump[0], ClientHandler::default()).await?;
+        let (mut current, first_process) =
+            connect_first_hop(&options.proxy_jump[0], ClientHandler::default()).await?;
+        let proxy_processes: Vec<tokio::process::Child> = first_process.into_iter().collect();
         authenticate(&mut current, &options.proxy_jump[0]).await?;
 
         for next in options.proxy_jump.iter().skip(1) {
@@ -139,13 +235,14 @@ impl SshSession {
             handle,
             jump_handles,
             forward_targets,
+            proxy_processes,
         })
     }
 
     async fn connect_direct(options: &ConnectOptions) -> Result<Self, SshError> {
         let handler = ClientHandler::default();
         let forward_targets = Arc::clone(&handler.forward_targets);
-        let mut handle = connect_tcp(options, handler).await?;
+        let (mut handle, process) = connect_first_hop(options, handler).await?;
         authenticate(&mut handle, options).await?;
 
         Ok(Self {
@@ -154,6 +251,7 @@ impl SshSession {
             handle,
             jump_handles: Vec::new(),
             forward_targets,
+            proxy_processes: process.into_iter().collect(),
         })
     }
 
@@ -176,6 +274,7 @@ impl SshSession {
             handle,
             jump_handles: Vec::new(),
             forward_targets,
+            proxy_processes: Vec::new(),
         })
     }
 
@@ -274,6 +373,114 @@ impl SshSession {
         self.execute_inner(command, Some(input)).await
     }
 
+    /// Like `execute`, but delivers stdout/stderr as they arrive instead of buffering the whole
+    /// result, through the returned channel. `command_timeout` still bounds the whole call: on
+    /// timeout, the channel yields one final `Err(SshError::CommandTimeout)` item, then closes.
+    /// The receiving end simply dropping the `Receiver` (e.g. a caller that stopped caring) ends
+    /// the background drain loop instead of erroring.
+    pub async fn execute_streaming(
+        &self,
+        command: &str,
+    ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
+        self.execute_streaming_inner(command, None).await
+    }
+
+    pub async fn execute_streaming_with_input(
+        &self,
+        command: &str,
+        input: &[u8],
+    ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
+        self.execute_streaming_inner(command, Some(input)).await
+    }
+
+    async fn execute_streaming_inner(
+        &self,
+        command: &str,
+        input: Option<&[u8]>,
+    ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
+        let mut channel = self.handle.channel_open_session().await?;
+        channel.exec(true, command).await?;
+        if let Some(data) = input {
+            channel.data_bytes(data.to_vec()).await?;
+        }
+        channel.eof().await?;
+
+        let (tx, rx) = mpsc::channel(16);
+        let command_timeout = self.command_timeout;
+        let host = self.host.clone();
+        let command = command.to_string();
+
+        tokio::spawn(async move {
+            let drained = tokio::time::timeout(command_timeout, async {
+                loop {
+                    let Some(msg) = channel.wait().await else {
+                        break;
+                    };
+                    match classify_channel_msg(msg) {
+                        DrainStep::Chunk(chunk) => {
+                            if tx.send(Ok(chunk)).await.is_err() {
+                                return;
+                            }
+                        }
+                        DrainStep::Ignore => {}
+                        DrainStep::Done => break,
+                    }
+                }
+            })
+            .await;
+
+            if drained.is_err() {
+                let _ = tx
+                    .send(Err(SshError::CommandTimeout {
+                        host,
+                        command,
+                        timeout_secs: command_timeout.as_secs(),
+                    }))
+                    .await;
+            }
+        });
+
+        Ok(rx)
+    }
+
+    /// Opens a PTY channel: `command` runs that command with a pseudo-terminal attached, `None`
+    /// requests an interactive login shell. `jiji-ssh` has no knowledge of the local terminal --
+    /// `term`/`cols`/`rows` are the caller's (`jiji-cli`'s) responsibility to determine and keep
+    /// updated via `PtyChannel::resize`.
+    pub async fn open_pty(
+        &self,
+        command: Option<&str>,
+        term: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PtyChannel, SshError> {
+        let channel = self.handle.channel_open_session().await?;
+        channel
+            .request_pty(true, term, u32::from(cols), u32::from(rows), 0, 0, &[])
+            .await
+            .map_err(|source| SshError::Pty {
+                host: self.host.clone(),
+                source,
+            })?;
+        match command {
+            Some(command) => channel.exec(true, command).await?,
+            None => channel.request_shell(true).await?,
+        }
+        Ok(PtyChannel { channel })
+    }
+
+    /// Opens a new channel and requests the "sftp" subsystem, returning its raw stream. Used by
+    /// the `sftp` module. Returning `impl AsyncRead + AsyncWrite` here (rather than exposing the
+    /// channel type itself) means the `sftp` module never needs to name the private
+    /// `ClientHandler` type this crate uses internally.
+    pub(crate) async fn open_sftp_stream(
+        &self,
+    ) -> Result<impl AsyncRead + AsyncWrite + Unpin + Send + 'static, SshError> {
+        let channel = self.handle.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        Ok(channel.into_stream())
+    }
+
     async fn execute_inner(
         &self,
         command: &str,
@@ -306,13 +513,16 @@ impl SshSession {
         let mut stderr = Vec::new();
         let mut code = None;
 
-        while let Some(msg) = channel.wait().await {
-            match msg {
-                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
-                ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
-                ChannelMsg::Close => break,
-                _ => {}
+        loop {
+            let Some(msg) = channel.wait().await else {
+                break;
+            };
+            match classify_channel_msg(msg) {
+                DrainStep::Chunk(StreamChunk::Stdout(data)) => stdout.extend_from_slice(&data),
+                DrainStep::Chunk(StreamChunk::Stderr(data)) => stderr.extend_from_slice(&data),
+                DrainStep::Chunk(StreamChunk::Exit(exit_status)) => code = Some(exit_status),
+                DrainStep::Ignore => {}
+                DrainStep::Done => break,
             }
         }
 
@@ -354,28 +564,144 @@ impl SshSession {
     }
 }
 
+/// Establishes the very first hop reached from the local machine: either a `ProxyCommand` child
+/// process (if `options.proxy_command` is set) or a direct TCP connection. This is the only place
+/// `proxy_command` is ever consulted -- see `ConnectOptions::proxy_command`'s doc comment for why
+/// later jump hops can't use it.
+async fn connect_first_hop(
+    options: &ConnectOptions,
+    handler: ClientHandler,
+) -> Result<(Handle<ClientHandler>, Option<tokio::process::Child>), SshError> {
+    match &options.proxy_command {
+        Some(command) => {
+            let (stream, child) = spawn_proxy_command(command, options)?;
+            let handle = connect_stream(stream, options, handler).await?;
+            Ok((handle, Some(child)))
+        }
+        None => {
+            let handle = connect_tcp(options, handler).await?;
+            Ok((handle, None))
+        }
+    }
+}
+
+/// Spawns `sh -c "<substituted ProxyCommand>"` and returns a duplex stream over its stdio, joined
+/// with `tokio::io::join` the same way OpenSSH itself treats `ProxyCommand`'s child process as the
+/// transport. `kill_on_drop(true)` on the returned `Child` means the caller only needs to keep it
+/// alive for as long as the stream is in use; stderr is inherited so the command's own diagnostics
+/// (e.g. a bastion wrapper script failing) reach the user directly.
+// `SshError` is shared across every fallible operation in this crate (dozens of call sites use
+// `?` against it), so boxing it crate-wide to satisfy this one function's lint would be a much
+// larger change than this function warrants; the `Forward` variant is already the largest one and
+// predates this function.
+#[allow(clippy::result_large_err)]
+fn spawn_proxy_command(
+    command: &str,
+    options: &ConnectOptions,
+) -> Result<
+    (
+        impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        tokio::process::Child,
+    ),
+    SshError,
+> {
+    let substituted = crate::options::substitute_proxy_command_tokens(
+        command,
+        &options.host,
+        options.port,
+        &options.user,
+    );
+
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&substituted)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|source| SshError::ProxyCommand {
+            host: options.host.clone(),
+            command: substituted.clone(),
+            source,
+        })?;
+
+    let stdin = child.stdin.take().expect("stdin configured as piped above");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("stdout configured as piped above");
+    let stream = tokio::io::join(stdout, stdin);
+
+    Ok((stream, child))
+}
+
 async fn connect_tcp(
     options: &ConnectOptions,
     handler: ClientHandler,
 ) -> Result<Handle<ClientHandler>, SshError> {
     let config = Arc::new(client::Config::default());
-    let addr = (options.host.as_str(), options.port);
 
-    tokio::time::timeout(
-        options.connect_timeout,
-        client::connect(config, addr, handler),
-    )
-    .await
-    .map_err(|elapsed| SshError::Connect {
+    let connect_future = async {
+        let addr = resolve_with_retry(options).await?;
+        client::connect(config, addr, handler)
+            .await
+            .map_err(|source| SshError::Connect {
+                host: options.host.clone(),
+                port: options.port,
+                source,
+            })
+    };
+
+    match tokio::time::timeout(options.connect_timeout, connect_future).await {
+        Ok(result) => result,
+        Err(elapsed) => Err(SshError::Connect {
+            host: options.host.clone(),
+            port: options.port,
+            source: russh::Error::from(elapsed),
+        }),
+    }
+}
+
+/// Resolves `options.host:options.port` with exponential backoff (200ms, 400ms, 800ms, ...,
+/// capped at 5s between attempts), retrying only resolution failures -- a refused or timed-out
+/// TCP connect to an already-resolved address is a different problem, handled by the caller's
+/// `connect_timeout`. Runs inside that same timeout, so a misconfigured host still fails bounded.
+async fn resolve_with_retry(options: &ConnectOptions) -> Result<SocketAddr, SshError> {
+    let target = format!("{}:{}", options.host, options.port);
+    let attempts = options.dns_retries.max(1);
+    let mut last_error = None;
+
+    for attempt in 0..attempts {
+        match tokio::net::lookup_host(&target).await {
+            Ok(mut addrs) => match addrs.next() {
+                Some(addr) => return Ok(addr),
+                None => {
+                    last_error = Some(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "DNS resolution returned no addresses",
+                    ));
+                }
+            },
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(backoff_delay(attempt)).await;
+        }
+    }
+
+    Err(SshError::Resolve {
         host: options.host.clone(),
-        port: options.port,
-        source: russh::Error::from(elapsed),
-    })?
-    .map_err(|source| SshError::Connect {
-        host: options.host.clone(),
-        port: options.port,
-        source,
+        attempts,
+        source: last_error.expect("loop runs at least once since attempts is at least 1"),
     })
+}
+
+fn backoff_delay(attempt: u32) -> Duration {
+    const BASE: u64 = 200;
+    const CAP: u64 = 5000;
+    let scaled = BASE.saturating_mul(1u64 << attempt.min(20));
+    Duration::from_millis(scaled.min(CAP))
 }
 
 async fn connect_stream<R>(
@@ -524,4 +850,45 @@ async fn try_agent(
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::options::ConnectOptions;
+
+    #[test]
+    fn backoff_delay_grows_and_caps_at_five_seconds() {
+        assert_eq!(backoff_delay(0), Duration::from_millis(200));
+        assert_eq!(backoff_delay(1), Duration::from_millis(400));
+        assert_eq!(backoff_delay(2), Duration::from_millis(800));
+        assert_eq!(backoff_delay(3), Duration::from_millis(1600));
+        assert_eq!(backoff_delay(10), Duration::from_millis(5000));
+    }
+
+    #[tokio::test]
+    async fn resolve_with_retry_exhausts_configured_attempts_on_unresolvable_host() {
+        let mut options = ConnectOptions::new("this-host-should-never-resolve.invalid", "tester");
+        options.dns_retries = 2;
+        let error = resolve_with_retry(&options)
+            .await
+            .expect_err("should fail to resolve");
+        match error {
+            SshError::Resolve { host, attempts, .. } => {
+                assert_eq!(host, "this-host-should-never-resolve.invalid");
+                assert_eq!(attempts, 2);
+            }
+            other => panic!("expected SshError::Resolve, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_with_retry_succeeds_immediately_for_a_loopback_address() {
+        let mut options = ConnectOptions::new("127.0.0.1", "tester");
+        options.port = 22;
+        let addr = resolve_with_retry(&options)
+            .await
+            .expect("should resolve loopback");
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+    }
 }

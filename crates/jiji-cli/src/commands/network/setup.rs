@@ -80,7 +80,9 @@ pub(crate) async fn reconcile_for_deploy(
     plan: &NetworkPlan,
 ) -> anyhow::Result<()> {
     let target_names = plan.servers.keys().cloned().collect::<BTreeSet<_>>();
-    let hosts = connect_all(config).await?;
+    let hosts = connect_all(config).await.context(
+        "Could not reach every configured server for automatic network reconciliation. Restore SSH access and retry `jiji deploy`.",
+    )?;
     let mut stale_hosts = Vec::new();
     for host in &hosts {
         match crate::network_guard::generation_is_current(&host.session, plan).await {

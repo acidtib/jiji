@@ -181,6 +181,14 @@ and loopback-bound reverse TCP forwarding with explicit cancellation.
 `crates/jiji-cli/src/ssh_adapter.rs` resolves supported OpenSSH config fields
 and adapts `jiji_config::{NamedServer, Ssh}` into `jiji_ssh::ConnectOptions`.
 
+A remote command killed by a signal never sends `ChannelMsg::ExitStatus` (SSH
+sends `exit-signal` instead, which `classify_channel_msg` in `session.rs`
+ignores) — so `Option<u32>` exit codes must treat `None` the same as a
+nonzero exit, never as success. `run_command`'s `success: code == Some(0)`
+gets this right; `commands/server/exec.rs`'s streaming/PTY paths originally
+didn't (`Some(0) | None => Ok(())`), silently reporting success on a killed
+remote command, fixed to bail on `None` with an actionable message.
+
 ### Naming Conventions
 
 - **Images**: explicit `image:` references, or versioned references produced by
@@ -244,10 +252,21 @@ unit's `ExecStart` is what starts the `--restart unless-stopped` network
 anchor container, so its `conmon` process lives in the unit's own cgroup and
 `systemctl disable --now` waits out its stop timeout before SIGKILLing it —
 fixed by removing the anchor before disabling the unit
-(`network_teardown::remove_anchor_if_present`). Live-test CLI-command-
-rendering work against a real Docker (and ideally Podman) host before
-considering it done — `cargo test` passing is not sufficient evidence for
-anything that shells out to `docker`/`podman`/`kamal-proxy`/`systemctl`/`nft`.
+(`network_teardown::remove_anchor_if_present`); and `jiji server exec
+--interactive` hanging forever after the remote shell exited, because
+`tokio::io::stdin().read()` was polled fresh inside a `tokio::select!` loop
+each iteration — cancelling that future does not cancel the underlying
+blocking read, and the Tokio runtime waits for its blocking pool to drain on
+shutdown, so a still-blocked stdin read (input that will never arrive once
+the remote side is done) hung process exit indefinitely. Only reproduced
+against a real allocated PTY (a captured-pipe test subprocess has no
+controlling terminal to hang on); fixed by reading stdin on a dedicated
+`std::thread` forwarding through an `mpsc` channel instead. Live-test CLI-
+command-rendering work against a real Docker (and ideally Podman) host, and
+interactive/PTY work against a real terminal, before considering it done —
+`cargo test` passing is not sufficient evidence for anything that shells out
+to `docker`/`podman`/`kamal-proxy`/`systemctl`/`nft`, or that drives a local
+TTY.
 
 ## Writing style
 
@@ -341,8 +360,25 @@ section tracks what's landed and what's still deferred.
 - `jiji server teardown` — full inverse of `server setup` (see architecture
   section above), including `--dry-run`, `--volumes`, typed project-name
   confirmation.
+- `jiji server exec` — runs a command, or an interactive login shell, on
+  exactly one `-H`-resolved server; `--interactive` attaches a PTY to a given
+  command too. Local raw-mode terminal handling and resize forwarding
+  (`SIGWINCH` -> `channel.window_change`) live in `commands/server/exec.rs`,
+  not `jiji-ssh`. Automatically downgrades to non-interactive when stdin/
+  stdout aren't a real TTY, with a warning. `-S`/`--services` is rejected.
 - `jiji-ssh` — connect, auth (key files, inline key data, ssh-agent
-  fallback), `execute`/`execute_with_input`, pooled concurrent execution.
+  fallback), DNS resolution with retry/backoff (`ssh.dns_retries`),
+  `ProxyCommand` (`ssh.proxy_command` or `~/.ssh/config`, spawned as the
+  first hop's transport, mutually exclusive with ProxyJump on the same
+  server), `execute`/`execute_with_input`, `execute_streaming`/
+  `execute_streaming_with_input` (stdout/stderr/exit delivered as they
+  arrive over an `mpsc::Receiver`), `open_pty` (PTY/interactive-exec
+  channels, driven by `jiji server exec`), `sftp_put`/`sftp_get` (via
+  `russh-sftp`, no CLI command consumes this yet — see
+  docs/ssh-deferred-features-plan.md for why it stays a standalone
+  primitive rather than replacing `mounts.rs`'s existing upload path),
+  pooled concurrent execution. Every item from the SSH deferred-features
+  plan is implemented as of this line.
 
 ## Explicitly deferred (stubbed with an actionable error, not silently skipped)
 
@@ -352,10 +388,7 @@ section tracks what's landed and what's still deferred.
   `.env` files and host-env fallback are implemented, no adapter
   implementations exist.
 - `jiji services logs/restart/remove/prune`, `jiji proxy logs`, `jiji audit`,
-  `jiji lock`, `jiji secrets print`, `jiji server exec` — not started.
-- SSH: ProxyCommand, interactive PTY shell, streaming exec, SFTP
-  upload/download, and DNS-retry-with-backoff. ProxyJump, reverse TCP
-  forwarding, and supported `~/.ssh/config` fields are implemented.
+  `jiji lock`, `jiji secrets print` — not started.
 
 ## Reference Archives
 

@@ -24,7 +24,7 @@ jiji-config.workspace = true
 jiji-network.workspace = true
 jiji-ssh.workspace = true
 clap.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal", "io-std"] }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -33,6 +33,8 @@ sha2.workspace = true
 ssh2-config.workspace = true
 tar.workspace = true
 thiserror.workspace = true
+nix = { version = "0.31", features = ["term"] }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

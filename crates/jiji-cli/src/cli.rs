@@ -165,6 +165,13 @@ pub enum ServerCommands {
         #[arg(long, help = "Print the teardown plan without changing any host")]
         dry_run: bool,
     },
+    #[command(about = "Run a command, or an interactive shell, on exactly one server")]
+    Exec {
+        #[arg(help = "Command to run (quote multi-word commands); omit for an interactive shell")]
+        command: Option<String>,
+        #[arg(long, help = "Attach a PTY even when a command is given")]
+        interactive: bool,
+    },
 }
 
 #[derive(Subcommand)]

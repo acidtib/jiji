@@ -315,6 +315,21 @@ ssh:
   # Or with port: bastion.example.com:2222
 ```
 
+**ProxyCommand (connect through an arbitrary command):**
+
+```yaml
+ssh:
+  user: deploy
+  proxy_command: "ssh -W %h:%p bastion.example.com"
+```
+
+Supports the `%h` (host), `%p` (port), `%r` (user), and `%%` (literal `%`)
+tokens; other OpenSSH tokens are not substituted. `proxy_command` and `proxy`
+are mutually exclusive for the same server. The command is spawned as a
+subprocess and its stdio becomes the SSH transport, matching real OpenSSH
+behavior; the command's own stderr output (e.g. an error from the command
+itself) is shown directly.
+
 ### SSH Config File Support
 
 Load SSH configuration from `~/.ssh/config` to leverage existing setups:
@@ -347,10 +362,8 @@ ssh:
 
 - Host specific settings (wildcards supported)
 - HostName, User, Port, and IdentityFile
-- ProxyJump
+- ProxyJump and ProxyCommand
 - ConnectTimeout and IdentitiesOnly
-
-Unsupported `ProxyCommand` entries are reported before connecting.
 
 **Note:** Jiji configuration takes precedence over SSH config file settings.
 

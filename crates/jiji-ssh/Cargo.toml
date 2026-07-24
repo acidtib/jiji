@@ -6,8 +6,9 @@ license.workspace = true
 
 [dependencies]
 russh.workspace = true
+russh-sftp = "2.3.0"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net", "time", "sync", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["net", "time", "sync", "macros", "rt-multi-thread", "process", "io-util", "fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true

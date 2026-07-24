@@ -2,8 +2,9 @@ mod error;
 mod options;
 mod pool;
 mod session;
+mod sftp;
 
 pub use error::SshError;
-pub use options::ConnectOptions;
+pub use options::{substitute_proxy_command_tokens, ConnectOptions};
 pub use pool::SshPool;
-pub use session::{CommandResult, RemoteForward, SshSession};
+pub use session::{CommandResult, PtyChannel, PtyEvent, RemoteForward, SshSession, StreamChunk};

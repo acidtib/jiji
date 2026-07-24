@@ -155,6 +155,8 @@ pub struct Ssh {
     #[serde(default)]
     pub proxy: Option<String>,
     #[serde(default)]
+    pub proxy_command: Option<String>,
+    #[serde(default)]
     pub keys: Option<Vec<String>>,
     #[serde(default)]
     pub key_data: Option<Vec<String>>,

@@ -236,6 +236,14 @@ ssh:
   # proxy: bastion.example.com:2222
   # proxy: deploy@jump-host
 
+  # ProxyCommand - Connect through an arbitrary command instead of a direct
+  # TCP connection. Mutually exclusive with `proxy` (ProxyJump) on the same
+  # server. Supports the %h (host), %p (port), %r (user), and %% (literal %)
+  # tokens; other OpenSSH tokens are not supported. Also honored from
+  # ~/.ssh/config's ProxyCommand when `config` (below) is enabled, with this
+  # setting taking precedence.
+  # proxy_command: "ssh -W %h:%p bastion.example.com"
+
   # SSH Configuration File Support
   # Load SSH configuration from ~/.ssh/config files to leverage existing SSH setups
   # This allows Jiji to inherit host-specific connection and authentication settings.

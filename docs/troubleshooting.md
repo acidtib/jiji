@@ -157,6 +157,29 @@ Error: Received too many authentication failures
    ssh-add ~/.ssh/deploy_key
    ```
 
+### About `jiji server exec`
+
+The many `jiji server exec "..."` examples throughout this guide target
+**exactly one server**. `-H`/`--hosts` must resolve to a single server: if
+your project has more than one, pass `-H` (e.g. `-H server1.example.com`) or
+the command is rejected before connecting. `-S`/`--services` is not accepted.
+
+```bash
+# Run a command non-interactively (the default for any given command)
+jiji server exec "docker ps" -H server1.example.com
+
+# Attach a PTY to that command instead (useful for full-screen tools like top)
+jiji server exec "top" --interactive -H server1.example.com
+
+# Omit the command entirely for an interactive login shell
+jiji server exec -H server1.example.com
+```
+
+An interactive shell (no command given) always requires a real terminal.
+Running `--interactive` from a non-interactive context (a script, CI, a
+piped/redirected shell) is automatically downgraded to a plain non-interactive
+run, with a warning explaining why.
+
 ## Registry Issues
 
 ### 403 Forbidden (GHCR)

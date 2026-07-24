@@ -9,10 +9,10 @@ portability.
 
 > **Status:** Jiji has been rewritten from Deno/TypeScript to Rust. The Rust
 > CLI implements `init`, `server setup`, `network plan`/`network setup`,
-> `build`, `deploy`, `server teardown`, `registry login`/`logout`, and
-> `registry teardown` (see the command table below for the full current
-> picture). A few operational commands (`services`, `proxy logs`, `audit`,
-> `lock`, `secrets print`, `server exec`) are not started yet.
+> `build`, `deploy`, `server teardown`, `server exec`, `registry
+> login`/`logout`, and `registry teardown` (see the command table below for
+> the full current picture). A few operational commands (`services`,
+> `proxy logs`, `audit`, `lock`, `secrets print`) are not started yet.
 
 ## Features
 
@@ -63,7 +63,7 @@ jiji registry teardown
 | `jiji services prune`    | Clean up old images                       | not yet implemented |
 | `jiji proxy logs`        | View kamal-proxy logs                     | not yet implemented |
 | `jiji server setup`      | Install container runtime and private network | Rust |
-| `jiji server exec`       | Execute commands on servers               | not yet implemented |
+| `jiji server exec`       | Run a command, or an interactive shell, on one server | Rust |
 | `jiji server teardown`   | Remove all jiji components from servers   | Rust |
 | `jiji registry login`    | Authenticate the local machine and/or servers to the configured registry | Rust |
 | `jiji registry logout`   | Remove registry credentials from the local machine and/or servers | Rust |

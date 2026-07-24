@@ -167,6 +167,26 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
+            ServerCommands::Exec {
+                command,
+                interactive,
+            } => {
+                if let Err(err) = commands::server::exec::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    command.as_deref(),
+                    *interactive,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Server exec failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
         },
         Some(Commands::Network { command }) => match command {
             NetworkCommands::Setup => {
