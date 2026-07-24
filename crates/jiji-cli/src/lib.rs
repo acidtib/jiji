@@ -26,7 +26,7 @@ mod volume_teardown;
 use clap::{CommandFactory, Parser};
 use cli::{
     Cli, Commands, NetworkCommands, ProxyCommands, RegistryCommands, SecretsCommands,
-    ServerCommands,
+    ServerCommands, ServiceCommands,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -310,6 +310,86 @@ pub async fn run() {
                 {
                     println!();
                     jiji_tui::Ui::error(&format!("Proxy logs failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Service { command }) => match command {
+            ServiceCommands::Logs {
+                lines,
+                since,
+                grep,
+                grep_options,
+                follow,
+                container_id,
+            } => {
+                if let Err(err) =
+                    commands::service::logs::run(commands::service::logs::LogsOptions {
+                        environment: cli.environment.as_deref(),
+                        config_file: cli.config_file.as_deref(),
+                        hosts: cli.hosts.as_deref(),
+                        services: cli.services.as_deref(),
+                        lines: *lines,
+                        since: since.as_deref(),
+                        grep: grep.as_deref(),
+                        grep_options: grep_options.as_deref(),
+                        follow: *follow,
+                        container_id: container_id.as_deref(),
+                    })
+                    .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service logs failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            ServiceCommands::Restart => {
+                if let Err(err) = commands::service::restart::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    cli.host_env,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service restart failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            ServiceCommands::Remove { yes, volumes } => {
+                if let Err(err) = commands::service::remove::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *yes,
+                    *volumes,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service remove failed: {err}"));
+                    jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
+                    std::process::exit(1);
+                }
+            }
+            ServiceCommands::Prune { retain } => {
+                if let Err(err) = commands::service::prune::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *retain,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service prune failed: {err}"));
                     jiji_tui::Ui::say("Fix the reported host or connection error and retry", 1);
                     std::process::exit(1);
                 }

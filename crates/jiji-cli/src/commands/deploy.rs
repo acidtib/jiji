@@ -14,7 +14,7 @@ use crate::{
     version_tag,
 };
 
-const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -501,7 +501,7 @@ pub async fn run(
 /// `NetworkPlan::select_hosts`/`select_endpoints` (already unit-tested, already raising an
 /// actionable `NetworkPlanError` on an unmatched pattern); an empty intersection between the two
 /// filters is a new, explicit error since neither primitive alone can detect it.
-fn select_target_endpoints<'a>(
+pub(crate) fn select_target_endpoints<'a>(
     plan: &'a NetworkPlan,
     hosts: Option<&str>,
     services: Option<&str>,
@@ -526,7 +526,7 @@ fn select_target_endpoints<'a>(
     Ok(selected)
 }
 
-fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
+pub(crate) fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
     value
         .map(|value| {
             value

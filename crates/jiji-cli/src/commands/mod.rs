@@ -6,4 +6,5 @@ pub mod proxy;
 pub mod registry;
 pub mod secrets;
 pub mod server;
+pub mod service;
 pub mod version;

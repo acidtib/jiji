@@ -18,17 +18,11 @@ const NAMESPACED_HOSTS: &[&str] = &[
 pub const LOCAL_REGISTRY_NAME: &str = "jiji-registry";
 pub const LOCAL_REGISTRY_IMAGE: &str = "registry:2";
 
-pub fn full_image_name(
-    registry: &Registry,
-    project: &str,
-    service: &str,
-    tag: &str,
-) -> anyhow::Result<String> {
+/// The tag-less repository prefix `full_image_name` appends a tag to -- exposed on its own so
+/// `service prune` can filter an `images` listing by repository without a tag, or knowing one.
+pub fn repo_reference(registry: &Registry, project: &str, service: &str) -> anyhow::Result<String> {
     if registry.kind == RegistryType::Local {
-        return Ok(format!(
-            "localhost:{}/{project}-{service}:{tag}",
-            registry.port
-        ));
+        return Ok(format!("localhost:{}/{project}-{service}", registry.port));
     }
     let server = registry.server.as_deref().ok_or_else(|| {
         anyhow::anyhow!("Remote registry has no `server:` configured. Set builder.registry.server.")
@@ -43,9 +37,21 @@ pub fn full_image_name(
         None
     };
     Ok(match namespace {
-        Some(namespace) => format!("{server}/{namespace}/{project}-{service}:{tag}"),
-        None => format!("{server}/{project}-{service}:{tag}"),
+        Some(namespace) => format!("{server}/{namespace}/{project}-{service}"),
+        None => format!("{server}/{project}-{service}"),
     })
+}
+
+pub fn full_image_name(
+    registry: &Registry,
+    project: &str,
+    service: &str,
+    tag: &str,
+) -> anyhow::Result<String> {
+    Ok(format!(
+        "{}:{tag}",
+        repo_reference(registry, project, service)?
+    ))
 }
 
 pub fn render_local_registry_inspect() -> Vec<String> {

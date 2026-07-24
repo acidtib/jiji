@@ -28,22 +28,38 @@ pub struct DiscoveredVolume {
 pub fn compute_candidates(config: &Config) -> Vec<VolumeCandidate> {
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
-    for (service_name, service) in &config.services {
-        for volume in &service.volumes {
-            let Some(colon) = volume.find(':') else {
-                continue;
-            };
-            let source = &volume[..colon];
-            if !is_named_volume_source(source) {
-                continue;
+    for service_name in config.services.keys() {
+        for candidate in compute_candidates_for_service(config, service_name) {
+            if seen.insert(candidate.name.clone()) {
+                candidates.push(candidate);
             }
-            let name = format!("{service_name}-{source}");
-            if seen.insert(name.clone()) {
-                candidates.push(VolumeCandidate {
-                    name,
-                    service: service_name.clone(),
-                });
-            }
+        }
+    }
+    candidates
+}
+
+/// Same naming rule as `compute_candidates`, scoped to a single service -- used by `jiji service
+/// remove --volumes` so a partial (`-S`-filtered) removal never touches another service's volumes.
+pub fn compute_candidates_for_service(config: &Config, service_name: &str) -> Vec<VolumeCandidate> {
+    let mut seen = BTreeSet::new();
+    let mut candidates = Vec::new();
+    let Some(service) = config.services.get(service_name) else {
+        return candidates;
+    };
+    for volume in &service.volumes {
+        let Some(colon) = volume.find(':') else {
+            continue;
+        };
+        let source = &volume[..colon];
+        if !is_named_volume_source(source) {
+            continue;
+        }
+        let name = format!("{service_name}-{source}");
+        if seen.insert(name.clone()) {
+            candidates.push(VolumeCandidate {
+                name,
+                service: service_name.to_string(),
+            });
         }
     }
     candidates
@@ -139,6 +155,18 @@ mod tests {
             "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n    volumes: [\"storage:/a\", \"storage:/b\"]\n",
         );
         assert_eq!(compute_candidates(&config).len(), 1);
+    }
+
+    #[test]
+    fn per_service_candidates_never_include_a_sibling_services_volumes() {
+        let config = config(
+            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n    volumes: [\"web_storage:/data\"]\n  worker:\n    image: example/worker\n    volumes: [\"worker_storage:/data\"]\n",
+        );
+        let web_only = compute_candidates_for_service(&config, "web");
+        assert_eq!(web_only.len(), 1);
+        assert_eq!(web_only[0].name, "web-web_storage");
+
+        assert!(compute_candidates_for_service(&config, "does-not-exist").is_empty());
     }
 
     #[test]

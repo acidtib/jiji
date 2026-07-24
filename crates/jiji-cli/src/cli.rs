@@ -124,6 +124,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
+    #[command(about = "Service management")]
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
+    },
     #[command(about = "Secrets management")]
     Secrets {
         #[command(subcommand)]
@@ -150,6 +155,60 @@ pub enum ProxyCommands {
         grep: Option<String>,
         #[arg(short = 'f', long, help = "Follow logs (requires exactly one host)")]
         follow: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceCommands {
+    #[command(about = "View service logs")]
+    Logs {
+        #[arg(short = 'n', long, value_name = "N", help = "Number of lines to show")]
+        lines: Option<u32>,
+        #[arg(
+            short = 's',
+            long,
+            value_name = "TIMESTAMP",
+            help = "Show logs since this timestamp or relative duration"
+        )]
+        since: Option<String>,
+        #[arg(short = 'g', long, value_name = "PATTERN", help = "Filter log lines")]
+        grep: Option<String>,
+        #[arg(
+            long,
+            value_name = "OPTIONS",
+            help = "Extra flags passed to grep (e.g. -i for case-insensitive)"
+        )]
+        grep_options: Option<String>,
+        #[arg(short = 'f', long, help = "Follow logs (requires exactly one target)")]
+        follow: bool,
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Show logs for an arbitrary container name instead of a configured service"
+        )]
+        container_id: Option<String>,
+    },
+    #[command(about = "Restart running services with a zero-downtime slot cycle")]
+    Restart,
+    #[command(about = "Remove services from servers")]
+    Remove {
+        #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]
+        yes: bool,
+        #[arg(
+            long,
+            help = "Also remove jiji-owned named volumes for selected services"
+        )]
+        volumes: bool,
+    },
+    #[command(about = "Clean up old container images")]
+    Prune {
+        #[arg(
+            short = 'r',
+            long,
+            value_name = "N",
+            help = "Number of image versions to keep (default: service's configured `retain`, normally 3)"
+        )]
+        retain: Option<u32>,
     },
 }
 

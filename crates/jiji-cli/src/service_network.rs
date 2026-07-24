@@ -163,7 +163,7 @@ pub async fn activate_slot(
     persist_state(session, plan, &state).await
 }
 
-async fn deactivate_slot(
+pub(crate) async fn deactivate_slot(
     session: &SshSession,
     plan: &NetworkPlan,
     endpoint_identity: &str,

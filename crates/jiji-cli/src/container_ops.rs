@@ -42,13 +42,33 @@ pub async fn pull_image(
     ensure_success(session, &command, &result)
 }
 
-/// `None` means "no such container" (not an error); any other failure to inspect propagates.
+/// `None` covers every way `{engine} inspect` can fail (container absent, daemon unreachable,
+/// permission denied, ...): the engine only reports success/failure via exit code, with no
+/// reliable way from here to tell "no such container" apart from another cause. Only an SSH
+/// transport-level failure (connection lost, command timeout) propagates as `Err` via `?`. Callers
+/// must not read `None` as proof the container never existed.
 pub async fn inspect_status(
     session: &SshSession,
     engine: ContainerEngine,
     name: &str,
 ) -> anyhow::Result<Option<String>> {
     let command = format!("{engine} inspect {name} --format '{{{{.State.Status}}}}'");
+    let result = session.execute(&command).await?;
+    if !result.success {
+        return Ok(None);
+    }
+    Ok(Some(result.stdout.trim().to_string()))
+}
+
+/// Same `None`-covers-every-inspect-failure caveat as `inspect_status` (see its doc comment).
+/// Used by `service restart` to discover the image a build-only service (no static `image:` in
+/// config) is currently running, since that reference exists nowhere else.
+pub async fn inspect_image_ref(
+    session: &SshSession,
+    engine: ContainerEngine,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    let command = format!("{engine} inspect {name} --format '{{{{.Config.Image}}}}'");
     let result = session.execute(&command).await?;
     if !result.success {
         return Ok(None);

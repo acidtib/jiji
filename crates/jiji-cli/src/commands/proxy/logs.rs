@@ -71,7 +71,15 @@ pub async fn run(
     }
 
     let effective_lines = effective_lines(lines, since, grep);
-    let command = render_logs_command(config.builder.engine, effective_lines, since, grep, follow);
+    let command = render_logs_command(
+        config.builder.engine,
+        "kamal-proxy",
+        effective_lines,
+        since,
+        grep,
+        None,
+        follow,
+    );
     if follow {
         let target = selected[0];
         let named_server = config.servers.get(&target.name).ok_or_else(|| {
@@ -146,11 +154,14 @@ pub async fn run(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_logs_command(
     engine: ContainerEngine,
+    container: &str,
     lines: Option<u32>,
     since: Option<&str>,
     grep: Option<&str>,
+    grep_options: Option<&str>,
     follow: bool,
 ) -> String {
     let mut command = format!("{engine} logs --timestamps");
@@ -163,18 +174,29 @@ pub(crate) fn render_logs_command(
     if let Some(lines) = lines {
         command.push_str(&format!(" --tail={lines}"));
     }
-    command.push_str(" kamal-proxy");
+    command.push_str(&format!(" {container}"));
     if let Some(pattern) = grep {
-        command.push_str(&format!(" | grep -- {}", shell_quote(pattern)));
+        command.push_str(" | grep");
+        if let Some(options) = grep_options {
+            for token in options.split_whitespace() {
+                command.push(' ');
+                command.push_str(&shell_quote(token));
+            }
+        }
+        command.push_str(&format!(" -- {}", shell_quote(pattern)));
     }
     command
 }
 
-fn effective_lines(lines: Option<u32>, since: Option<&str>, grep: Option<&str>) -> Option<u32> {
+pub(crate) fn effective_lines(
+    lines: Option<u32>,
+    since: Option<&str>,
+    grep: Option<&str>,
+) -> Option<u32> {
     lines.or_else(|| (since.is_none() && grep.is_none()).then_some(100))
 }
 
-async fn stream_logs(session: &SshSession, command: &str) -> anyhow::Result<()> {
+pub(crate) async fn stream_logs(session: &SshSession, command: &str) -> anyhow::Result<()> {
     let mut receiver = session.execute_streaming(command).await?;
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
@@ -223,9 +245,11 @@ mod tests {
         assert_eq!(
             render_logs_command(
                 ContainerEngine::Docker,
+                "kamal-proxy",
                 Some(25),
                 Some("1 hour ago"),
                 Some("can't; echo bad"),
+                None,
                 true,
             ),
             "docker logs --timestamps --follow --since='1 hour ago' --tail=25 kamal-proxy | grep -- 'can'\\''t; echo bad'"
@@ -235,8 +259,81 @@ mod tests {
     #[test]
     fn renders_minimal_command_without_optional_flags() {
         assert_eq!(
-            render_logs_command(ContainerEngine::Podman, None, None, None, false),
+            render_logs_command(
+                ContainerEngine::Podman,
+                "kamal-proxy",
+                None,
+                None,
+                None,
+                None,
+                false
+            ),
             "podman logs --timestamps kamal-proxy"
+        );
+    }
+
+    #[test]
+    fn grep_options_are_inserted_between_grep_and_the_pattern() {
+        assert_eq!(
+            render_logs_command(
+                ContainerEngine::Docker,
+                "demo-web-a",
+                None,
+                None,
+                Some("error"),
+                Some("-i"),
+                false,
+            ),
+            "docker logs --timestamps demo-web-a | grep '-i' -- 'error'"
+        );
+    }
+
+    #[test]
+    fn grep_options_supports_multiple_space_separated_flags() {
+        assert_eq!(
+            render_logs_command(
+                ContainerEngine::Docker,
+                "demo-web-a",
+                None,
+                None,
+                Some("error"),
+                Some("-i -v"),
+                false,
+            ),
+            "docker logs --timestamps demo-web-a | grep '-i' '-v' -- 'error'"
+        );
+    }
+
+    #[test]
+    fn grep_options_cannot_inject_a_second_shell_command() {
+        let command = render_logs_command(
+            ContainerEngine::Docker,
+            "demo-web-a",
+            None,
+            None,
+            Some("error"),
+            Some("-i; rm -rf ~/.jiji"),
+            false,
+        );
+        assert_eq!(
+            command,
+            "docker logs --timestamps demo-web-a | grep '-i;' 'rm' '-rf' '~/.jiji' -- 'error'"
+        );
+    }
+
+    #[test]
+    fn container_name_is_configurable() {
+        assert_eq!(
+            render_logs_command(
+                ContainerEngine::Docker,
+                "demo-web-a",
+                None,
+                None,
+                None,
+                None,
+                false
+            ),
+            "docker logs --timestamps demo-web-a"
         );
     }
 
