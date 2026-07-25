@@ -1,8 +1,8 @@
-//! Integration tests for `jiji server exec`'s non-interactive path, run as a real subprocess
-//! against a real, in-process SSH server (mirroring `server_teardown_test.rs`'s pattern).
-//! Interactive/PTY behavior is not covered here: there is no real terminal available to a test
-//! subprocess's captured pipes, so that path is exercised only through live validation (see
-//! docs/ssh-deferred-features-plan.md).
+//! Integration tests for `jiji server exec`'s non-interactive path (single host and multi-host),
+//! run as a real subprocess against a real, in-process SSH server (mirroring
+//! `server_teardown_test.rs`'s pattern). Interactive/PTY behavior is not covered here: there is
+//! no real terminal available to a test subprocess's captured pipes, so that path is exercised
+//! only through live validation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -308,7 +308,7 @@ async fn unmatched_host_filter_fails_before_connecting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn multiple_matched_hosts_are_rejected() {
+async fn interactive_shell_with_multiple_matched_hosts_is_rejected() {
     let (dir, key_path, client_key) = setup_test_dir();
     let (harness1, addr1) =
         spawn_test_server("127.0.0.1", client_key.public_key().clone(), HashMap::new()).await;
@@ -319,14 +319,143 @@ async fn multiple_matched_hosts_are_rejected() {
         &config_yaml_two_servers(addr1, addr2, &key_path),
     );
 
-    let output = run_jiji_exec(&config_path, &["echo hi"]);
+    // No command given -> implies an interactive login shell, which is bound to one host.
+    let output = run_jiji_exec(&config_path, &[]);
     assert!(
         !output.status.success(),
         "expected exactly-one-host rejection"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("exactly one host"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("interactive session targets exactly one host"),
+        "stderr: {stderr}"
+    );
     assert!(harness1.received.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interactive_flag_with_multiple_matched_hosts_is_rejected() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let (harness1, addr1) =
+        spawn_test_server("127.0.0.1", client_key.public_key().clone(), HashMap::new()).await;
+    let (_harness2, addr2) =
+        spawn_test_server("127.0.0.2", client_key.public_key().clone(), HashMap::new()).await;
+    let config_path = write_config_str(
+        dir.path(),
+        &config_yaml_two_servers(addr1, addr2, &key_path),
+    );
+
+    let output = run_jiji_exec(&config_path, &["echo hi", "--interactive"]);
+    assert!(
+        !output.status.success(),
+        "expected exactly-one-host rejection"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive session targets exactly one host"),
+        "stderr: {stderr}"
+    );
+    assert!(harness1.received.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_interactive_command_runs_concurrently_on_every_matched_host() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert("echo hi".to_string(), success("hi\n"));
+    let (harness1, addr1) = spawn_test_server(
+        "127.0.0.1",
+        client_key.public_key().clone(),
+        responses.clone(),
+    )
+    .await;
+    let (harness2, addr2) =
+        spawn_test_server("127.0.0.2", client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(
+        dir.path(),
+        &config_yaml_two_servers(addr1, addr2, &key_path),
+    );
+
+    // No -H filter matches both app1 and app2.
+    let output = run_jiji_exec(&config_path, &["echo hi"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(harness1
+        .received
+        .lock()
+        .unwrap()
+        .contains(&"echo hi".to_string()));
+    assert!(harness2
+        .received
+        .lock()
+        .unwrap()
+        .contains(&"echo hi".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sequential_flag_still_runs_the_command_on_every_matched_host() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert("echo hi".to_string(), success("hi\n"));
+    let (harness1, addr1) = spawn_test_server(
+        "127.0.0.1",
+        client_key.public_key().clone(),
+        responses.clone(),
+    )
+    .await;
+    let (harness2, addr2) =
+        spawn_test_server("127.0.0.2", client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(
+        dir.path(),
+        &config_yaml_two_servers(addr1, addr2, &key_path),
+    );
+
+    let output = run_jiji_exec(&config_path, &["echo hi", "--sequential"]);
+    assert!(
+        output.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(harness1
+        .received
+        .lock()
+        .unwrap()
+        .contains(&"echo hi".to_string()));
+    assert!(harness2
+        .received
+        .lock()
+        .unwrap()
+        .contains(&"echo hi".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_host_command_reports_which_hosts_failed() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut ok_responses = HashMap::new();
+    ok_responses.insert("false".to_string(), success("ignored"));
+    let mut fail_responses = HashMap::new();
+    fail_responses.insert("false".to_string(), failure("boom"));
+    let (_harness1, addr1) =
+        spawn_test_server("127.0.0.1", client_key.public_key().clone(), ok_responses).await;
+    let (_harness2, addr2) =
+        spawn_test_server("127.0.0.2", client_key.public_key().clone(), fail_responses).await;
+    let config_path = write_config_str(
+        dir.path(),
+        &config_yaml_two_servers(addr1, addr2, &key_path),
+    );
+
+    let output = run_jiji_exec(&config_path, &["false"]);
+    assert!(!output.status.success(), "expected a nonzero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Command failed on 1 server"),
+        "stderr: {stderr}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

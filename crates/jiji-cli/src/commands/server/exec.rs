@@ -1,15 +1,16 @@
 use std::io::IsTerminal;
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config};
-use jiji_network::NetworkPlanner;
-use jiji_ssh::{PtyEvent, SshSession, StreamChunk};
+use jiji_config::{load_config, validate_config, Config, Ssh};
+use jiji_network::{NetworkPlanner, ServerPlan};
+use jiji_ssh::{PtyEvent, SshPool, SshSession, StreamChunk};
 use jiji_tui::Ui;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use crate::ssh_adapter;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
@@ -17,12 +18,13 @@ pub async fn run(
     services: Option<&str>,
     command: Option<&str>,
     interactive: bool,
+    sequential: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Server Exec:");
 
     if services.is_some() {
         anyhow::bail!(
-            "`jiji server exec` does not accept -S/--services: a session targets exactly one host, not a service. Use -H/--hosts instead."
+            "`jiji server exec` does not accept -S/--services: it targets hosts, not services. Use -H/--hosts instead."
         );
     }
 
@@ -51,21 +53,46 @@ pub async fn run(
         .map_err(|error| anyhow::anyhow!("Could not build the private network plan: {error}"))?;
     let host_filters = split_comma_trimmed(hosts);
     let selected = plan.select_hosts(&host_filters)?;
-    let target = match selected.as_slice() {
-        [server] => server,
-        [] => anyhow::bail!(
-            "No server matched -H/--hosts. `jiji server exec` targets exactly one host; check the filter and try again."
-        ),
-        multiple => anyhow::bail!(
-            "-H/--hosts matched {} servers ({}). `jiji server exec` targets exactly one host; narrow the filter and try again.",
-            multiple.len(),
-            multiple
-                .iter()
-                .map(|server| server.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    };
+    if selected.is_empty() {
+        anyhow::bail!("No server matched -H/--hosts. Check the filter and try again.");
+    }
+
+    // An interactive shell or a command with --interactive attaches a PTY, which is bound to
+    // exactly one local terminal -- raw mode and resize forwarding can't sanely fan out to N
+    // remote sessions sharing one local TTY.
+    let wants_pty = interactive || command.is_none();
+    if wants_pty {
+        let target = match selected.as_slice() {
+            [server] => server,
+            multiple => anyhow::bail!(
+                "-H/--hosts matched {} servers ({}). An interactive session targets exactly one host; narrow the filter and try again.",
+                multiple.len(),
+                multiple
+                    .iter()
+                    .map(|server| server.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        return run_interactive(&config, &ssh, target, command, interactive).await;
+    }
+
+    let command = command.expect("non-interactive path always has a command");
+    if let [target] = selected.as_slice() {
+        return run_single_host(&config, &ssh, target, command).await;
+    }
+    run_multi_host(&config, &ssh, &selected, command, sequential).await
+}
+
+/// Interactive login shell, or `--interactive` attached to a command: connects, then hands off
+/// to the PTY or plain-streaming driver depending on TTY availability.
+async fn run_interactive(
+    config: &Config,
+    ssh: &Ssh,
+    target: &ServerPlan,
+    command: Option<&str>,
+    interactive: bool,
+) -> anyhow::Result<()> {
     let named_server = config.servers.get(&target.name).ok_or_else(|| {
         anyhow::anyhow!(
             "Server '{}' selected by the network plan is not defined in configuration",
@@ -73,7 +100,7 @@ pub async fn run(
         )
     })?;
 
-    let options = ssh_adapter::connect_options(&target.name, named_server, &ssh)?;
+    let options = ssh_adapter::connect_options(&target.name, named_server, ssh)?;
     Ui::say(&format!("{}: connecting...", target.name), 1);
     let session = SshSession::connect(&options)
         .await
@@ -106,6 +133,113 @@ pub async fn run(
 
     session.close().await;
     result
+}
+
+/// Single host, non-interactive: streams output live as it arrives.
+async fn run_single_host(
+    config: &Config,
+    ssh: &Ssh,
+    target: &ServerPlan,
+    command: &str,
+) -> anyhow::Result<()> {
+    let named_server = config.servers.get(&target.name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Server '{}' selected by the network plan is not defined in configuration",
+            target.name
+        )
+    })?;
+
+    let options = ssh_adapter::connect_options(&target.name, named_server, ssh)?;
+    Ui::say(&format!("{}: connecting...", target.name), 1);
+    let session = SshSession::connect(&options)
+        .await
+        .with_context(|| format!("Could not connect to '{}'", target.name))?;
+    Ui::say(&format!("{}: connected", target.name), 1);
+
+    let result = run_streaming(&session, command).await;
+    session.close().await;
+    result
+}
+
+/// Multiple hosts, non-interactive: live-interleaving N hosts' output would just garble it, so
+/// each host's output is captured in full and printed under its own header once that host's
+/// command finishes -- the same pattern `jiji service logs`'s multi-host non-follow path uses.
+/// Concurrent by default (bounded by `ssh.max_concurrent_starts`); `sequential` runs one host
+/// fully to completion before starting the next.
+async fn run_multi_host(
+    config: &Config,
+    ssh: &Ssh,
+    selected: &[&ServerPlan],
+    command: &str,
+    sequential: bool,
+) -> anyhow::Result<()> {
+    let mut operations = Vec::with_capacity(selected.len());
+    for target in selected {
+        let name = target.name.clone();
+        let named_server = config
+            .servers
+            .get(&name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Server '{name}' selected by the network plan is not defined in configuration"
+                )
+            })?
+            .clone();
+        let options = ssh_adapter::connect_options(&name, &named_server, ssh)?;
+        let command = command.to_string();
+        operations.push(move || async move {
+            let result = async {
+                let session = SshSession::connect(&options).await?;
+                let outcome = session.execute(&command).await;
+                session.close().await;
+                outcome
+            }
+            .await;
+            (name, result)
+        });
+    }
+
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let outcomes = if sequential {
+        pool.execute_batched(operations, Some(1)).await
+    } else {
+        pool.execute_concurrent(operations).await
+    };
+
+    let mut failures = Vec::new();
+    for (name, outcome) in outcomes {
+        match outcome {
+            Ok(result) if result.success => {
+                Ui::say(&format!("{name}:"), 1);
+                if !result.stdout.is_empty() {
+                    print!("{}", result.stdout);
+                }
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+            }
+            Ok(result) => {
+                let error = format!(
+                    "remote command failed with status {:?}: {}",
+                    result.code,
+                    result.stderr.trim()
+                );
+                Ui::error(&format!("{name}: {error}"));
+                failures.push(error);
+            }
+            Err(error) => {
+                Ui::error(&format!("{name}: {error}"));
+                failures.push(error.to_string());
+            }
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "Command failed on {} server(s). Fix the reported hosts and retry `jiji server exec`.",
+            failures.len()
+        );
+    }
+    Ok(())
 }
 
 fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {

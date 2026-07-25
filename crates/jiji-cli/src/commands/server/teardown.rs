@@ -43,6 +43,7 @@ pub async fn run(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Server Teardown:");
+    let started_at = std::time::Instant::now();
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -260,6 +261,7 @@ pub async fn run(
                 AuditStatus::Success
             },
             format!("{} step(s)", steps.len()),
+            Some(started_at.elapsed()),
         )
         .await;
         outcomes.insert(name.clone(), HostTeardownOutcome::Completed { steps });

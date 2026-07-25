@@ -89,3 +89,11 @@ jobs:
             ```
 
             ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+
+      - name: Notify jiji-website of the new release
+        env:
+          GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/acidtib/jiji-website/dispatches \
+            -f event_type=jiji-release \
+            -f "client_payload[version]=v${{ steps.get_tag_version.outputs.TAG_VERSION }}"

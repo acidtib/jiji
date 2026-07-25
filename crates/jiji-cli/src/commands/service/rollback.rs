@@ -26,6 +26,7 @@ pub async fn run(
     host_env: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Service Rollback:");
+    let started_at = std::time::Instant::now();
 
     let version = version.ok_or_else(|| {
         anyhow::anyhow!(
@@ -294,6 +295,7 @@ pub async fn run(
         "service_rollback",
         Some(&format!("version '{version}'")),
         endpoint_outcomes,
+        Some(started_at.elapsed()),
     )
     .await;
     close_all(&sessions).await;

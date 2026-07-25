@@ -296,11 +296,14 @@ pub fn render_logout_args(server: &str) -> Vec<String> {
     vec!["logout".into(), server.into()]
 }
 
-pub fn resolve_registry_password(
+pub async fn resolve_registry_password(
     raw: &str,
     loaded: &BTreeMap<String, String>,
     allow_host_env: bool,
 ) -> anyhow::Result<String> {
+    if let Some(command) = env_resolution::is_command_expression(raw) {
+        return env_resolution::resolve_command_value(command).await;
+    }
     if !env_resolution::is_bare_all_caps_name(raw) {
         return Ok(raw.to_string());
     }
@@ -517,18 +520,38 @@ mod tests {
         assert_eq!(classify_logout(false, "permission denied"), None);
     }
 
-    #[test]
-    fn password_resolution_distinguishes_names_from_literals() {
+    #[tokio::test]
+    async fn password_resolution_distinguishes_names_from_literals() {
         let loaded = BTreeMap::from([("TOKEN".into(), "secret".into())]);
         assert_eq!(
-            resolve_registry_password("TOKEN", &loaded, false).unwrap(),
+            resolve_registry_password("TOKEN", &loaded, false)
+                .await
+                .unwrap(),
             "secret"
         );
         assert_eq!(
-            resolve_registry_password("literal-value", &loaded, false).unwrap(),
+            resolve_registry_password("literal-value", &loaded, false)
+                .await
+                .unwrap(),
             "literal-value"
         );
-        assert!(resolve_registry_password("MISSING", &loaded, false).is_err());
+        assert!(resolve_registry_password("MISSING", &loaded, false)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn password_resolution_runs_command_expressions() {
+        let loaded = BTreeMap::new();
+        assert_eq!(
+            resolve_registry_password("$(echo -n secret-token)", &loaded, false)
+                .await
+                .unwrap(),
+            "secret-token"
+        );
+        assert!(resolve_registry_password("$(exit 1)", &loaded, false)
+            .await
+            .is_err());
     }
 
     #[test]

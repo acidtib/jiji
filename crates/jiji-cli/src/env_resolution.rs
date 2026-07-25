@@ -194,6 +194,38 @@ pub fn is_bare_all_caps_name(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// A config value can opt into "run this local command and use its output" by wrapping it as
+/// `$(...)`, the same convention shell command substitution uses. Returns the inner command on a
+/// match, e.g. `is_command_expression("$(aws ecr get-login-password)")` ->
+/// `Some("aws ecr get-login-password")`.
+pub fn is_command_expression(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix("$(")
+        .and_then(|rest| rest.strip_suffix(')'))
+}
+
+const COMMAND_VALUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs `command` through a shell locally (never on a remote host) and returns its trimmed
+/// stdout, matching shell `$(...)` substitution semantics. `deploy.yml` is already a trusted,
+/// version-controlled file -- this is not a new trust boundary, the same as `healthcheck.cmd`
+/// already executing a configured command (inside a container, in that case).
+pub async fn resolve_command_value(command: &str) -> anyhow::Result<String> {
+    let result = crate::local_exec::run_captured_with_timeout(
+        "sh",
+        &["-c".to_string(), command.to_string()],
+        None,
+        None,
+        Some(COMMAND_VALUE_TIMEOUT),
+    )
+    .await?;
+    if !result.success {
+        anyhow::bail!("Command '{command}' failed: {}", result.stderr.trim());
+    }
+    Ok(result.stdout.trim_end_matches('\n').to_string())
+}
+
 /// Renders `KEY=value` for clear vars and `KEY=<redacted>` for secrets -- safe to print in debug
 /// output or audit logs.
 pub fn redacted_summary(resolved: &ResolvedEnvironment) -> Vec<String> {
@@ -409,5 +441,23 @@ mod tests {
             project_root_from_config_path(path),
             Path::new("/srv/myproject")
         );
+    }
+
+    #[test]
+    fn command_expression_detection_requires_dollar_paren_wrapper() {
+        assert_eq!(
+            is_command_expression("$(aws ecr get-login-password)"),
+            Some("aws ecr get-login-password")
+        );
+        assert_eq!(is_command_expression("  $(echo hi)  "), Some("echo hi"));
+        assert_eq!(is_command_expression("GITHUB_TOKEN"), None);
+        assert_eq!(is_command_expression("literal-value"), None);
+        assert_eq!(is_command_expression("$(unterminated"), None);
+    }
+
+    #[tokio::test]
+    async fn command_value_resolution_trims_trailing_newline_and_reports_failures() {
+        assert_eq!(resolve_command_value("echo hello").await.unwrap(), "hello");
+        assert!(resolve_command_value("exit 1").await.is_err());
     }
 }

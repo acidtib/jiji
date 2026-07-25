@@ -80,7 +80,7 @@ pub async fn run(
                 ) {
                     (Some(_), Some(raw)) => {
                         let password =
-                            registry::resolve_registry_password(raw, &loaded, host_env)?;
+                            registry::resolve_registry_password(raw, &loaded, host_env).await?;
                         registry::login_local(
                             config.builder.engine,
                             &config.builder.registry,

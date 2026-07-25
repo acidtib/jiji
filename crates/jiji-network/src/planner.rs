@@ -36,7 +36,10 @@ impl NetworkPlan {
             let matches: Vec<&str> = self
                 .servers
                 .iter()
-                .filter(|(_, server)| jiji_core::matches_pattern(&server.public_host, filter))
+                .filter(|(name, server)| {
+                    jiji_core::matches_pattern(name, filter)
+                        || jiji_core::matches_pattern(&server.public_host, filter)
+                })
                 .map(|(name, _)| name.as_str())
                 .collect();
             if matches.is_empty() {
@@ -695,6 +698,26 @@ network:
         assert_eq!(selected[0].peers.len(), 1);
         assert_eq!(plan.servers.len(), 2);
         assert_eq!(plan.generation, generation);
+    }
+
+    #[test]
+    fn select_hosts_matches_the_configured_server_name_as_well_as_its_address() {
+        let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
+
+        let by_name = plan.select_hosts(&["app".to_string()]).unwrap();
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].name, "app");
+
+        let by_wildcard_name = plan.select_hosts(&["a*".to_string()]).unwrap();
+        assert_eq!(by_wildcard_name.len(), 1);
+        assert_eq!(by_wildcard_name[0].name, "app");
+
+        // A filter matching both a server's name and its address must not select it twice.
+        let by_both = plan
+            .select_hosts(&["app".to_string(), "203.0.113.10".to_string()])
+            .unwrap();
+        assert_eq!(by_both.len(), 1);
+        assert_eq!(by_both[0].name, "app");
     }
 
     #[test]

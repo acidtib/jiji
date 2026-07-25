@@ -416,6 +416,7 @@ mod tests {
             privileged: false,
             cap_add: vec![],
             stop_first: false,
+            restart: None,
         };
         let server = |arch: Option<&str>| NamedServer {
             host: "example".into(),

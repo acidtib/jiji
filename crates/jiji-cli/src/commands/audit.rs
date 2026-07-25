@@ -165,6 +165,7 @@ pub async fn run(
                     "status": entry.status,
                     "actor": entry.actor,
                     "message": entry.message,
+                    "duration_ms": entry.duration_ms,
                 });
                 println!("{}", serde_json::to_string(&payload)?);
             }
@@ -184,13 +185,18 @@ pub async fn run(
         }
         Ui::say(&format!("{host}:"), 1);
         for entry in entries {
+            let duration = entry
+                .duration_ms
+                .map(|ms| format!(" [{}]", audit::format_duration_ms(ms)))
+                .unwrap_or_default();
             Ui::say(
                 &format!(
-                    "[{}] {} ({}) {}: {}",
+                    "[{}] {} ({}) {}{}: {}",
                     entry.status,
                     entry.timestamp,
                     audit::format_timestamp(entry.timestamp),
                     entry.action,
+                    duration,
                     entry.message
                 ),
                 2,

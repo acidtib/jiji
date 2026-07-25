@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,8 +29,10 @@ pub async fn run(
     no_cache: bool,
     skip_proxy: bool,
     host_env: bool,
+    yes: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Deploy:");
+    let started_at = std::time::Instant::now();
 
     if no_cache && !build {
         Ui::warn("--no-cache has no effect without --build");
@@ -69,18 +72,15 @@ pub async fn run(
     }
 
     let selected = select_target_endpoints(&plan, hosts, services)?;
-    Ui::say(
-        &format!(
-            "Deploying {} endpoint(s): {}",
-            selected.len(),
-            selected
-                .iter()
-                .map(|e| e.identity.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        1,
-    );
+    confirm_deployment_plan(
+        &config.project,
+        environment,
+        &selected,
+        build,
+        version,
+        skip_proxy,
+        yes,
+    )?;
 
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
 
@@ -150,7 +150,8 @@ pub async fn run(
                     );
                 }
                 let password =
-                    registry::resolve_registry_password(raw_password, &loaded_env, host_env)?;
+                    registry::resolve_registry_password(raw_password, &loaded_env, host_env)
+                        .await?;
                 Ui::section("Registry Login:");
                 registry::login_local(config.builder.engine, &config.builder.registry, &password)
                     .await?;
@@ -507,8 +508,15 @@ pub async fn run(
             matches!(outcome, EndpointOutcome::Deployed { .. }),
         )
     });
-    audit::record_endpoints_by_server(&sessions, &plan.project, "deploy", None, endpoint_outcomes)
-        .await;
+    audit::record_endpoints_by_server(
+        &sessions,
+        &plan.project,
+        "deploy",
+        None,
+        endpoint_outcomes,
+        Some(started_at.elapsed()),
+    )
+    .await;
     close_all(&sessions).await;
 
     Ui::section("Deployment Summary:");
@@ -568,6 +576,73 @@ pub(crate) fn select_target_endpoints<'a>(
         anyhow::bail!("No service endpoint matches both --hosts and --services filters");
     }
     Ok(selected)
+}
+
+/// Prints the deployment plan and gates on confirmation before anything (build, network
+/// reconciliation, SSH) happens. `--yes` skips the prompt outright; without it, a missing
+/// terminal is a hard error rather than a hang, since `dialoguer::Confirm::interact` can't be
+/// answered non-interactively (e.g. CI/CD, where `--yes` must be passed explicitly).
+fn confirm_deployment_plan(
+    project: &str,
+    environment: Option<&str>,
+    selected: &[&ServiceEndpointPlan],
+    build: bool,
+    version: Option<&str>,
+    skip_proxy: bool,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let servers: BTreeSet<&str> = selected.iter().map(|e| e.server.as_str()).collect();
+
+    Ui::section("Deployment Plan:");
+    Ui::say(&format!("Project: {project}"), 1);
+    Ui::say(
+        &format!("Environment: {}", environment.unwrap_or("default")),
+        1,
+    );
+    Ui::say(
+        &format!(
+            "Servers: {}",
+            servers.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+        1,
+    );
+    Ui::say(
+        &format!(
+            "Build: {}",
+            if build {
+                "yes (--build)"
+            } else {
+                "no, using configured image"
+            }
+        ),
+        1,
+    );
+    if let Some(version) = version {
+        Ui::say(&format!("Version override: {version}"), 1);
+    }
+    if skip_proxy {
+        Ui::say("Proxy route activation: skipped (--skip-proxy)", 1);
+    }
+    Ui::say(&format!("Endpoints ({}):", selected.len()), 1);
+    for endpoint in selected {
+        Ui::say(&format!("{} @ {}", endpoint.service, endpoint.server), 2);
+    }
+
+    if yes {
+        return Ok(());
+    }
+
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        anyhow::bail!(
+            "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm the deployment plan when running non-interactively (e.g. CI/CD)."
+        );
+    }
+
+    let confirmed = Ui::confirm("Proceed with this deployment plan?", true)?;
+    if !confirmed {
+        anyhow::bail!("Deployment cancelled.");
+    }
+    Ok(())
 }
 
 pub(crate) fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {

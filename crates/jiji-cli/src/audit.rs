@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jiji_ssh::SshSession;
 use jiji_tui::Ui;
@@ -53,10 +53,19 @@ pub struct AuditEntry {
     pub status: AuditStatus,
     pub actor: String,
     pub message: String,
+    /// How long the recorded operation took, in milliseconds. `None` for entries written before
+    /// this field existed, or from a call site that doesn't track a start time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl AuditEntry {
-    pub fn new(action: impl Into<String>, status: AuditStatus, message: impl Into<String>) -> Self {
+    pub fn new(
+        action: impl Into<String>,
+        status: AuditStatus,
+        message: impl Into<String>,
+        duration: Option<Duration>,
+    ) -> Self {
         Self {
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -66,6 +75,7 @@ impl AuditEntry {
             status,
             actor: crate::lock::current_user(),
             message: message.into(),
+            duration_ms: duration.map(|d| d.as_millis() as u64),
         }
     }
 }
@@ -77,6 +87,19 @@ pub fn format_timestamp(timestamp: u64) -> String {
         .unwrap_or(0);
     let age = now.saturating_sub(timestamp);
     format!("{} ago", crate::lock::format_age(age))
+}
+
+/// Formats an operation duration for display: sub-second precision below a minute (deploys and
+/// restarts typically land here), otherwise the same coarse `{m}m{s}s` shape `lock::format_age`
+/// uses for lock ages.
+pub fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        crate::lock::format_age(ms / 1000)
+    }
 }
 
 /// Appends one entry, creating the project's staging directory if this is the first entry on this
@@ -121,8 +144,9 @@ pub async fn record(
     action: &str,
     status: AuditStatus,
     message: impl Into<String>,
+    duration: Option<Duration>,
 ) {
-    let entry = AuditEntry::new(action, status, message);
+    let entry = AuditEntry::new(action, status, message, duration);
     if let Err(error) = append_entry(session, project, &entry).await {
         Ui::warn(&format!(
             "Could not write audit entry ({action}) on {}: {error}",
@@ -145,6 +169,7 @@ pub async fn record_endpoints_by_server(
     action: &str,
     detail: Option<&str>,
     outcomes: impl IntoIterator<Item = (String, String, bool)>,
+    duration: Option<Duration>,
 ) {
     let mut by_server: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
     for (identity, server, succeeded) in outcomes {
@@ -177,6 +202,7 @@ pub async fn record_endpoints_by_server(
                 AuditStatus::Failed
             },
             summary,
+            duration,
         )
         .await;
     }
@@ -238,12 +264,35 @@ mod tests {
 
     #[test]
     fn entry_serializes_to_a_single_json_line_with_no_embedded_newline() {
-        let entry = AuditEntry::new("deploy", AuditStatus::Success, "demo:web:app deployed");
+        let entry = AuditEntry::new(
+            "deploy",
+            AuditStatus::Success,
+            "demo:web:app deployed",
+            Some(Duration::from_millis(1234)),
+        );
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains('\n'));
         let parsed: AuditEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.action, "deploy");
         assert_eq!(parsed.status, AuditStatus::Success);
+        assert_eq!(parsed.duration_ms, Some(1234));
+    }
+
+    #[test]
+    fn entries_written_before_duration_existed_still_parse() {
+        let legacy =
+            r#"{"timestamp":1,"action":"deploy","status":"success","actor":"x","message":"m"}"#;
+        let parsed: AuditEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.duration_ms, None);
+    }
+
+    #[test]
+    fn duration_formatting_switches_precision_by_magnitude() {
+        assert_eq!(format_duration_ms(850), "850ms");
+        assert_eq!(format_duration_ms(12_400), "12.4s");
+        assert_eq!(format_duration_ms(59_999), "60.0s");
+        assert_eq!(format_duration_ms(60_000), "1m0s");
+        assert_eq!(format_duration_ms(125_000), "2m5s");
     }
 
     #[test]

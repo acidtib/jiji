@@ -70,7 +70,7 @@ pub async fn run(
             1,
         );
     }
-    let password = registry::resolve_registry_password(raw_password, &loaded, host_env)?;
+    let password = registry::resolve_registry_password(raw_password, &loaded, host_env).await?;
 
     let mut outcomes = Vec::new();
 

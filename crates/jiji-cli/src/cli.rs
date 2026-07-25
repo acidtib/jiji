@@ -90,6 +90,12 @@ pub enum Commands {
         no_cache: bool,
         #[arg(long, help = "Skip kamal-proxy route activation")]
         skip_proxy: bool,
+        #[arg(
+            short = 'y',
+            long,
+            help = "Auto-confirm the deployment plan; required when running non-interactively (e.g. CI/CD)"
+        )]
+        yes: bool,
     },
     #[command(about = "Build and push images for services with `build:` configured")]
     Build {
@@ -333,12 +339,22 @@ pub enum ServerCommands {
         #[arg(long, help = "Print the teardown plan without changing any host")]
         dry_run: bool,
     },
-    #[command(about = "Run a command, or an interactive shell, on exactly one server")]
+    #[command(
+        about = "Run a command on any number of servers, or attach an interactive shell to exactly one"
+    )]
     Exec {
         #[arg(help = "Command to run (quote multi-word commands); omit for an interactive shell")]
         command: Option<String>,
-        #[arg(long, help = "Attach a PTY even when a command is given")]
+        #[arg(
+            long,
+            help = "Attach a PTY even when a command is given (requires exactly one matched host)"
+        )]
         interactive: bool,
+        #[arg(
+            long,
+            help = "With multiple matched hosts, run one at a time instead of concurrently"
+        )]
+        sequential: bool,
     },
 }
 

@@ -15,6 +15,7 @@ pub async fn run(
     hosts: Option<&str>,
 ) -> anyhow::Result<()> {
     Ui::section("Server Setup:");
+    let started_at = std::time::Instant::now();
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -134,7 +135,7 @@ pub async fn run(
             )
         })?;
 
-    setup_proxies(&config, &servers, &ssh).await?;
+    setup_proxies(&config, &servers, &ssh, started_at).await?;
 
     Ui::success("\nAll servers are ready.");
     Ok(())
@@ -144,6 +145,7 @@ async fn setup_proxies(
     config: &Config,
     servers: &[(String, NamedServer)],
     ssh: &Ssh,
+    started_at: std::time::Instant,
 ) -> anyhow::Result<()> {
     let plan = NetworkPlanner::new()
         .plan(config)
@@ -192,6 +194,7 @@ async fn setup_proxies(
                     "server_setup",
                     AuditStatus::Success,
                     "engine, network, and kamal-proxy configured",
+                    Some(started_at.elapsed()),
                 )
                 .await;
             }
@@ -203,6 +206,7 @@ async fn setup_proxies(
                     "server_setup",
                     AuditStatus::Success,
                     "engine, network, and kamal-proxy configured",
+                    Some(started_at.elapsed()),
                 )
                 .await;
             }
@@ -214,6 +218,7 @@ async fn setup_proxies(
                     "server_setup",
                     AuditStatus::Failed,
                     format!("kamal-proxy setup failed: {error}"),
+                    Some(started_at.elapsed()),
                 )
                 .await;
                 failures.push((name.clone(), error.to_string()));

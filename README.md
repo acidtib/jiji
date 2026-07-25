@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/jiji_logo.svg" alt="Jiji Logo" width="400">
+  <img src="assets/jiji_logo.svg" alt="Jiji Logo" width="400">
 </p>
 
 # Jiji
@@ -19,8 +19,13 @@ portability.
 
 ## Installation
 
-Build from source (see Development below). Prebuilt binaries and the install
-script are not yet updated for the Rust rewrite.
+```bash
+curl -fsSL https://get.jiji.run/install.sh | sh
+```
+
+Installs the latest release to `~/.local/bin/jiji` (Linux/macOS,
+x86_64/arm64). Pin a version with `VERSION=v1.2.3`. To build from source
+instead, see Development below.
 
 ## Quick Start
 

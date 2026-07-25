@@ -25,6 +25,7 @@ pub async fn run(
     host_env: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Service Restart:");
+    let started_at = std::time::Instant::now();
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -325,6 +326,7 @@ pub async fn run(
         "service_restart",
         None,
         endpoint_outcomes,
+        Some(started_at.elapsed()),
     )
     .await;
     close_all(&sessions).await;

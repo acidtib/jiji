@@ -17,6 +17,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     Ui::section("Lock Acquire:");
     Ui::say(&format!("Message: {message}"), 1);
+    let started_at = Instant::now();
 
     Ui::section("Connecting:");
     let targets = connect_targets(environment, config_file, hosts, services, false).await?;
@@ -129,6 +130,7 @@ pub async fn run(
             "lock_acquire",
             AuditStatus::Success,
             format!("\"{message}\" by {}", lock::current_user()),
+            Some(started_at.elapsed()),
         )
         .await;
     }

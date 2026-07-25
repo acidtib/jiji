@@ -25,6 +25,7 @@ pub async fn run(
     retain_override: Option<u32>,
 ) -> anyhow::Result<()> {
     Ui::section("Service Prune:");
+    let started_at = std::time::Instant::now();
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -195,6 +196,7 @@ pub async fn run(
         "service_prune",
         None,
         endpoint_outcomes,
+        Some(started_at.elapsed()),
     )
     .await;
     close_all(&sessions).await;

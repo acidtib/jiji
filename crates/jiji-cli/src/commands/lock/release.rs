@@ -11,6 +11,7 @@ pub async fn run(
     services: Option<&str>,
 ) -> anyhow::Result<()> {
     Ui::section("Lock Release:");
+    let started_at = std::time::Instant::now();
 
     Ui::section("Connecting:");
     let targets = connect_targets(environment, config_file, hosts, services, false).await?;
@@ -48,6 +49,7 @@ pub async fn run(
                     "lock_release",
                     AuditStatus::Success,
                     format!("released by {}", lock::current_user()),
+                    Some(started_at.elapsed()),
                 )
                 .await;
             }

@@ -29,6 +29,7 @@ pub async fn run(
     remove_volumes: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Service Remove:");
+    let started_at = std::time::Instant::now();
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
@@ -302,6 +303,7 @@ pub async fn run(
         "service_remove",
         None,
         endpoint_outcomes,
+        Some(started_at.elapsed()),
     )
     .await;
     close_all(&sessions).await;

@@ -345,6 +345,29 @@ pub struct ProxyConfig {
     pub targets: Option<Vec<ProxyTarget>>,
 }
 
+/// Mirrors Docker/Podman's `--restart` values exactly (`Display`/serde both render the same
+/// kebab-case strings `container_runtime.rs` passes straight through as the flag value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    #[default]
+    UnlessStopped,
+    Always,
+    OnFailure,
+    No,
+}
+
+impl fmt::Display for RestartPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RestartPolicy::UnlessStopped => write!(f, "unless-stopped"),
+            RestartPolicy::Always => write!(f, "always"),
+            RestartPolicy::OnFailure => write!(f, "on-failure"),
+            RestartPolicy::No => write!(f, "no"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Service {
     #[serde(default)]
@@ -385,6 +408,8 @@ pub struct Service {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub stop_first: bool,
+    #[serde(default)]
+    pub restart: Option<RestartPolicy>,
 }
 
 fn default_true() -> bool {

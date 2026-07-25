@@ -261,9 +261,15 @@ fn plan_generation(addr: SocketAddr, engine: &str) -> String {
     plan.generation
 }
 
+/// Always passes `--yes`: the test subprocess has no controlling terminal, so without it every
+/// deploy would bail on the new non-interactive confirmation guard before doing anything.
 fn run_jiji_deploy(config_path: &std::path::Path, extra_args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));
-    command.arg("deploy").arg("-c").arg(config_path);
+    command
+        .arg("deploy")
+        .arg("-c")
+        .arg(config_path)
+        .arg("--yes");
     for arg in extra_args {
         command.arg(arg);
     }
@@ -455,6 +461,74 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
                 && c.contains("install -d -m 0700 .jiji/demo")),
         "a successful deploy should append an audit entry: {received:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn yes_flag_prints_the_deployment_plan_and_proceeds_without_prompting() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let candidate_name = "demo-web-a";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(active_slots_path(), success(""));
+    responses.insert(inspect_status_command("docker", candidate_name), failure());
+    responses.insert(
+        image_inspect_command("docker", "example/web:latest"),
+        success(""),
+    );
+    responses.insert(
+        readiness_health_command("docker", candidate_name),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("plan123"));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Deployment Plan:"), "stdout: {stdout}");
+    assert!(stdout.contains("Project: demo"), "stdout: {stdout}");
+    assert!(stdout.contains("Servers: app"), "stdout: {stdout}");
+    assert!(stdout.contains("Endpoints (1):"), "stdout: {stdout}");
+    assert!(stdout.contains("web @ app"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Build: no, using configured image"),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_yes_and_no_terminal_deploy_refuses_to_hang_on_a_prompt() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let harness = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));
+    let output = command
+        .arg("deploy")
+        .arg("-c")
+        .arg(&config_path)
+        .output()
+        .expect("run jiji deploy");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "stdout: {stdout}");
+    assert!(stdout.contains("Deployment Plan:"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("--yes") && stderr.contains("non-interactively"),
+        "stderr: {stderr}"
+    );
+
+    // Refused before ever connecting: the SSH server received nothing at all.
+    assert!(harness.received.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -702,6 +776,7 @@ ssh:
         .arg("deploy")
         .arg("-c")
         .arg(&config_path)
+        .arg("--yes")
         .arg("--build")
         .arg("--version")
         .arg("v1")

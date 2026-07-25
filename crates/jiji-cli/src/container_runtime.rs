@@ -138,8 +138,9 @@ pub fn render_command(command: &Option<CommandValue>) -> Vec<String> {
 
 /// Builds the ordered flag list inserted between the fixed network/DNS block
 /// (`NetworkedContainerRun::for_endpoint` already renders that part) and the image name:
-/// `--detach --restart unless-stopped {labels} -p {ports}... {mounts} --env-file {path}
-/// {resource options}`.
+/// `--detach --restart {policy} {labels} -p {ports}... {mounts} --env-file {path}
+/// {resource options}`. `policy` defaults to `unless-stopped` when the service doesn't set
+/// `restart:`.
 #[allow(clippy::too_many_arguments)]
 pub fn render_extra_args(
     service: &Service,
@@ -152,7 +153,7 @@ pub fn render_extra_args(
     let mut args = vec![
         "--detach".to_string(),
         "--restart".to_string(),
-        "unless-stopped".to_string(),
+        service.restart.unwrap_or_default().to_string(),
     ];
     args.extend(render_labels(project, service_name, server));
     args.extend(render_ports(&service.ports));
@@ -351,5 +352,30 @@ cap_add: ["SYS_ADMIN"]
         let docker_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
         let podman_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
         assert_eq!(docker_args, podman_args);
+    }
+
+    #[test]
+    fn restart_policy_defaults_to_unless_stopped() {
+        let service = service("image: example/web\nhosts: [app]\n");
+        let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
+        let restart_index = args.iter().position(|a| a == "--restart").unwrap();
+        assert_eq!(args[restart_index + 1], "unless-stopped");
+    }
+
+    #[test]
+    fn restart_policy_is_configurable() {
+        for (yaml_value, flag_value) in [
+            ("unless-stopped", "unless-stopped"),
+            ("always", "always"),
+            ("on-failure", "on-failure"),
+            ("no", "no"),
+        ] {
+            let service = service(&format!(
+                "image: example/web\nhosts: [app]\nrestart: {yaml_value}\n"
+            ));
+            let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
+            let restart_index = args.iter().position(|a| a == "--restart").unwrap();
+            assert_eq!(args[restart_index + 1], flag_value);
+        }
     }
 }

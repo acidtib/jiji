@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::Context;
 use tokio::io::AsyncWriteExt;
@@ -19,11 +20,25 @@ pub async fn run_captured(
     input: Option<&[u8]>,
     cwd: Option<&Path>,
 ) -> anyhow::Result<LocalCommandResult> {
+    run_captured_with_timeout(program, args, input, cwd, None).await
+}
+
+/// Same as [`run_captured`], but fails with an actionable error instead of waiting forever if
+/// `timeout` elapses before the command exits. Pass `None` to wait indefinitely (matches
+/// `run_captured`'s behavior).
+pub async fn run_captured_with_timeout(
+    program: &str,
+    args: &[String],
+    input: Option<&[u8]>,
+    cwd: Option<&Path>,
+    timeout: Option<Duration>,
+) -> anyhow::Result<LocalCommandResult> {
     let mut command = Command::new(program);
     command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(timeout.is_some());
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
@@ -44,10 +59,21 @@ pub async fn run_captured(
             .await
             .with_context(|| format!("Could not write input to '{program}'"))?;
     }
-    let output = child
-        .wait_with_output()
-        .await
-        .with_context(|| format!("Could not wait for '{program}'"))?;
+    let wait = child.wait_with_output();
+    let output = match timeout {
+        Some(duration) => tokio::time::timeout(duration, wait)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Command '{program}' timed out after {}s",
+                    duration.as_secs()
+                )
+            })?
+            .with_context(|| format!("Could not wait for '{program}'"))?,
+        None => wait
+            .await
+            .with_context(|| format!("Could not wait for '{program}'"))?,
+    };
     Ok(LocalCommandResult {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -111,6 +137,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.stdout, "hello");
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_a_hanging_command_and_returns_an_error() {
+        let args = vec!["1".to_string()];
+        let result =
+            run_captured_with_timeout("sleep", &args, None, None, Some(Duration::from_millis(50)))
+                .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn no_timeout_behaves_like_run_captured() {
+        let empty = Vec::new();
+        let result = run_captured_with_timeout("true", &empty, None, None, None)
+            .await
+            .unwrap();
+        assert!(result.success);
     }
 
     #[tokio::test]

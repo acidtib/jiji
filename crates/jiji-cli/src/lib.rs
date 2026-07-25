@@ -72,6 +72,7 @@ pub async fn run() {
             build,
             no_cache,
             skip_proxy,
+            yes,
         }) => {
             if let Err(err) = commands::deploy::run(
                 cli.environment.as_deref(),
@@ -83,6 +84,7 @@ pub async fn run() {
                 *no_cache,
                 *skip_proxy,
                 cli.host_env,
+                *yes,
             )
             .await
             {
@@ -175,6 +177,7 @@ pub async fn run() {
             ServerCommands::Exec {
                 command,
                 interactive,
+                sequential,
             } => {
                 if let Err(err) = commands::server::exec::run(
                     cli.environment.as_deref(),
@@ -183,6 +186,7 @@ pub async fn run() {
                     cli.services.as_deref(),
                     command.as_deref(),
                     *interactive,
+                    *sequential,
                 )
                 .await
                 {

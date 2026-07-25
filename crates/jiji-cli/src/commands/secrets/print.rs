@@ -569,6 +569,7 @@ mod tests {
             privileged: false,
             cap_add: Vec::new(),
             stop_first: false,
+            restart: None,
         }
     }
 
