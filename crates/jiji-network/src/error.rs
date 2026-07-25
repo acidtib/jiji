@@ -41,15 +41,15 @@ pub enum NetworkPlanError {
     },
 
     #[error(
-        "Service '{service}' lists server '{server}' more than once. Remove the duplicate host."
+        "Service '{service}' lists server '{server}' more than once. Remove the duplicate entry."
     )]
-    DuplicateServiceHost { service: String, server: String },
+    DuplicateServiceServer { service: String, server: String },
 
     #[error(
         "Service '{service}' references unknown server '{server}'. Add that server or correct the \
-         service hosts list."
+         service servers list."
     )]
-    UnknownServiceHost { service: String, server: String },
+    UnknownServiceServer { service: String, server: String },
 
     #[error("No configured server matches host filter '{filter}'. Check --hosts and try again.")]
     UnmatchedHostFilter { filter: String },

@@ -549,7 +549,7 @@ mod tests {
         Service {
             image: None,
             build: None,
-            hosts: Vec::new(),
+            servers: Vec::new(),
             ports: Vec::new(),
             volumes: Vec::new(),
             files: Vec::new(),

@@ -167,11 +167,11 @@ servers:
 services:
   web:
     build: .
-    hosts: [app]
+    servers: [app]
     retain: {retain}
   static:
     image: example/static:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true

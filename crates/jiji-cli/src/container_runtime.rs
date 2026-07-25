@@ -288,13 +288,13 @@ mod tests {
 
     #[test]
     fn resource_options_present_only_when_configured() {
-        let none = service("image: example/web\nhosts: [app]\n");
+        let none = service("image: example/web\nservers: [app]\n");
         assert!(render_resource_options(&none).is_empty());
 
         let all = service(
             r#"
 image: example/web
-hosts: [app]
+servers: [app]
 cpus: 1.5
 memory: "512m"
 gpus: "all"
@@ -332,7 +332,7 @@ cap_add: ["SYS_ADMIN"]
 
     #[test]
     fn extra_args_never_contain_inline_env_flags() {
-        let service = service("image: example/web\nhosts: [app]\nports: [\"3000\"]\n");
+        let service = service("image: example/web\nservers: [app]\nports: [\"3000\"]\n");
         let args = render_extra_args(
             &service,
             "demo",
@@ -348,7 +348,7 @@ cap_add: ["SYS_ADMIN"]
 
     #[test]
     fn docker_and_podman_extra_args_are_identical_modulo_engine() {
-        let service = service("image: example/web\nhosts: [app]\n");
+        let service = service("image: example/web\nservers: [app]\n");
         let docker_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
         let podman_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
         assert_eq!(docker_args, podman_args);
@@ -356,7 +356,7 @@ cap_add: ["SYS_ADMIN"]
 
     #[test]
     fn restart_policy_defaults_to_unless_stopped() {
-        let service = service("image: example/web\nhosts: [app]\n");
+        let service = service("image: example/web\nservers: [app]\n");
         let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
         let restart_index = args.iter().position(|a| a == "--restart").unwrap();
         assert_eq!(args[restart_index + 1], "unless-stopped");
@@ -371,7 +371,7 @@ cap_add: ["SYS_ADMIN"]
             ("no", "no"),
         ] {
             let service = service(&format!(
-                "image: example/web\nhosts: [app]\nrestart: {yaml_value}\n"
+                "image: example/web\nservers: [app]\nrestart: {yaml_value}\n"
             ));
             let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
             let restart_index = args.iter().position(|a| a == "--restart").unwrap();

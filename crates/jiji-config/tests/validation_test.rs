@@ -23,7 +23,7 @@ servers: {}
 }
 
 #[test]
-fn service_with_no_hosts_reports_no_hosts() {
+fn service_with_no_servers_reports_no_servers() {
     let raw = parse(
         r#"
 project: demo
@@ -42,11 +42,11 @@ services:
     assert!(result
         .errors
         .iter()
-        .any(|e| e.code == "NO_HOSTS" && e.path == "services.app.hosts"));
+        .any(|e| e.code == "NO_SERVERS" && e.path == "services.app.servers"));
 }
 
 #[test]
-fn service_host_referencing_undefined_server_reports_undefined_server() {
+fn service_server_referencing_undefined_server_reports_undefined_server() {
     let raw = parse(
         r#"
 project: demo
@@ -58,7 +58,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts:
+    servers:
       - not-a-real-server
 "#,
     );
@@ -86,7 +86,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts:
+    servers:
       - web
 ssh:
   user: root
@@ -114,7 +114,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts:
+    servers:
       - web
 ssh:
   port: 22
@@ -141,7 +141,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts:
+    servers:
       - web
 ssh:
   config: true
@@ -165,7 +165,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts:
+    servers:
       - web
 ssh:
   port: 22
@@ -199,7 +199,7 @@ servers:
 services:
   app:
     image: nginx:latest
-    hosts: [web]
+    servers: [web]
 network:
   management_cidr: 198.18.0.0/16
   container_cidr: 100.64.0.0/10

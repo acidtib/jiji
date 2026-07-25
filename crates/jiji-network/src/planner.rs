@@ -301,15 +301,15 @@ fn plan_endpoints(
     let mut identities_by_server: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (service_name, service) in &config.services {
         let mut seen = BTreeSet::new();
-        for server_name in &service.hosts {
+        for server_name in &service.servers {
             if !seen.insert(server_name) {
-                return Err(NetworkPlanError::DuplicateServiceHost {
+                return Err(NetworkPlanError::DuplicateServiceServer {
                     service: service_name.clone(),
                     server: server_name.clone(),
                 });
             }
             if !servers.contains_key(server_name) {
-                return Err(NetworkPlanError::UnknownServiceHost {
+                return Err(NetworkPlanError::UnknownServiceServer {
                     service: service_name.clone(),
                     server: server_name.clone(),
                 });
@@ -574,11 +574,11 @@ servers:
 services:
   web:
     image: example/web
-    hosts: [app, data]
+    servers: [app, data]
     ports: ["3000"]
   redis:
     image: redis
-    hosts: [data]
+    servers: [data]
     ports: ["6379"]
 network:
   management_cidr: 198.18.0.0/16
@@ -631,11 +631,11 @@ servers:
 services:
   redis:
     image: redis
-    hosts: [data]
+    servers: [data]
     ports: ["6379"]
   web:
     image: example/web
-    hosts: [app, data]
+    servers: [app, data]
     ports: ["3000"]
 network:
   container_cidr: 100.64.0.0/10
@@ -993,12 +993,12 @@ servers:
   app: { host: 203.0.113.10 }
 services:
   web:
-    hosts: [missing]
+    servers: [missing]
 "#,
         );
         assert!(matches!(
             NetworkPlanner::new().plan(&unknown),
-            Err(NetworkPlanError::UnknownServiceHost { .. })
+            Err(NetworkPlanError::UnknownServiceServer { .. })
         ));
 
         let duplicate = config(
@@ -1009,12 +1009,12 @@ servers:
   app: { host: 203.0.113.10 }
 services:
   web:
-    hosts: [app, app]
+    servers: [app, app]
 "#,
         );
         assert!(matches!(
             NetworkPlanner::new().plan(&duplicate),
-            Err(NetworkPlanError::DuplicateServiceHost { .. })
+            Err(NetworkPlanError::DuplicateServiceServer { .. })
         ));
     }
 }

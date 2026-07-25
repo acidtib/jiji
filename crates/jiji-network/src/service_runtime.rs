@@ -276,7 +276,7 @@ servers:
 services:
   web:
     image: example/web
-    hosts: [app]
+    servers: [app]
 "#,
         )
         .unwrap();

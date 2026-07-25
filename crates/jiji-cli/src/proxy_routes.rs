@@ -187,7 +187,7 @@ builder: { engine: docker }
 servers:
   app: { host: 203.0.113.10 }
 services:
-  web: { image: example/web, hosts: [app] }
+  web: { image: example/web, servers: [app] }
 "#,
         )
         .unwrap();

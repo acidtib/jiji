@@ -177,7 +177,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true
@@ -204,7 +204,7 @@ servers:
 services:
   web:
     build: .
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true

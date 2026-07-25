@@ -177,7 +177,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
     volumes: ["web_storage:/data"]
     proxy:
       app_port: 3000

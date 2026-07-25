@@ -307,7 +307,7 @@ mod tests {
         let service: Service = serde_yaml::from_str(
             r#"
 image: example/web
-hosts: [app]
+servers: [app]
 files: ["a.conf:/a.conf"]
 directories: ["confd:/etc/confd"]
 volumes: ["data:/data"]

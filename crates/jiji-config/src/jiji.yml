@@ -110,7 +110,7 @@ builder:
 
 # Server Definitions (required)
 # ===============================
-# Define all servers once by name, then reference them in services under hosts:
+# Define all servers once by name, then reference them in services under servers:
 # This eliminates duplication and allows per-server SSH configuration overrides
 #
 # Each server must have:
@@ -332,12 +332,12 @@ ssh:
 #
 # services:
 #   api-backend:
-#     hosts:
+#     servers:
 #       - server1
 #       - server2
 #
 #   database:
-#     hosts:
+#     servers:
 #       - server3
 #
 # The api-backend containers can connect to database via (assuming project: myapp):
@@ -439,7 +439,7 @@ services:
   web-frontend:
     image: nginx:latest
     # Server targets: Reference servers by name from the servers section
-    hosts:
+    servers:
       - vps-prod
       - home-server
     # Port Mappings: Map host ports to container ports
@@ -520,7 +520,7 @@ services:
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: BUILD_DATE
-  #   hosts:                              # Deploy to both amd64 and arm64 servers
+  #   servers:                              # Deploy to both amd64 and arm64 servers
   #     - vps-prod
   #     - arm-builder
   #   ports:
@@ -584,7 +584,7 @@ services:
   # Useful for services like Garage that expose multiple APIs
   # garage:
   #   image: dxflrs/garage:v2.1.0
-  #   hosts:
+  #   servers:
   #     - storage-server
   #   ports:
   #     - "127.0.0.1:3900:3900"           # S3 API
@@ -658,7 +658,7 @@ services:
   #   build:
   #     context: ./admin
   #     dockerfile: Dockerfile
-  #   hosts:
+  #   servers:
   #     - web-server
   #   ports:
   #     - "3000"
@@ -700,7 +700,7 @@ services:
 #       arch: arm64
 #
 # Notes:
-# - Servers are defined at root level, services reference them under hosts:
+# - Servers are defined at root level, services reference them under servers:
 # - Supported architectures: amd64, arm64
 # - If no arch specified, defaults to amd64
 # - Jiji automatically builds multi-architecture images when needed
@@ -710,7 +710,7 @@ services:
 #   build:
 #     context: ./graphql
 #     dockerfile: Dockerfile
-#   hosts:
+#   servers:
 #     - api-server
 #   ports:
 #     - "4000:4000"
@@ -730,7 +730,7 @@ services:
 #   build:
 #     context: ./worker
 #     dockerfile: Dockerfile
-#   hosts:
+#   servers:
 #     - worker-server
 #   environment:
 #     clear:
@@ -743,7 +743,7 @@ services:
 # Example: Database service
 # database:
 #   image: postgres:15-alpine
-#   hosts:
+#   servers:
 #     - db-server
 #   ports:
 #     - "127.0.0.1:5432:5432"
@@ -758,7 +758,7 @@ services:
 # Example: Cache service
 # cache:
 #   image: redis:7-alpine
-#   hosts:
+#   servers:
 #     - cache-server
 #   ports:
 #     - "127.0.0.1:6379:6379"
@@ -769,7 +769,7 @@ services:
 # # Example: DNS server with UDP ports
 # dns-server:
 #   image: coredns/coredns:latest
-#   hosts:
+#   servers:
 #     - dns-server
 #   ports:
 #     - "53:53/udp"              # DNS queries over UDP
@@ -781,7 +781,7 @@ services:
 # # Example: Service with mixed TCP/UDP ports
 # game-server:
 #   image: game-server:latest
-#   hosts:
+#   servers:
 #     - game-server
 #   ports:
 #     - "8080:8080/tcp"          # HTTP API
@@ -792,7 +792,7 @@ services:
 # # Example: ML service with GPU and resource constraints
 # ml-trainer:
 #   image: tensorflow/tensorflow:latest-gpu
-#   hosts:
+#   servers:
 #     - gpu-server
 #   ports:
 #     - "8888:8888"              # Jupyter notebook
@@ -810,7 +810,7 @@ services:
 # # Example: Media server with device access
 # media-processor:
 #   image: ffmpeg:latest
-#   hosts:
+#   servers:
 #     - media-server
 #   ports:
 #     - "8080:8080"
@@ -828,7 +828,7 @@ services:
 # # Example: FUSE filesystem with privileged mode
 # rclone-mount:
 #   image: rclone/rclone:latest
-#   hosts:
+#   servers:
 #     - storage-server
 #   ports:
 #     - "5572:5572"              # WebUI
@@ -845,7 +845,7 @@ services:
 # # Example: Network service with specific capabilities
 # vpn-server:
 #   image: linuxserver/wireguard:latest
-#   hosts:
+#   servers:
 #     - vpn-server
 #   ports:
 #     - "31820:31820/udp"        # WireGuard

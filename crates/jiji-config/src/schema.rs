@@ -375,7 +375,7 @@ pub struct Service {
     #[serde(default)]
     pub build: Option<BuildValue>,
     #[serde(default)]
-    pub hosts: Vec<String>,
+    pub servers: Vec<String>,
     #[serde(default)]
     pub ports: Vec<String>,
     #[serde(default)]

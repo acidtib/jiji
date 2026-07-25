@@ -248,7 +248,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true
@@ -292,7 +292,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app1]
+    servers: [app1]
 ssh:
   user: tester
   keys_only: true
@@ -324,7 +324,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 "#,
     )
 }
@@ -347,7 +347,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true
@@ -655,7 +655,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true
@@ -718,7 +718,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 ssh:
   user: tester
   keys_only: true

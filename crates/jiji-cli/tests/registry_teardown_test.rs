@@ -20,7 +20,7 @@ servers:
 services:
   web:
     image: example/web:latest
-    hosts: [app]
+    servers: [app]
 "#,
     )
     .expect("write config");

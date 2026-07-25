@@ -88,7 +88,7 @@ services:
     # Use a published image, or replace this with `build:` and run
     # `jiji deploy --build`.
     image: ghcr.io/yourname/myapp-web:latest
-    hosts:
+    servers:
       - server1
       - server2
     ports:

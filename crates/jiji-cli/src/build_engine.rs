@@ -57,7 +57,7 @@ pub fn to_platform(arch: &str) -> String {
 pub fn required_arches(config: &Config, service: &Service) -> Vec<String> {
     let mut seen = BTreeSet::new();
     service
-        .hosts
+        .servers
         .iter()
         .filter_map(|name| config.servers.get(name))
         .map(|server| to_platform(server.arch.as_deref().unwrap_or("amd64")))
@@ -399,7 +399,7 @@ mod tests {
         let service = Service {
             image: None,
             build: None,
-            hosts: vec!["one".into(), "two".into(), "three".into()],
+            servers: vec!["one".into(), "two".into(), "three".into()],
             ports: vec![],
             volumes: vec![],
             files: vec![],

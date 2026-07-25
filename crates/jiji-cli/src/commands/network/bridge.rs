@@ -219,7 +219,7 @@ servers:
   app: { host: 203.0.113.10 }
   data: { host: 203.0.113.20 }
 services:
-  web: { hosts: [app, data] }
+  web: { servers: [app, data] }
 "#,
         )
         .unwrap();

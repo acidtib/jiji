@@ -24,7 +24,7 @@ pub struct ValidationResult {
 const REQUIRED_TOP_LEVEL: [&str; 4] = ["project", "builder", "servers", "services"];
 
 /// Validates raw YAML + the typed config. Scope for this slice (see design doc Non-Goals):
-/// required top-level fields, each service has >=1 host, every service host references a
+/// required top-level fields, each service has >=1 server, every listed server references a
 /// defined server, and basic SSH shape (port range, presence of `user` when `ssh:` is set).
 /// Everything else (proxy/healthcheck rules, port/volume format, registry reachability,
 /// project/server name patterns, host-consistency warnings, ...) is deferred to a future slice.
@@ -82,21 +82,21 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     let warnings = Vec::new();
 
     for (name, service) in &config.services {
-        if service.hosts.is_empty() {
+        if service.servers.is_empty() {
             errors.push(ValidationError {
-                path: format!("services.{name}.hosts"),
+                path: format!("services.{name}.servers"),
                 message: format!(
-                    "Service '{name}' must specify at least one server in 'hosts' array"
+                    "Service '{name}' must specify at least one server in 'servers' array"
                 ),
-                code: "NO_HOSTS",
+                code: "NO_SERVERS",
             });
         }
-        for host in &service.hosts {
+        for host in &service.servers {
             if !config.servers.contains_key(host) {
                 let mut available: Vec<&str> = config.servers.keys().map(String::as_str).collect();
                 available.sort_unstable();
                 errors.push(ValidationError {
-                    path: format!("services.{name}.hosts"),
+                    path: format!("services.{name}.servers"),
                     message: format!(
                         "Server '{host}' not found in servers section. Available servers: {}",
                         available.join(", ")
