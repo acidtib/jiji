@@ -1,3 +1,4 @@
+use crate::remote_builder::parse_remote_builder_uri;
 use crate::schema::{Config, SshConfigFiles};
 
 #[derive(Debug, Clone)]
@@ -107,6 +108,8 @@ pub fn validate_config(config: &Config) -> ValidationResult {
         }
     }
 
+    validate_builder(config, &mut errors);
+
     if let Some(ssh) = &config.ssh {
         let user_can_come_from_config = !matches!(ssh.config, SshConfigFiles::Enabled(false));
         let every_server_has_user = config.servers.values().all(|server| {
@@ -141,5 +144,36 @@ pub fn validate_config(config: &Config) -> ValidationResult {
         valid: errors.is_empty(),
         errors,
         warnings,
+    }
+}
+
+fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
+    let builder = &config.builder;
+    if builder.local && builder.remote.is_some() {
+        errors.push(ValidationError {
+            path: "builder.remote".to_string(),
+            message: "'builder.local: true' and 'builder.remote' cannot both be set. Choose one build target: set `builder.local: false` to build remotely, or remove `builder.remote` to build locally.".to_string(),
+            code: "BUILDER_MODE_CONFLICT",
+        });
+        return;
+    }
+
+    if !builder.local && builder.remote.is_none() {
+        errors.push(ValidationError {
+            path: "builder.remote".to_string(),
+            message: "'builder.local: false' requires `builder.remote` to be set to `ssh://[user@]hostname[:port]`.".to_string(),
+            code: "BUILDER_REMOTE_REQUIRED",
+        });
+        return;
+    }
+
+    if let Some(remote) = &builder.remote {
+        if let Err(error) = parse_remote_builder_uri(remote) {
+            errors.push(ValidationError {
+                path: "builder.remote".to_string(),
+                message: error.to_string(),
+                code: "INVALID_BUILDER_REMOTE",
+            });
+        }
     }
 }

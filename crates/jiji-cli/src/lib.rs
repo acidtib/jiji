@@ -1,5 +1,7 @@
 mod audit;
+mod build_context;
 mod build_engine;
+mod build_executor;
 mod build_plan;
 mod cli;
 mod commands;
@@ -19,6 +21,7 @@ mod proxy;
 mod proxy_routes;
 mod proxy_teardown;
 mod registry;
+mod remote_build;
 pub mod service_network;
 mod ssh_adapter;
 mod teardown_plan;

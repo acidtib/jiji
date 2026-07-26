@@ -5,8 +5,17 @@ use jiji_config::{BuildValue, Config, ContainerEngine, Service};
 
 use crate::local_exec;
 
-pub const BUILDX_BUILDER_NAME: &str = "jiji-builder";
-pub const LOCAL_BUILDX_BUILDER_NAME: &str = "jiji-builder-local";
+/// Project-scoped buildx builder name, e.g. `jiji-builder-myproject` (or
+/// `jiji-builder-myproject-local` when pushing to the loopback local registry, which needs its
+/// own builder using the host-network driver -- see `render_buildx_create`). Plain interpolation,
+/// no sanitization, matching `manifest_name`'s existing convention for the same naming problem.
+pub fn buildx_builder_name(project: &str, local_registry: bool) -> String {
+    if local_registry {
+        format!("jiji-builder-{project}-local")
+    } else {
+        format!("jiji-builder-{project}")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedBuildConfig {
@@ -229,29 +238,40 @@ pub async fn build_and_push(
             }
         }
         (BuildStrategy::MultiArch, ContainerEngine::Docker) => {
-            let builder_name = if local_registry {
-                LOCAL_BUILDX_BUILDER_NAME
-            } else {
-                BUILDX_BUILDER_NAME
-            };
+            let builder_name = buildx_builder_name(project, local_registry);
             let inspect = local_exec::run_captured(
                 "docker",
-                &render_buildx_inspect(builder_name),
+                &render_buildx_inspect(&builder_name),
                 None,
                 Some(cwd),
             )
             .await?;
             if !inspect.success {
-                stream(
+                if let Err(create_error) = stream(
                     engine,
-                    render_buildx_create(builder_name, local_registry),
+                    render_buildx_create(&builder_name, local_registry),
                     cwd,
                 )
-                .await?;
+                .await
+                {
+                    // Tolerate a concurrent `jiji` process winning the create race: if the
+                    // builder exists now, proceed; otherwise the create failure was real, and
+                    // re-raising the retry's own error would hide what actually went wrong.
+                    let retry_inspect = local_exec::run_captured(
+                        "docker",
+                        &render_buildx_inspect(&builder_name),
+                        None,
+                        Some(cwd),
+                    )
+                    .await?;
+                    if !retry_inspect.success {
+                        return Err(create_error);
+                    }
+                }
             }
             stream(
                 engine,
-                render_buildx_build(build, no_cache, platforms, tags, builder_name),
+                render_buildx_build(build, no_cache, platforms, tags, &builder_name),
                 cwd,
             )
             .await?;
@@ -323,18 +343,18 @@ mod tests {
             false,
             &["linux/arm64".into(), "linux/amd64".into()],
             &["repo/app:v1".into()],
-            BUILDX_BUILDER_NAME,
+            &buildx_builder_name("demo", false),
         );
         assert_eq!(args[5], "linux/arm64,linux/amd64");
         assert_eq!(args.last().unwrap(), ".");
         assert!(args.contains(&"--push".into()));
         assert_eq!(
-            render_buildx_create(LOCAL_BUILDX_BUILDER_NAME, true),
+            render_buildx_create(&buildx_builder_name("demo", true), true),
             [
                 "buildx",
                 "create",
                 "--name",
-                "jiji-builder-local",
+                "jiji-builder-demo-local",
                 "--driver",
                 "docker-container",
                 "--driver-opt",
@@ -374,6 +394,16 @@ mod tests {
         assert_eq!(
             render_push(ContainerEngine::Podman, false, "ghcr.io/acme/app:v1"),
             ["push", "ghcr.io/acme/app:v1"]
+        );
+    }
+
+    #[test]
+    fn buildx_builder_name_varies_by_project_and_local_registry() {
+        assert_eq!(buildx_builder_name("demo", false), "jiji-builder-demo");
+        assert_eq!(buildx_builder_name("demo", true), "jiji-builder-demo-local");
+        assert_ne!(
+            buildx_builder_name("demo", false),
+            buildx_builder_name("other", false)
         );
     }
 

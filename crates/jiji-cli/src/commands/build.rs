@@ -4,6 +4,7 @@ use anyhow::Context;
 use jiji_config::{load_config, validate_config, RegistryType};
 use jiji_tui::Ui;
 
+use crate::build_executor::{self, BuildExecutor};
 use crate::{build_engine, build_plan, env_resolution, registry, version_tag};
 
 #[allow(clippy::too_many_arguments)]
@@ -39,7 +40,9 @@ pub async fn run(
         })
         .unwrap_or_default();
     let services = build_plan::select_buildable_services(&config, &filters)?;
-    build_plan::check_scope_guards(&config.builder)?;
+    let executor_target = build_plan::select_executor(&config)?;
+    let is_remote = matches!(executor_target, build_plan::ExecutorTarget::Remote { .. });
+    let executor_identity = executor_target.identity();
     let git = version_tag::gather_git_status().await;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let (version, warning) = version_tag::resolve_version_tag(version, git.as_ref(), now);
@@ -48,6 +51,7 @@ pub async fn run(
     }
     version_tag::validate_or_bail(&version)?;
     let plan = build_plan::compute_plan(&config, &config.project, &services, &version)?;
+    Ui::say(&format!("Executor: {executor_identity}"), 1);
     Ui::say(&build_plan::render_plan_summary(&plan), 1);
 
     let push = !no_push;
@@ -58,6 +62,7 @@ pub async fn run(
     }
 
     let project_root = env_resolution::project_root_from_config_path(&path);
+    let mut resolved_password = None;
     if push {
         match config.builder.registry.kind {
             RegistryType::Local => {
@@ -79,14 +84,8 @@ pub async fn run(
                     config.builder.registry.password.as_deref(),
                 ) {
                     (Some(_), Some(raw)) => {
-                        let password =
-                            registry::resolve_registry_password(raw, &loaded, host_env).await?;
-                        registry::login_local(
-                            config.builder.engine,
-                            &config.builder.registry,
-                            &password,
-                        )
-                        .await?;
+                        resolved_password =
+                            Some(registry::resolve_registry_password(raw, &loaded, host_env).await?);
                     }
                     _ => Ui::warn(
                         "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",
@@ -96,31 +95,80 @@ pub async fn run(
         }
     }
 
-    Ui::section("Building:");
-    for entry in &plan {
-        Ui::say(&entry.service_name, 1);
-        build_plan::build_one(
-            entry,
-            config.builder.engine,
-            no_cache,
-            push,
-            &config.project,
-            &project_root,
-            config.builder.registry.kind == RegistryType::Local,
-        )
-        .await
-        .with_context(|| format!("Build failed for service '{}'", entry.service_name))?;
+    let mut executor = BuildExecutor::prepare(
+        executor_target,
+        config.builder.engine,
+        &config.project,
+        &plan,
+    )
+    .await?;
+
+    // Everything from here that can fail must still let `executor.finish()` run (staging
+    // cleanup, tunnel cancellation, session close) -- so every failure is captured into
+    // `run_result` instead of an early `?` return, and combined with the cleanup outcome once,
+    // at the end, regardless of where in this sequence things went wrong.
+    let mut run_result: anyhow::Result<()> = Ok(());
+    if push {
+        Ui::section("Registry:");
+        run_result = executor
+            .prepare_registry(
+                config.builder.engine,
+                &config.builder.registry,
+                resolved_password.as_deref(),
+            )
+            .await;
+        if run_result.is_ok() && is_remote {
+            match config.builder.registry.kind {
+                RegistryType::Local => Ui::say(
+                    &format!("Tunneled local registry to {executor_identity}"),
+                    1,
+                ),
+                RegistryType::Remote => {
+                    if resolved_password.is_some() {
+                        Ui::say(&format!("Logged in on {executor_identity}"), 1);
+                    }
+                }
+            }
+        }
     }
+
+    if run_result.is_ok() {
+        Ui::section("Building:");
+        for entry in &plan {
+            Ui::say(&entry.service_name, 1);
+            run_result = build_plan::build_one(
+                entry,
+                &executor,
+                config.builder.engine,
+                no_cache,
+                push,
+                &config.project,
+                &project_root,
+                config.builder.registry.kind == RegistryType::Local,
+            )
+            .await
+            .with_context(|| format!("Build failed for service '{}'", entry.service_name));
+            if run_result.is_err() {
+                break;
+            }
+        }
+    }
+    build_executor::combine_with_cleanup_error(run_result, executor.finish().await)?;
+
     Ui::section("Build Summary:");
     for entry in &plan {
         Ui::say(
             &format!(
                 "{}: {}",
                 entry.service_name,
-                if push {
-                    &entry.version_ref
+                if !push {
+                    if is_remote {
+                        "built remotely, not pushed; the image remains only on the builder host"
+                    } else {
+                        "built locally"
+                    }
                 } else {
-                    "built locally"
+                    &entry.version_ref
                 }
             ),
             1,

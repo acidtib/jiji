@@ -187,6 +187,108 @@ fn shipped_template_parses_and_validates_cleanly() {
 }
 
 #[test]
+fn builder_local_true_with_remote_reports_mode_conflict() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  local: true
+  remote: ssh://build@10.0.0.9
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "BUILDER_MODE_CONFLICT" && e.path == "builder.remote"));
+}
+
+#[test]
+fn builder_local_false_without_remote_reports_remote_required() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  local: false
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "BUILDER_REMOTE_REQUIRED" && e.path == "builder.remote"));
+}
+
+#[test]
+fn builder_remote_with_invalid_uri_reports_invalid_builder_remote() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  local: false
+  remote: ssh://user:pass@10.0.0.9
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    let err = result
+        .errors
+        .iter()
+        .find(|e| e.code == "INVALID_BUILDER_REMOTE")
+        .expect("expected an INVALID_BUILDER_REMOTE error");
+    assert_eq!(err.path, "builder.remote");
+    assert!(err.message.contains("password"));
+}
+
+#[test]
+fn builder_local_false_with_valid_remote_validates_cleanly() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  local: false
+  remote: ssh://build@10.0.0.9:2222
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
 fn split_network_cidrs_parse_and_validate() {
     let raw = parse(
         r#"

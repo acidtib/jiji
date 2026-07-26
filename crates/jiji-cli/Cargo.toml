@@ -34,6 +34,7 @@ serde_yaml.workspace = true
 sha2.workspace = true
 ssh2-config.workspace = true
 tar.workspace = true
+ignore.workspace = true
 thiserror.workspace = true
 nix = { version = "0.31", features = ["term"] }
 libc = "0.2"

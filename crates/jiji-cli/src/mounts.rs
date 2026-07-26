@@ -236,7 +236,7 @@ pub async fn prepare_mounts(
     build_all_mount_args(service, project, service_name)
 }
 
-fn ensure_success(
+pub(crate) fn ensure_success(
     session: &SshSession,
     command: &str,
     result: &CommandResult,

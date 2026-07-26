@@ -37,6 +37,26 @@ pub async fn ensure_engine(
     Ok(EngineStatus::Installed(version))
 }
 
+/// Verifies `engine` is already installed and meets the minimum supported version on `session`,
+/// without installing or upgrading anything -- jiji does not provision or upgrade a remote
+/// builder host (see `plans/remote-builders.md` non-goals), unlike `ensure_engine`, which is
+/// only ever used for a `jiji server setup`-managed deployment host.
+pub(crate) async fn ensure_min_version(
+    session: &SshSession,
+    engine: ContainerEngine,
+) -> anyhow::Result<String> {
+    let name = engine.to_string();
+    if !is_installed(session, &name).await? {
+        anyhow::bail!(
+            "{name} is not installed on {}. jiji does not provision remote builder hosts; install {name} there and retry.",
+            session.host()
+        );
+    }
+    let version = version_of(session, &name).await?;
+    check_min_version(&name, &version, min_version(engine))?;
+    Ok(version)
+}
+
 fn min_version(engine: ContainerEngine) -> (u64, u64, u64) {
     match engine {
         ContainerEngine::Docker => DOCKER_MIN_VERSION,

@@ -12,8 +12,8 @@ use jiji_tui::Ui;
 use crate::audit;
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
 use crate::{
-    build_engine, build_plan, container_runtime, env_resolution, proxy, registry, ssh_adapter,
-    version_tag,
+    build_engine, build_executor, build_plan, container_runtime, env_resolution, proxy, registry,
+    ssh_adapter, version_tag,
 };
 
 pub(crate) const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
@@ -62,6 +62,11 @@ pub async fn run(
         )
     })?;
 
+    // Resolved (and, for a remote target, validated against `ssh:`) before network planning or
+    // any SSH connection -- a broken `builder.remote` fails here, before the confirmation
+    // prompt, rather than mid-build.
+    let executor_target = build_plan::select_executor(&config)?;
+
     let plan = NetworkPlanner::new()
         .plan(&config)
         .context("Could not build the private network plan")?;
@@ -77,6 +82,7 @@ pub async fn run(
         environment,
         &selected,
         build,
+        build.then(|| executor_target.identity()).as_deref(),
         version,
         skip_proxy,
         yes,
@@ -115,7 +121,9 @@ pub async fn run(
         Ui::warn("--build was passed, but no selected service has `build:` configured");
     }
     if !services_to_build.is_empty() {
-        build_plan::check_scope_guards(&config.builder)?;
+        let is_remote_executor =
+            matches!(executor_target, build_plan::ExecutorTarget::Remote { .. });
+        let executor_identity = executor_target.identity();
         let git = version_tag::gather_git_status().await;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let (build_version, warning) = version_tag::resolve_version_tag(version, git.as_ref(), now);
@@ -152,28 +160,62 @@ pub async fn run(
                 let password =
                     registry::resolve_registry_password(raw_password, &loaded_env, host_env)
                         .await?;
-                Ui::section("Registry Login:");
-                registry::login_local(config.builder.engine, &config.builder.registry, &password)
-                    .await?;
                 registry_password = Some(password);
             }
         }
-        Ui::section("Building:");
-        for entry in &build_plan {
-            Ui::say(&entry.service_name, 1);
-            build_plan::build_one(
-                entry,
+        let mut executor = build_executor::BuildExecutor::prepare(
+            executor_target,
+            config.builder.engine,
+            &config.project,
+            &build_plan,
+        )
+        .await?;
+
+        // Everything from here that can fail must still let `executor.finish()` run (staging
+        // cleanup, tunnel cancellation, session close) -- so every failure is captured into
+        // `run_result` instead of an early `?` return, and combined with the cleanup outcome
+        // once, at the end, regardless of where in this sequence things went wrong.
+        Ui::section("Registry:");
+        let mut run_result = executor
+            .prepare_registry(
                 config.builder.engine,
-                no_cache,
-                true,
-                &config.project,
-                &project_root,
-                config.builder.registry.kind == RegistryType::Local,
+                &config.builder.registry,
+                registry_password.as_deref(),
             )
-            .await
-            .with_context(|| format!("Build failed for service '{}'", entry.service_name))?;
-            images.insert(entry.service_name.clone(), entry.version_ref.clone());
+            .await;
+        if run_result.is_ok() && is_remote_executor {
+            match config.builder.registry.kind {
+                RegistryType::Local => Ui::say(
+                    &format!("Tunneled local registry to {executor_identity}"),
+                    1,
+                ),
+                RegistryType::Remote => Ui::say(&format!("Logged in on {executor_identity}"), 1),
+            }
         }
+
+        if run_result.is_ok() {
+            Ui::section("Building:");
+            for entry in &build_plan {
+                Ui::say(&entry.service_name, 1);
+                run_result = build_plan::build_one(
+                    entry,
+                    &executor,
+                    config.builder.engine,
+                    no_cache,
+                    true,
+                    &config.project,
+                    &project_root,
+                    config.builder.registry.kind == RegistryType::Local,
+                )
+                .await
+                .with_context(|| format!("Build failed for service '{}'", entry.service_name));
+                if run_result.is_err() {
+                    break;
+                }
+                images.insert(entry.service_name.clone(), entry.version_ref.clone());
+            }
+        }
+        build_executor::combine_with_cleanup_error(run_result, executor.finish().await)?;
     }
 
     for endpoint in &selected {
@@ -582,11 +624,13 @@ pub(crate) fn select_target_endpoints<'a>(
 /// reconciliation, SSH) happens. `--yes` skips the prompt outright; without it, a missing
 /// terminal is a hard error rather than a hang, since `dialoguer::Confirm::interact` can't be
 /// answered non-interactively (e.g. CI/CD, where `--yes` must be passed explicitly).
+#[allow(clippy::too_many_arguments)]
 fn confirm_deployment_plan(
     project: &str,
     environment: Option<&str>,
     selected: &[&ServiceEndpointPlan],
     build: bool,
+    executor_identity: Option<&str>,
     version: Option<&str>,
     skip_proxy: bool,
     yes: bool,
@@ -617,6 +661,9 @@ fn confirm_deployment_plan(
         ),
         1,
     );
+    if let Some(executor_identity) = executor_identity {
+        Ui::say(&format!("Executor: {executor_identity}"), 1);
+    }
     if let Some(version) = version {
         Ui::say(&format!("Version override: {version}"), 1);
     }

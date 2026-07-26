@@ -4,12 +4,33 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
-use jiji_config::{NamedServer, Ssh, SshConfigFiles};
+use jiji_config::{NamedServer, RemoteBuilder, Ssh, SshConfigFiles};
 use jiji_ssh::ConnectOptions;
 use ssh2_config::{HostParams, ParseRule, SshConfig};
 
 const DEFAULT_PORT: u16 = 22;
 const DEFAULT_CONNECT_TIMEOUT: u32 = 30;
+
+/// Resolves connection options for a `builder.remote` target, reusing `connect_options`'s
+/// entire user/port/keys/proxy precedence chain unmodified: the URI's user/port are a
+/// server-level override, so they take the same priority `NamedServer.user`/`.port` already
+/// do relative to top-level `ssh.*` and `~/.ssh/config`.
+pub fn connect_options_for_remote_builder(
+    remote: &RemoteBuilder,
+    ssh: &Ssh,
+) -> anyhow::Result<ConnectOptions> {
+    let server = NamedServer {
+        host: remote.host.clone(),
+        arch: None,
+        user: remote.user.clone(),
+        port: remote.port,
+        key_path: None,
+        key_passphrase: None,
+        keys: None,
+        key_data: None,
+    };
+    connect_options("builder", &server, ssh)
+}
 
 pub fn connect_options(
     name: &str,
@@ -421,6 +442,75 @@ mod tests {
 
         let error = connect_options("app", &server("app"), &ssh).expect_err("reject");
         assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn remote_builder_uri_user_and_port_override_ssh_defaults() {
+        let mut top_level_ssh = ssh(SshConfigFiles::Enabled(false));
+        top_level_ssh.user = Some("default-user".to_string());
+
+        let remote = RemoteBuilder {
+            host: "builder.example.com".to_string(),
+            user: Some("builder-user".to_string()),
+            port: Some(2222),
+        };
+        let options = connect_options_for_remote_builder(&remote, &top_level_ssh).expect("resolve");
+        assert_eq!(options.host, "builder.example.com");
+        assert_eq!(options.user, "builder-user");
+        assert_eq!(options.port, 2222);
+    }
+
+    #[test]
+    fn remote_builder_uri_falls_through_to_ssh_defaults_when_omitted() {
+        let mut top_level_ssh = ssh(SshConfigFiles::Enabled(false));
+        top_level_ssh.user = Some("default-user".to_string());
+
+        let remote = RemoteBuilder {
+            host: "builder.example.com".to_string(),
+            user: None,
+            port: None,
+        };
+        let options = connect_options_for_remote_builder(&remote, &top_level_ssh).expect("resolve");
+        assert_eq!(options.user, "default-user");
+        assert_eq!(options.port, 22);
+    }
+
+    #[test]
+    fn remote_builder_uri_falls_through_to_ssh_config_when_ssh_yml_omits_user() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config");
+        std::fs::write(
+            &path,
+            "Host builder.example.com\n  User config-user\n  Port 2200\n",
+        )
+        .expect("write config");
+
+        let remote = RemoteBuilder {
+            host: "builder.example.com".to_string(),
+            user: None,
+            port: None,
+        };
+        let options = connect_options_for_remote_builder(
+            &remote,
+            &ssh(SshConfigFiles::Single(path.display().to_string())),
+        )
+        .expect("resolve");
+        assert_eq!(options.user, "config-user");
+        assert_eq!(options.port, 2200);
+    }
+
+    #[test]
+    fn remote_builder_uri_without_any_user_is_a_clear_error() {
+        let error = connect_options_for_remote_builder(
+            &RemoteBuilder {
+                host: "builder.example.com".to_string(),
+                user: None,
+                port: None,
+            },
+            &ssh(SshConfigFiles::Enabled(false)),
+        )
+        .expect_err("reject");
+        assert!(error.to_string().contains("no SSH user configured"));
     }
 
     #[test]
