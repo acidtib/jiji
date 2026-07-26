@@ -18,6 +18,7 @@ pub async fn run(
     host_env: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Build:");
+    let started_at = std::time::Instant::now();
     let start = std::env::current_dir()?;
     let (config, path) = load_config(environment, config_file.map(std::path::Path::new), &start)?;
     Ui::say(&format!("Configuration loaded from: {}", path.display()), 1);
@@ -174,6 +175,6 @@ pub async fn run(
             1,
         );
     }
-    Ui::success("Build completed.");
+    Ui::success_elapsed("Build completed.", started_at.elapsed());
     Ok(())
 }

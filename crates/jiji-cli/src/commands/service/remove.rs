@@ -337,7 +337,7 @@ pub async fn run(
         anyhow::bail!("Removal failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success("\nRemoval completed.");
+    Ui::success_elapsed("Removal completed.", started_at.elapsed());
     Ok(())
 }
 

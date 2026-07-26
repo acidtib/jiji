@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "Jiji uses rsa only through russh/ssh-key for SSH public-key authentication: RSA private keys sign session data and public keys verify signatures. Neither dependency calls rsa ciphertext decryption or depadding APIs, so the attacker-observable RSA decryption required by the Marvin attack is unreachable."

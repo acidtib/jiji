@@ -137,7 +137,7 @@ pub async fn run(
 
     setup_proxies(&config, &servers, &ssh, started_at).await?;
 
-    Ui::success("\nAll servers are ready.");
+    Ui::success_elapsed("All servers are ready.", started_at.elapsed());
     Ok(())
 }
 

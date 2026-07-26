@@ -26,6 +26,10 @@ fn init_writes_config_and_exits_successfully() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Configuration is valid"));
     assert!(stdout.contains("Configuration file created"));
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "captured output should not contain ANSI styling: {stdout:?}"
+    );
 }
 
 // The overwrite-confirmation path (`init` on an existing config) is not covered here:

@@ -242,7 +242,7 @@ async fn prune_removes_images_past_the_retained_count() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("Pruned 1 image(s) across 1 server(s)."),
+        stdout.contains("Pruned 1 image(s) across 1 server(s) in "),
         "stdout: {stdout}"
     );
 

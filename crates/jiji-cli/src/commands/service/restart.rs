@@ -241,7 +241,7 @@ pub async fn run(
         );
     }
 
-    Ui::section("Restarting:");
+    let restart_spinner = Ui::spinner(&format!("Restarting {} endpoint(s)", selected.len()));
     let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
     for endpoint in &selected {
         endpoints_by_service
@@ -305,6 +305,7 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+    drop(restart_spinner);
 
     let server_by_identity: BTreeMap<String, String> = selected
         .iter()
@@ -331,22 +332,26 @@ pub async fn run(
     .await;
     close_all(&sessions).await;
 
-    Ui::section("Restart Summary:");
+    Ui::progress("Restarting", selected.len(), selected.len());
     let mut failures = 0usize;
     for outcomes in &results {
         for (identity, outcome) in outcomes {
             match outcome {
                 EndpointOutcome::Deployed { candidate_slot } => {
-                    Ui::say(&format!("{identity}: restarted (slot {candidate_slot})"), 1);
+                    Ui::result_ok(
+                        &format!("{identity}:"),
+                        &format!("restarted (slot {candidate_slot})"),
+                    );
                 }
                 EndpointOutcome::Failed { error } => {
-                    Ui::error(&format!("{identity}: {error}"));
+                    Ui::result_error(&format!("{identity}:"), error);
                     failures += 1;
                 }
                 EndpointOutcome::SkippedAfterSiblingFailure => {
-                    Ui::warn(&format!(
-                        "{identity}: skipped after a sibling replica failed"
-                    ));
+                    Ui::result_warn(
+                        &format!("{identity}:"),
+                        "skipped after a sibling replica failed",
+                    );
                     failures += 1;
                 }
             }
@@ -357,7 +362,7 @@ pub async fn run(
         anyhow::bail!("Restart failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success("\nRestart completed.");
+    Ui::success_elapsed("Restart completed.", started_at.elapsed());
     Ok(())
 }
 

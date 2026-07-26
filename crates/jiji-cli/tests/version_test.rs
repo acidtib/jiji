@@ -16,4 +16,8 @@ fn version_prints_cargo_package_version() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(&format!("Jiji v{}", env!("CARGO_PKG_VERSION"))));
     assert!(stdout.contains(env!("JIJI_GIT_SHA")));
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "captured output should not contain ANSI styling: {stdout:?}"
+    );
 }

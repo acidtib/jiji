@@ -136,7 +136,7 @@ pub async fn run(
         );
     }
 
-    Ui::section("Pruning:");
+    let prune_spinner = Ui::spinner(&format!("Pruning {} endpoint(s)", prunable.len()));
     let engine = config.builder.engine;
     let registry_config = config.builder.registry.clone();
     let project = config.project.clone();
@@ -169,6 +169,7 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(operations).await;
+    drop(prune_spinner);
 
     let server_by_identity: BTreeMap<String, String> = prunable
         .iter()
@@ -201,7 +202,7 @@ pub async fn run(
     .await;
     close_all(&sessions).await;
 
-    Ui::section("Prune Summary:");
+    Ui::progress("Pruning", prunable.len(), prunable.len());
     let mut removed_total = 0usize;
     let mut failures = 0usize;
     for (identity, outcome) in &results {
@@ -212,7 +213,10 @@ pub async fn run(
                     .filter(|(_, r)| matches!(r, PruneStepResult::Removed))
                     .count();
                 removed_total += removed;
-                Ui::say(&format!("{identity}: {removed} image(s) removed"), 1);
+                Ui::result_ok(
+                    &format!("{identity}:"),
+                    &format!("{removed} image(s) removed"),
+                );
                 for (image, result) in steps {
                     match result {
                         PruneStepResult::Retained { reason } => {
@@ -233,7 +237,7 @@ pub async fn run(
                 }
             }
             Err(error) => {
-                Ui::error(&format!("{identity}: {error}"));
+                Ui::result_error(&format!("{identity}:"), error);
                 failures += 1;
             }
         }
@@ -244,9 +248,10 @@ pub async fn run(
         .map(|e| e.server.as_str())
         .collect::<BTreeSet<_>>()
         .len();
-    Ui::success(&format!(
-        "\nPruned {removed_total} image(s) across {server_count} server(s)."
-    ));
+    Ui::success_elapsed(
+        &format!("Pruned {removed_total} image(s) across {server_count} server(s)."),
+        started_at.elapsed(),
+    );
 
     if failures > 0 {
         anyhow::bail!("Prune failed for {failures} endpoint(s); see the summary above.");

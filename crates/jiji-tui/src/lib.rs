@@ -1,40 +1,98 @@
 use dialoguer::{Confirm, Input};
 use indicatif::{ProgressBar, ProgressStyle};
 use jiji_core::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Style};
+use std::io::IsTerminal;
 use std::time::Duration;
 
 pub struct Ui;
 
 impl Ui {
-    /// Start a new section with clear visual separation: blank line + bold title.
+    /// Start a new section with clear visual separation.
     pub fn section(title: &str) {
         println!();
-        println!("{}", title.bold());
+        let style = stdout_style(Style::new().bold().cyan());
+        println!("{}", title.trim().style(style));
     }
 
     /// Print a message indented by `indent` levels (2 spaces each).
+    ///
+    /// Every line is indented independently so rendered summaries do not lose
+    /// their hierarchy after the first newline.
     pub fn say(message: &str, indent: u8) {
         let indentation = "  ".repeat(indent as usize);
-        println!("{indentation}{message}");
+        for line in message.lines() {
+            println!("{indentation}{line}");
+        }
     }
 
     pub fn success(message: &str) {
-        println!("{}", message.green());
+        let style = stdout_style(Style::new().green().bold());
+        println!("{} {}", "Done".style(style), message.trim_start());
+    }
+
+    pub fn success_elapsed(message: &str, elapsed: Duration) {
+        let style = stdout_style(Style::new().green().bold());
+        let timing = stdout_style(Style::new().dimmed());
+        let message = message.trim_start().trim_end_matches('.');
+        println!(
+            "{} {} {}",
+            "Done".style(style),
+            message,
+            format!("in {}", format_duration(elapsed)).style(timing)
+        );
+    }
+
+    pub fn progress(title: &str, completed: usize, total: usize) {
+        println!();
+        let marker = stdout_style(Style::new().cyan().bold());
+        let title_style = stdout_style(Style::new().bold());
+        println!(
+            "{} {} {completed}/{total}",
+            "[+]".style(marker),
+            title.trim().style(title_style)
+        );
+    }
+
+    pub fn rule(width: usize, indent: u8) {
+        let indentation = "  ".repeat(indent as usize);
+        let style = stdout_style(Style::new().dimmed());
+        println!("{indentation}{}", "-".repeat(width).style(style));
+    }
+
+    pub fn result_ok(label: &str, detail: &str) {
+        result_line_stdout("OK", Style::new().green().bold(), label, detail);
+    }
+
+    pub fn result_warn(label: &str, detail: &str) {
+        result_line_stdout("SKIP", Style::new().yellow().bold(), label, detail);
+    }
+
+    pub fn result_error(label: &str, detail: &str) {
+        let status = "FAIL";
+        eprintln!(
+            "  {} {} {}",
+            format!("{status:<4}").style(stderr_style(Style::new().red().bold())),
+            label,
+            detail
+        );
     }
 
     pub fn warn(message: &str) {
-        println!("{}", message.yellow());
+        let style = stdout_style(Style::new().yellow().bold());
+        println!("{} {}", "Warning:".style(style), message.trim_start());
     }
 
     pub fn error(message: &str) {
-        eprintln!("{}", message.red());
+        let style = stderr_style(Style::new().red().bold());
+        eprintln!("{} {}", "Error:".style(style), message.trim_start());
     }
 
     /// Render a bordered panel with a bold title and a body.
     pub fn panel(title: &str, body: &str) {
         println!();
-        println!("{}", title.bold());
+        let style = stdout_style(Style::new().bold().cyan());
+        println!("{}", title.trim().style(style));
         for line in body.lines() {
             println!("  {line}");
         }
@@ -72,6 +130,43 @@ impl Ui {
     }
 }
 
+fn stdout_style(style: Style) -> Style {
+    if std::io::stdout().is_terminal() {
+        style
+    } else {
+        Style::new()
+    }
+}
+
+fn stderr_style(style: Style) -> Style {
+    if std::io::stderr().is_terminal() {
+        style
+    } else {
+        Style::new()
+    }
+}
+
+fn result_line_stdout(status: &str, style: Style, label: &str, detail: &str) {
+    let status = format!("{status:<4}");
+    println!(
+        "  {} {} {}",
+        status.style(stdout_style(style)),
+        label,
+        detail
+    );
+}
+
+pub fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1_000 {
+        format!("{millis}ms")
+    } else if millis < 10_000 {
+        format!("{:.1}s", duration.as_secs_f64())
+    } else {
+        format!("{}s", duration.as_secs())
+    }
+}
+
 /// Clears the spinner when dropped.
 pub struct SpinnerGuard {
     bar: ProgressBar,
@@ -86,5 +181,18 @@ impl SpinnerGuard {
 impl Drop for SpinnerGuard {
     fn drop(&mut self) {
         self.bar.finish_and_clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn durations_use_compact_precision() {
+        assert_eq!(format_duration(Duration::from_millis(81)), "81ms");
+        assert_eq!(format_duration(Duration::from_millis(1_240)), "1.2s");
+        assert_eq!(format_duration(Duration::from_millis(12_840)), "12s");
     }
 }

@@ -346,6 +346,10 @@ pub async fn run(
             "Deployment lock is held on the following server(s):{detail}\nCheck `jiji lock status`, and once it's safe, `jiji lock release` before retrying.",
         );
     }
+    Ui::say(
+        &format!("No active locks on {} server(s).", sessions.len()),
+        1,
+    );
 
     let mut tunnel_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
     if !services_to_build.is_empty() && config.builder.registry.kind == RegistryType::Local {
@@ -410,6 +414,7 @@ pub async fn run(
                     "Registry login failed on deploy host '{server_name}'"
                 )));
             }
+            Ui::say(&format!("{server_name}: authenticated"), 1);
         }
     }
 
@@ -464,10 +469,11 @@ pub async fn run(
                 close_all(&sessions).await;
                 return Err(error.context(format!("kamal-proxy is not ready on '{server_name}'")));
             }
+            Ui::say(&format!("{server_name}: ready"), 1);
         }
     }
 
-    Ui::section("Deploying:");
+    let deploy_spinner = Ui::spinner(&format!("Deploying {} endpoint(s)", selected.len()));
     let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
     for endpoint in &selected {
         endpoints_by_service
@@ -531,6 +537,7 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+    drop(deploy_spinner);
     close_all(&tunnel_sessions).await;
 
     // One audit entry per server, summarizing every endpoint deployed on it during this run --
@@ -561,22 +568,26 @@ pub async fn run(
     .await;
     close_all(&sessions).await;
 
-    Ui::section("Deployment Summary:");
+    Ui::progress("Deploying", selected.len(), selected.len());
     let mut failures = 0usize;
     for outcomes in &results {
         for (identity, outcome) in outcomes {
             match outcome {
                 EndpointOutcome::Deployed { candidate_slot } => {
-                    Ui::say(&format!("{identity}: deployed (slot {candidate_slot})"), 1);
+                    Ui::result_ok(
+                        &format!("{identity}:"),
+                        &format!("deployed (slot {candidate_slot})"),
+                    );
                 }
                 EndpointOutcome::Failed { error } => {
-                    Ui::error(&format!("{identity}: {error}"));
+                    Ui::result_error(&format!("{identity}:"), error);
                     failures += 1;
                 }
                 EndpointOutcome::SkippedAfterSiblingFailure => {
-                    Ui::warn(&format!(
-                        "{identity}: skipped after a sibling replica failed"
-                    ));
+                    Ui::result_warn(
+                        &format!("{identity}:"),
+                        "skipped after a sibling replica failed",
+                    );
                     failures += 1;
                 }
             }
@@ -587,7 +598,7 @@ pub async fn run(
         anyhow::bail!("Deploy failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success("\nDeployment completed.");
+    Ui::success_elapsed("Deployment completed.", started_at.elapsed());
     Ok(())
 }
 
@@ -646,7 +657,7 @@ fn confirm_deployment_plan(
     Ui::say(
         &format!(
             "Servers: {}",
-            servers.into_iter().collect::<Vec<_>>().join(", ")
+            servers.iter().copied().collect::<Vec<_>>().join(", ")
         ),
         1,
     );
@@ -674,6 +685,13 @@ fn confirm_deployment_plan(
     for endpoint in selected {
         Ui::say(&format!("{} @ {}", endpoint.service, endpoint.server), 2);
     }
+    let summary = format!(
+        "{} endpoint(s) across {} server(s)",
+        selected.len(),
+        servers.len()
+    );
+    Ui::rule(summary.len(), 1);
+    Ui::say(&summary, 1);
 
     if yes {
         return Ok(());

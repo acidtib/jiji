@@ -209,7 +209,7 @@ pub async fn run(
         }
     }
 
-    Ui::section("Rolling Back:");
+    let rollback_spinner = Ui::spinner(&format!("Rolling back {} endpoint(s)", selected.len()));
     let engine = config.builder.engine;
     let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
     for endpoint in &selected {
@@ -274,6 +274,7 @@ pub async fn run(
     }
 
     let results = pool.execute_concurrent(service_futures).await;
+    drop(rollback_spinner);
 
     let server_by_identity: BTreeMap<String, String> = selected
         .iter()
@@ -300,25 +301,26 @@ pub async fn run(
     .await;
     close_all(&sessions).await;
 
-    Ui::section("Rollback Summary:");
+    Ui::progress("Rolling back", selected.len(), selected.len());
     let mut failures = 0usize;
     for outcomes in &results {
         for (identity, outcome) in outcomes {
             match outcome {
                 EndpointOutcome::Deployed { candidate_slot } => {
-                    Ui::say(
-                        &format!("{identity}: rolled back to '{version}' (slot {candidate_slot})"),
-                        1,
+                    Ui::result_ok(
+                        &format!("{identity}:"),
+                        &format!("rolled back to '{version}' (slot {candidate_slot})"),
                     );
                 }
                 EndpointOutcome::Failed { error } => {
-                    Ui::error(&format!("{identity}: {error}"));
+                    Ui::result_error(&format!("{identity}:"), error);
                     failures += 1;
                 }
                 EndpointOutcome::SkippedAfterSiblingFailure => {
-                    Ui::warn(&format!(
-                        "{identity}: skipped after a sibling replica failed"
-                    ));
+                    Ui::result_warn(
+                        &format!("{identity}:"),
+                        "skipped after a sibling replica failed",
+                    );
                     failures += 1;
                 }
             }
@@ -329,7 +331,7 @@ pub async fn run(
         anyhow::bail!("Rollback failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success("\nRollback completed.");
+    Ui::success_elapsed("Rollback completed.", started_at.elapsed());
     Ok(())
 }
 
