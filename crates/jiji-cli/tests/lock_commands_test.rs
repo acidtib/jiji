@@ -259,7 +259,8 @@ async fn acquire_writes_a_lock_file_that_status_and_show_then_report() {
     assert!(
         received
             .iter()
-            .any(|c| c.contains("install -D -m 0600 /dev/stdin") && c.contains("deploy.lock")),
+            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")
+                && c.contains("install -m 0600 /dev/stdin")),
         "lock file should have been written atomically: {received:?}"
     );
 
@@ -299,7 +300,7 @@ async fn acquire_without_force_fails_fast_when_already_locked_and_force_override
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.contains("install -D -m 0600 /dev/stdin")),
+            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")),
         "a blocked acquire must never write a lock file"
     );
 
@@ -315,7 +316,7 @@ async fn acquire_without_force_fails_fast_when_already_locked_and_force_override
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.contains("install -D -m 0600 /dev/stdin")),
+            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")),
         "--force must still write the new lock file"
     );
 }
@@ -341,7 +342,10 @@ async fn release_removes_the_lock_file() {
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
-        received.contains(&"rm -f .jiji/demo/deploy.lock".to_string()),
+        received.iter().any(|command| {
+            command.contains("rm -f .jiji/demo/deploy.lock/info.json")
+                && command.contains("rmdir .jiji/demo/deploy.lock")
+        }),
         "received: {received:?}"
     );
 }

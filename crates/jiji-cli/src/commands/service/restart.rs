@@ -74,6 +74,32 @@ pub async fn run(
         1,
     );
 
+    Ui::section("Acquiring Deployment Lock:");
+    let lock_targets =
+        crate::commands::lock::connect_targets(environment, config_file, None, None, true).await?;
+    let service_names = selected
+        .iter()
+        .map(|endpoint| endpoint.service.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let owned_locks = match crate::lock::OwnedDeploymentLocks::acquire(
+        &lock_targets.pool,
+        &lock_targets.sessions,
+        &config.project,
+        format!("jiji service restart: {service_names}"),
+    )
+    .await
+    {
+        Ok(locks) => locks,
+        Err(error) => {
+            crate::commands::lock::close_all(&lock_targets.sessions).await;
+            return Err(error);
+        }
+    };
+
+    let operation_result: anyhow::Result<()> = async {
     // Restart still performs a VIP cutover, so the installed network generation must be current
     // first -- same precondition `jiji deploy` enforces.
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
@@ -362,8 +388,26 @@ pub async fn run(
         anyhow::bail!("Restart failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success_elapsed("Restart completed.", started_at.elapsed());
     Ok(())
+    }
+    .await;
+
+    Ui::section("Releasing Deployment Lock:");
+    let release_result = owned_locks
+        .release(&lock_targets.pool, &lock_targets.sessions)
+        .await;
+    crate::commands::lock::close_all(&lock_targets.sessions).await;
+    match (operation_result, release_result) {
+        (Ok(()), Ok(())) => {
+            Ui::success_elapsed("Restart completed.", started_at.elapsed());
+            Ok(())
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(release_error)) => Err(release_error),
+        (Err(error), Err(release_error)) => {
+            Err(error.context(format!("Additionally, {release_error}")))
+        }
+    }
 }
 
 async fn resolve_restart_image(

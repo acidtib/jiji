@@ -88,6 +88,32 @@ pub async fn run(
         yes,
     )?;
 
+    Ui::section("Acquiring Deployment Lock:");
+    let lock_targets =
+        crate::commands::lock::connect_targets(environment, config_file, None, None, true).await?;
+    let owned_locks = match crate::lock::OwnedDeploymentLocks::acquire(
+        &lock_targets.pool,
+        &lock_targets.sessions,
+        &config.project,
+        format!(
+            "jiji deploy: {}",
+            selected_service_names_for_message(&selected)
+        ),
+    )
+    .await
+    {
+        Ok(locks) => locks,
+        Err(error) => {
+            crate::commands::lock::close_all(&lock_targets.sessions).await;
+            return Err(error);
+        }
+    };
+    Ui::say(
+        &format!("Acquired on {} server(s).", lock_targets.sessions.len()),
+        1,
+    );
+
+    let operation_result: anyhow::Result<()> = async {
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
 
     let project_root = env_resolution::project_root_from_config_path(&path);
@@ -332,33 +358,6 @@ pub async fn run(
             connection_failures.join(", ")
         );
     }
-
-    Ui::section("Checking Deployment Lock:");
-    let mut locked_hosts = Vec::new();
-    for (name, session) in &sessions {
-        if let Some(info) = crate::lock::read_lock(session, &plan.project).await? {
-            locked_hosts.push((name.clone(), info));
-        }
-    }
-    if !locked_hosts.is_empty() {
-        close_all(&sessions).await;
-        let mut detail = String::new();
-        for (name, info) in &locked_hosts {
-            detail.push_str(&format!(
-                "\n  {name}: \"{}\" by {} ({} ago)",
-                info.message,
-                info.acquired_by,
-                crate::lock::format_age(info.age_seconds())
-            ));
-        }
-        anyhow::bail!(
-            "Deployment lock is held on the following server(s):{detail}\nCheck `jiji lock status`, and once it's safe, `jiji lock release` before retrying.",
-        );
-    }
-    Ui::say(
-        &format!("No active locks on {} server(s).", sessions.len()),
-        1,
-    );
 
     let mut tunnel_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
     if !services_to_build.is_empty() && config.builder.registry.kind == RegistryType::Local {
@@ -607,8 +606,36 @@ pub async fn run(
         anyhow::bail!("Deploy failed for {failures} endpoint(s); see the summary above.");
     }
 
-    Ui::success_elapsed("Deployment completed.", started_at.elapsed());
     Ok(())
+    }
+    .await;
+
+    Ui::section("Releasing Deployment Lock:");
+    let release_result = owned_locks
+        .release(&lock_targets.pool, &lock_targets.sessions)
+        .await;
+    crate::commands::lock::close_all(&lock_targets.sessions).await;
+    match (operation_result, release_result) {
+        (Ok(()), Ok(())) => {
+            Ui::success_elapsed("Deployment completed.", started_at.elapsed());
+            Ok(())
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(release_error)) => Err(release_error),
+        (Err(error), Err(release_error)) => {
+            Err(error.context(format!("Additionally, {release_error}")))
+        }
+    }
+}
+
+fn selected_service_names_for_message(selected: &[&ServiceEndpointPlan]) -> String {
+    selected
+        .iter()
+        .map(|endpoint| endpoint.service.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Selects endpoints matching both `--hosts` and `--services`. Each filter alone reuses

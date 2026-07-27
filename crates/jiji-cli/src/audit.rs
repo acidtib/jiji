@@ -104,7 +104,7 @@ pub fn format_duration_ms(ms: u64) -> String {
 
 /// Appends one entry, creating the project's staging directory if this is the first entry on this
 /// server. Content is piped over stdin rather than inlined into the command string (same reasoning
-/// as `env_resolution::stage_env_file`/`lock::write_lock`: no value -- here, a caller-supplied
+/// as `env_resolution::stage_env_file`: no value -- here, a caller-supplied
 /// message or error string -- should ever appear embedded in a logged shell command). Appends are
 /// not atomic across concurrent writers (unlike the lock file's write-temp-then-`mv`): two
 /// operations racing to audit the same server at the same instant could interleave, which is an

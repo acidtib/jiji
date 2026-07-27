@@ -69,15 +69,27 @@ pub async fn run(
     }
 
     Ui::section("Creating Lock Files:");
-    let info = LockInfo {
-        message: message.to_string(),
-        acquired_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock should be after the unix epoch")
-            .as_secs(),
-        acquired_by: lock::current_user(),
-        pid: std::process::id(),
-    };
+    if force {
+        let operations: Vec<_> = targets
+            .sessions
+            .values()
+            .cloned()
+            .map(|session| {
+                let project = targets.project.clone();
+                move || async move { lock::force_remove_lock(&session, &project).await }
+            })
+            .collect();
+        for result in targets.pool.execute_concurrent(operations).await {
+            result?;
+        }
+    }
+
+    let info = LockInfo::new(message);
+    let lock_id = info
+        .lock_id
+        .as_deref()
+        .expect("new locks have an ID")
+        .to_string();
 
     let names: Vec<String> = targets.sessions.keys().cloned().collect();
     let operations: Vec<_> = names
@@ -86,7 +98,7 @@ pub async fn run(
         .map(|session| {
             let project = targets.project.clone();
             let info = info.clone();
-            move || async move { lock::write_lock(&session, &project, &info).await }
+            move || async move { lock::acquire_lock(&session, &project, &info).await }
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;
@@ -95,9 +107,22 @@ pub async fn run(
     let mut failures = Vec::new();
     for (name, result) in names.iter().zip(results) {
         match result {
-            Ok(()) => {
+            Ok(lock::AcquireResult::Acquired) => {
                 Ui::say(&format!("{name}: lock acquired"), 1);
                 acquired.push(name.clone());
+            }
+            Ok(lock::AcquireResult::Held(info)) => {
+                if let Some(info) = info {
+                    Ui::error(&format!(
+                        "{name}: lock is held by {} (\"{}\")",
+                        info.acquired_by, info.message
+                    ));
+                } else {
+                    Ui::error(&format!(
+                        "{name}: lock is held but its metadata is incomplete"
+                    ));
+                }
+                failures.push(name.clone());
             }
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
@@ -110,7 +135,7 @@ pub async fn run(
         Ui::section("Rolling Back Partial Locks:");
         for name in &acquired {
             let session = targets.sessions.get(name).expect("connected above");
-            match lock::remove_lock(session, &targets.project).await {
+            match lock::release_owned_lock(session, &targets.project, &lock_id).await {
                 Ok(()) => Ui::say(&format!("{name}: rolled back"), 1),
                 Err(error) => Ui::error(&format!("{name}: could not roll back ({error})")),
             }

@@ -32,7 +32,7 @@ pub async fn run(
         .map(|name| targets.sessions.get(name).expect("connected above").clone())
         .map(|session| {
             let project = targets.project.clone();
-            move || async move { lock::remove_lock(&session, &project).await }
+            move || async move { lock::force_remove_lock(&session, &project).await }
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;

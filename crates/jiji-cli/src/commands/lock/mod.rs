@@ -19,13 +19,13 @@ use crate::ssh_adapter;
 /// SSH sessions for every server a `jiji lock` subcommand targets, plus the project name the
 /// lock file is scoped under. Locks are host-scoped (see `connect_targets`'s `-S` rejection), so
 /// unlike `deploy`/`service remove` there is no per-endpoint filtering here.
-pub(super) struct LockTargets {
+pub(crate) struct LockTargets {
     pub project: String,
     pub pool: SshPool,
     pub sessions: BTreeMap<String, Arc<SshSession>>,
 }
 
-pub(super) async fn connect_targets(
+pub(crate) async fn connect_targets(
     environment: Option<&str>,
     config_file: Option<&str>,
     hosts: Option<&str>,
@@ -141,7 +141,7 @@ pub(super) async fn read_all(
         .collect()
 }
 
-pub(super) async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
+pub(crate) async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     for session in sessions.values() {
         session.close().await;
     }

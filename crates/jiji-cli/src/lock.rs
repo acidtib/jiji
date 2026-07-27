@@ -1,9 +1,14 @@
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jiji_ssh::SshSession;
+use jiji_ssh::{SshPool, SshSession};
 use serde::{Deserialize, Serialize};
 
 use crate::env_resolution::project_staging_dir;
+
+static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Deployment locks live at `.jiji/{project}/deploy.lock` on each server, inside the same
 /// `.jiji/{project}` staging directory `env_resolution::project_staging_dir` already uses for
@@ -18,9 +23,29 @@ pub struct LockInfo {
     pub acquired_at: u64,
     pub acquired_by: String,
     pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_id: Option<String>,
 }
 
 impl LockInfo {
+    pub fn new(message: impl Into<String>) -> Self {
+        let acquired_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the unix epoch");
+        let pid = std::process::id();
+        Self {
+            message: message.into(),
+            acquired_at: acquired_at.as_secs(),
+            acquired_by: current_user(),
+            pid,
+            lock_id: Some(format!(
+                "{pid}-{}-{}",
+                acquired_at.as_nanos(),
+                LOCK_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            )),
+        }
+    }
+
     pub fn age_seconds(&self) -> u64 {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -56,37 +81,106 @@ pub fn format_age(seconds: u64) -> String {
     }
 }
 
-/// Reads the lock file, if any. An unparsable lock file (corrupted, or written by an incompatible
-/// future version) is treated as unlocked rather than as an error, so a bad lock file can never
-/// permanently jam deploys -- `jiji lock acquire` will simply overwrite it.
+/// Reads either the directory-backed atomic lock or the legacy lock file.
 pub async fn read_lock(session: &SshSession, project: &str) -> anyhow::Result<Option<LockInfo>> {
     let path = lock_file_path(project);
-    let command = format!("cat {path} 2>/dev/null || true");
-    let result = session.execute(&command).await?;
-    let trimmed = result.stdout.trim();
+    let result = session
+        .execute(&format!("cat {path}/info.json 2>/dev/null || true"))
+        .await?;
+    let mut trimmed = result.stdout.trim();
+    let legacy;
     if trimmed.is_empty() {
-        return Ok(None);
+        legacy = session
+            .execute(&format!("cat {path} 2>/dev/null || true"))
+            .await?;
+        trimmed = legacy.stdout.trim();
     }
-    Ok(serde_json::from_str::<LockInfo>(trimmed).ok())
+    if let Ok(info) = serde_json::from_str::<LockInfo>(trimmed) {
+        return Ok(Some(info));
+    }
+    let directory = session
+        .execute(&format!(
+            "if [ -d {path} ]; then echo JIJI_LOCK_INCOMPLETE; fi"
+        ))
+        .await?;
+    if directory.stdout.trim() == "JIJI_LOCK_INCOMPLETE" {
+        return Ok(Some(LockInfo {
+            message: "incomplete lock metadata".to_string(),
+            acquired_at: 0,
+            acquired_by: "unknown".to_string(),
+            pid: 0,
+            lock_id: None,
+        }));
+    }
+    Ok(None)
 }
 
-/// Writes the lock file atomically (write to a temp path, then `mv`), the same pattern
-/// `env_resolution::stage_env_file` uses, so a reader never observes a partially written file.
-pub async fn write_lock(
+#[derive(Debug)]
+pub enum AcquireResult {
+    Acquired,
+    Held(Option<LockInfo>),
+}
+
+/// Claims the lock with `mkdir`, whose existence check and creation are one atomic filesystem
+/// operation. Contention is reported through a stable stdout marker so it remains distinguishable
+/// from transport and filesystem failures.
+pub async fn acquire_lock(
     session: &SshSession,
     project: &str,
     info: &LockInfo,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AcquireResult> {
     let path = lock_file_path(project);
-    let temp = format!("{path}.jiji-new");
     let content = serde_json::to_string_pretty(info)?;
-    let command = format!("set -eu; install -D -m 0600 /dev/stdin {temp}; mv {temp} {path}");
+    let command = format!(
+        "set -eu\n\
+         if [ -e {path} ]; then echo JIJI_LOCK_HELD; exit 0; fi\n\
+         mkdir -p {}\n\
+         if ! mkdir {path} 2>/dev/null; then echo JIJI_LOCK_HELD; exit 0; fi\n\
+         if ! install -m 0600 /dev/stdin {path}/info.json; then rmdir {path}; exit 74; fi",
+        project_staging_dir(project)
+    );
     let result = session
         .execute_with_input(&command, content.as_bytes())
         .await?;
+    if result.success && result.stdout.trim() == "JIJI_LOCK_HELD" {
+        Ok(AcquireResult::Held(read_lock(session, project).await?))
+    } else if result.success {
+        Ok(AcquireResult::Acquired)
+    } else {
+        anyhow::bail!(
+            "Could not acquire deployment lock on {}: {}",
+            session.host(),
+            result.stderr.trim()
+        )
+    }
+}
+
+/// Removes a lock only when its unique ID still belongs to the caller.
+pub async fn release_owned_lock(
+    session: &SshSession,
+    project: &str,
+    lock_id: &str,
+) -> anyhow::Result<()> {
+    let path = lock_file_path(project);
+    let expected = serde_json::to_string(lock_id)?;
+    let command = format!(
+        "set -eu\n\
+         test -d {path} || exit 75\n\
+         actual=$(sed -n 's/.*\"lock_id\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' {path}/info.json)\n\
+         test \"$actual\" = {expected} || exit 75\n\
+         rm -f {path}/info.json\n\
+         rmdir {path}"
+    );
+    let result = session.execute(&command).await?;
+    if result.code == Some(75) {
+        anyhow::bail!(
+            "Deployment lock on {} is no longer owned by this invocation; it was not removed",
+            session.host()
+        );
+    }
     if !result.success {
         anyhow::bail!(
-            "Could not write lock file on {}: {}",
+            "Could not release deployment lock on {}: {}",
             session.host(),
             result.stderr.trim()
         );
@@ -94,17 +188,135 @@ pub async fn write_lock(
     Ok(())
 }
 
-pub async fn remove_lock(session: &SshSession, project: &str) -> anyhow::Result<()> {
+pub async fn force_remove_lock(session: &SshSession, project: &str) -> anyhow::Result<()> {
     let path = lock_file_path(project);
-    let result = session.execute(&format!("rm -f {path}")).await?;
+    let command = format!(
+        "if [ -d {path} ]; then rm -f {path}/info.json && rmdir {path}; else rm -f {path}; fi"
+    );
+    let result = session.execute(&command).await?;
     if !result.success {
         anyhow::bail!(
-            "Could not remove lock file on {}: {}",
+            "Could not remove deployment lock on {}: {}",
             session.host(),
             result.stderr.trim()
         );
     }
     Ok(())
+}
+
+pub struct OwnedDeploymentLocks {
+    project: String,
+    lock_id: String,
+    hosts: Vec<String>,
+}
+
+impl OwnedDeploymentLocks {
+    pub async fn acquire(
+        pool: &SshPool,
+        sessions: &BTreeMap<String, Arc<SshSession>>,
+        project: &str,
+        message: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let info = LockInfo::new(message);
+        let lock_id = info
+            .lock_id
+            .as_deref()
+            .expect("new locks have an ID")
+            .to_string();
+        let names: Vec<String> = sessions.keys().cloned().collect();
+        let operations: Vec<_> = names
+            .iter()
+            .map(|name| sessions.get(name).expect("host has a session").clone())
+            .map(|session| {
+                let project = project.to_string();
+                let info = info.clone();
+                move || async move { acquire_lock(&session, &project, &info).await }
+            })
+            .collect();
+        let results = pool.execute_concurrent(operations).await;
+
+        let mut acquired = Vec::new();
+        let mut failures = Vec::new();
+        for (name, result) in names.iter().zip(results) {
+            match result {
+                Ok(AcquireResult::Acquired) => acquired.push(name.clone()),
+                Ok(AcquireResult::Held(Some(holder))) => failures.push(format!(
+                    "{name}: \"{}\" by {} ({} ago)",
+                    holder.message,
+                    holder.acquired_by,
+                    format_age(holder.age_seconds())
+                )),
+                Ok(AcquireResult::Held(None)) => {
+                    failures.push(format!("{name}: lock metadata is incomplete"))
+                }
+                Err(error) => failures.push(format!("{name}: {error}")),
+            }
+        }
+
+        if !failures.is_empty() {
+            let rollback_errors = release_hosts(pool, sessions, project, &lock_id, &acquired).await;
+            let mut message = format!(
+                "Could not acquire the deployment lock on every server:\n  {}",
+                failures.join("\n  ")
+            );
+            if !rollback_errors.is_empty() {
+                message.push_str(&format!(
+                    "\nCould not roll back partial locks:\n  {}",
+                    rollback_errors.join("\n  ")
+                ));
+            }
+            anyhow::bail!("{message}");
+        }
+
+        Ok(Self {
+            project: project.to_string(),
+            lock_id,
+            hosts: acquired,
+        })
+    }
+
+    pub async fn release(
+        self,
+        pool: &SshPool,
+        sessions: &BTreeMap<String, Arc<SshSession>>,
+    ) -> anyhow::Result<()> {
+        let errors = release_hosts(pool, sessions, &self.project, &self.lock_id, &self.hosts).await;
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "Could not release deployment lock on server(s): {}. Run `jiji lock release` after verifying no deployment is active.",
+                errors.join(", ")
+            );
+        }
+        Ok(())
+    }
+}
+
+async fn release_hosts(
+    pool: &SshPool,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    project: &str,
+    lock_id: &str,
+    hosts: &[String],
+) -> Vec<String> {
+    let operations: Vec<_> = hosts
+        .iter()
+        .map(|name| {
+            sessions
+                .get(name)
+                .expect("acquired host has a session")
+                .clone()
+        })
+        .map(|session| {
+            let project = project.to_string();
+            let lock_id = lock_id.to_string();
+            move || async move { release_owned_lock(&session, &project, &lock_id).await }
+        })
+        .collect();
+    hosts
+        .iter()
+        .zip(pool.execute_concurrent(operations).await)
+        .filter_map(|(name, result)| result.err().map(|error| format!("{name}: {error}")))
+        .collect()
 }
 
 #[cfg(test)]
@@ -127,6 +339,7 @@ mod tests {
             acquired_at: now,
             acquired_by: "alice".to_string(),
             pid: 1,
+            lock_id: None,
         };
         assert_eq!(info.age_seconds(), 0);
     }
@@ -136,5 +349,22 @@ mod tests {
         assert_eq!(format_age(5), "5s");
         assert_eq!(format_age(65), "1m5s");
         assert_eq!(format_age(3725), "1h2m");
+    }
+
+    #[test]
+    fn legacy_lock_deserializes_without_an_ownership_id() {
+        let info: LockInfo = serde_json::from_str(
+            r#"{"message":"maintenance","acquired_at":1,"acquired_by":"alice","pid":2}"#,
+        )
+        .unwrap();
+        assert_eq!(info.lock_id, None);
+    }
+
+    #[test]
+    fn new_locks_have_distinct_ownership_ids() {
+        let first = LockInfo::new("first");
+        let second = LockInfo::new("second");
+        assert!(first.lock_id.is_some());
+        assert_ne!(first.lock_id, second.lock_id);
     }
 }

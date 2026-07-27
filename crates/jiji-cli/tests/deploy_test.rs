@@ -451,8 +451,10 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
         "candidate should have been created: {received:?}"
     );
     assert!(
-        !received.iter().any(|c| c.contains("rm -f")),
-        "nothing should be removed on a first deployment: {received:?}"
+        !received
+            .iter()
+            .any(|c| c.contains("docker rm") || c.contains("podman rm")),
+        "no container should be removed on a first deployment: {received:?}"
     );
     assert!(
         received
@@ -850,11 +852,9 @@ async fn failed_pull_after_tunnel_setup_cancels_the_forward_and_stops_deploy() {
 #[tokio::test(flavor = "multi_thread")]
 async fn deploy_bails_when_deployment_lock_is_held() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
-
     let lock_path = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
     let mut responses = HashMap::new();
-    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(atomic_lock_command(), success("JIJI_LOCK_HELD\n"));
     responses.insert(
         lock_path.to_string(),
         success(
@@ -870,7 +870,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 
     assert!(!output.status.success());
     assert!(
-        stderr.contains("Deployment lock is held"),
+        stderr.contains("Could not acquire the deployment lock"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("Deploying v1.2.3"), "stderr: {stderr}");
@@ -881,4 +881,8 @@ async fn deploy_bails_when_deployment_lock_is_held() {
         !received.iter().any(|c| c.contains("run --name")),
         "no container should be touched while the lock is held: {received:?}"
     );
+}
+
+fn atomic_lock_command() -> String {
+    "set -eu\nif [ -e .jiji/demo/deploy.lock ]; then echo JIJI_LOCK_HELD; exit 0; fi\nmkdir -p .jiji/demo\nif ! mkdir .jiji/demo/deploy.lock 2>/dev/null; then echo JIJI_LOCK_HELD; exit 0; fi\nif ! install -m 0600 /dev/stdin .jiji/demo/deploy.lock/info.json; then rmdir .jiji/demo/deploy.lock; exit 74; fi".to_string()
 }
