@@ -96,7 +96,7 @@ pub fn run(
     if informational_only {
         println!();
         Ui::say(
-            "Note: ssh key_passphrase/key_data, proxy SSL certs, build args, and command \
+            "Note: ssh key_passphrase, proxy SSL certs, build args, and command \
              interpolation are reported for visibility only -- unlike environment.secrets and \
              builder.registry.password, they are used as literal config values today and are not \
              actually substituted from .env/host env at runtime.",
@@ -135,7 +135,7 @@ struct SecretRef {
     /// Whether this config field is actually resolved from `.env`/host-env by any runtime code
     /// path today (`environment.secrets`, `builder.registry.password`), versus reported here only
     /// for visibility because it looks like a secret reference but is currently used literally
-    /// (ssh key_passphrase/key_data, proxy SSL certs, build args, command interpolation).
+    /// (ssh key_passphrase, proxy SSL certs, build args, command interpolation).
     runtime_resolved: bool,
 }
 
@@ -200,17 +200,22 @@ fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<Secret
         push_if_env_ref(&mut refs, Some(server.host.as_str()), &source, false);
 
         let source = format!("servers.{name}.ssh");
-        push_if_env_ref(&mut refs, server.key_passphrase.as_deref(), &source, false);
-        for entry in server.key_data.iter().flatten() {
-            push_if_env_ref(&mut refs, Some(entry.as_str()), &source, false);
+        for entry in server.keys.iter().flatten() {
+            push_if_env_ref(
+                &mut refs,
+                Some(entry.as_str()),
+                &format!("servers.{name}.keys"),
+                true,
+            );
         }
+        push_if_env_ref(&mut refs, server.key_passphrase.as_deref(), &source, false);
     }
 
     if let Some(ssh) = &config.ssh {
-        push_if_env_ref(&mut refs, ssh.key_passphrase.as_deref(), "ssh", false);
-        for entry in ssh.key_data.iter().flatten() {
-            push_if_env_ref(&mut refs, Some(entry.as_str()), "ssh.key_data", false);
+        for entry in ssh.keys.iter().flatten() {
+            push_if_env_ref(&mut refs, Some(entry.as_str()), "ssh.keys", true);
         }
+        push_if_env_ref(&mut refs, ssh.key_passphrase.as_deref(), "ssh", false);
     }
 
     push_if_env_ref(
@@ -391,16 +396,47 @@ mod tests {
     }
 
     #[test]
-    fn ssh_key_passphrase_and_key_data_are_flagged_as_informational_only() {
+    fn ssh_key_passphrase_is_flagged_as_informational_only() {
         let mut config = base_config();
         config.ssh = Some(Ssh {
             key_passphrase: Some("SSH_PASSPHRASE".to_string()),
-            key_data: Some(vec!["SSH_KEY_DATA".to_string()]),
             ..default_ssh()
         });
         let refs = collect_secret_refs(&config, &[]);
-        assert_eq!(refs.len(), 2);
+        assert_eq!(refs.len(), 1);
         assert!(refs.iter().all(|r| !r.runtime_resolved));
+    }
+
+    #[test]
+    fn ssh_key_paths_are_reported_as_runtime_resolved() {
+        let mut config = base_config();
+        config.ssh = Some(Ssh {
+            keys: Some(vec!["GLOBAL_KEY_PATH".to_string()]),
+            ..default_ssh()
+        });
+        config.servers.insert(
+            "app1".to_string(),
+            NamedServer {
+                host: "app.example.com".to_string(),
+                arch: None,
+                user: None,
+                port: None,
+                key_passphrase: None,
+                keys: Some(vec!["SERVER_KEY_PATH".to_string()]),
+            },
+        );
+
+        let refs = collect_secret_refs(&config, &[]);
+        assert!(refs.iter().any(|reference| {
+            reference.name == "GLOBAL_KEY_PATH"
+                && reference.source == "ssh.keys"
+                && reference.runtime_resolved
+        }));
+        assert!(refs.iter().any(|reference| {
+            reference.name == "SERVER_KEY_PATH"
+                && reference.source == "servers.app1.keys"
+                && reference.runtime_resolved
+        }));
     }
 
     #[test]
@@ -413,10 +449,8 @@ mod tests {
                 arch: None,
                 user: None,
                 port: None,
-                key_path: None,
                 key_passphrase: Some("APP1_PASSPHRASE".to_string()),
                 keys: None,
-                key_data: None,
             },
         );
         let refs = collect_secret_refs(&config, &[]);
@@ -438,8 +472,7 @@ mod tests {
             "web".to_string(),
             Service {
                 proxy: Some(ProxyConfig {
-                    app_port: Some(3000),
-                    host: None,
+                    port: Some(3000),
                     hosts: None,
                     ssl: Some(SslValue::Certs {
                         certificate_pem: "CERT_PEM".to_string(),
@@ -448,8 +481,7 @@ mod tests {
                     path_prefix: None,
                     healthcheck: None,
                     targets: Some(vec![ProxyTarget {
-                        app_port: 4000,
-                        host: None,
+                        port: 4000,
                         hosts: None,
                         ssl: Some(SslValue::Certs {
                             certificate_pem: "CERT_PEM_2".to_string(),
@@ -577,7 +609,6 @@ mod tests {
         Ssh {
             user: None,
             port: 22,
-            key_path: None,
             key_passphrase: None,
             connect_timeout: 10,
             command_timeout: 60,
@@ -585,7 +616,6 @@ mod tests {
             proxy: None,
             proxy_command: None,
             keys: None,
-            key_data: None,
             keys_only: false,
             max_concurrent_starts: 4,
             pool_idle_timeout: 60,

@@ -3,7 +3,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, Config, ContainerEngine, NamedServer};
+use jiji_config::{validate_config, Config, ContainerEngine, NamedServer};
 use jiji_network::{
     ActiveSlotState, DnsRecord, Ipv4Cidr, NetworkPlan, NetworkPlanner, ServerPlan,
     ServiceNatArtifacts,
@@ -85,7 +85,8 @@ pub async fn run(
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(Path::new);
-    let (config, path) = load_config(environment, config_path, &start)?;
+    let (config, path) =
+        crate::config_loading::load_config_for_ssh(environment, config_path, &start).await?;
     Ui::say(&format!("Configuration loaded from: {}", path.display()), 1);
 
     let validation = validate_config(&config);

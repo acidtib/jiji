@@ -5,6 +5,7 @@ mod build_executor;
 mod build_plan;
 mod cli;
 mod commands;
+mod config_loading;
 mod container_ops;
 mod container_runtime;
 mod deploy_transaction;
@@ -36,10 +37,17 @@ use cli::{
 };
 use tracing_subscriber::EnvFilter;
 
+static SSH_HOST_ENV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn ssh_host_env_enabled() -> bool {
+    SSH_HOST_ENV.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Shared entrypoint for both the `jiji` and `jiji_dev` binaries (see `src/main.rs` and
 /// `src/bin/jiji_dev.rs`) so a local test build never has to overwrite the installed `jiji`.
 pub async fn run() {
     let cli = Cli::parse();
+    SSH_HOST_ENV.store(cli.host_env, std::sync::atomic::Ordering::Relaxed);
 
     let filter = if cli.verbose {
         "debug"

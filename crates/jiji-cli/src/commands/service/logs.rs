@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, Config, NamedServer, Ssh};
+use jiji_config::{validate_config, Config, NamedServer, Ssh};
 use jiji_network::{NetworkPlan, NetworkPlanner};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
@@ -45,7 +45,12 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
         );
     }
     let start = std::env::current_dir()?;
-    let (config, path) = load_config(environment, config_file.map(std::path::Path::new), &start)?;
+    let (config, path) = crate::config_loading::load_config_for_ssh(
+        environment,
+        config_file.map(std::path::Path::new),
+        &start,
+    )
+    .await?;
     let validation = validate_config(&config);
     if !validation.valid {
         for error in validation.errors {

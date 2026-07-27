@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::error::SshError;
-use crate::options::ConnectOptions;
+use crate::options::{ConnectOptions, SshKey};
 
 /// Result of running a single command over SSH.
 #[derive(Debug, Clone)]
@@ -743,34 +743,33 @@ async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     options: &ConnectOptions,
 ) -> Result<(), SshError> {
-    let has_explicit_keys = !options.keys.is_empty() || !options.key_data.is_empty();
+    let has_explicit_keys = !options.keys.is_empty();
 
     if has_explicit_keys {
         let mut attempted = Vec::new();
 
-        for path in &options.keys {
-            let key =
-                load_secret_key(path, options.key_passphrase.as_deref()).map_err(|source| {
-                    SshError::KeyLoad {
-                        path: path.display().to_string(),
-                        source,
-                    }
-                })?;
-            attempted.push(path.display().to_string());
-            if try_publickey(handle, options, key).await? {
-                return Ok(());
-            }
-        }
-
-        for (i, data) in options.key_data.iter().enumerate() {
-            let key =
-                decode_secret_key(data, options.key_passphrase.as_deref()).map_err(|source| {
-                    SshError::KeyLoad {
-                        path: format!("key_data[{i}]"),
-                        source,
-                    }
-                })?;
-            attempted.push(format!("key_data[{i}]"));
+        for (index, configured) in options.keys.iter().enumerate() {
+            let (key, description) = match configured {
+                SshKey::Path(path) => (
+                    load_secret_key(path, options.key_passphrase.as_deref()).map_err(|source| {
+                        SshError::KeyLoad {
+                            path: path.display().to_string(),
+                            source,
+                        }
+                    })?,
+                    path.display().to_string(),
+                ),
+                SshKey::Inline(data) => (
+                    decode_secret_key(data, options.key_passphrase.as_deref()).map_err(
+                        |source| SshError::KeyLoad {
+                            path: format!("keys[{index}]"),
+                            source,
+                        },
+                    )?,
+                    format!("keys[{index}]"),
+                ),
+            };
+            attempted.push(description);
             if try_publickey(handle, options, key).await? {
                 return Ok(());
             }

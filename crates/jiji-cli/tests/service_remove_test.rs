@@ -161,7 +161,7 @@ async fn spawn_test_server(
     Harness { addr, received }
 }
 
-/// A single service ("web", image "example/web:latest", proxy on app_port 3000) on a single
+/// A single service ("web", image "example/web:latest", proxy on port 3000) on a single
 /// server ("app"), with a named volume so `--volumes` has something to remove.
 fn config_yaml(addr: SocketAddr, key_path: &std::path::Path) -> String {
     format!(
@@ -180,8 +180,8 @@ services:
     servers: [app]
     volumes: ["web_storage:/data"]
     proxy:
-      app_port: 3000
-      host: example.com
+      port: 3000
+      hosts: [example.com]
 ssh:
   user: tester
   keys_only: true

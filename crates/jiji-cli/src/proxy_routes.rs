@@ -9,7 +9,7 @@ use crate::container_runtime::backend_address;
 pub struct RouteTarget {
     pub route_name: String,
     pub address: Ipv4Addr,
-    pub app_port: u32,
+    pub port: u32,
     pub hosts: Vec<String>,
     pub tls: bool,
     pub path_prefix: Option<String>,
@@ -43,13 +43,10 @@ pub fn targets_for_service(
         return targets
             .iter()
             .map(|target| RouteTarget {
-                route_name: format!("{project}-{service_name}-{}", target.app_port),
+                route_name: format!("{project}-{service_name}-{}", target.port),
                 address,
-                app_port: target.app_port,
-                hosts: target
-                    .hosts
-                    .clone()
-                    .unwrap_or_else(|| target.host.clone().into_iter().collect()),
+                port: target.port,
+                hosts: target.hosts.clone().unwrap_or_default(),
                 tls: is_tls(&target.ssl),
                 path_prefix: target.path_prefix.clone(),
                 healthcheck: target.healthcheck.clone(),
@@ -57,17 +54,14 @@ pub fn targets_for_service(
             .collect();
     }
 
-    let Some(app_port) = proxy.app_port else {
+    let Some(port) = proxy.port else {
         return Vec::new();
     };
     vec![RouteTarget {
-        route_name: format!("{project}-{service_name}-{app_port}"),
+        route_name: format!("{project}-{service_name}-{port}"),
         address,
-        app_port,
-        hosts: proxy
-            .hosts
-            .clone()
-            .unwrap_or_else(|| proxy.host.clone().into_iter().collect()),
+        port,
+        hosts: proxy.hosts.clone().unwrap_or_default(),
         tls: is_tls(&proxy.ssl),
         path_prefix: proxy.path_prefix.clone(),
         healthcheck: proxy.healthcheck.clone(),
@@ -75,7 +69,7 @@ pub fn targets_for_service(
 }
 
 pub fn render_deploy_command(engine: ContainerEngine, target: &RouteTarget) -> String {
-    let mut args = vec![format!("--target={}:{}", target.address, target.app_port)];
+    let mut args = vec![format!("--target={}:{}", target.address, target.port)];
     for host in &target.hosts {
         args.push(format!("--host={host}"));
     }
@@ -199,7 +193,7 @@ services:
     fn single_target_flat_config_produces_one_route() {
         let (endpoint, slot) = endpoint();
         let proxy: ProxyConfig =
-            serde_yaml::from_str("app_port: 3000\nhost: example.com\nssl: true\n").unwrap();
+            serde_yaml::from_str("port: 3000\nhosts: [example.com]\nssl: true\n").unwrap();
         let targets = targets_for_service("demo", "web", Some(&proxy), &endpoint, slot);
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].route_name, "demo-web-3000");
@@ -213,10 +207,10 @@ services:
         let proxy: ProxyConfig = serde_yaml::from_str(
             r#"
 targets:
-  - app_port: 3900
-    host: s3.example.com
-  - app_port: 3903
-    host: admin.example.com
+  - port: 3900
+    hosts: [s3.example.com]
+  - port: 3903
+    hosts: [admin.example.com]
     ssl: true
 "#,
         )
@@ -238,7 +232,7 @@ targets:
     fn deploy_command_renders_http_healthcheck() {
         let (endpoint, slot) = endpoint();
         let proxy: ProxyConfig = serde_yaml::from_str(
-            "app_port: 3000\nhost: example.com\nhealthcheck: { path: /health, interval: 10s, deploy_timeout: 60s }\n",
+            "port: 3000\nhosts: [example.com]\nhealthcheck: { path: /health, interval: 10s, deploy_timeout: 60s }\n",
         )
         .unwrap();
         let target = &targets_for_service("demo", "web", Some(&proxy), &endpoint, slot)[0];
@@ -256,7 +250,7 @@ targets:
     fn deploy_command_renders_command_healthcheck_with_runtime() {
         let (endpoint, slot) = endpoint();
         let proxy: ProxyConfig = serde_yaml::from_str(
-            "app_port: 3000\nhost: example.com\nhealthcheck: { cmd: \"test -f /ready\" }\n",
+            "port: 3000\nhosts: [example.com]\nhealthcheck: { cmd: \"test -f /ready\" }\n",
         )
         .unwrap();
         let target = &targets_for_service("demo", "web", Some(&proxy), &endpoint, slot)[0];
@@ -269,7 +263,7 @@ targets:
     fn path_prefix_and_tls_are_rendered_when_set() {
         let (endpoint, slot) = endpoint();
         let proxy: ProxyConfig = serde_yaml::from_str(
-            "app_port: 3000\nhost: example.com\npath_prefix: /api\nssl: true\n",
+            "port: 3000\nhosts: [example.com]\npath_prefix: /api\nssl: true\n",
         )
         .unwrap();
         let target = &targets_for_service("demo", "web", Some(&proxy), &endpoint, slot)[0];

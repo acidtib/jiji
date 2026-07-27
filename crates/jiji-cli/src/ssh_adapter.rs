@@ -1,15 +1,82 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
-use jiji_config::{NamedServer, RemoteBuilder, Ssh, SshConfigFiles};
-use jiji_ssh::ConnectOptions;
+use jiji_config::{Config, NamedServer, RemoteBuilder, Ssh, SshConfigFiles};
+use jiji_ssh::{ConnectOptions, SshKey};
 use ssh2_config::{HostParams, ParseRule, SshConfig};
 
 const DEFAULT_PORT: u16 = 22;
 const DEFAULT_CONNECT_TIMEOUT: u32 = 30;
+
+pub async fn resolve_key_references(
+    config: &mut Config,
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> anyhow::Result<()> {
+    if let Some(ssh) = config.ssh.as_mut() {
+        resolve_keys(&mut ssh.keys, "ssh.keys", loaded, allow_host_env).await?;
+    }
+    for (name, server) in &mut config.servers {
+        resolve_keys(
+            &mut server.keys,
+            &format!("servers.{name}.keys"),
+            loaded,
+            allow_host_env,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn resolve_keys(
+    values: &mut Option<Vec<String>>,
+    source: &str,
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> anyhow::Result<()> {
+    if let Some(values) = values {
+        for (index, value) in values.iter_mut().enumerate() {
+            *value =
+                resolve_key_reference(value, &format!("{source}[{index}]"), loaded, allow_host_env)
+                    .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_key_reference(
+    raw: &str,
+    source: &str,
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> anyhow::Result<String> {
+    if let Some(command) = crate::env_resolution::is_command_expression(raw) {
+        let value = crate::env_resolution::resolve_command_value(command)
+            .await
+            .with_context(|| format!("Could not resolve SSH key path from `{source}`"))?;
+        return require_key_path(value, source);
+    }
+    if !crate::env_resolution::is_bare_all_caps_name(raw) {
+        return Ok(raw.to_string());
+    }
+    let value = crate::env_resolution::resolve_secret_name(raw, loaded, allow_host_env).ok_or_else(|| {
+        anyhow::anyhow!(
+            "SSH key path variable '{raw}' from `{source}` was not found. Add it to the selected .env file or pass --host-env."
+        )
+    })?;
+    require_key_path(value, source)
+}
+
+fn require_key_path(value: String, source: &str) -> anyhow::Result<String> {
+    if value.trim().is_empty() {
+        anyhow::bail!("SSH key path from `{source}` resolved to an empty value");
+    }
+    Ok(value)
+}
 
 /// Resolves connection options for a `builder.remote` target, reusing `connect_options`'s
 /// entire user/port/keys/proxy precedence chain unmodified: the URI's user/port are a
@@ -24,10 +91,8 @@ pub fn connect_options_for_remote_builder(
         arch: None,
         user: remote.user.clone(),
         port: remote.port,
-        key_path: None,
         key_passphrase: None,
         keys: None,
-        key_data: None,
     };
     connect_options("builder", &server, ssh)
 }
@@ -73,12 +138,8 @@ pub fn connect_options(
             params
                 .as_ref()
                 .and_then(|params| params.identity_file.clone())
+                .map(|paths| paths.into_iter().map(SshKey::Path).collect())
         })
-        .unwrap_or_default();
-    options.key_data = server
-        .key_data
-        .clone()
-        .or_else(|| ssh.key_data.clone())
         .unwrap_or_default();
     options.key_passphrase = server
         .key_passphrase
@@ -121,14 +182,20 @@ pub fn connect_options(
     Ok(options)
 }
 
-fn configured_keys(server: &NamedServer, ssh: &Ssh) -> Option<Vec<PathBuf>> {
+fn configured_keys(server: &NamedServer, ssh: &Ssh) -> Option<Vec<SshKey>> {
     server
         .keys
         .clone()
-        .or_else(|| server.key_path.clone().map(|path| vec![path]))
         .or_else(|| ssh.keys.clone())
-        .or_else(|| ssh.key_path.clone().map(|path| vec![path]))
-        .map(|paths| paths.into_iter().map(expand_tilde).collect())
+        .map(|keys| keys.into_iter().map(classify_key).collect())
+}
+
+fn classify_key(value: String) -> SshKey {
+    if value.trim_start().starts_with("-----BEGIN ") {
+        SshKey::Inline(value)
+    } else {
+        SshKey::Path(expand_tilde(value))
+    }
 }
 
 /// Builds one jump hop's `ConnectOptions`. `is_first_hop` controls how `ProxyCommand` is handled:
@@ -170,8 +237,8 @@ fn jump_options(
     options.keys = params
         .as_ref()
         .and_then(|params| params.identity_file.clone())
+        .map(|paths| paths.into_iter().map(SshKey::Path).collect())
         .unwrap_or_else(|| target.keys.clone());
-    options.key_data = target.key_data.clone();
     options.key_passphrase = target.key_passphrase.clone();
     options.keys_only = ssh.keys_only || identities_only(params.as_ref());
     options.connect_timeout = params
@@ -319,10 +386,8 @@ mod tests {
             arch: None,
             user: None,
             port: None,
-            key_path: None,
             key_passphrase: None,
             keys: None,
-            key_data: None,
         }
     }
 
@@ -330,7 +395,6 @@ mod tests {
         Ssh {
             user: None,
             port: 22,
-            key_path: None,
             key_passphrase: None,
             connect_timeout: 30,
             command_timeout: 300,
@@ -338,7 +402,6 @@ mod tests {
             proxy: None,
             proxy_command: None,
             keys: None,
-            key_data: None,
             keys_only: false,
             max_concurrent_starts: 30,
             pool_idle_timeout: 900,
@@ -534,5 +597,83 @@ mod tests {
         let error = jump_options("second", &ssh, Some(&config), &target, false)
             .expect_err("reject a non-first hop's ProxyCommand");
         assert!(error.to_string().contains("only the first hop"));
+    }
+
+    #[tokio::test]
+    async fn key_references_resolve_literals_env_values_and_commands() {
+        let mut config: Config = serde_yaml::from_str(
+            r#"
+project: demo
+builder: { engine: podman }
+ssh:
+  user: deploy
+  keys:
+    - ~/.ssh/literal
+    - APP_KEY_PATH
+    - "$(printf /tmp/command-key)"
+servers:
+  app:
+    host: app.example.com
+    keys: [SERVER_KEY_PATH]
+services: {}
+"#,
+        )
+        .expect("parse config");
+        let loaded = BTreeMap::from([
+            ("APP_KEY_PATH".to_string(), "/tmp/app-key".to_string()),
+            ("SERVER_KEY_PATH".to_string(), "/tmp/server-key".to_string()),
+        ]);
+
+        resolve_key_references(&mut config, &loaded, false)
+            .await
+            .expect("resolve");
+
+        assert_eq!(
+            config.ssh.unwrap().keys.unwrap(),
+            ["~/.ssh/literal", "/tmp/app-key", "/tmp/command-key"]
+        );
+        assert_eq!(
+            config.servers["app"].keys.as_deref(),
+            Some(["/tmp/server-key".to_string()].as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_key_environment_reference_is_actionable() {
+        let mut config: Config = serde_yaml::from_str(
+            r#"
+project: demo
+builder: { engine: podman }
+ssh:
+  user: deploy
+  keys: [MISSING_KEY_PATH]
+servers:
+  app:
+    host: app.example.com
+services: {}
+"#,
+        )
+        .expect("parse config");
+
+        let error = resolve_key_references(&mut config, &BTreeMap::new(), false)
+            .await
+            .expect_err("missing reference");
+        assert!(error.to_string().contains("MISSING_KEY_PATH"));
+        assert!(error.to_string().contains("--host-env"));
+    }
+
+    #[test]
+    fn resolved_keys_distinguish_paths_from_inline_material() {
+        assert!(matches!(
+            classify_key("/tmp/deploy-key".to_string()),
+            SshKey::Path(path) if path == Path::new("/tmp/deploy-key")
+        ));
+        assert!(matches!(
+            classify_key(
+                "  -----BEGIN OPENSSH PRIVATE KEY-----\nvalue\n-----END OPENSSH PRIVATE KEY-----"
+                    .to_string()
+            ),
+            SshKey::Inline(_)
+        ));
     }
 }

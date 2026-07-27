@@ -88,6 +88,7 @@ impl Default for Registry {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NamedServer {
     pub host: String,
     #[serde(default)]
@@ -97,13 +98,9 @@ pub struct NamedServer {
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]
-    pub key_path: Option<String>,
-    #[serde(default)]
     pub key_passphrase: Option<String>,
     #[serde(default)]
     pub keys: Option<Vec<String>>,
-    #[serde(default)]
-    pub key_data: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -143,8 +140,6 @@ pub struct Ssh {
     #[serde(default = "default_ssh_port")]
     pub port: u16,
     #[serde(default)]
-    pub key_path: Option<String>,
-    #[serde(default)]
     pub key_passphrase: Option<String>,
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout: u32,
@@ -158,8 +153,6 @@ pub struct Ssh {
     pub proxy_command: Option<String>,
     #[serde(default)]
     pub keys: Option<Vec<String>>,
-    #[serde(default)]
-    pub key_data: Option<Vec<String>>,
     #[serde(default)]
     pub keys_only: bool,
     #[serde(default = "default_max_concurrent_starts")]
@@ -312,10 +305,9 @@ pub struct HealthcheckConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyTarget {
-    pub app_port: u32,
-    #[serde(default)]
-    pub host: Option<String>,
+    pub port: u32,
     #[serde(default)]
     pub hosts: Option<Vec<String>>,
     #[serde(default)]
@@ -328,11 +320,10 @@ pub struct ProxyTarget {
 
 /// Single-target fields live directly on this struct; multi-target configs use `targets`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     #[serde(default)]
-    pub app_port: Option<u32>,
-    #[serde(default)]
-    pub host: Option<String>,
+    pub port: Option<u32>,
     #[serde(default)]
     pub hosts: Option<Vec<String>>,
     #[serde(default)]

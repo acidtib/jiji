@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, NamedServer, RegistryType};
+use jiji_config::{validate_config, NamedServer, RegistryType};
 use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
@@ -42,7 +42,8 @@ pub async fn run(
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
-    let (config, path) = load_config(environment, config_path, &start)?;
+    let (config, path) =
+        crate::config_loading::load_config_for_ssh(environment, config_path, &start).await?;
     Ui::say(&format!("Configuration loaded from: {}", path.display()), 1);
 
     let validation = validate_config(&config);

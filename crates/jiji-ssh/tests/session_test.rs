@@ -292,7 +292,7 @@ async fn connects_and_executes_with_a_key_file() {
     let key_path = write_key_file(&dir, &client_key);
 
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
 
     let session = SshSession::connect(&options).await.expect("connect");
@@ -308,7 +308,7 @@ async fn connects_and_executes_with_a_key_file() {
 }
 
 #[tokio::test]
-async fn connects_and_executes_with_inline_key_data() {
+async fn connects_and_executes_with_inline_key() {
     let client_key = generate_client_key();
     let addr = spawn_test_server(client_key.public_key().clone()).await;
     let pem = client_key
@@ -317,7 +317,7 @@ async fn connects_and_executes_with_inline_key_data() {
         .to_string();
 
     let mut options = base_options(addr);
-    options.key_data = vec![pem];
+    options.keys = vec![jiji_ssh::SshKey::Inline(pem)];
     options.keys_only = true;
 
     let session = SshSession::connect(&options).await.expect("connect");
@@ -335,7 +335,7 @@ async fn rejects_a_key_the_server_does_not_recognize() {
     let key_path = write_key_file(&dir, &untrusted_key);
 
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
 
     // `SshSession` doesn't implement `Debug` (it wraps a russh connection handle), so this can't
@@ -358,7 +358,7 @@ async fn execute_with_input_sends_stdin_to_the_remote_command() {
     let key_path = write_key_file(&dir, &client_key);
 
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
 
     let session = SshSession::connect(&options).await.expect("connect");
@@ -379,7 +379,7 @@ async fn a_failing_remote_command_is_reported_as_unsuccessful() {
     let key_path = write_key_file(&dir, &client_key);
 
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
 
     let session = SshSession::connect(&options).await.expect("connect");
@@ -398,7 +398,7 @@ async fn a_command_that_never_responds_times_out() {
     let key_path = write_key_file(&dir, &client_key);
 
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     options.command_timeout = Duration::from_millis(200);
 
@@ -419,11 +419,11 @@ async fn connects_and_executes_through_a_proxy_jump() {
     let key_path = write_key_file(&dir, &client_key);
 
     let mut options = base_options(target_addr);
-    options.keys = vec![key_path.clone()];
+    options.keys = vec![key_path.clone().into()];
     options.keys_only = true;
 
     let mut jump = base_options(jump_addr);
-    jump.keys = vec![key_path];
+    jump.keys = vec![key_path.into()];
     jump.keys_only = true;
     options.proxy_jump = vec![jump];
 
@@ -457,7 +457,7 @@ async fn reverse_forward_relays_to_a_local_tcp_service_and_can_be_cancelled() {
     });
 
     let mut options = base_options(ssh_addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     let session = SshSession::connect(&options).await.expect("connect");
 
@@ -525,7 +525,7 @@ async fn reverse_forward_relays_a_payload_larger_than_the_ssh_channel_window() {
     });
 
     let mut options = base_options(ssh_addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     let session = SshSession::connect(&options).await.expect("connect");
     let forward = session
@@ -553,7 +553,7 @@ async fn denied_reverse_forward_has_an_actionable_error() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = write_key_file(&dir, &client_key);
     let mut options = base_options(ssh_addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     let session = SshSession::connect(&options).await.expect("connect");
 
@@ -576,7 +576,7 @@ async fn occupied_remote_port_is_rejected_with_an_actionable_error() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = write_key_file(&dir, &client_key);
     let mut options = base_options(ssh_addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     let session = SshSession::connect(&options).await.expect("connect");
 
@@ -596,7 +596,7 @@ async fn execute_streaming_delivers_chunks_as_they_arrive_not_as_one_aggregate()
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = write_key_file(&dir, &client_key);
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     let session = SshSession::connect(&options).await.expect("connect");
 
@@ -637,7 +637,7 @@ async fn execute_streaming_reports_command_timeout_through_the_channel() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = write_key_file(&dir, &client_key);
     let mut options = base_options(addr);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     options.command_timeout = Duration::from_millis(100);
     let session = SshSession::connect(&options).await.expect("connect");
@@ -682,7 +682,7 @@ async fn connects_and_executes_through_a_proxy_command() {
     options.port = addr.port();
     options.connect_timeout = Duration::from_secs(5);
     options.command_timeout = Duration::from_secs(5);
-    options.keys = vec![key_path];
+    options.keys = vec![key_path.into()];
     options.keys_only = true;
     options.proxy_command = Some("socat - TCP:%h:%p".to_string());
 

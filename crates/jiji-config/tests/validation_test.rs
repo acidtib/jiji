@@ -310,3 +310,158 @@ network:
     let result = validate_yaml(&raw);
     assert!(result.valid, "unexpected errors: {:?}", result.errors);
 }
+
+#[test]
+fn removed_legacy_key_fields_are_rejected_globally_and_per_server() {
+    for (raw, removed_field) in [
+        (
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app: { image: nginx, servers: [web] }
+ssh:
+  user: root
+  key_path: ~/.ssh/id_ed25519
+"#,
+            "key_path",
+        ),
+        (
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web:
+    host: 10.0.0.1
+    key_path: ~/.ssh/id_ed25519
+services:
+  app: { image: nginx, servers: [web] }
+ssh: { user: root }
+"#,
+            "key_path",
+        ),
+        (
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app: { image: nginx, servers: [web] }
+ssh:
+  user: root
+  key: ~/.ssh/id_ed25519
+"#,
+            "key",
+        ),
+        (
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web:
+    host: 10.0.0.1
+    key: ~/.ssh/id_ed25519
+services:
+  app: { image: nginx, servers: [web] }
+ssh: { user: root }
+"#,
+            "key",
+        ),
+    ] {
+        let result = validate_yaml(&parse(raw));
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains(removed_field)),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn singular_proxy_host_is_rejected_for_flat_and_multi_target_configs() {
+    for raw in [
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 80, host: example.com }
+"#,
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy:
+      targets:
+        - { port: 80, host: example.com }
+"#,
+    ] {
+        let result = validate_yaml(&parse(raw));
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("host")),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn removed_proxy_app_port_is_rejected_for_flat_and_multi_target_configs() {
+    for raw in [
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { app_port: 80, hosts: [example.com] }
+"#,
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy:
+      targets:
+        - { app_port: 80, hosts: [example.com] }
+"#,
+    ] {
+        let result = validate_yaml(&parse(raw));
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("app_port")),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+    }
+}

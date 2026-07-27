@@ -3,10 +3,10 @@ use jiji_ssh::SshSession;
 
 use crate::{container_ops, proxy, proxy_ingress, proxy_routes};
 
-/// Every `{project}-{service}-{app_port}` route name a proxy-enabled service in this project
+/// Every `{project}-{service}-{port}` route name a proxy-enabled service in this project
 /// would register, computed purely from config. No `NetworkPlan`/session needed: kamal-proxy
 /// route names have no server component (each server's kamal-proxy keeps its own local route
-/// table, keyed only by project/service/app_port -- see `proxy_routes::targets_for_service`).
+/// table, keyed only by project/service/port, see `proxy_routes::targets_for_service`).
 /// Exact-name, not a prefix match: project/service names may themselves contain hyphens, so a
 /// `"{project}-"` prefix match could false-positive against an unrelated project name that
 /// happens to start the same way.
@@ -18,10 +18,10 @@ pub fn compute_route_candidates(config: &Config, project: &str) -> Vec<String> {
         };
         if let Some(targets) = &proxy.targets {
             for target in targets {
-                names.push(format!("{project}-{service_name}-{}", target.app_port));
+                names.push(format!("{project}-{service_name}-{}", target.port));
             }
-        } else if let Some(app_port) = proxy.app_port {
-            names.push(format!("{project}-{service_name}-{app_port}"));
+        } else if let Some(port) = proxy.port {
+            names.push(format!("{project}-{service_name}-{port}"));
         }
     }
     names
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn single_target_route_name_matches_deploy_naming() {
         let config = config(
-            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n    proxy: { app_port: 3000, host: example.com }\n",
+            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n    proxy: { port: 3000, hosts: [example.com] }\n",
         );
         let candidates = compute_route_candidates(&config, "demo");
         assert_eq!(candidates, vec!["demo-web-3000".to_string()]);
@@ -191,8 +191,8 @@ services:
     image: example/web
     proxy:
       targets:
-        - { app_port: 3900, host: s3.example.com }
-        - { app_port: 3903, host: admin.example.com }
+        - { port: 3900, hosts: [s3.example.com] }
+        - { port: 3903, hosts: [admin.example.com] }
 "#,
         );
         let mut candidates = compute_route_candidates(&config, "demo");

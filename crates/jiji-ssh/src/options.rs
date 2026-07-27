@@ -1,6 +1,18 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshKey {
+    Path(PathBuf),
+    Inline(String),
+}
+
+impl From<PathBuf> for SshKey {
+    fn from(path: PathBuf) -> Self {
+        Self::Path(path)
+    }
+}
+
 /// Connection and authentication settings for a single SSH host.
 ///
 /// Deliberately decoupled from `jiji_config::Ssh`/`NamedServer`: this crate has no dependency on
@@ -11,12 +23,9 @@ pub struct ConnectOptions {
     pub host: String,
     pub port: u16,
     pub user: String,
-    /// Private key file paths, tried in order.
-    pub keys: Vec<PathBuf>,
-    /// Inline private key material (e.g. loaded from an environment variable), tried in order
-    /// after `keys`.
-    pub key_data: Vec<String>,
-    /// Passphrase applied to every key in `keys`/`key_data` that needs one.
+    /// Private key file paths or inline private key material, tried in order.
+    pub keys: Vec<SshKey>,
+    /// Passphrase applied to every key in `keys` that needs one.
     pub key_passphrase: Option<String>,
     /// If true, never fall back to ssh-agent even if `SSH_AUTH_SOCK` is set.
     pub keys_only: bool,
@@ -46,7 +55,6 @@ impl ConnectOptions {
             port: 22,
             user: user.into(),
             keys: Vec::new(),
-            key_data: Vec::new(),
             key_passphrase: None,
             keys_only: false,
             connect_timeout: Duration::from_secs(30),

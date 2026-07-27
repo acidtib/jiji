@@ -51,7 +51,7 @@ pub fn plan_for_candidate(
     engine: ContainerEngine,
     container_name: &str,
     backend_address: Ipv4Addr,
-    app_port: u32,
+    port: u32,
     healthcheck: Option<&HealthcheckConfig>,
 ) -> HealthCheckPlan {
     let interval = healthcheck
@@ -76,7 +76,7 @@ pub fn plan_for_candidate(
                         .and_then(parse_duration)
                         .unwrap_or(DEFAULT_HTTP_TIMEOUT);
                     format!(
-                        "curl -fsS --max-time {} http://{backend_address}:{app_port}{path}",
+                        "curl -fsS --max-time {} http://{backend_address}:{port}{path}",
                         timeout.as_secs().max(1)
                     )
                 })

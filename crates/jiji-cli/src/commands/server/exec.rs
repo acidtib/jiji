@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, Config, Ssh};
+use jiji_config::{validate_config, Config, Ssh};
 use jiji_network::{NetworkPlanner, ServerPlan};
 use jiji_ssh::{PtyEvent, SshPool, SshSession, StreamChunk};
 use jiji_tui::Ui;
@@ -30,7 +30,8 @@ pub async fn run(
 
     let start = std::env::current_dir()?;
     let config_path = config_file.map(std::path::Path::new);
-    let (config, path) = load_config(environment, config_path, &start)?;
+    let (config, path) =
+        crate::config_loading::load_config_for_ssh(environment, config_path, &start).await?;
     Ui::say(&format!("Configuration loaded from: {}", path.display()), 1);
 
     let validation = validate_config(&config);

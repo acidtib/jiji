@@ -45,7 +45,7 @@ pub enum SshError {
     },
 
     #[error(
-        "SSH_AUTH_SOCK is not set. Start ssh-agent, or set `keys`/`key_data` in the ssh config to authenticate without one."
+        "SSH_AUTH_SOCK is not set. Start ssh-agent, or set `keys` in the ssh config to authenticate without one."
     )]
     AgentUnavailable,
 

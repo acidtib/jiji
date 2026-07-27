@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jiji_config::{load_config, validate_config};
+use jiji_config::validate_config;
 use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
@@ -48,7 +48,9 @@ pub async fn run(
     let status_filter = status.map(str::parse::<AuditStatus>).transpose()?;
 
     let start = std::env::current_dir()?;
-    let (config, path) = load_config(environment, config_file.map(Path::new), &start)?;
+    let (config, path) =
+        crate::config_loading::load_config_for_ssh(environment, config_file.map(Path::new), &start)
+            .await?;
     let validation = validate_config(&config);
     if !validation.valid {
         for error in validation.errors {

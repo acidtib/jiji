@@ -94,7 +94,7 @@ services:
     ports:
       - "3000"
     proxy:
-      app_port: 3000
+      port: 3000
       host: myapp.example.com
       ssl: true
       healthcheck:

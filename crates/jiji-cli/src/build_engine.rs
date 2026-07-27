@@ -523,10 +523,8 @@ mod tests {
             arch: arch.map(str::to_string),
             user: None,
             port: None,
-            key_path: None,
             key_passphrase: None,
             keys: None,
-            key_data: None,
         };
         let config = Config {
             project: "demo".into(),

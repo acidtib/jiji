@@ -20,7 +20,8 @@ pub async fn run(
     Ui::section("Build:");
     let started_at = std::time::Instant::now();
     let start = std::env::current_dir()?;
-    let (config, path) = load_config(environment, config_file.map(std::path::Path::new), &start)?;
+    let (mut config, path) =
+        load_config(environment, config_file.map(std::path::Path::new), &start)?;
     Ui::say(&format!("Configuration loaded from: {}", path.display()), 1);
     let validation = validate_config(&config);
     if !validation.valid {
@@ -28,6 +29,15 @@ pub async fn run(
             Ui::error(&format!("{}: {}", error.path, error.message));
         }
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
+    }
+    if !config.builder.local {
+        let project_root = env_resolution::project_root_from_config_path(&path);
+        let (loaded, _) = env_resolution::load_env_file(
+            &project_root,
+            environment,
+            config.secrets_path.as_deref(),
+        )?;
+        crate::ssh_adapter::resolve_key_references(&mut config, &loaded, host_env).await?;
     }
 
     let filters: Vec<String> = services

@@ -139,16 +139,16 @@ async fn deploy_endpoint_inner(
     }
 
     let candidate_targets = targets_for_slot(ctx, candidate_slot);
-    let (health_app_port, health_config) = candidate_targets
+    let (health_port, health_config) = candidate_targets
         .first()
-        .map(|target| (target.app_port, target.healthcheck.as_ref()))
+        .map(|target| (target.port, target.healthcheck.as_ref()))
         .unwrap_or((0, None));
     let candidate_address = backend_address(ctx.endpoint, candidate_slot);
     let health_plan = health_check::plan_for_candidate(
         ctx.engine,
         &candidate_name,
         candidate_address,
-        health_app_port,
+        health_port,
         health_config,
     );
 

@@ -1,4 +1,4 @@
-use jiji_config::{load_config, validate_config, RegistryType};
+use jiji_config::{validate_config, RegistryType};
 use jiji_tui::Ui;
 
 use super::shared::{self, TargetKind, TargetOutcome};
@@ -16,7 +16,12 @@ pub async fn run(
     shared::validate_scope(services, skip_local, skip_remote)?;
 
     let start = std::env::current_dir()?;
-    let (config, path) = load_config(environment, config_file.map(std::path::Path::new), &start)?;
+    let (config, path) = crate::config_loading::load_config_for_ssh(
+        environment,
+        config_file.map(std::path::Path::new),
+        &start,
+    )
+    .await?;
     let validation = validate_config(&config);
     if !validation.valid {
         for error in validation.errors {
