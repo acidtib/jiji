@@ -152,6 +152,7 @@ pub enum Commands {
             long,
             value_name = "N",
             default_value_t = 20,
+            conflicts_with = "stats",
             help = "Number of entries to show per server"
         )]
         lines: u32,
@@ -168,8 +169,21 @@ pub enum Commands {
             help = "Filter by status: success or failed"
         )]
         status: Option<String>,
-        #[arg(long, help = "Output entries as newline-delimited JSON")]
+        #[arg(
+            long,
+            help = "Output newline-delimited entries, or one structured stats object, as JSON"
+        )]
         json: bool,
+        #[arg(long, help = "Show aggregate success-rate and duration statistics")]
+        stats: bool,
+        #[arg(
+            short = 's',
+            long,
+            value_name = "WINDOW",
+            requires = "stats",
+            help = "Only include entries from this relative window (for example 30m, 12h, or 7d)"
+        )]
+        since: Option<String>,
         #[arg(
             short = 'f',
             long,

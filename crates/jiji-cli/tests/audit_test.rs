@@ -211,6 +211,7 @@ fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
 }
 
 const AUDIT_READ: &str = "tail -n 20 .jiji/demo/audit.log 2>/dev/null || true";
+const AUDIT_READ_ALL: &str = "cat .jiji/demo/audit.log 2>/dev/null || true";
 const LOCK_PATH: &str = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
 
 fn run_jiji_audit(config_path: &std::path::Path, args: &[&str]) -> std::process::Output {
@@ -331,6 +332,51 @@ async fn audit_skips_malformed_lines_instead_of_failing() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("deploy: ok"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_stats_aggregates_all_entries_by_action_and_server() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let body = "{\"timestamp\":4102444800,\"action\":\"deploy\",\"status\":\"success\",\"actor\":\"tester\",\"message\":\"ok\",\"duration_ms\":1000}\n\
+                {\"timestamp\":4102444801,\"action\":\"deploy\",\"status\":\"failed\",\"actor\":\"tester\",\"message\":\"failed\",\"duration_ms\":3000}\n\
+                {\"timestamp\":4102444802,\"action\":\"lock_acquire\",\"status\":\"success\",\"actor\":\"tester\",\"message\":\"locked\"}\n";
+    let mut responses = HashMap::new();
+    responses.insert(AUDIT_READ_ALL.to_string(), success(body));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_audit(&config_path, &["--stats"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("all: 3 entries, 2 success, 1 failed, 66.7% success"));
+    assert!(stdout.contains("deploy: 2 entries, 1 success, 1 failed, 50.0% success, avg 2.0s"));
+    assert!(stdout.contains("app: 3 entries, 2 success, 1 failed"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_stats_since_filters_entries_and_json_is_structured() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let body = "{\"timestamp\":1,\"action\":\"deploy\",\"status\":\"failed\",\"actor\":\"tester\",\"message\":\"old\",\"duration_ms\":9000}\n\
+                {\"timestamp\":4102444800,\"action\":\"deploy\",\"status\":\"success\",\"actor\":\"tester\",\"message\":\"recent\",\"duration_ms\":1000}\n";
+    let mut responses = HashMap::new();
+    responses.insert(AUDIT_READ_ALL.to_string(), success(body));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_audit(&config_path, &["--stats", "--since", "1h", "--json"]);
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid stats json");
+    assert_eq!(parsed["overall"]["entries"], 1);
+    assert_eq!(parsed["overall"]["successes"], 1);
+    assert_eq!(parsed["by_action"]["deploy"]["average_duration_ms"], 1000);
+    assert_eq!(parsed["by_server"]["app"]["entries"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

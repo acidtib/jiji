@@ -509,6 +509,8 @@ pub async fn run() {
             grep,
             status,
             json,
+            stats,
+            since,
             follow,
         }) => {
             if let Err(err) = commands::audit::run(
@@ -520,6 +522,8 @@ pub async fn run() {
                 grep.as_deref(),
                 status.as_deref(),
                 *json,
+                *stats,
+                since.as_deref(),
                 *follow,
             )
             .await

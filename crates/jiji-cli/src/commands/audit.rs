@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use jiji_config::{load_config, validate_config};
 use jiji_network::NetworkPlanner;
@@ -22,6 +23,8 @@ pub async fn run(
     grep: Option<&str>,
     status: Option<&str>,
     json: bool,
+    stats: bool,
+    since: Option<&str>,
     follow: bool,
 ) -> anyhow::Result<()> {
     if services.is_some() {
@@ -29,6 +32,12 @@ pub async fn run(
             "`jiji audit` does not accept -S/--services: the audit trail is per server, not per service. Use -H/--hosts to select servers instead."
         );
     }
+    if stats && follow {
+        anyhow::bail!(
+            "`jiji audit --stats` cannot be combined with --follow. Remove one of those flags and retry."
+        );
+    }
+    let since_seconds = since.map(parse_window).transpose()?;
     let status_filter = status.map(str::parse::<AuditStatus>).transpose()?;
 
     let start = std::env::current_dir()?;
@@ -123,7 +132,13 @@ pub async fn run(
         .map(|name| sessions.get(name).expect("connected above").clone())
         .map(|session| {
             let project = plan.project.clone();
-            move || async move { audit::read_entries(&session, &project, lines).await }
+            move || async move {
+                if stats {
+                    audit::read_all_entries(&session, &project).await
+                } else {
+                    audit::read_entries(&session, &project, lines).await
+                }
+            }
         })
         .collect();
     let results = pool.execute_concurrent(operations).await;
@@ -136,6 +151,15 @@ pub async fn run(
             Ok(entries) => {
                 let filtered: Vec<AuditEntry> = entries
                     .into_iter()
+                    .filter(|entry| {
+                        since_seconds.is_none_or(|window| {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|duration| duration.as_secs())
+                                .unwrap_or(0);
+                            entry.timestamp >= now.saturating_sub(window)
+                        })
+                    })
                     .filter(|entry| status_filter.is_none_or(|status| entry.status == status))
                     .filter(|entry| {
                         grep.is_none_or(|pattern| {
@@ -153,6 +177,10 @@ pub async fn run(
             "Could not read the audit trail on server(s): {}.",
             read_failures.join(", ")
         );
+    }
+
+    if stats {
+        return render_stats(&per_host, json);
     }
 
     if json {
@@ -206,8 +234,194 @@ pub async fn run(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct StatsRow {
+    entries: usize,
+    successes: usize,
+    failures: usize,
+    success_rate: f64,
+    average_duration_ms: Option<u64>,
+    measured_durations: usize,
+}
+
+fn summarize<'a>(entries: impl Iterator<Item = &'a AuditEntry>) -> StatsRow {
+    let entries: Vec<&AuditEntry> = entries.collect();
+    let successes = entries
+        .iter()
+        .filter(|entry| entry.status == AuditStatus::Success)
+        .count();
+    let durations: Vec<u64> = entries
+        .iter()
+        .filter_map(|entry| entry.duration_ms)
+        .collect();
+    StatsRow {
+        entries: entries.len(),
+        successes,
+        failures: entries.len().saturating_sub(successes),
+        success_rate: if entries.is_empty() {
+            0.0
+        } else {
+            successes as f64 * 100.0 / entries.len() as f64
+        },
+        average_duration_ms: (!durations.is_empty()).then(|| {
+            (durations
+                .iter()
+                .map(|duration| *duration as u128)
+                .sum::<u128>()
+                / durations.len() as u128) as u64
+        }),
+        measured_durations: durations.len(),
+    }
+}
+
+fn render_stats(per_host: &[(String, Vec<AuditEntry>)], json: bool) -> anyhow::Result<()> {
+    let overall = summarize(per_host.iter().flat_map(|(_, entries)| entries.iter()));
+    let mut by_action: BTreeMap<String, Vec<&AuditEntry>> = BTreeMap::new();
+    for entry in per_host.iter().flat_map(|(_, entries)| entries) {
+        by_action
+            .entry(entry.action.clone())
+            .or_default()
+            .push(entry);
+    }
+    let actions: BTreeMap<String, StatsRow> = by_action
+        .into_iter()
+        .map(|(action, entries)| (action, summarize(entries.into_iter())))
+        .collect();
+    let servers: BTreeMap<String, StatsRow> = per_host
+        .iter()
+        .map(|(host, entries)| (host.clone(), summarize(entries.iter())))
+        .collect();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "overall": overall,
+                "by_action": actions,
+                "by_server": servers,
+            }))?
+        );
+        return Ok(());
+    }
+
+    Ui::section("Audit Statistics:");
+    if overall.entries == 0 {
+        Ui::say("No matching audit entries.", 1);
+        return Ok(());
+    }
+    Ui::say("Overall:", 1);
+    render_stats_row("all", &overall, 2);
+    Ui::say("By action:", 1);
+    for (action, row) in &actions {
+        render_stats_row(action, row, 2);
+    }
+    Ui::say("By server:", 1);
+    for (server, row) in &servers {
+        render_stats_row(server, row, 2);
+    }
+    Ok(())
+}
+
+fn render_stats_row(label: &str, row: &StatsRow, indent: u8) {
+    let average = row
+        .average_duration_ms
+        .map(audit::format_duration_ms)
+        .unwrap_or_else(|| "n/a".to_string());
+    Ui::say(
+        &format!(
+            "{label}: {} entries, {} success, {} failed, {:.1}% success, avg {} ({}/{} timed)",
+            row.entries,
+            row.successes,
+            row.failures,
+            row.success_rate,
+            average,
+            row.measured_durations,
+            row.entries
+        ),
+        indent,
+    );
+}
+
+fn parse_window(value: &str) -> anyhow::Result<u64> {
+    let value = value.trim();
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (amount, unit) = value.split_at(split);
+    let amount = amount.parse::<u64>().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid --since window '{value}'. Use a positive duration such as 30m, 12h, or 7d."
+        )
+    })?;
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        "w" => 7 * 24 * 60 * 60,
+        _ => {
+            anyhow::bail!(
+                "Invalid --since window '{value}'. Use a positive duration such as 30m, 12h, or 7d."
+            )
+        }
+    };
+    if amount == 0 {
+        anyhow::bail!(
+            "Invalid --since window '{value}'. Use a positive duration such as 30m, 12h, or 7d."
+        );
+    }
+    amount.checked_mul(multiplier).ok_or_else(|| {
+        anyhow::anyhow!(
+            "The --since window '{value}' is too large. Use a smaller duration and retry."
+        )
+    })
+}
+
 async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     for session in sessions.values() {
         session.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_compact_relative_windows() {
+        assert_eq!(parse_window("30m").unwrap(), 1800);
+        assert_eq!(parse_window("12h").unwrap(), 43_200);
+        assert_eq!(parse_window("7d").unwrap(), 604_800);
+        assert!(parse_window("0m").is_err());
+        assert!(parse_window("yesterday").is_err());
+    }
+
+    #[test]
+    fn summary_uses_all_results_but_only_measured_durations() {
+        let entries = [
+            AuditEntry {
+                timestamp: 1,
+                action: "deploy".into(),
+                status: AuditStatus::Success,
+                actor: "a".into(),
+                message: "ok".into(),
+                duration_ms: Some(100),
+            },
+            AuditEntry {
+                timestamp: 2,
+                action: "deploy".into(),
+                status: AuditStatus::Failed,
+                actor: "a".into(),
+                message: "failed".into(),
+                duration_ms: None,
+            },
+        ];
+        let row = summarize(entries.iter());
+        assert_eq!(row.entries, 2);
+        assert_eq!(row.successes, 1);
+        assert_eq!(row.failures, 1);
+        assert_eq!(row.success_rate, 50.0);
+        assert_eq!(row.average_duration_ms, Some(100));
+        assert_eq!(row.measured_durations, 1);
     }
 }

@@ -228,6 +228,23 @@ pub async fn read_entries(
         .collect())
 }
 
+/// Reads the full live audit log for aggregation. Stats intentionally do not use the listing
+/// command's tail cutoff: applying a time window after `tail -n` could silently omit entries that
+/// belong in the window on a busy server.
+pub async fn read_all_entries(
+    session: &SshSession,
+    project: &str,
+) -> anyhow::Result<Vec<AuditEntry>> {
+    let path = audit_file_path(project);
+    let command = format!("cat {path} 2>/dev/null || true");
+    let result = session.execute(&command).await?;
+    Ok(result
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<AuditEntry>(line.trim()).ok())
+        .collect())
+}
+
 /// The remote command `jiji audit --follow` streams via `stream_logs` -- plain `tail -f` on the
 /// raw JSONL file, deliberately not reformatted server-side (no reliable `jq` to depend on, and
 /// reformatting a byte stream client-side line-by-line isn't worth the complexity for a follow
