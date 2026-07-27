@@ -35,16 +35,21 @@ fn resolve_dockerfile_path(context: &str, dockerfile: &str) -> String {
     // Drop `.` components entirely (rather than just normalizing "./x" -> "x") so a "." context
     // still yields a bare "Dockerfile", matching the pre-existing convention every rendered
     // command and test string expects.
-    let parts: Vec<_> = Path::new(context)
-        .join(dockerfile)
+    let path = if Path::new(dockerfile).is_absolute() {
+        Path::new(dockerfile).to_path_buf()
+    } else {
+        Path::new(context).join(dockerfile)
+    };
+    let absolute = path.is_absolute();
+    let parts: Vec<_> = path
         .components()
-        .filter(|component| !matches!(component, Component::CurDir))
+        .filter(|component| !matches!(component, Component::CurDir | Component::RootDir))
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect();
     if parts.is_empty() {
         ".".into()
     } else {
-        parts.join("/")
+        format!("{}{}", if absolute { "/" } else { "" }, parts.join("/"))
     }
 }
 
@@ -361,6 +366,16 @@ mod tests {
         assert_eq!(
             resolve_build_config(&BuildValue::Context(".".into())).dockerfile,
             "Dockerfile"
+        );
+        assert_eq!(
+            resolve_build_config(&BuildValue::Detailed(BuildConfig {
+                context: "./api".into(),
+                dockerfile: Some("/etc/jiji/Containerfile".into()),
+                args: None,
+                target: None,
+            }))
+            .dockerfile,
+            "/etc/jiji/Containerfile"
         );
     }
 

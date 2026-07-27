@@ -873,7 +873,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
 
-    let output = run_jiji_deploy(&config_path, &[]);
+    let output = run_jiji_deploy(&config_path, &["--lock-timeout", "0"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());

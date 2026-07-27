@@ -109,6 +109,14 @@ impl server::Handler for TestServer {
             .responses
             .get(&format!("{command}#{occurrence}"))
             .or_else(|| self.responses.get(&command))
+            .or_else(|| {
+                self.responses.iter().find_map(|(pattern, response)| {
+                    pattern
+                        .strip_prefix("PREFIX:")
+                        .filter(|prefix| command.starts_with(prefix))
+                        .map(|_| response)
+                })
+            })
             .cloned()
             .unwrap_or_else(|| success(""));
 
@@ -364,7 +372,7 @@ async fn audit_stats_since_filters_entries_and_json_is_structured() {
     let body = "{\"timestamp\":1,\"action\":\"deploy\",\"status\":\"failed\",\"actor\":\"tester\",\"message\":\"old\",\"duration_ms\":9000}\n\
                 {\"timestamp\":4102444800,\"action\":\"deploy\",\"status\":\"success\",\"actor\":\"tester\",\"message\":\"recent\",\"duration_ms\":1000}\n";
     let mut responses = HashMap::new();
-    responses.insert(AUDIT_READ_ALL.to_string(), success(body));
+    responses.insert("PREFIX:awk -v cutoff=".to_string(), success(body));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path);

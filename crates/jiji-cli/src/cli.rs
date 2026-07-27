@@ -96,6 +96,10 @@ pub enum Commands {
             help = "Auto-confirm the deployment plan; required when running non-interactively (e.g. CI/CD)"
         )]
         yes: bool,
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+        lock_timeout: u64,
+        #[arg(long, help = "Replace an existing deployment lock")]
+        force_lock: bool,
     },
     #[command(about = "Build and push images for services with `build:` configured")]
     Build {
@@ -273,11 +277,21 @@ pub enum ServiceCommands {
         container_id: Option<String>,
     },
     #[command(about = "Restart running services with a zero-downtime slot cycle")]
-    Restart,
+    Restart {
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+        lock_timeout: u64,
+        #[arg(long, help = "Replace an existing deployment lock")]
+        force_lock: bool,
+    },
     #[command(
         about = "Roll back services to a previously built image via a zero-downtime slot cycle (requires --version)"
     )]
-    Rollback,
+    Rollback {
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+        lock_timeout: u64,
+        #[arg(long, help = "Replace an existing deployment lock")]
+        force_lock: bool,
+    },
     #[command(about = "Remove services from servers")]
     Remove {
         #[arg(short = 'y', long, help = "Skip the destructive confirmation prompt")]

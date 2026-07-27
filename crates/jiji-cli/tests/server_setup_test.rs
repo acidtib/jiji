@@ -339,7 +339,7 @@ async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_addre
     .expect("write key file");
 
     let config_path = write_config(dir.path(), addr, &key_path);
-    let output = run_jiji_server_setup_with_hosts(&config_path, "web1");
+    let output = run_jiji_server_setup_with_hosts(&config_path, "missing,web1");
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -349,6 +349,10 @@ async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_addre
     );
     assert!(
         stdout.contains("Targeting 1 server(s): web1"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Host filter 'missing' matched no servers"),
         "stdout: {stdout}"
     );
 }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jiji_ssh::{SshPool, SshSession};
 use serde::{Deserialize, Serialize};
@@ -180,11 +180,17 @@ async fn recover_incomplete_lock(session: &SshSession, project: &str) -> anyhow:
 }
 
 /// Removes a lock only when its unique ID still belongs to the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseOwnedResult {
+    Released,
+    NoLongerOwned,
+}
+
 pub async fn release_owned_lock(
     session: &SshSession,
     project: &str,
     lock_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ReleaseOwnedResult> {
     let path = lock_file_path(project);
     let expected = serde_json::to_string(lock_id)?;
     let command = format!(
@@ -197,10 +203,7 @@ pub async fn release_owned_lock(
     );
     let result = session.execute(&command).await?;
     if result.code == Some(75) {
-        anyhow::bail!(
-            "Deployment lock on {} is no longer owned by this invocation; it was not removed",
-            session.host()
-        );
+        return Ok(ReleaseOwnedResult::NoLongerOwned);
     }
     if !result.success {
         anyhow::bail!(
@@ -209,7 +212,7 @@ pub async fn release_owned_lock(
             result.stderr.trim()
         );
     }
-    Ok(())
+    Ok(ReleaseOwnedResult::Released)
 }
 
 pub async fn force_remove_lock(session: &SshSession, project: &str) -> anyhow::Result<()> {
@@ -240,6 +243,8 @@ impl OwnedDeploymentLocks {
         sessions: &BTreeMap<String, Arc<SshSession>>,
         project: &str,
         message: impl Into<String>,
+        timeout: u64,
+        force: bool,
     ) -> anyhow::Result<Self> {
         let info = LockInfo::new(message);
         let lock_id = info
@@ -248,37 +253,64 @@ impl OwnedDeploymentLocks {
             .expect("new locks have an ID")
             .to_string();
         let names: Vec<String> = sessions.keys().cloned().collect();
-        let operations: Vec<_> = names
-            .iter()
-            .map(|name| sessions.get(name).expect("host has a session").clone())
-            .map(|session| {
-                let project = project.to_string();
-                let info = info.clone();
-                move || async move { acquire_lock(&session, &project, &info).await }
-            })
-            .collect();
-        let results = pool.execute_concurrent(operations).await;
-
-        let mut acquired = Vec::new();
-        let mut failures = Vec::new();
-        for (name, result) in names.iter().zip(results) {
-            match result {
-                Ok(AcquireResult::Acquired) => acquired.push(name.clone()),
-                Ok(AcquireResult::Held(Some(holder))) => failures.push(format!(
-                    "{name}: \"{}\" by {} ({} ago)",
-                    holder.message,
-                    holder.acquired_by,
-                    format_age(holder.age_seconds())
-                )),
-                Ok(AcquireResult::Held(None)) => {
-                    failures.push(format!("{name}: lock metadata is incomplete"))
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let mut warned = false;
+        loop {
+            if force {
+                let operations: Vec<_> = sessions
+                    .values()
+                    .cloned()
+                    .map(|session| {
+                        let project = project.to_string();
+                        move || async move { force_remove_lock(&session, &project).await }
+                    })
+                    .collect();
+                for result in pool.execute_concurrent(operations).await {
+                    result?;
                 }
-                Err(error) => failures.push(format!("{name}: {error}")),
             }
-        }
+            let operations: Vec<_> = names
+                .iter()
+                .map(|name| sessions.get(name).expect("host has a session").clone())
+                .map(|session| {
+                    let project = project.to_string();
+                    let info = info.clone();
+                    move || async move { acquire_lock(&session, &project, &info).await }
+                })
+                .collect();
+            let results = pool.execute_concurrent(operations).await;
 
-        if !failures.is_empty() {
-            let rollback_errors = release_hosts(pool, sessions, project, &lock_id, &acquired).await;
+            let mut acquired = Vec::new();
+            let mut failures = Vec::new();
+            let mut hard_failure = false;
+            for (name, result) in names.iter().zip(results) {
+                match result {
+                    Ok(AcquireResult::Acquired) => acquired.push(name.clone()),
+                    Ok(AcquireResult::Held(Some(holder))) => failures.push(format!(
+                        "{name}: \"{}\" by {} ({} ago)",
+                        holder.message,
+                        holder.acquired_by,
+                        format_age(holder.age_seconds())
+                    )),
+                    Ok(AcquireResult::Held(None)) => {
+                        failures.push(format!("{name}: lock metadata is incomplete"))
+                    }
+                    Err(error) => {
+                        hard_failure = true;
+                        failures.push(format!("{name}: {error}"));
+                    }
+                }
+            }
+
+            if failures.is_empty() {
+                return Ok(Self {
+                    project: project.to_string(),
+                    lock_id,
+                    hosts: acquired,
+                });
+            }
+            let (rollback_warnings, rollback_errors) =
+                release_hosts(pool, sessions, project, &lock_id, &acquired).await;
             let mut message = format!(
                 "Could not acquire the deployment lock on every server:\n  {}",
                 failures.join("\n  ")
@@ -289,14 +321,23 @@ impl OwnedDeploymentLocks {
                     rollback_errors.join("\n  ")
                 ));
             }
-            anyhow::bail!("{message}");
+            for warning in rollback_warnings {
+                jiji_tui::Ui::warn(&warning);
+            }
+            if hard_failure || !rollback_errors.is_empty() || Instant::now() >= deadline {
+                message.push_str(
+                    "\nCheck `jiji lock status`, and once it is safe, run `jiji lock release`.",
+                );
+                anyhow::bail!("{message}");
+            }
+            if !warned {
+                jiji_tui::Ui::warn(&format!(
+                    "Deployment lock is held; waiting up to {timeout}s for it to be released."
+                ));
+                warned = true;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-
-        Ok(Self {
-            project: project.to_string(),
-            lock_id,
-            hosts: acquired,
-        })
     }
 
     pub async fn release(
@@ -304,7 +345,11 @@ impl OwnedDeploymentLocks {
         pool: &SshPool,
         sessions: &BTreeMap<String, Arc<SshSession>>,
     ) -> anyhow::Result<()> {
-        let errors = release_hosts(pool, sessions, &self.project, &self.lock_id, &self.hosts).await;
+        let (warnings, errors) =
+            release_hosts(pool, sessions, &self.project, &self.lock_id, &self.hosts).await;
+        for warning in warnings {
+            jiji_tui::Ui::warn(&warning);
+        }
         if !errors.is_empty() {
             anyhow::bail!(
                 "Could not release deployment lock on server(s): {}. Run `jiji lock release` after verifying no deployment is active.",
@@ -321,7 +366,7 @@ async fn release_hosts(
     project: &str,
     lock_id: &str,
     hosts: &[String],
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     let operations: Vec<_> = hosts
         .iter()
         .map(|name| {
@@ -336,11 +381,18 @@ async fn release_hosts(
             move || async move { release_owned_lock(&session, &project, &lock_id).await }
         })
         .collect();
-    hosts
-        .iter()
-        .zip(pool.execute_concurrent(operations).await)
-        .filter_map(|(name, result)| result.err().map(|error| format!("{name}: {error}")))
-        .collect()
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    for (name, result) in hosts.iter().zip(pool.execute_concurrent(operations).await) {
+        match result {
+            Ok(ReleaseOwnedResult::Released) => {}
+            Ok(ReleaseOwnedResult::NoLongerOwned) => warnings.push(format!(
+                "Deployment lock on {name} is no longer owned by this invocation; it was not removed."
+            )),
+            Err(error) => errors.push(format!("{name}: {error}")),
+        }
+    }
+    (warnings, errors)
 }
 
 #[cfg(test)]

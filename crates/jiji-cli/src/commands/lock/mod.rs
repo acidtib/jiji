@@ -4,6 +4,7 @@ pub mod show;
 pub mod status;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -144,5 +145,61 @@ pub(super) async fn read_all(
 pub(crate) async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     for session in sessions.values() {
         session.close().await;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AutomaticLockOptions {
+    pub timeout: u64,
+    pub force: bool,
+}
+
+pub(crate) async fn with_deployment_lock<F, Fut>(
+    environment: Option<&str>,
+    config_file: Option<&str>,
+    hosts: Option<&str>,
+    project: &str,
+    message: String,
+    options: AutomaticLockOptions,
+    operation: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    Ui::section("Acquiring Deployment Lock:");
+    let targets = connect_targets(environment, config_file, hosts, None, true).await?;
+    let locks = match crate::lock::OwnedDeploymentLocks::acquire(
+        &targets.pool,
+        &targets.sessions,
+        project,
+        message,
+        options.timeout,
+        options.force,
+    )
+    .await
+    {
+        Ok(locks) => locks,
+        Err(error) => {
+            close_all(&targets.sessions).await;
+            return Err(error);
+        }
+    };
+    Ui::say(
+        &format!("Acquired on {} server(s).", targets.sessions.len()),
+        1,
+    );
+
+    let operation_result = operation().await;
+    Ui::section("Releasing Deployment Lock:");
+    let release_result = locks.release(&targets.pool, &targets.sessions).await;
+    close_all(&targets.sessions).await;
+    match (operation_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(release_error)) => Err(release_error),
+        (Err(error), Err(release_error)) => {
+            Err(error.context(format!("Additionally, {release_error}")))
+        }
     }
 }

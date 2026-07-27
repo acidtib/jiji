@@ -439,6 +439,17 @@ async fn another_projects_container_is_left_untouched_not_blocking() {
         list_other_project_containers_command("docker"),
         success("other-web-a|other|web|app|running\n"),
     );
+    responses.insert(
+        format!(
+            "docker network disconnect {} kamal-proxy",
+            jiji_network::bridge_network_name("demo")
+        ),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "container is not connected to the network".to_string(),
+        },
+    );
     let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
 
@@ -465,6 +476,13 @@ async fn another_projects_container_is_left_untouched_not_blocking() {
             .iter()
             .any(|c| c.contains("rm -rf /etc/jiji/network")),
         "this project's own compiled network state should still be removed: {received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|command| command.starts_with("docker inspect --format")
+                && command.contains("kamal-proxy")),
+        "ingress must be refreshed even when this project's bridge was already detached: {received:?}"
     );
 }
 

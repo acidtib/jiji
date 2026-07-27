@@ -136,7 +136,12 @@ pub async fn run(
         for name in &acquired {
             let session = targets.sessions.get(name).expect("connected above");
             match lock::release_owned_lock(session, &targets.project, &lock_id).await {
-                Ok(()) => Ui::say(&format!("{name}: rolled back"), 1),
+                Ok(lock::ReleaseOwnedResult::Released) => {
+                    Ui::say(&format!("{name}: rolled back"), 1)
+                }
+                Ok(lock::ReleaseOwnedResult::NoLongerOwned) => Ui::warn(&format!(
+                    "{name}: lock is no longer owned by this invocation; it was not removed"
+                )),
                 Err(error) => Ui::error(&format!("{name}: could not roll back ({error})")),
             }
         }

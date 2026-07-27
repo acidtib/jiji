@@ -55,11 +55,22 @@ pub async fn run(
         .map_err(|error| anyhow::anyhow!("Could not build the private network plan: {error}"))?;
 
     let host_filters = split_comma_trimmed(hosts);
-    let target_names: BTreeSet<String> = network_plan
-        .select_hosts(&host_filters)?
-        .into_iter()
-        .map(|server| server.name.clone())
-        .collect();
+    let mut target_names = BTreeSet::new();
+    for filter in &host_filters {
+        match network_plan.select_hosts(std::slice::from_ref(filter)) {
+            Ok(matches) => {
+                target_names.extend(matches.into_iter().map(|server| server.name.clone()))
+            }
+            Err(_) => Ui::warn(&format!(
+                "Host filter '{filter}' matched no servers; continuing with the other filters."
+            )),
+        }
+    }
+    if host_filters.is_empty() {
+        target_names.extend(network_plan.servers.keys().cloned());
+    } else if target_names.is_empty() {
+        anyhow::bail!("No host filters matched a configured server.");
+    }
 
     let mut servers: Vec<(String, NamedServer)> = config
         .servers
@@ -141,7 +152,8 @@ pub async fn run(
         anyhow::bail!("Server setup failed for {} server(s)", failures.len());
     }
 
-    network::setup::run(environment, config_file, hosts)
+    let matched_hosts = target_names.iter().cloned().collect::<Vec<_>>().join(",");
+    network::setup::run(environment, config_file, Some(&matched_hosts))
         .await
         .map_err(|error| {
             anyhow::anyhow!(

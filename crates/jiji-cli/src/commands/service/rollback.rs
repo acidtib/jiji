@@ -24,6 +24,7 @@ pub async fn run(
     services: Option<&str>,
     version: Option<&str>,
     host_env: bool,
+    lock_options: crate::commands::lock::AutomaticLockOptions,
 ) -> anyhow::Result<()> {
     Ui::section("Service Rollback:");
     let started_at = std::time::Instant::now();
@@ -104,12 +105,10 @@ pub async fn run(
         images.insert(service_name.clone(), image);
     }
 
-    Ui::section("Acquiring Deployment Lock:");
-    let lock_targets =
-        crate::commands::lock::connect_targets(environment, config_file, hosts, None, true).await?;
-    let owned_locks = match crate::lock::OwnedDeploymentLocks::acquire(
-        &lock_targets.pool,
-        &lock_targets.sessions,
+    crate::commands::lock::with_deployment_lock(
+        environment,
+        config_file,
+        hosts,
         &config.project,
         format!(
             "jiji service rollback: {} to {version}",
@@ -119,17 +118,8 @@ pub async fn run(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-    )
-    .await
-    {
-        Ok(locks) => locks,
-        Err(error) => {
-            crate::commands::lock::close_all(&lock_targets.sessions).await;
-            return Err(error);
-        }
-    };
-
-    let operation_result: anyhow::Result<()> = async {
+        lock_options,
+        || async {
     // Rollback still performs a VIP cutover, so the installed network generation must be current
     // first -- same precondition `jiji deploy`/`jiji service restart` enforce.
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
@@ -358,25 +348,11 @@ pub async fn run(
     }
 
     Ok(())
-    }
-    .await;
-
-    Ui::section("Releasing Deployment Lock:");
-    let release_result = owned_locks
-        .release(&lock_targets.pool, &lock_targets.sessions)
-        .await;
-    crate::commands::lock::close_all(&lock_targets.sessions).await;
-    match (operation_result, release_result) {
-        (Ok(()), Ok(())) => {
-            Ui::success_elapsed("Rollback completed.", started_at.elapsed());
-            Ok(())
-        }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(release_error)) => Err(release_error),
-        (Err(error), Err(release_error)) => {
-            Err(error.context(format!("Additionally, {release_error}")))
-        }
-    }
+        },
+    )
+    .await?;
+    Ui::success_elapsed("Rollback completed.", started_at.elapsed());
+    Ok(())
 }
 
 /// Resolves the exact image reference for `--version` without touching the builder or registry --

@@ -460,10 +460,21 @@ async fn execute_host_teardown(
     // bridge itself can be removed. Tolerant of kamal-proxy being absent or already disconnected.
     let bridge_name = jiji_network::bridge_network_name(project);
     match crate::proxy::disconnect_bridge_if_attached(session, engine, &bridge_name).await {
-        Ok(was_attached) => steps.push((
-            "kamal-proxy network attachment".to_string(),
-            present_or_absent(was_attached),
-        )),
+        Ok(was_attached) => {
+            steps.push((
+                "kamal-proxy network attachment".to_string(),
+                present_or_absent(was_attached),
+            ));
+            match crate::proxy_ingress::refresh_from_surviving_attachment(session, engine).await {
+                Ok(_) => {}
+                Err(error) => steps.push((
+                    "kamal-proxy ingress rule".to_string(),
+                    TeardownStepResult::Failed {
+                        error: error.to_string(),
+                    },
+                )),
+            }
+        }
         Err(error) => steps.push((
             "kamal-proxy network attachment".to_string(),
             TeardownStepResult::Failed {

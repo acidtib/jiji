@@ -30,6 +30,8 @@ pub async fn run(
     skip_proxy: bool,
     host_env: bool,
     yes: bool,
+    lock_timeout: u64,
+    force_lock: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Deploy:");
     let started_at = std::time::Instant::now();
@@ -88,32 +90,20 @@ pub async fn run(
         yes,
     )?;
 
-    Ui::section("Acquiring Deployment Lock:");
-    let lock_targets =
-        crate::commands::lock::connect_targets(environment, config_file, hosts, None, true).await?;
-    let owned_locks = match crate::lock::OwnedDeploymentLocks::acquire(
-        &lock_targets.pool,
-        &lock_targets.sessions,
+    crate::commands::lock::with_deployment_lock(
+        environment,
+        config_file,
+        hosts,
         &config.project,
         format!(
             "jiji deploy: {}",
             selected_service_names_for_message(&selected)
         ),
-    )
-    .await
-    {
-        Ok(locks) => locks,
-        Err(error) => {
-            crate::commands::lock::close_all(&lock_targets.sessions).await;
-            return Err(error);
-        }
-    };
-    Ui::say(
-        &format!("Acquired on {} server(s).", lock_targets.sessions.len()),
-        1,
-    );
-
-    let operation_result: anyhow::Result<()> = async {
+        crate::commands::lock::AutomaticLockOptions {
+            timeout: lock_timeout,
+            force: force_lock,
+        },
+        || async {
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
 
     let project_root = env_resolution::project_root_from_config_path(&path);
@@ -607,25 +597,11 @@ pub async fn run(
     }
 
     Ok(())
-    }
-    .await;
-
-    Ui::section("Releasing Deployment Lock:");
-    let release_result = owned_locks
-        .release(&lock_targets.pool, &lock_targets.sessions)
-        .await;
-    crate::commands::lock::close_all(&lock_targets.sessions).await;
-    match (operation_result, release_result) {
-        (Ok(()), Ok(())) => {
-            Ui::success_elapsed("Deployment completed.", started_at.elapsed());
-            Ok(())
-        }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(release_error)) => Err(release_error),
-        (Err(error), Err(release_error)) => {
-            Err(error.context(format!("Additionally, {release_error}")))
-        }
-    }
+        },
+    )
+    .await?;
+    Ui::success_elapsed("Deployment completed.", started_at.elapsed());
+    Ok(())
 }
 
 fn selected_service_names_for_message(selected: &[&ServiceEndpointPlan]) -> String {

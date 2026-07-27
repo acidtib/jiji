@@ -38,6 +38,13 @@ pub async fn run(
         );
     }
     let since_seconds = since.map(parse_window).transpose()?;
+    let cutoff = since_seconds.map(|window| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+            .saturating_sub(window)
+    });
     let status_filter = status.map(str::parse::<AuditStatus>).transpose()?;
 
     let start = std::env::current_dir()?;
@@ -133,7 +140,9 @@ pub async fn run(
         .map(|session| {
             let project = plan.project.clone();
             move || async move {
-                if stats {
+                if let Some(cutoff) = cutoff {
+                    audit::read_entries_since(&session, &project, cutoff).await
+                } else if stats {
                     audit::read_all_entries(&session, &project).await
                 } else {
                     audit::read_entries(&session, &project, lines).await
@@ -151,15 +160,7 @@ pub async fn run(
             Ok(entries) => {
                 let filtered: Vec<AuditEntry> = entries
                     .into_iter()
-                    .filter(|entry| {
-                        since_seconds.is_none_or(|window| {
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map(|duration| duration.as_secs())
-                                .unwrap_or(0);
-                            entry.timestamp >= now.saturating_sub(window)
-                        })
-                    })
+                    .filter(|entry| cutoff.is_none_or(|cutoff| entry.timestamp >= cutoff))
                     .filter(|entry| status_filter.is_none_or(|status| entry.status == status))
                     .filter(|entry| {
                         grep.is_none_or(|pattern| {

@@ -21,6 +21,7 @@
 
 use std::net::Ipv4Addr;
 
+use jiji_config::ContainerEngine;
 use jiji_ssh::SshSession;
 
 use crate::proxy::{INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT};
@@ -130,6 +131,33 @@ pub async fn remove_ingress_rule(session: &SshSession) -> anyhow::Result<()> {
     .await
 }
 
+pub async fn refresh_from_surviving_attachment(
+    session: &SshSession,
+    engine: ContainerEngine,
+) -> anyhow::Result<bool> {
+    if engine != ContainerEngine::Docker {
+        return Ok(false);
+    }
+    let command = "docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{printf \"%s %s\\n\" $name $network.IPAddress}}{{end}}' kamal-proxy 2>/dev/null || true";
+    let result = session.execute(command).await?;
+    let address = surviving_proxy_address(&result.stdout);
+    if let Some(address) = address {
+        ensure_ingress_rule(session, address).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn surviving_proxy_address(output: &str) -> Option<Ipv4Addr> {
+    output.lines().find_map(|line| {
+        let (network, address) = line.split_once(' ')?;
+        network
+            .starts_with("jiji-")
+            .then(|| address.parse::<Ipv4Addr>().ok())
+            .flatten()
+    })
+}
+
 async fn write_remote_file(
     session: &SshSession,
     setup: &str,
@@ -212,5 +240,16 @@ mod tests {
         let apply_pos = script.find(&format!("nft --file {RULES_PATH}")).unwrap();
         assert!(add_pos < apply_pos);
         assert!(script.starts_with("#!/bin/sh\nset -eu\n"));
+    }
+
+    #[test]
+    fn surviving_address_ignores_non_jiji_networks() {
+        assert_eq!(
+            surviving_proxy_address(
+                "bridge 172.17.0.2\njiji-other 100.107.192.4\njiji-third 100.107.200.4\n"
+            ),
+            Some("100.107.192.4".parse().unwrap())
+        );
+        assert_eq!(surviving_proxy_address("bridge 172.17.0.2\n"), None);
     }
 }

@@ -77,6 +77,8 @@ pub async fn run() {
             no_cache,
             skip_proxy,
             yes,
+            lock_timeout,
+            force_lock,
         }) => {
             if let Err(err) = commands::deploy::run(
                 cli.environment.as_deref(),
@@ -89,6 +91,8 @@ pub async fn run() {
                 *skip_proxy,
                 cli.host_env,
                 *yes,
+                *lock_timeout,
+                *force_lock,
             )
             .await
             {
@@ -355,13 +359,18 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            ServiceCommands::Restart => {
+            ServiceCommands::Restart {
+                lock_timeout,
+                force_lock,
+            } => {
                 if let Err(err) = commands::service::restart::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     cli.hosts.as_deref(),
                     cli.services.as_deref(),
                     cli.host_env,
+                    *lock_timeout,
+                    *force_lock,
                 )
                 .await
                 {
@@ -371,7 +380,10 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            ServiceCommands::Rollback => {
+            ServiceCommands::Rollback {
+                lock_timeout,
+                force_lock,
+            } => {
                 if let Err(err) = commands::service::rollback::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
@@ -379,6 +391,10 @@ pub async fn run() {
                     cli.services.as_deref(),
                     cli.version_arg.as_deref(),
                     cli.host_env,
+                    commands::lock::AutomaticLockOptions {
+                        timeout: *lock_timeout,
+                        force: *force_lock,
+                    },
                 )
                 .await
                 {
