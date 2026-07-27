@@ -330,8 +330,8 @@ pub async fn remove_volume_if_present(
     Ok(true)
 }
 
-/// Number of containers attached to `network`, excluding any name listed in `exclude` (e.g. the
-/// Podman keepalive anchor, or kamal-proxy when it's still legitimately serving other projects).
+/// Number of containers attached to `network`, excluding any listed names, such as kamal-proxy
+/// when it is still legitimately serving other projects.
 pub async fn network_attachment_count(
     session: &SshSession,
     engine: ContainerEngine,
@@ -468,8 +468,8 @@ mod tests {
 
     #[test]
     fn network_attachment_count_excludes_listed_names() {
-        let stdout = "jiji-network-anchor\nkamal-proxy\ndemo-web-a\n";
-        let exclude = ["jiji-network-anchor", "kamal-proxy"];
+        let stdout = "kamal-proxy\ndemo-web-a\n";
+        let exclude = ["kamal-proxy"];
         assert_eq!(count_attachments(stdout, &exclude), 1);
     }
 

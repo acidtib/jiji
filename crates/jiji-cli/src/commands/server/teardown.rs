@@ -521,22 +521,6 @@ async fn execute_host_teardown(
         return steps;
     }
 
-    // Must run before stopping jiji-network-restore.service: that unit is what starts the Podman
-    // anchor container, so its conmon process lives in the unit's cgroup until the anchor is gone.
-    // Disabling the unit first stalls teardown for roughly a minute waiting on a control-group kill.
-    match network_teardown::remove_anchor_if_present(session, engine, project).await {
-        Ok(was_present) => steps.push((
-            "podman network anchor container".to_string(),
-            present_or_absent(was_present),
-        )),
-        Err(error) => steps.push((
-            "podman network anchor container".to_string(),
-            TeardownStepResult::Failed {
-                error: error.to_string(),
-            },
-        )),
-    }
-
     if let Err(error) = network_teardown::stop_and_disable_units(session, engine, project).await {
         steps.push((
             "network systemd units".to_string(),

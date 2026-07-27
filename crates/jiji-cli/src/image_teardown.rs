@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::SshSession;
 
-use crate::container_ops;
+use crate::{container_ops, container_runtime};
 
 pub enum ImageOutcome {
     Removed,
@@ -19,8 +19,9 @@ pub fn compute_candidates(config: &Config) -> Vec<String> {
     let mut candidates = Vec::new();
     for service in config.services.values() {
         if let Some(image) = &service.image {
+            let image = container_runtime::normalize_image_name(image);
             if seen.insert(image.clone()) {
-                candidates.push(image.clone());
+                candidates.push(image);
             }
         }
     }
@@ -69,7 +70,10 @@ mod tests {
         candidates.sort();
         assert_eq!(
             candidates,
-            vec!["example/web:1".to_string(), "example/worker:1".to_string()]
+            vec![
+                "docker.io/example/web:1".to_string(),
+                "docker.io/example/worker:1".to_string()
+            ]
         );
     }
 
@@ -80,7 +84,7 @@ mod tests {
         );
         assert_eq!(
             compute_candidates(&config),
-            vec!["example/shared:1".to_string()]
+            vec!["docker.io/example/shared:1".to_string()]
         );
     }
 

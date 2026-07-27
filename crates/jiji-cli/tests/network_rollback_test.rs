@@ -1,12 +1,12 @@
 //! Integration test for the rollback-cleanup gap found during live Podman testing: a first-install
 //! `jiji network setup` that fails *during* activation (inside `systemctl restart
 //! jiji-network-restore-{slug}.service`, which runs the freshly staged `restore.sh`) can leave
-//! engine-level resources behind (a bridge network, and on Podman the keepalive anchor container)
-//! that `rollback_host`'s original symlink/unit-only rollback command had no way to know about,
+//! an engine-level bridge network behind that `rollback_host`'s original symlink/unit-only
+//! rollback command had no way to know about,
 //! since it only reverts jiji's own compiled state, not whatever an external script partially did.
 //! `rollback_host` (`commands/network/setup.rs`) now additionally calls
-//! `network_teardown::remove_anchor_if_present`/`remove_bridge_and_engine_network` whenever there
-//! was no previous generation to fall back to (`state.network.is_none()`, i.e. a first install).
+//! `network_teardown::remove_bridge_and_engine_network` whenever there was no previous generation
+//! to fall back to (`state.network.is_none()`, i.e. a first install).
 //!
 //! Uses the same in-process russh `TestServer`/`CannedResponse`/occurrence-keyed harness pattern as
 //! `deploy_test.rs`/`multi_project_network_test.rs`, with one addition: a substring-based failure
@@ -135,7 +135,7 @@ impl server::Handler for TestServer {
         // identical special case).
         let response = if command.contains("if test -L ") && command.contains("/current") {
             success("-\n-\n")
-        } else if command.contains("sysctl --system") {
+        } else if command.contains("sysctl --system") && command.contains("rollback-demo") {
             // Marks the activate_host command specifically (present nowhere else in the setup
             // command set, including the rollback command it triggers) so it can be failed without
             // knowing its exact text ahead of time -- it embeds a content hash of the generation.
@@ -297,5 +297,79 @@ async fn first_install_activation_failure_removes_the_partially_created_bridge()
             .any(|c| c == &format!("docker network rm {bridge_name}")),
         "rollback should remove the partially-created bridge left behind by the failed \
          activation, not just jiji's own compiled-state symlinks: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_migrates_an_existing_bridge_and_reattaches_the_proxy() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let (key_path, client_key) = setup_key(dir.path(), "migration-id");
+
+    let project = "migration-demo";
+    let plan = plan_for(project, SocketAddr::from(([127, 0, 0, 1], 0)));
+    let server = &plan.servers["app"];
+    let bridge_name = server.bridge_name.clone();
+    let slug = jiji_network::systemd_unit_slug(project);
+
+    let probe = format!(
+        "set -eu; if ! docker network inspect {bridge_name} >/dev/null 2>&1; then printf '%s\\n' MISSING; exit 0; fi; \
+         subnet=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Subnet}}}}'); \
+         gateway=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Gateway}}}}'); \
+         printf '%s|%s\\n' \"$subnet\" \"$gateway\""
+    );
+    let list = format!("docker ps -a --filter network={bridge_name} --format '{{{{.Names}}}}'");
+    let inspect_proxy = format!(
+        "docker inspect kamal-proxy --format '{{{{(index .NetworkSettings.Networks \"{bridge_name}\").IPAddress}}}}'"
+    );
+
+    let mut responses = HashMap::new();
+    responses.insert("id -u".to_string(), success("0\n"));
+    responses.insert(probe, success("192.0.2.0/24|192.0.2.1\n"));
+    responses.insert(list, success("kamal-proxy\n"));
+    responses.insert(inspect_proxy, success("192.0.2.4\n"));
+    let public_key_path = format!("/etc/jiji/network/{slug}/public.key");
+    responses.insert(
+        format!("test -s {public_key_path} && cat {public_key_path}"),
+        success("migration-demo-public-key\n"),
+    );
+
+    let harness = spawn_test_server(vec![client_key.public_key().clone()], responses).await;
+    let config_path = dir.path().join("migration.yml");
+    std::fs::write(&config_path, config_yaml(project, harness.addr, &key_path))
+        .expect("write test config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("network")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .output()
+        .expect("run jiji network setup");
+
+    assert!(
+        output.status.success(),
+        "network migration should succeed, stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received.iter().any(|command| {
+            command.contains(&format!(
+                "docker network disconnect -f {bridge_name} kamal-proxy"
+            )) && command.contains(&format!("docker network rm {bridge_name}"))
+        }),
+        "migration should detach the proxy and remove the old bridge: {received:?}"
+    );
+    assert!(
+        received.iter().any(|command| {
+            command
+                == &format!(
+                    "docker network connect --ip {} {bridge_name} kamal-proxy",
+                    server.proxy_address
+                )
+        }),
+        "migration should reconnect the proxy at its new planned address: {received:?}"
     );
 }

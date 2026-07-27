@@ -248,11 +248,8 @@ impl NetworkPlanner {
                     dns_address: container_subnet
                         .address(2)
                         .expect("a /20 has a DNS address"),
-                    // Offset 3 is reserved by the Podman bridge's `jiji-network-anchor` keepalive
-                    // container (`BridgeProvisioner::render_podman_network`); use the next offset
-                    // so the two reservations can never collide.
                     proxy_address: container_subnet
-                        .address(4)
+                        .address(3)
                         .expect("a /20 has a proxy address"),
                     wireguard_port,
                     wireguard_interface: wireguard_interface.clone(),

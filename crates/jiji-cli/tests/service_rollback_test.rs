@@ -309,7 +309,7 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
 
     let old_name = "demo-web-a";
     let candidate_name = "demo-web-b";
-    let target_image = "example/web:v1.2.3";
+    let target_image = "docker.io/example/web:v1.2.3";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
     responses.insert(active_slots_path(), success("demo:web:app=a\n"));

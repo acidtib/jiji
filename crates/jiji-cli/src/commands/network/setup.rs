@@ -12,7 +12,7 @@ use jiji_ssh::{CommandResult, SshPool, SshSession};
 use jiji_tui::Ui;
 use sha2::{Digest, Sha256};
 
-use super::bridge::BridgeProvisioner;
+use super::bridge::{BridgeMigration, BridgeProvisioner};
 use crate::ssh_adapter;
 
 // Every path lives under a project-scoped subdirectory of the shared `/etc/jiji/network` parent
@@ -261,6 +261,7 @@ async fn apply_connected(
     hosts: &[ConnectedHost],
 ) -> anyhow::Result<()> {
     let slug = jiji_network::systemd_unit_slug(&plan.project);
+    let mut migrations = BTreeMap::new();
 
     Ui::section("Preflight:");
     for host in hosts
@@ -269,15 +270,26 @@ async fn apply_connected(
     {
         require_root(&host.session).await?;
         ensure_engine_available(&host.session, config.builder.engine).await?;
-        inspect_conflicts(
+        if let Some(migration) = inspect_conflicts(
             &host.session,
             &host.name,
             &plan.servers[&host.name],
             plan,
             config.builder.engine,
         )
-        .await?;
-        Ui::say(&format!("{}: address ranges are available", host.name), 1);
+        .await?
+        {
+            migrations.insert(host.name.clone(), migration);
+            Ui::say(
+                &format!(
+                    "{}: project bridge will migrate to {}",
+                    host.name, plan.servers[&host.name].container_subnet
+                ),
+                1,
+            );
+        } else {
+            Ui::say(&format!("{}: address ranges are available", host.name), 1);
+        }
     }
 
     Ui::section("Preparing Hosts:");
@@ -348,11 +360,31 @@ async fn apply_connected(
             capture_installed_generation(&host.session, &slug).await?,
         );
     }
+    let rollback_context = RollbackContext {
+        previous: &previous,
+        migrations: &migrations,
+        config,
+        plan,
+        engine: config.builder.engine,
+    };
 
     Ui::section("Activating Network:");
     let mut attempted = Vec::new();
     for host in &target_hosts {
         attempted.push(*host);
+        let bridge = BridgeProvisioner::new(config.builder.engine, plan, &plan.servers[&host.name]);
+        if let Some(migration) = migrations.get(&host.name) {
+            if let Err(error) = bridge.detach_for_migration(&host.session, migration).await {
+                return rollback_transaction(
+                    &attempted,
+                    &rollback_context,
+                    &host.name,
+                    "bridge migration",
+                    error,
+                )
+                .await;
+            }
+        }
         if let Err(error) = activate_host(
             &host.session,
             config.builder.engine,
@@ -365,14 +397,44 @@ async fn apply_connected(
         {
             return rollback_transaction(
                 &attempted,
-                &previous,
+                &rollback_context,
                 &host.name,
                 "activation",
                 error,
-                plan,
-                config.builder.engine,
             )
             .await;
+        }
+        if let Some(migration) = migrations.get(&host.name) {
+            if let Err(error) = bridge
+                .reattach_after_migration(&host.session, migration)
+                .await
+            {
+                return rollback_transaction(
+                    &attempted,
+                    &rollback_context,
+                    &host.name,
+                    "container reattachment",
+                    error,
+                )
+                .await;
+            }
+            if migration.includes_proxy() && config.builder.engine == ContainerEngine::Docker {
+                if let Err(error) = crate::proxy_ingress::ensure_ingress_rule(
+                    &host.session,
+                    plan.servers[&host.name].proxy_address,
+                )
+                .await
+                {
+                    return rollback_transaction(
+                        &attempted,
+                        &rollback_context,
+                        &host.name,
+                        "proxy ingress migration",
+                        error,
+                    )
+                    .await;
+                }
+            }
         }
         Ui::say(&format!("{}: generation activated", host.name), 1);
     }
@@ -382,12 +444,10 @@ async fn apply_connected(
         if let Err(error) = verify_host(&host.session, &plan.servers[&host.name], plan).await {
             return rollback_transaction(
                 &attempted,
-                &previous,
+                &rollback_context,
                 &host.name,
                 "verification",
                 error,
-                plan,
-                config.builder.engine,
             )
             .await;
         }
@@ -411,9 +471,66 @@ async fn apply_connected(
             &format!("{}: service mappings match configured topology", host.name),
             1,
         );
+        if proxy_container_exists(&host.session, config.builder.engine).await? {
+            reconcile_proxy_routes_after_migration(&host.session, config, plan, &host.name, None)
+                .await?;
+            Ui::say(
+                &format!("{}: proxy routes match planned addresses", host.name),
+                1,
+            );
+        }
     }
 
     Ui::success("Private network setup completed.");
+    Ok(())
+}
+
+async fn proxy_container_exists(
+    session: &SshSession,
+    engine: ContainerEngine,
+) -> anyhow::Result<bool> {
+    let command = format!("{engine} container inspect kamal-proxy >/dev/null 2>&1");
+    let result = session.execute(&command).await?;
+    Ok(result.success)
+}
+
+async fn reconcile_proxy_routes_after_migration(
+    session: &SshSession,
+    config: &Config,
+    plan: &NetworkPlan,
+    server_name: &str,
+    previous: Option<&BridgeMigration>,
+) -> anyhow::Result<()> {
+    let state = crate::service_network::load_active_slots(session, plan).await?;
+    for endpoint in plan
+        .endpoints
+        .values()
+        .filter(|endpoint| endpoint.server == server_name)
+    {
+        let Some(slot) = state.active_slot(&endpoint.identity) else {
+            continue;
+        };
+        let service = &config.services[&endpoint.service];
+        for mut target in crate::proxy_routes::targets_for_service(
+            &plan.project,
+            &endpoint.service,
+            service.proxy.as_ref(),
+            endpoint,
+            slot,
+        ) {
+            if let Some(previous) = previous {
+                let name = crate::container_runtime::container_name(
+                    &plan.project,
+                    &endpoint.service,
+                    slot,
+                );
+                if let Some(address) = previous.previous_container_address(&name) {
+                    target.address = address;
+                }
+            }
+            crate::proxy_routes::deploy_route(session, config.builder.engine, &target).await?;
+        }
+    }
     Ok(())
 }
 
@@ -468,7 +585,7 @@ async fn inspect_conflicts(
     server_plan: &ServerPlan,
     plan: &NetworkPlan,
     engine: ContainerEngine,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<BridgeMigration>> {
     let network_command = BridgeProvisioner::network_inspection_command(engine);
     let command = format!(
         "ip -o -4 route show table all; {network_command}; \
@@ -573,11 +690,14 @@ async fn inspect_conflicts(
         reject_overlap(server_name, "host route", cidr, plan)?;
     }
 
-    let bridge_validation =
-        BridgeProvisioner::new(engine, plan, server_plan).render_existing_validation_command();
-    let result = session.execute(&bridge_validation).await?;
-    ensure_success(session, &bridge_validation, &result)?;
-    Ok(())
+    let bridge = BridgeProvisioner::new(engine, plan, server_plan);
+    let migration = bridge.inspect_migration(session).await?;
+    if migration.is_none() {
+        let command = bridge.render_existing_validation_command();
+        let result = session.execute(&command).await?;
+        ensure_success(session, &command, &result)?;
+    }
+    Ok(migration)
 }
 
 /// A collision between this project's planned resource and a resource that looks like it belongs
@@ -618,11 +738,11 @@ async fn install_prerequisites(session: &SshSession, slug: &str) -> anyhow::Resu
         "set -eu; \
 if command -v apt-get >/dev/null 2>&1; then \
   apt-get update -qq; \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools dnsmasq-base dnsutils iptables nftables busybox-static; \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools dnsmasq-base dnsutils iptables nftables; \
 elif command -v dnf >/dev/null 2>&1; then \
-  dnf install -y wireguard-tools dnsmasq bind-utils iptables nftables busybox; \
+  dnf install -y wireguard-tools dnsmasq bind-utils iptables nftables; \
 else \
-  echo 'Unsupported package manager. Install wireguard-tools, dnsmasq, DNS query tools, iptables, nftables, and static BusyBox manually.' >&2; exit 1; \
+  echo 'Unsupported package manager. Install wireguard-tools, dnsmasq, DNS query tools, iptables, and nftables manually.' >&2; exit 1; \
 fi; \
 install -d -m 0700 /etc/jiji/network; install -d -m 0700 {project_dir}; install -d -m 0700 /etc/wireguard"
     );
@@ -767,7 +887,7 @@ async fn stage_host(
             &format!("/etc/systemd/system/podman-restart.service.d/jiji-network-{slug}.conf"),
             "0644",
             &format!(
-                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n"
+                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=/usr/bin/podman start --all --filter restart-policy=unless-stopped\n"
             ),
         )
         .await?;
@@ -1033,43 +1153,101 @@ async fn activate_host(
     ensure_success(session, &command, &result)
 }
 
+struct RollbackContext<'a> {
+    previous: &'a BTreeMap<String, InstalledGeneration>,
+    migrations: &'a BTreeMap<String, BridgeMigration>,
+    config: &'a Config,
+    plan: &'a NetworkPlan,
+    engine: ContainerEngine,
+}
+
 async fn rollback_transaction(
     attempted: &[&ConnectedHost],
-    previous: &BTreeMap<String, InstalledGeneration>,
+    context: &RollbackContext<'_>,
     failed_host: &str,
     phase: &str,
     cause: anyhow::Error,
-    plan: &NetworkPlan,
-    engine: ContainerEngine,
 ) -> anyhow::Result<()> {
     Ui::error(&format!(
         "Network {phase} failed on {failed_host}: {cause}. Rolling back attempted hosts."
     ));
-    let slug = jiji_network::systemd_unit_slug(&plan.project);
-    let wireguard_interface = jiji_network::wireguard_interface_name(&plan.project);
+    let slug = jiji_network::systemd_unit_slug(&context.plan.project);
+    let wireguard_interface = jiji_network::wireguard_interface_name(&context.plan.project);
     let mut rollback_failures = Vec::new();
     for host in attempted.iter().rev() {
-        let state = &previous[&host.name];
-        match rollback_host(
+        let state = &context.previous[&host.name];
+        if let Some(migration) = context.migrations.get(&host.name) {
+            let bridge = BridgeProvisioner::new(
+                context.engine,
+                context.plan,
+                &context.plan.servers[&host.name],
+            );
+            if let Err(error) = bridge
+                .restore_previous_bridge(&host.session, migration)
+                .await
+            {
+                rollback_failures.push(format!(
+                    "{}: could not restore previous bridge: {error}",
+                    host.name
+                ));
+                continue;
+            }
+            if context.engine == ContainerEngine::Docker {
+                if let Some(address) = migration.previous_proxy_address() {
+                    if let Err(error) =
+                        crate::proxy_ingress::ensure_ingress_rule(&host.session, address).await
+                    {
+                        rollback_failures.push(format!(
+                            "{}: previous bridge was restored but proxy ingress was not: {error}",
+                            host.name
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+        let rollback = rollback_host(
             &host.session,
             state,
             &slug,
             &wireguard_interface,
-            engine,
-            &plan.project,
+            context.engine,
+            &context.plan.project,
         )
-        .await
-        {
-            Ok(()) => Ui::say(
-                &format!(
-                    "{}: restored generation {}",
-                    host.name,
-                    state.network_name()
-                ),
-                1,
-            ),
-            Err(error) => rollback_failures.push(format!("{}: {error}", host.name)),
+        .await;
+        if let Err(error) = rollback {
+            rollback_failures.push(format!("{}: {error}", host.name));
+            continue;
         }
+        if let Some(migration) = context
+            .migrations
+            .get(&host.name)
+            .filter(|migration| migration.includes_proxy())
+        {
+            if let Err(error) = reconcile_proxy_routes_after_migration(
+                &host.session,
+                context.config,
+                context.plan,
+                &host.name,
+                Some(migration),
+            )
+            .await
+            {
+                rollback_failures.push(format!(
+                    "{}: previous network was restored but proxy routes were not: {error}",
+                    host.name
+                ));
+                continue;
+            }
+        }
+        Ui::say(
+            &format!(
+                "{}: restored generation {}",
+                host.name,
+                state.network_name()
+            ),
+            1,
+        );
     }
     if rollback_failures.is_empty() {
         anyhow::bail!(
@@ -1097,7 +1275,7 @@ async fn rollback_host(
 
     // Confirmed live: a first-install activation can fail *inside* `restore.sh` (run via
     // `systemctl restart jiji-network-restore-{slug}.service`) after it has already created
-    // engine-level resources -- a bridge network, and on Podman, the keepalive anchor container.
+    // engine-level resources, including the bridge network.
     // `render_rollback_command` only reverts jiji's own compiled-state symlinks/units; it has no
     // way to know what a partially-run *external* script did. On a first install (no previous
     // generation to fall back to -- if there were, restarting that generation's own idempotent
@@ -1105,14 +1283,6 @@ async fn rollback_host(
     // resources this attempt may have created, using the exact same primitives `jiji server
     // teardown` uses, so a failed `jiji network setup` never leaves orphaned infrastructure behind.
     if state.network.is_none() {
-        crate::network_teardown::remove_anchor_if_present(session, engine, project)
-            .await
-            .with_context(|| {
-                format!(
-                    "rollback removed jiji's own compiled state on {}, but could not remove a partially-created network anchor container",
-                    session.host()
-                )
-            })?;
         crate::network_teardown::remove_bridge_and_engine_network(session, engine, project)
             .await
             .with_context(|| {

@@ -20,6 +20,19 @@ pub fn container_name(project: &str, service: &str, slot: BackendSlot) -> String
     format!("{project}-{service}-{slot}")
 }
 
+/// Expands Docker-compatible short names so Podman never depends on host-specific
+/// `unqualified-search-registries` configuration.
+pub fn normalize_image_name(image: &str) -> String {
+    let Some((first, _)) = image.split_once('/') else {
+        return format!("docker.io/library/{image}");
+    };
+    if first == "localhost" || first.contains('.') || first.contains(':') {
+        image.to_string()
+    } else {
+        format!("docker.io/{image}")
+    }
+}
+
 /// Applies `--version` to an image reference that has no explicit tag on its last path segment
 /// (checked after the final `/`, so a registry port like `localhost:5000/app` is never mistaken
 /// for a tag). Rejects `--version` outright if the image already carries an explicit tag, rather
@@ -28,15 +41,16 @@ pub fn resolve_image_reference(image: &str, version: Option<&str>) -> anyhow::Re
     let last_segment = image.rsplit('/').next().unwrap_or(image);
     let has_explicit_tag = last_segment.contains(':');
 
-    match version {
-        None => Ok(image.to_string()),
+    let resolved = match version {
+        None => image.to_string(),
         Some(version) if has_explicit_tag => {
             anyhow::bail!(
                 "Image '{image}' already has an explicit tag; remove it or drop --version '{version}' to resolve the conflict."
             )
         }
-        Some(version) => Ok(format!("{image}:{version}")),
-    }
+        Some(version) => format!("{image}:{version}"),
+    };
+    Ok(normalize_image_name(&resolved))
 }
 
 pub fn render_labels(project: &str, service: &str, server: &str) -> Vec<String> {
@@ -210,11 +224,11 @@ mod tests {
     fn resolve_image_reference_appends_version_when_untagged() {
         assert_eq!(
             resolve_image_reference("example/web", Some("1.2.3")).unwrap(),
-            "example/web:1.2.3"
+            "docker.io/example/web:1.2.3"
         );
         assert_eq!(
             resolve_image_reference("example/web", None).unwrap(),
-            "example/web"
+            "docker.io/example/web"
         );
     }
 
@@ -229,6 +243,30 @@ mod tests {
     #[test]
     fn resolve_image_reference_rejects_conflicting_explicit_tag() {
         assert!(resolve_image_reference("example/web:v1", Some("v2")).is_err());
+    }
+
+    #[test]
+    fn image_names_are_fully_qualified_for_podman_compatibility() {
+        assert_eq!(
+            normalize_image_name("nginx:latest"),
+            "docker.io/library/nginx:latest"
+        );
+        assert_eq!(
+            normalize_image_name("dxflrs/garage:v2.1.0"),
+            "docker.io/dxflrs/garage:v2.1.0"
+        );
+        assert_eq!(
+            normalize_image_name("ghcr.io/owner/repo:v1"),
+            "ghcr.io/owner/repo:v1"
+        );
+        assert_eq!(
+            normalize_image_name("localhost:5000/app:v1"),
+            "localhost:5000/app:v1"
+        );
+        assert_eq!(
+            normalize_image_name("10.0.0.1:5000/app:v1"),
+            "10.0.0.1:5000/app:v1"
+        );
     }
 
     #[test]

@@ -20,39 +20,52 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
     }
     let plan = NetworkPlanner::new().plan(&config)?;
 
-    println!("generation {}", plan.generation);
-    println!("management {}", plan.management_cidr);
-    println!("containers {}", plan.container_cidr);
-    println!(
-        "project {} wireguard-interface={} bridge-interface={} bridge-network={} wireguard-port={}",
-        plan.project,
-        jiji_network::wireguard_interface_name(&plan.project),
-        jiji_network::bridge_interface_name(&plan.project),
-        jiji_network::bridge_network_name(&plan.project),
-        jiji_network::wireguard_port(&plan.project),
+    Ui::section("Network Plan:");
+    Ui::say(&format!("Generation: {}", plan.generation), 1);
+    Ui::say(&format!("Management CIDR: {}", plan.management_cidr), 1);
+    Ui::say(&format!("Container CIDR: {}", plan.container_cidr), 1);
+    Ui::say(&format!("Project: {}", plan.project), 1);
+    Ui::say(
+        &format!(
+            "WireGuard: interface={} port={}",
+            jiji_network::wireguard_interface_name(&plan.project),
+            jiji_network::wireguard_port(&plan.project),
+        ),
+        2,
     );
+    Ui::say(
+        &format!(
+            "Bridge: interface={} network={}",
+            jiji_network::bridge_interface_name(&plan.project),
+            jiji_network::bridge_network_name(&plan.project),
+        ),
+        2,
+    );
+
+    Ui::section("Servers:");
     for server in plan.servers.values() {
-        println!(
-            "server {} host={} management={} subnet={} gateway={} dns={} proxy={}",
-            server.name,
-            server.public_host,
-            server.management_address,
-            server.container_subnet,
-            server.bridge_gateway,
-            server.dns_address,
-            server.proxy_address
-        );
+        Ui::say(&format!("{} ({})", server.name, server.public_host), 1);
+        Ui::say(&format!("management: {}", server.management_address), 2);
+        Ui::say(&format!("subnet:     {}", server.container_subnet), 2);
+        Ui::say(&format!("gateway:    {}", server.bridge_gateway), 2);
+        Ui::say(&format!("dns:        {}", server.dns_address), 2);
+        Ui::say(&format!("proxy:      {}", server.proxy_address), 2);
     }
+
+    Ui::section("Endpoints:");
     for endpoint in plan.endpoints.values() {
-        println!(
-            "endpoint {} dns={} server-dns={} vip={} backend-a={} backend-b={}",
-            endpoint.identity,
-            endpoint.dns_name,
-            endpoint.server_dns_name,
-            endpoint.address,
-            endpoint.backend_addresses[0],
-            endpoint.backend_addresses[1]
+        Ui::say(&endpoint.identity, 1);
+        Ui::say(&format!("dns:        {}", endpoint.dns_name), 2);
+        Ui::say(&format!("server-dns: {}", endpoint.server_dns_name), 2);
+        Ui::say(&format!("vip:        {}", endpoint.address), 2);
+        Ui::say(
+            &format!(
+                "backends:   a={} b={}",
+                endpoint.backend_addresses[0], endpoint.backend_addresses[1]
+            ),
+            2,
         );
     }
+
     Ok(())
 }

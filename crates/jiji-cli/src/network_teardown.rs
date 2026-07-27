@@ -1,7 +1,6 @@
 use jiji_config::ContainerEngine;
 use jiji_ssh::{CommandResult, SshSession};
 
-use crate::commands::network::bridge::network_anchor_container_name;
 use crate::commands::network::setup::{
     network_dir, private_key_path, public_key_path, wireguard_config_path,
 };
@@ -59,7 +58,10 @@ pub async fn stop_and_disable_units(
     let wireguard_interface = jiji_network::wireguard_interface_name(project);
     let command = format!(
         "systemctl disable --now jiji-dns-{slug}.service jiji-service-nat-{slug}.service \
-         jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true"
+         jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true; \
+         rm -f /etc/systemd/system/jiji-dns-{slug}.service \
+         /etc/systemd/system/jiji-service-nat-{slug}.service \
+         /etc/systemd/system/jiji-network-restore-{slug}.service"
     );
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
@@ -69,6 +71,9 @@ pub async fn stop_and_disable_units(
         let result = session.execute(&command).await?;
         ensure_success(session, &command, &result)?;
     }
+    let command = "systemctl daemon-reload";
+    let result = session.execute(command).await?;
+    ensure_success(session, command, &result)?;
     Ok(())
 }
 
@@ -99,23 +104,6 @@ pub enum NetworkRemovalOutcome {
     RetainedAttached(usize),
 }
 
-/// Removes the Podman keepalive anchor container, if present. Must run before
-/// `stop_and_disable_units`: `jiji-network-restore.service` is what creates and starts the
-/// `--restart unless-stopped` anchor, so its `conmon` process ends up inside that unit's own
-/// cgroup. Stopping the unit while the anchor is still alive makes systemd's default
-/// `KillMode=control-group` wait out the stop timeout and SIGKILL conmon instead of returning
-/// immediately, stalling teardown by roughly a minute.
-pub async fn remove_anchor_if_present(
-    session: &SshSession,
-    engine: ContainerEngine,
-    project: &str,
-) -> anyhow::Result<bool> {
-    if engine != ContainerEngine::Podman {
-        return Ok(false);
-    }
-    container_ops::remove_if_present(session, engine, &network_anchor_container_name(project)).await
-}
-
 /// Removes this project's bridge/engine network itself, but only when nothing remains attached.
 ///
 /// Deliberately takes no "is kamal-proxy still running" flag: under multi-homing, kamal-proxy
@@ -126,8 +114,6 @@ pub async fn remove_anchor_if_present(
 /// forever on any host serving more than one project). Callers must disconnect kamal-proxy from
 /// this bridge first (`crate::proxy::disconnect_bridge_if_attached`) if it might be attached;
 /// what's left in `attached` here is purely "how many containers are still on this bridge."
-/// Call `remove_anchor_if_present` first too: leaving the anchor attached would otherwise always
-/// count as attachment.
 pub async fn remove_bridge_and_engine_network(
     session: &SshSession,
     engine: ContainerEngine,
@@ -140,7 +126,15 @@ pub async fn remove_bridge_and_engine_network(
         return Ok(NetworkRemovalOutcome::RetainedAttached(attached));
     }
 
-    if container_ops::remove_network_if_present(session, engine, &bridge_name).await? {
+    let removed = container_ops::remove_network_if_present(session, engine, &bridge_name).await?;
+    if engine == ContainerEngine::Podman {
+        let bridge_interface = jiji_network::bridge_interface_name(project);
+        let command = format!("ip link delete {bridge_interface} type bridge 2>/dev/null || true");
+        let result = session.execute(&command).await?;
+        ensure_success(session, &command, &result)?;
+    }
+
+    if removed {
         Ok(NetworkRemovalOutcome::Removed)
     } else {
         Ok(NetworkRemovalOutcome::AlreadyAbsent)
@@ -207,7 +201,10 @@ mod tests {
         let wireguard_interface = jiji_network::wireguard_interface_name("demo");
         let command = format!(
             "systemctl disable --now jiji-dns-{slug}.service jiji-service-nat-{slug}.service \
-             jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true"
+             jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true; \
+             rm -f /etc/systemd/system/jiji-dns-{slug}.service \
+             /etc/systemd/system/jiji-service-nat-{slug}.service \
+             /etc/systemd/system/jiji-network-restore-{slug}.service"
         );
         for unit in [
             format!("jiji-dns-{slug}.service"),
@@ -218,5 +215,8 @@ mod tests {
             assert!(command.contains(&unit));
         }
         assert!(command.contains("|| true"));
+        assert!(command.contains(&format!(
+            "rm -f /etc/systemd/system/jiji-dns-{slug}.service"
+        )));
     }
 }

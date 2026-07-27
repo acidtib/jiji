@@ -374,7 +374,7 @@ async fn network_generation_mismatch_triggers_reconciliation_before_container_co
     responses.insert(capture_generations_command(), success("-\n-\n"));
     responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
     responses.insert(
-        image_inspect_command("docker", "example/web:latest"),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(
@@ -427,7 +427,7 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
-        image_inspect_command("docker", "example/web:latest"),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(
@@ -484,7 +484,7 @@ async fn yes_flag_prints_the_deployment_plan_and_proceeds_without_prompting() {
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
-        image_inspect_command("docker", "example/web:latest"),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(
@@ -557,7 +557,7 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     );
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
-        image_inspect_command("docker", "example/web:latest"),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(
@@ -613,7 +613,7 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
     );
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
-        image_inspect_command("docker", "example/web:latest"),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(
@@ -659,7 +659,7 @@ async fn podman_first_deployment_uses_podman_commands_only() {
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("podman", candidate_name), failure());
     responses.insert(
-        image_inspect_command("podman", "example/web:latest"),
+        image_inspect_command("podman", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(

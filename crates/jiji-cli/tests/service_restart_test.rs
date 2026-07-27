@@ -313,7 +313,10 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
     responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(inspect_status_command(old_name), success("running\n"));
     responses.insert(inspect_status_command(candidate_name), failure());
-    responses.insert(image_inspect_command("example/web:latest"), success(""));
+    responses.insert(
+        image_inspect_command("docker.io/example/web:latest"),
+        success(""),
+    );
     responses.insert(readiness_health_command(candidate_name), success(""));
     responses.insert(mktemp_command(), cutover_generation_path("abc123"));
 

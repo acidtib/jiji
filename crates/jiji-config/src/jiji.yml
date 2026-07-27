@@ -431,6 +431,9 @@ environment:
 services:
   # Example: Web frontend service using pre-built image
   web-frontend:
+    # Short names are expanded explicitly for engine portability:
+    # nginx:latest -> docker.io/library/nginx:latest
+    # owner/image:tag -> docker.io/owner/image:tag
     image: nginx:latest
     # Server targets: Reference servers by name from the servers section
     servers:
