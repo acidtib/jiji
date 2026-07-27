@@ -5,7 +5,7 @@ use jiji_config::{load_config, validate_config, RegistryType};
 use jiji_tui::Ui;
 
 use crate::build_executor::{self, BuildExecutor};
-use crate::{build_engine, build_plan, env_resolution, registry, version_tag};
+use crate::{build_engine, build_plan, engine, env_resolution, registry, version_tag};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -103,6 +103,15 @@ pub async fn run(
         &plan,
     )
     .await?;
+    if let Some(engine::EngineStatus::Installed(version)) = executor.engine_status() {
+        Ui::say(
+            &format!(
+                "{} {version} installed on {executor_identity}",
+                config.builder.engine
+            ),
+            1,
+        );
+    }
 
     // Everything from here that can fail must still let `executor.finish()` run (staging
     // cleanup, tunnel cancellation, session close) -- so every failure is captured into

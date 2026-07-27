@@ -24,11 +24,13 @@ pub struct RemoteBuildExecutor {
     session: SshSession,
     staging_root: String,
     registry_forward: Option<RemoteForward>,
+    engine_status: engine::EngineStatus,
 }
 
 impl RemoteBuildExecutor {
-    /// Connects once, preflights the builder, and creates a collision-safe staging root, all in
-    /// one entry point -- a `RemoteBuildExecutor` that exists at all is ready to stage and build.
+    /// Connects once, preflights the builder (installing `engine_kind` there if it's missing --
+    /// see `preflight`), and creates a collision-safe staging root, all in one entry point -- a
+    /// `RemoteBuildExecutor` that exists at all is ready to stage and build.
     pub async fn connect(
         connect_options: &ConnectOptions,
         engine_kind: ContainerEngine,
@@ -44,10 +46,13 @@ impl RemoteBuildExecutor {
                 )
             })?;
 
-        if let Err(error) = preflight(&session, engine_kind, plan).await {
-            session.close().await;
-            return Err(error);
-        }
+        let engine_status = match preflight(&session, engine_kind, plan).await {
+            Ok(status) => status,
+            Err(error) => {
+                session.close().await;
+                return Err(error);
+            }
+        };
 
         let staging_root = match create_staging_root(&session, project).await {
             Ok(root) => root,
@@ -61,7 +66,15 @@ impl RemoteBuildExecutor {
             session,
             staging_root,
             registry_forward: None,
+            engine_status,
         })
+    }
+
+    /// Whether `connect` found `engine_kind` already installed on the builder or had to install
+    /// it -- surfaced by callers (`build.rs`/`deploy.rs`) so provisioning a remote builder is
+    /// visible, not silent.
+    pub fn engine_status(&self) -> &engine::EngineStatus {
+        &self.engine_status
     }
 
     /// Prepares the builder to reach the configured registry, before any context upload. For a
@@ -348,21 +361,23 @@ fn shell_command(engine: ContainerEngine, args: &[String]) -> String {
     command
 }
 
-/// Verifies the configured engine is present and new enough, and -- only when `plan` actually
-/// requires it -- that the multi-architecture tooling it depends on is available. A missing
-/// capability is rejected explicitly rather than silently dropping the platforms that need it.
+/// Ensures the configured engine is present and new enough -- installing it if it's missing,
+/// same as `jiji server setup` does for a deployment host -- and, only when `plan` actually
+/// requires it, that the multi-architecture tooling it depends on is available. Multi-arch
+/// tooling (Buildx/`podman manifest`) is deliberately still detect-and-report only, not
+/// installed: unlike the engine itself, jiji has no distro-aware install path for it.
 async fn preflight(
     session: &SshSession,
     engine_kind: ContainerEngine,
     plan: &[BuildPlanEntry],
-) -> anyhow::Result<()> {
-    engine::ensure_min_version(session, engine_kind).await?;
+) -> anyhow::Result<engine::EngineStatus> {
+    let engine_status = engine::ensure_engine(session, engine_kind).await?;
 
     let needs_multi_arch = plan
         .iter()
         .any(|entry| build_engine::build_strategy(&entry.platforms) == BuildStrategy::MultiArch);
     if !needs_multi_arch {
-        return Ok(());
+        return Ok(engine_status);
     }
 
     match engine_kind {
@@ -385,7 +400,7 @@ async fn preflight(
             }
         }
     }
-    Ok(())
+    Ok(engine_status)
 }
 
 async fn create_staging_root(session: &SshSession, project: &str) -> anyhow::Result<String> {

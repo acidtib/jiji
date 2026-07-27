@@ -8,7 +8,7 @@ use std::path::Path;
 use jiji_config::{ContainerEngine, Registry, RegistryType};
 
 use crate::build_plan::{BuildPlanEntry, ExecutorTarget};
-use crate::{build_engine, registry, remote_build};
+use crate::{build_engine, engine, registry, remote_build};
 
 pub enum BuildExecutor {
     Local,
@@ -37,6 +37,15 @@ impl BuildExecutor {
                 .await?;
                 Ok(BuildExecutor::Remote(remote))
             }
+        }
+    }
+
+    /// `None` for `Local` (no remote engine to provision); `Some` for `Remote`, reflecting
+    /// whether `prepare` found the builder's engine already installed or had to install it.
+    pub fn engine_status(&self) -> Option<&engine::EngineStatus> {
+        match self {
+            BuildExecutor::Local => None,
+            BuildExecutor::Remote(remote) => Some(remote.engine_status()),
         }
     }
 

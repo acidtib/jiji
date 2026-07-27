@@ -17,7 +17,10 @@ struct OsInfo {
 
 /// Checks whether `engine` is installed on the remote host and, if not, installs it. Refuses to
 /// proceed (rather than silently continuing) if an already-installed engine is below the
-/// minimum supported version — matches the POC's behavior of never auto-upgrading in place.
+/// minimum supported version — matches the POC's behavior of never auto-upgrading in place. Used
+/// both for a `jiji server setup`-managed deployment host and a `builder.remote` host (see
+/// `remote_build.rs::preflight`) -- jiji provisions the engine on either, but never anything else
+/// on a builder host (no network/proxy setup, no Buildx/`podman manifest` installation).
 pub async fn ensure_engine(
     session: &SshSession,
     engine: ContainerEngine,
@@ -35,26 +38,6 @@ pub async fn ensure_engine(
     let version = version_of(session, &name).await?;
     check_min_version(&name, &version, min_version(engine))?;
     Ok(EngineStatus::Installed(version))
-}
-
-/// Verifies `engine` is already installed and meets the minimum supported version on `session`,
-/// without installing or upgrading anything -- jiji does not provision or upgrade a remote
-/// builder host (see `plans/remote-builders.md` non-goals), unlike `ensure_engine`, which is
-/// only ever used for a `jiji server setup`-managed deployment host.
-pub(crate) async fn ensure_min_version(
-    session: &SshSession,
-    engine: ContainerEngine,
-) -> anyhow::Result<String> {
-    let name = engine.to_string();
-    if !is_installed(session, &name).await? {
-        anyhow::bail!(
-            "{name} is not installed on {}. jiji does not provision remote builder hosts; install {name} there and retry.",
-            session.host()
-        );
-    }
-    let version = version_of(session, &name).await?;
-    check_min_version(&name, &version, min_version(engine))?;
-    Ok(version)
 }
 
 fn min_version(engine: ContainerEngine) -> (u64, u64, u64) {

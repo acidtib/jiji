@@ -514,7 +514,9 @@ services:
   # api-backend:
   #   build:
   #     context: ./api                    # Build context (relative to project root)
-  #     dockerfile: Dockerfile           # Dockerfile path (relative to context)
+  #     dockerfile: Dockerfile            # Dockerfile path (relative to context, matching
+  #                                       #   Docker Compose -- context: ./api + this needs
+  #                                       #   no ./api prefix; defaults to "Dockerfile")
   #     target: production               # Build target for multi-stage Dockerfiles
   #     args:                            # Build arguments for this service
   #       NODE_ENV: production
@@ -943,7 +945,8 @@ services:
 # stop_first: Stop old container before starting new one
 #   - Type: boolean
 #   - Default: false
-#   - When false: Zero-downtime deployment (rename old → start new → stop old)
+#   - When false: Zero-downtime deployment (start new on the other backend
+#     slot, health-check it, cut over, then stop old)
 #   - When true: Stop-first deployment (stop old → start new)
 #   - Use for stateful services that cannot have two instances running:
 #     - Databases with file locks (SQLite, LevelDB, embedded stores)

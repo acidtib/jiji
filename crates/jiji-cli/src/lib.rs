@@ -18,6 +18,7 @@ mod mounts;
 mod network_guard;
 mod network_teardown;
 mod proxy;
+mod proxy_ingress;
 mod proxy_routes;
 mod proxy_teardown;
 mod registry;

@@ -409,9 +409,17 @@ async fn container_removal_failure_prevents_network_removal() {
             .any(|c| c.contains("rm -rf /etc/jiji/network")),
         "network layer must not be torn down after an application-layer failure: {received:?}"
     );
+    // Scoped to this project's own network-layer restore units (`jiji-network-restore-`,
+    // `jiji-service-nat-`, `jiji-dns-`), not kamal-proxy's own shared teardown (which legitimately
+    // still runs after an application-layer failure, per the ordering above, and disables its own
+    // unrelated `jiji-proxy-ingress-restore.service` unit as part of removing the container it
+    // belongs to).
     assert!(
-        !received.iter().any(|c| c.contains("systemctl disable")),
-        "network units must not be touched after an application-layer failure: {received:?}"
+        !received.iter().any(|c| c.contains("systemctl disable")
+            && (c.contains("jiji-network-restore-")
+                || c.contains("jiji-service-nat-")
+                || c.contains("jiji-dns-"))),
+        "this project's network units must not be touched after an application-layer failure: {received:?}"
     );
 }
 

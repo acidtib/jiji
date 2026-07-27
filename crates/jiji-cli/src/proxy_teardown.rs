@@ -1,7 +1,7 @@
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::SshSession;
 
-use crate::{container_ops, proxy, proxy_routes};
+use crate::{container_ops, proxy, proxy_ingress, proxy_routes};
 
 /// Every `{project}-{service}-{app_port}` route name a proxy-enabled service in this project
 /// would register, computed purely from config. No `NetworkPlan`/session needed: kamal-proxy
@@ -140,6 +140,11 @@ pub async fn teardown_proxy_container_if_unused(
     // there's no data-loss concern in removing them now.
     container_ops::remove_volume_if_present(session, engine, proxy::CONFIG_VOLUME).await?;
     remove_certs_dir(session).await?;
+    // Only Docker's `ensure_proxy` ever installs this (see `proxy_ingress`); harmlessly a no-op
+    // on Podman, where it was never created.
+    if engine == ContainerEngine::Docker {
+        proxy_ingress::remove_ingress_rule(session).await?;
+    }
     Ok(ProxyContainerOutcome::Removed)
 }
 

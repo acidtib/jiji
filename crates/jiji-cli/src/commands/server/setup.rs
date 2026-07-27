@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use jiji_config::{load_config, validate_config, Config, NamedServer, Ssh};
 use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
@@ -41,19 +43,31 @@ pub async fn run(
         )
     })?;
 
-    let mut servers: Vec<(String, NamedServer)> = config.servers.clone().into_iter().collect();
-    servers.sort_by(|a, b| a.0.cmp(&b.0));
-
-    if servers.is_empty() {
+    if config.servers.is_empty() {
         anyhow::bail!(
             "No servers defined in {}. Add a `servers:` entry before running server setup.",
             path.display()
         );
     }
 
-    if let Some(pattern_list) = hosts {
-        servers = filter_by_hosts(servers, pattern_list)?;
-    }
+    let network_plan = NetworkPlanner::new()
+        .plan(&config)
+        .map_err(|error| anyhow::anyhow!("Could not build the private network plan: {error}"))?;
+
+    let host_filters = split_comma_trimmed(hosts);
+    let target_names: BTreeSet<String> = network_plan
+        .select_hosts(&host_filters)?
+        .into_iter()
+        .map(|server| server.name.clone())
+        .collect();
+
+    let mut servers: Vec<(String, NamedServer)> = config
+        .servers
+        .iter()
+        .filter(|(name, _)| target_names.contains(*name))
+        .map(|(name, server)| (name.clone(), server.clone()))
+        .collect();
+    servers.sort_by(|a, b| a.0.cmp(&b.0));
 
     Ui::say(
         &format!(
@@ -243,35 +257,15 @@ async fn setup_proxies(
 /// Filters `servers` down to those whose `host` value matches at least one comma-separated
 /// `*`-wildcard pattern. Warns on patterns that match nothing, and fails only if the filter
 /// empties the whole set.
-fn filter_by_hosts(
-    servers: Vec<(String, NamedServer)>,
-    pattern_list: &str,
-) -> anyhow::Result<Vec<(String, NamedServer)>> {
-    let patterns: Vec<&str> = pattern_list.split(',').map(str::trim).collect();
-    let mut matched_any = vec![false; patterns.len()];
-
-    let filtered: Vec<(String, NamedServer)> = servers
-        .into_iter()
-        .filter(|(_, server)| {
-            patterns.iter().enumerate().any(|(i, pattern)| {
-                let is_match = jiji_core::matches_pattern(&server.host, pattern);
-                if is_match {
-                    matched_any[i] = true;
-                }
-                is_match
-            })
+fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
+    value
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
         })
-        .collect();
-
-    for (pattern, matched) in patterns.iter().zip(matched_any.iter()) {
-        if !matched {
-            Ui::warn(&format!("No server host matched pattern '{pattern}'"));
-        }
-    }
-
-    if filtered.is_empty() {
-        anyhow::bail!("No servers matched --hosts filter '{pattern_list}'");
-    }
-
-    Ok(filtered)
+        .unwrap_or_default()
 }

@@ -9,10 +9,9 @@ use crate::session::SshSession;
 impl SshSession {
     /// Uploads a local file's full contents to `remote_path`, creating it if missing and
     /// truncating it if present -- ordinary "upload" semantics, not the atomic
-    /// write-to-temp-then-rename behavior `jiji-cli`'s `mounts.rs::upload_file` uses. This is a
-    /// minimal primitive with no current caller in this codebase; see
-    /// docs/ssh-deferred-features-plan.md for why the existing `mounts.rs`/`env_resolution.rs`
-    /// upload paths are deliberately not migrated to it.
+    /// write-to-temp-then-rename behavior `jiji-cli`'s `mounts.rs::upload_file` uses. No CLI
+    /// command calls this yet; `mounts.rs`/`env_resolution.rs` keep their own upload paths rather
+    /// than migrating to it.
     pub async fn sftp_put(&self, local_path: &Path, remote_path: &str) -> Result<(), SshError> {
         let data = tokio::fs::read(local_path).await?;
         let sftp = self.open_sftp().await?;

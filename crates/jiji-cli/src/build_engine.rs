@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use jiji_config::{BuildValue, Config, ContainerEngine, Service};
 
@@ -25,23 +25,46 @@ pub struct ResolvedBuildConfig {
     pub target: Option<String>,
 }
 
+/// `dockerfile:` is resolved relative to `context:` (matching Docker Compose convention), then
+/// joined onto context to produce the project-root-relative path every downstream consumer
+/// expects: `common_build_flags`'s `-f` value (the local engine runs with cwd = project root, not
+/// context) and `build_context.rs::resolve_remote_context`'s `project_root.join(&build.dockerfile)`
+/// both operate on `ResolvedBuildConfig::dockerfile` as-is, so this is the single place that needs
+/// to know about the context/dockerfile split.
+fn resolve_dockerfile_path(context: &str, dockerfile: &str) -> String {
+    // Drop `.` components entirely (rather than just normalizing "./x" -> "x") so a "." context
+    // still yields a bare "Dockerfile", matching the pre-existing convention every rendered
+    // command and test string expects.
+    let parts: Vec<_> = Path::new(context)
+        .join(dockerfile)
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join("/")
+    }
+}
+
 pub fn resolve_build_config(build: &BuildValue) -> ResolvedBuildConfig {
     match build {
         BuildValue::Context(context) => ResolvedBuildConfig {
+            dockerfile: resolve_dockerfile_path(context, "Dockerfile"),
             context: context.clone(),
-            dockerfile: "Dockerfile".into(),
             args: BTreeMap::new(),
             target: None,
         },
-        BuildValue::Detailed(build) => ResolvedBuildConfig {
-            context: build.context.clone(),
-            dockerfile: build
-                .dockerfile
-                .clone()
-                .unwrap_or_else(|| "Dockerfile".into()),
-            args: build.args.clone().unwrap_or_default().into_iter().collect(),
-            target: build.target.clone(),
-        },
+        BuildValue::Detailed(build) => {
+            let dockerfile = build.dockerfile.as_deref().unwrap_or("Dockerfile");
+            ResolvedBuildConfig {
+                dockerfile: resolve_dockerfile_path(&build.context, dockerfile),
+                context: build.context.clone(),
+                args: build.args.clone().unwrap_or_default().into_iter().collect(),
+                target: build.target.clone(),
+            }
+        }
     }
 }
 
@@ -306,8 +329,40 @@ pub async fn build_and_push(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiji_config::{Builder, NamedServer, Registry};
+    use jiji_config::{BuildConfig, BuildValue, Builder, NamedServer, Registry};
     use std::collections::HashMap;
+
+    #[test]
+    fn dockerfile_defaults_and_paths_resolve_relative_to_context_not_project_root() {
+        assert_eq!(
+            resolve_build_config(&BuildValue::Context("./api".into())).dockerfile,
+            "api/Dockerfile"
+        );
+        assert_eq!(
+            resolve_build_config(&BuildValue::Detailed(BuildConfig {
+                context: "./api".into(),
+                dockerfile: Some("Dockerfile".into()),
+                args: None,
+                target: None,
+            }))
+            .dockerfile,
+            "api/Dockerfile"
+        );
+        assert_eq!(
+            resolve_build_config(&BuildValue::Detailed(BuildConfig {
+                context: "./api".into(),
+                dockerfile: Some("docker/Dockerfile.prod".into()),
+                args: None,
+                target: None,
+            }))
+            .dockerfile,
+            "api/docker/Dockerfile.prod"
+        );
+        assert_eq!(
+            resolve_build_config(&BuildValue::Context(".".into())).dockerfile,
+            "Dockerfile"
+        );
+    }
 
     fn build() -> ResolvedBuildConfig {
         ResolvedBuildConfig {

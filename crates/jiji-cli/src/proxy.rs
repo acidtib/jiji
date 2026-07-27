@@ -10,8 +10,9 @@ const IMAGE: &str = "ghcr.io/acidtib/kamal-proxy:jiji";
 // torn down (no project needs it anymore).
 pub(crate) const CONFIG_VOLUME: &str = "kamal-proxy-config";
 pub(crate) const CERTS_DIR: &str = "/etc/jiji/certs";
-const INTERNAL_HTTP_PORT: u16 = 8080;
-const INTERNAL_HTTPS_PORT: u16 = 8443;
+// `pub(crate)`: `proxy_ingress` needs the same ports for its Docker-only nftables DNAT workaround.
+pub(crate) const INTERNAL_HTTP_PORT: u16 = 8080;
+pub(crate) const INTERNAL_HTTPS_PORT: u16 = 8443;
 
 pub enum ProxyStatus {
     AlreadyRunning,
@@ -68,6 +69,12 @@ pub async fn ensure_proxy(
     // is no need to special-case "did we just create it with this network already."
     if let Some(network) = &network {
         ensure_attached(session, engine, network).await?;
+        // Docker only: see `proxy_ingress` for why `--publish` alone isn't enough on jiji's
+        // bridge networks. Re-applied on every call, from any project sharing this host, so it
+        // self-heals and always targets a currently-attached address.
+        if engine == ContainerEngine::Docker {
+            crate::proxy_ingress::ensure_ingress_rule(session, network.proxy_address).await?;
+        }
     }
 
     Ok(status)

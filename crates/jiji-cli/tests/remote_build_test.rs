@@ -633,21 +633,72 @@ fn local_tags(registry_port: u16) -> (String, String) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn preflight_failure_is_reported_before_any_upload() {
+    // A too-old already-installed engine still rejects outright (unlike a missing engine, which
+    // `preflight` now installs -- see `missing_engine_on_the_builder_is_installed_before_building`
+    // below).
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert("which docker".to_string(), failure());
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 1.0.0, build abcdef\n"),
+    );
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_project(dir.path(), harness.addr, &key_path);
 
     let output = run_build(&config_path, &["--version", "v1"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not installed"), "stderr: {stderr}");
+    assert!(stderr.contains("requires at least"), "stderr: {stderr}");
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
         !received.iter().any(|c| c.contains("mktemp")),
         "no staging should happen after a failed preflight: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_engine_on_the_builder_is_installed_before_building() {
+    // jiji provisions a missing engine on a `builder.remote` host the same way `jiji server
+    // setup` does for a deployment host -- unlike the "never installs anything on a builder"
+    // behavior this replaced, only multi-arch tooling (Buildx/`podman manifest`) stays
+    // detect-and-report only.
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), failure());
+    responses.insert(
+        "cat /etc/os-release".to_string(),
+        success("ID=ubuntu\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n"),
+    );
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    responses.insert(staging_root_command(), staging_root_response("abc123"));
+    // Every install command not explicitly listed defaults to success (empty CannedResponse).
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_project(dir.path(), harness.addr, &key_path);
+
+    let output = run_build(&config_path, &["--version", "v1"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Docker version 99.0.0, build abcdef installed on"),
+        "stdout: {stdout}"
+    );
+
+    let staging_root = ".jiji/testproject/builds/run.abc123";
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c == &context_upload_command(staging_root)),
+        "the build should still proceed after installing the engine: {received:?}"
     );
 }
 
@@ -1195,8 +1246,8 @@ ssh:
     std::fs::write(&config_path, config).expect("write test deploy.yml");
 
     // `deploy.rs`'s remote-registry `--build` path still logs in on the *local* machine (moving
-    // this to the selected executor is Slice 3's job, per plans/remote-builders.md) -- a fake
-    // local `docker` avoids that step touching the real network.
+    // this to the selected executor is a known follow-up, not yet done) -- a fake local `docker`
+    // avoids that step touching the real network.
     let bin = dir.path().join("bin");
     std::fs::create_dir(&bin).expect("create bin");
     let docker = bin.join("docker");

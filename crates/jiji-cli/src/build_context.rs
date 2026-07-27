@@ -282,6 +282,33 @@ mod tests {
     }
 
     #[test]
+    fn packages_a_subdirectory_context_with_a_bare_dockerfile_name() {
+        // Mirrors resolve_build_config's context-relative resolution: `context: ./api` +
+        // `dockerfile: Dockerfile` (no `api/` prefix needed) must still find api/Dockerfile.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("api")).unwrap();
+        fs::write(dir.path().join("api/Dockerfile"), "FROM scratch\n").unwrap();
+        fs::write(dir.path().join("api/app.txt"), "hi").unwrap();
+
+        let build = crate::build_engine::resolve_build_config(&jiji_config::BuildValue::Detailed(
+            jiji_config::BuildConfig {
+                context: "./api".into(),
+                dockerfile: Some("Dockerfile".into()),
+                args: None,
+                target: None,
+            },
+        ));
+        assert_eq!(build.dockerfile, "api/Dockerfile");
+
+        let package =
+            package_context(dir.path(), &build, ContainerEngine::Docker, 1024 * 1024).unwrap();
+        assert_eq!(package.dockerfile_rel, "Dockerfile");
+        let entries = archive_entries(&package.archive);
+        assert!(entries.iter().any(|(p, _)| p == "Dockerfile"));
+        assert!(entries.iter().any(|(p, _)| p == "app.txt"));
+    }
+
+    #[test]
     fn dockerignore_excludes_matching_files() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();

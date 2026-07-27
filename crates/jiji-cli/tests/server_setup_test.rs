@@ -221,6 +221,21 @@ fn run_jiji_server_setup(config_path: &std::path::Path) -> std::process::Output 
         .expect("run jiji server setup")
 }
 
+fn run_jiji_server_setup_with_hosts(
+    config_path: &std::path::Path,
+    hosts: &str,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(config_path)
+        .arg("-H")
+        .arg(hosts)
+        .output()
+        .expect("run jiji server setup")
+}
+
 fn run_jiji_proxy_restart(config_path: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("proxy")
@@ -292,6 +307,49 @@ async fn reports_an_already_installed_engine() {
             .iter()
             .any(|c| c.contains("cat >> .jiji/testproject/audit.log")),
         "a successful server setup should append an audit entry"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_address() {
+    // `write_config` names the server `web1` with a loopback test-server address as its `host:`
+    // -- `-H web1` must match the config-key name (mirroring `NetworkPlan::select_hosts`'s
+    // documented name-or-host matching, used by `deploy`/`teardown`), not just `server.host`.
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, _received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+
+    let config_path = write_config(dir.path(), addr, &key_path);
+    let output = run_jiji_server_setup_with_hosts(&config_path, "web1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("Targeting 1 server(s): web1"),
+        "stdout: {stdout}"
     );
 }
 

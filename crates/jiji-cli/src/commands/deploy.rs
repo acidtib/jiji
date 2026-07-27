@@ -12,8 +12,8 @@ use jiji_tui::Ui;
 use crate::audit;
 use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
 use crate::{
-    build_engine, build_executor, build_plan, container_runtime, env_resolution, proxy, registry,
-    ssh_adapter, version_tag,
+    build_engine, build_executor, build_plan, container_runtime, engine, env_resolution, proxy,
+    registry, ssh_adapter, version_tag,
 };
 
 pub(crate) const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
@@ -170,6 +170,15 @@ pub async fn run(
             &build_plan,
         )
         .await?;
+        if let Some(engine::EngineStatus::Installed(version)) = executor.engine_status() {
+            Ui::say(
+                &format!(
+                    "{} {version} installed on {executor_identity}",
+                    config.builder.engine
+                ),
+                1,
+            );
+        }
 
         // Everything from here that can fail must still let `executor.finish()` run (staging
         // cleanup, tunnel cancellation, session close) -- so every failure is captured into
