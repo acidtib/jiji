@@ -76,7 +76,7 @@ pub async fn run(
 
     Ui::section("Acquiring Deployment Lock:");
     let lock_targets =
-        crate::commands::lock::connect_targets(environment, config_file, None, None, true).await?;
+        crate::commands::lock::connect_targets(environment, config_file, hosts, None, true).await?;
     let service_names = selected
         .iter()
         .map(|endpoint| endpoint.service.as_str())

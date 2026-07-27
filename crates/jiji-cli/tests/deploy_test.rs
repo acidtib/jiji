@@ -150,6 +150,14 @@ impl server::Handler for TestServer {
             .responses
             .get(&format!("{command}#{occurrence}"))
             .or_else(|| self.responses.get(&command))
+            .or_else(|| {
+                self.responses.iter().find_map(|(pattern, response)| {
+                    pattern
+                        .strip_prefix("PREFIX:")
+                        .filter(|prefix| command.starts_with(prefix))
+                        .map(|_| response)
+                })
+            })
             .cloned()
             .unwrap_or_else(|| success(""));
 
@@ -884,5 +892,5 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 }
 
 fn atomic_lock_command() -> String {
-    "set -eu\nif [ -e .jiji/demo/deploy.lock ]; then echo JIJI_LOCK_HELD; exit 0; fi\nmkdir -p .jiji/demo\nif ! mkdir .jiji/demo/deploy.lock 2>/dev/null; then echo JIJI_LOCK_HELD; exit 0; fi\nif ! install -m 0600 /dev/stdin .jiji/demo/deploy.lock/info.json; then rmdir .jiji/demo/deploy.lock; exit 74; fi".to_string()
+    "PREFIX:set -eu\nmkdir -p .jiji/demo\nmkdir .jiji/demo/deploy.lock.".to_string()
 }

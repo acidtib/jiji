@@ -106,7 +106,7 @@ pub async fn run(
 
     Ui::section("Acquiring Deployment Lock:");
     let lock_targets =
-        crate::commands::lock::connect_targets(environment, config_file, None, None, true).await?;
+        crate::commands::lock::connect_targets(environment, config_file, hosts, None, true).await?;
     let owned_locks = match crate::lock::OwnedDeploymentLocks::acquire(
         &lock_targets.pool,
         &lock_targets.sessions,

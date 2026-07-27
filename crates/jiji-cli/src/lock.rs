@@ -81,7 +81,8 @@ pub fn format_age(seconds: u64) -> String {
     }
 }
 
-/// Reads either the directory-backed atomic lock or the legacy lock file.
+/// Reads either the directory-backed atomic lock or the legacy lock file. Missing or malformed
+/// metadata is treated as unlocked so interrupted writes cannot permanently jam deployments.
 pub async fn read_lock(session: &SshSession, project: &str) -> anyhow::Result<Option<LockInfo>> {
     let path = lock_file_path(project);
     let result = session
@@ -97,20 +98,6 @@ pub async fn read_lock(session: &SshSession, project: &str) -> anyhow::Result<Op
     }
     if let Ok(info) = serde_json::from_str::<LockInfo>(trimmed) {
         return Ok(Some(info));
-    }
-    let directory = session
-        .execute(&format!(
-            "if [ -d {path} ]; then echo JIJI_LOCK_INCOMPLETE; fi"
-        ))
-        .await?;
-    if directory.stdout.trim() == "JIJI_LOCK_INCOMPLETE" {
-        return Ok(Some(LockInfo {
-            message: "incomplete lock metadata".to_string(),
-            acquired_at: 0,
-            acquired_by: "unknown".to_string(),
-            pid: 0,
-            lock_id: None,
-        }));
     }
     Ok(None)
 }
@@ -131,28 +118,65 @@ pub async fn acquire_lock(
 ) -> anyhow::Result<AcquireResult> {
     let path = lock_file_path(project);
     let content = serde_json::to_string_pretty(info)?;
+    let lock_id = info.lock_id.as_deref().expect("new locks have an ID");
+    let pending = format!("{path}.{lock_id}.pending");
     let command = format!(
         "set -eu\n\
-         if [ -e {path} ]; then echo JIJI_LOCK_HELD; exit 0; fi\n\
          mkdir -p {}\n\
-         if ! mkdir {path} 2>/dev/null; then echo JIJI_LOCK_HELD; exit 0; fi\n\
-         if ! install -m 0600 /dev/stdin {path}/info.json; then rmdir {path}; exit 74; fi",
+         mkdir {pending}\n\
+         if ! install -m 0600 /dev/stdin {pending}/info.json; then rmdir {pending}; exit 74; fi\n\
+         if ! mv -T {pending} {path} 2>/dev/null; then\n\
+           rm -f {pending}/info.json\n\
+           rmdir {pending}\n\
+           echo JIJI_LOCK_HELD\n\
+         fi",
         project_staging_dir(project)
     );
-    let result = session
+    let mut result = session
         .execute_with_input(&command, content.as_bytes())
         .await?;
     if result.success && result.stdout.trim() == "JIJI_LOCK_HELD" {
-        Ok(AcquireResult::Held(read_lock(session, project).await?))
-    } else if result.success {
-        Ok(AcquireResult::Acquired)
-    } else {
+        if let Some(holder) = read_lock(session, project).await? {
+            return Ok(AcquireResult::Held(Some(holder)));
+        }
+
+        recover_incomplete_lock(session, project).await?;
+        result = session
+            .execute_with_input(&command, content.as_bytes())
+            .await?;
+        if result.success && result.stdout.trim() == "JIJI_LOCK_HELD" {
+            return Ok(AcquireResult::Held(read_lock(session, project).await?));
+        }
+    }
+    if result.success {
+        return Ok(AcquireResult::Acquired);
+    }
+    anyhow::bail!(
+        "Could not acquire deployment lock on {}: {}",
+        session.host(),
+        result.stderr.trim()
+    )
+}
+
+async fn recover_incomplete_lock(session: &SshSession, project: &str) -> anyhow::Result<()> {
+    let path = lock_file_path(project);
+    let command = format!(
+        "if [ -d {path} ]; then\n\
+           rm -f {path}/info.json\n\
+           rmdir {path} 2>/dev/null || true\n\
+         elif [ -e {path} ]; then\n\
+           rm -f {path}\n\
+         fi"
+    );
+    let result = session.execute(&command).await?;
+    if !result.success {
         anyhow::bail!(
-            "Could not acquire deployment lock on {}: {}",
+            "Could not recover incomplete deployment lock on {}: {}",
             session.host(),
             result.stderr.trim()
-        )
+        );
     }
+    Ok(())
 }
 
 /// Removes a lock only when its unique ID still belongs to the caller.
