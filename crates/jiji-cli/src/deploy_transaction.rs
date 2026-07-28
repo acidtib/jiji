@@ -272,6 +272,13 @@ async fn restore_interrupted_active_container(
                 "Active container '{active_name}' is stopped and could not be restarted: {error}"
             )
         })?;
+    crate::commands::network::bridge::reconcile_podman_dns_address(
+        ctx.session,
+        ctx.engine,
+        &ctx.server.bridge_interface,
+        ctx.server.dns_address,
+    )
+    .await?;
 
     let active_targets = targets_for_slot(ctx, slot);
     let (health_port, health_config) = active_targets

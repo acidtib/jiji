@@ -470,7 +470,9 @@ pub async fn run(
             let server_plan = &plan.servers[server_name];
             let network = Some(proxy::ProxyNetwork {
                 bridge_name: server_plan.bridge_name.clone(),
+                bridge_interface: server_plan.bridge_interface.clone(),
                 proxy_address: server_plan.proxy_address,
+                dns_address: server_plan.dns_address,
             });
             if let Err(error) =
                 proxy::ensure_proxy(session, config.builder.engine, network, false).await

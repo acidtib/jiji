@@ -64,7 +64,9 @@ pub async fn run(
         let engine = config.builder.engine;
         let network = plan.enabled.then_some(proxy::ProxyNetwork {
             bridge_name: server_plan.bridge_name.clone(),
+            bridge_interface: server_plan.bridge_interface.clone(),
             proxy_address: server_plan.proxy_address,
+            dns_address: server_plan.dns_address,
         });
         operations.push(move || async move {
             let result = async {

@@ -26,7 +26,9 @@ pub enum ProxyStatus {
 #[derive(Debug, Clone)]
 pub struct ProxyNetwork {
     pub bridge_name: String,
+    pub bridge_interface: String,
     pub proxy_address: Ipv4Addr,
+    pub dns_address: Ipv4Addr,
 }
 
 /// Ensures kamal-proxy is running with the current image/engine, and (if `network` is given)
@@ -69,6 +71,13 @@ pub async fn ensure_proxy(
     // is no need to special-case "did we just create it with this network already."
     if let Some(network) = &network {
         ensure_attached(session, engine, network).await?;
+        crate::commands::network::bridge::reconcile_podman_dns_address(
+            session,
+            engine,
+            &network.bridge_interface,
+            network.dns_address,
+        )
+        .await?;
         // Docker only: see `proxy_ingress` for why `--publish` alone isn't enough on jiji's
         // bridge networks. Re-applied on every call, from any project sharing this host, so it
         // self-heals and always targets a currently-attached address.
@@ -330,7 +339,9 @@ mod tests {
     fn network(bridge_name: &str, proxy_address: &str) -> ProxyNetwork {
         ProxyNetwork {
             bridge_name: bridge_name.to_string(),
+            bridge_interface: "jijib1234567".to_string(),
             proxy_address: proxy_address.parse().unwrap(),
+            dns_address: "10.0.2.2".parse().unwrap(),
         }
     }
 
@@ -395,6 +406,8 @@ mod tests {
     fn network_test_helper_still_builds_the_expected_struct() {
         let net = network("jiji-demo-9f8e7d6c", "10.0.2.9");
         assert_eq!(net.bridge_name, "jiji-demo-9f8e7d6c");
+        assert_eq!(net.bridge_interface, "jijib1234567");
         assert_eq!(net.proxy_address, "10.0.2.9".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(net.dns_address, "10.0.2.2".parse::<Ipv4Addr>().unwrap());
     }
 }

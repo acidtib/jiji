@@ -138,6 +138,9 @@ pub struct NetworkedContainerRun {
     /// This project's bridge network name (`ServerPlan::bridge_name`), not the shared literal
     /// `"jiji"` -- every project has its own bridge, see `naming::bridge_network_name`.
     pub bridge_name: String,
+    /// The project-scoped kernel bridge device. Podman/Netavark can remove the secondary
+    /// dnsmasq address while activating a container, so the CLI reconciles it after `podman run`.
+    pub bridge_interface: String,
     pub extra_args: Vec<String>,
     pub command: Vec<String>,
 }
@@ -158,6 +161,7 @@ impl NetworkedContainerRun {
             address: endpoint.backend_addresses[slot.index()],
             dns_address: server.dns_address,
             bridge_name: server.bridge_name.clone(),
+            bridge_interface: server.bridge_interface.clone(),
             extra_args: Vec::new(),
             command: Vec::new(),
         }

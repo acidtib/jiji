@@ -882,12 +882,18 @@ async fn stage_host(
         // one file) into a simple idempotent add/remove-file problem, matching every other
         // per-project resource here. `podman-restart.service` itself is host-global, so it picks
         // up every project's drop-in automatically.
+        let restore_dns = super::bridge::render_podman_dns_address_command(
+            engine,
+            &server.bridge_interface,
+            server.dns_address,
+        )
+        .expect("Podman always renders a DNS address reconciliation command");
         write_staged_file(
             session,
             &format!("/etc/systemd/system/podman-restart.service.d/jiji-network-{slug}.conf"),
             "0644",
             &format!(
-                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=podman start --all --filter restart-policy=unless-stopped\n"
+                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=podman start --all --filter restart-policy=unless-stopped\nExecStartPost={restore_dns}\n",
             ),
         )
         .await?;

@@ -82,7 +82,14 @@ pub async fn create_and_start(
 ) -> anyhow::Result<()> {
     let command = run.shell_command();
     let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)
+    ensure_success(session, &command, &result)?;
+    crate::commands::network::bridge::reconcile_podman_dns_address(
+        session,
+        run.engine,
+        &run.bridge_interface,
+        run.dns_address,
+    )
+    .await
 }
 
 pub async fn start(

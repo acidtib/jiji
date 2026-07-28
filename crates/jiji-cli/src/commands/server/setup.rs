@@ -206,7 +206,9 @@ async fn setup_proxies(
         let server_plan = &plan.servers[name];
         let network = dns_enabled.then_some(proxy::ProxyNetwork {
             bridge_name: server_plan.bridge_name.clone(),
+            bridge_interface: server_plan.bridge_interface.clone(),
             proxy_address: server_plan.proxy_address,
+            dns_address: server_plan.dns_address,
         });
         // Written here, not earlier: engine install and network setup each already bailed the
         // whole command on any per-host failure before reaching this final phase, so a host that

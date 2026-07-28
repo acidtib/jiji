@@ -7,6 +7,32 @@ use jiji_ssh::SshSession;
 
 use crate::container_runtime::{backend_address, container_name};
 
+/// Netavark reconfigures the kernel bridge when a Podman container is attached and can remove
+/// dnsmasq's secondary `/32` address. Re-applying it is idempotent and lets Aardvark forward the
+/// container's custom `--dns` queries to Jiji's project-scoped dnsmasq instance.
+pub async fn reconcile_podman_dns_address(
+    session: &SshSession,
+    engine: ContainerEngine,
+    bridge_interface: &str,
+    dns_address: Ipv4Addr,
+) -> anyhow::Result<()> {
+    let Some(command) = render_podman_dns_address_command(engine, bridge_interface, dns_address)
+    else {
+        return Ok(());
+    };
+    let result = session.execute(&command).await?;
+    require_success(session, &command, &result)
+}
+
+pub(crate) fn render_podman_dns_address_command(
+    engine: ContainerEngine,
+    bridge_interface: &str,
+    dns_address: Ipv4Addr,
+) -> Option<String> {
+    (engine == ContainerEngine::Podman)
+        .then(|| format!("ip address replace {dns_address}/32 dev {bridge_interface}"))
+}
+
 pub struct BridgeProvisioner<'a> {
     engine: ContainerEngine,
     plan: &'a NetworkPlan,
@@ -272,6 +298,13 @@ fi
             require_success(session, &command, &result)?;
             proxy_reattached |= name == "kamal-proxy";
         }
+        reconcile_podman_dns_address(
+            session,
+            self.engine,
+            &self.server.bridge_interface,
+            self.server.dns_address,
+        )
+        .await?;
         Ok(proxy_reattached)
     }
 
@@ -501,6 +534,31 @@ services:
         assert!(rendered.contains(&server.bridge_gateway.to_string()));
         assert!(!rendered.contains("gateway_mode_ipv4"));
         assert!(!rendered.contains("anchor"));
+    }
+
+    #[test]
+    fn podman_reconciles_the_project_dns_address_after_network_activation() {
+        let plan = plan();
+        let server = &plan.servers["app"];
+        assert_eq!(
+            render_podman_dns_address_command(
+                ContainerEngine::Podman,
+                &server.bridge_interface,
+                server.dns_address,
+            ),
+            Some(format!(
+                "ip address replace {}/32 dev {}",
+                server.dns_address, server.bridge_interface
+            ))
+        );
+        assert_eq!(
+            render_podman_dns_address_command(
+                ContainerEngine::Docker,
+                &server.bridge_interface,
+                server.dns_address,
+            ),
+            None
+        );
     }
 
     #[test]
