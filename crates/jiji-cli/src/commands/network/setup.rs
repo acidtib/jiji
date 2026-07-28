@@ -117,10 +117,28 @@ pub(crate) async fn reconcile_for_deploy(
     config: &Config,
     plan: &NetworkPlan,
 ) -> anyhow::Result<()> {
+    reconcile_cluster(config, plan, "jiji deploy", false).await
+}
+
+pub(crate) async fn reconcile_for_server_setup(
+    config: &Config,
+    plan: &NetworkPlan,
+) -> anyhow::Result<()> {
+    reconcile_cluster(config, plan, "jiji server setup", true).await
+}
+
+async fn reconcile_cluster(
+    config: &Config,
+    plan: &NetworkPlan,
+    retry_command: &str,
+    report_current: bool,
+) -> anyhow::Result<()> {
     let target_names = plan.servers.keys().cloned().collect::<BTreeSet<_>>();
-    let hosts = connect_all(config).await.context(
-        "Could not reach every configured server for automatic network reconciliation. Restore SSH access and retry `jiji deploy`.",
-    )?;
+    let hosts = connect_all(config).await.with_context(|| {
+        format!(
+            "Could not reach every configured server for network reconciliation. Restore SSH access and retry `{retry_command}`."
+        )
+    })?;
     let mut stale_hosts = Vec::new();
     for host in &hosts {
         match crate::network_guard::generation_is_current(&host.session, plan).await {
@@ -140,6 +158,15 @@ pub(crate) async fn reconcile_for_deploy(
 
     if stale_hosts.is_empty() {
         close_all(&hosts).await;
+        if report_current {
+            Ui::say(
+                &format!(
+                    "Network generation {} is already active on every configured server.",
+                    &plan.generation[..12]
+                ),
+                1,
+            );
+        }
         return Ok(());
     }
 
@@ -155,8 +182,8 @@ pub(crate) async fn reconcile_for_deploy(
     let result = apply_connected(config, plan, &target_names, &hosts).await;
     close_all(&hosts).await;
     result.context(format!(
-        "Automatic network reconciliation failed for stale host(s): {}. Fix the reported network error and retry `jiji deploy`.",
-        stale_hosts.join(", ")
+        "Network reconciliation failed for stale host(s): {}. Fix the reported network error and retry `{retry_command}`.",
+        stale_hosts.join(", "),
     ))
 }
 
@@ -1384,21 +1411,32 @@ async fn verify_host(
         .next()
         .map(|record| {
             format!(
-                "test -n \"$(dig +time=2 +tries=1 +short @{} {})\"",
+                "test -n \"$(dig +time=2 +tries=1 +short @{} {})\" || {{ echo 'DNS verification failed: {} did not resolve {}' >&2; exit 1; }}",
                 server.dns_address,
-                record.name.trim_end_matches('.')
+                record.name.trim_end_matches('.'),
+                server.dns_address,
+                record.name.trim_end_matches('.'),
             )
         })
         .unwrap_or_else(|| {
             format!(
-                "dig +time=2 +tries=1 @{} . SOA >/dev/null",
-                server.dns_address
+                "dig +time=2 +tries=1 @{} . SOA >/dev/null || {{ echo 'DNS verification failed: {} did not answer' >&2; exit 1; }}",
+                server.dns_address, server.dns_address
             )
         });
     let peer_checks = server
         .peers
         .iter()
-        .map(|peer| format!("ping -c 1 -W 3 {} >/dev/null", peer.management_address))
+        .map(|peer| {
+            format!(
+                "ping -c 1 -W 3 {} >/dev/null || {{ echo \"WireGuard peer verification failed: {} ({}) could not reach {} ({})\" >&2; exit 1; }}",
+                peer.management_address,
+                server.name,
+                server.management_address,
+                peer.server,
+                peer.management_address,
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ");
     let slug = jiji_network::systemd_unit_slug(&plan.project);

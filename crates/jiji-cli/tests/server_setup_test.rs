@@ -211,6 +211,47 @@ ssh:
     config_path
 }
 
+fn write_two_server_config(
+    dir: &std::path::Path,
+    first: SocketAddr,
+    second: SocketAddr,
+    key_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: testproject
+builder:
+  engine: docker
+servers:
+  existing:
+    host: {first_ip}
+    port: {first_port}
+    keys:
+      - {key_path}
+  new-host:
+    host: {second_ip}
+    port: {second_port}
+    keys:
+      - {key_path}
+services: {{}}
+ssh:
+  user: tester
+  keys_only: true
+"#,
+            first_ip = first.ip(),
+            first_port = first.port(),
+            second_ip = second.ip(),
+            second_port = second.port(),
+            key_path = key_path.display(),
+        ),
+    )
+    .expect("write two-server deploy.yml");
+    config_path
+}
+
 fn run_jiji_server_setup(config_path: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("server")
@@ -354,6 +395,80 @@ async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_addre
     assert!(
         stdout.contains("Host filter 'missing' matched no servers"),
         "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn filtered_setup_reconciles_changed_network_on_every_host_but_limits_engine_and_proxy() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (existing_addr, existing_received) =
+        spawn_test_server(client_key.public_key().clone(), responses.clone()).await;
+    let (new_addr, new_received) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_two_server_config(dir.path(), existing_addr, new_addr, &key_path);
+
+    let output = run_jiji_server_setup_with_hosts(&config_path, "new-host");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let existing_commands = existing_received.lock().expect("received mutex poisoned");
+    let new_commands = new_received.lock().expect("received mutex poisoned");
+
+    assert!(
+        !existing_commands
+            .iter()
+            .any(|command| command == "which docker"),
+        "the host filter must still limit engine setup: {existing_commands:?}"
+    );
+    assert!(
+        new_commands.iter().any(|command| command == "which docker"),
+        "the selected host must receive engine setup: {new_commands:?}"
+    );
+    assert!(
+        existing_commands
+            .iter()
+            .any(|command| command.contains("jiji-network-restore-testproject-")),
+        "a stale topology must reconcile the existing host too: {existing_commands:?}"
+    );
+    assert!(
+        new_commands
+            .iter()
+            .any(|command| command.contains("jiji-network-restore-testproject-")),
+        "a stale topology must reconcile the selected host: {new_commands:?}"
+    );
+    assert!(
+        !existing_commands
+            .iter()
+            .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"),
+        "the host filter must still limit proxy setup: {existing_commands:?}"
+    );
+    assert!(
+        new_commands
+            .iter()
+            .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"),
+        "the selected host must receive proxy setup: {new_commands:?}"
     );
 }
 

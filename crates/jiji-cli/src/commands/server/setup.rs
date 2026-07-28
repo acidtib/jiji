@@ -156,8 +156,7 @@ pub async fn run(
         anyhow::bail!("Server setup failed for {} server(s)", failures.len());
     }
 
-    let matched_hosts = target_names.iter().cloned().collect::<Vec<_>>().join(",");
-    network::setup::run(environment, config_file, Some(&matched_hosts))
+    network::setup::reconcile_for_server_setup(&config, &network_plan)
         .await
         .map_err(|error| {
             anyhow::anyhow!(
