@@ -20,6 +20,15 @@ pub fn container_name(project: &str, service: &str, slot: BackendSlot) -> String
     format!("{project}-{service}-{slot}")
 }
 
+/// Jiji does not need persistent exec sessions. Disabling them avoids Podman clients waiting on
+/// stale session state after the process inside the container has already exited.
+pub fn exec_prefix(engine: ContainerEngine) -> &'static str {
+    match engine {
+        ContainerEngine::Docker => "docker exec",
+        ContainerEngine::Podman => "podman exec --no-session",
+    }
+}
+
 /// Expands Docker-compatible short names so Podman never depends on host-specific
 /// `unqualified-search-registries` configuration.
 pub fn normalize_image_name(image: &str) -> String {

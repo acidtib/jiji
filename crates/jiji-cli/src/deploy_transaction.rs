@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use jiji_config::{ContainerEngine, Service};
 use jiji_network::{NetworkPlan, ServerPlan, ServiceEndpointPlan};
@@ -13,6 +14,8 @@ use crate::{
     service_network,
 };
 
+pub type EndpointProgress = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 pub struct EndpointDeploymentContext<'a> {
     pub session: &'a SshSession,
     pub plan: &'a NetworkPlan,
@@ -26,6 +29,7 @@ pub struct EndpointDeploymentContext<'a> {
     pub project_root: &'a Path,
     pub skip_proxy: bool,
     pub max_dir_upload_bytes: u64,
+    pub progress: Option<EndpointProgress>,
 }
 
 #[derive(Debug)]
@@ -56,6 +60,7 @@ async fn deploy_endpoint_inner(
     let project = &ctx.plan.project;
     let identity = &ctx.endpoint.identity;
 
+    report_progress(ctx, "preparing candidate");
     network_guard::verify_generation(ctx.session, ctx.plan, &ctx.server.name).await?;
 
     let cutover = service_network::prepare_cutover(ctx.session, ctx.plan, identity).await?;
@@ -65,14 +70,16 @@ async fn deploy_endpoint_inner(
         container_runtime::container_name(project, ctx.service_name, candidate_slot);
 
     // Decision 6: the slot to use always comes from `ActiveSlotState`, never from container
-    // names/timestamps. If a container is supposed to be actively serving and isn't, fail loudly
-    // rather than guess.
+    // names/timestamps. A stopped but still-present active container is unambiguous and can be
+    // restored after an interrupted stop-first deployment. A missing active container remains
+    // ambiguous and must fail rather than guessing.
     if let Some(slot) = previous_slot {
         let active_name = container_runtime::container_name(project, ctx.service_name, slot);
         match container_ops::inspect_status(ctx.session, ctx.engine, &active_name).await? {
             Some(status) if status == "running" => {}
-            _ => anyhow::bail!(
-                "Active container '{active_name}' for endpoint '{identity}' is missing or not running. Refusing to guess deployment state; repair '{active_name}' manually (or reconcile the VIP mapping) before retrying `jiji deploy`."
+            Some(_) => restore_interrupted_active_container(ctx, slot, &active_name).await?,
+            None => anyhow::bail!(
+                "Active container '{active_name}' for endpoint '{identity}' is missing. Refusing to guess deployment state; recreate '{active_name}' manually (or reconcile the VIP mapping) before retrying `jiji deploy`."
             ),
         }
     }
@@ -128,6 +135,7 @@ async fn deploy_endpoint_inner(
         &mount_args,
         &env_file_path,
     );
+    report_progress(ctx, "starting candidate");
     if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
         // A failed `run` can still leave a stopped/half-created container behind (e.g. Docker
         // allocating the container object before failing to bind a published port). Clean it up
@@ -152,6 +160,10 @@ async fn deploy_endpoint_inner(
         health_config,
     );
 
+    report_progress(
+        ctx,
+        &health_check_progress_detail(health_plan.deploy_timeout),
+    );
     if let Err(error) =
         health_check::wait_until_healthy(ctx.session, ctx.engine, &candidate_name, &health_plan)
             .await
@@ -164,6 +176,7 @@ async fn deploy_endpoint_inner(
         );
     }
 
+    report_progress(ctx, "health check passed, activating service VIP");
     if let Err(error) = service_network::commit_after_health_check(
         ctx.session,
         ctx.plan,
@@ -179,6 +192,7 @@ async fn deploy_endpoint_inner(
     }
 
     if !ctx.skip_proxy {
+        report_progress(ctx, &proxy_activation_progress_detail(&candidate_targets));
         if let Err(error) = activate_proxy_routes(ctx, &candidate_targets).await {
             let cleanup = rollback_after_proxy_failure(
                 ctx,
@@ -193,15 +207,43 @@ async fn deploy_endpoint_inner(
                 ctx.engine
             );
         }
+        report_progress(ctx, "proxy route active");
     }
 
     if let Some(slot) = previous_slot {
+        report_progress(ctx, "removing previous container");
         let old_name = container_runtime::container_name(project, ctx.service_name, slot);
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
         container_ops::remove(ctx.session, ctx.engine, &old_name).await?;
     }
 
     Ok(candidate_slot)
+}
+
+fn report_progress(ctx: &EndpointDeploymentContext<'_>, detail: &str) {
+    if let Some(progress) = &ctx.progress {
+        progress(&ctx.endpoint.identity, detail);
+    }
+}
+
+fn health_check_progress_detail(timeout: std::time::Duration) -> String {
+    format!("waiting for health check (up to {}s)", timeout.as_secs())
+}
+
+fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {
+    let timeout = targets
+        .iter()
+        .filter_map(|target| target.healthcheck.as_ref())
+        .filter_map(|check| check.deploy_timeout.as_deref())
+        .filter_map(health_check::parse_duration)
+        .max();
+    match timeout {
+        Some(timeout) => format!(
+            "configuring proxy route (health timeout {}s)",
+            timeout.as_secs()
+        ),
+        None => "configuring proxy route".to_string(),
+    }
 }
 
 fn targets_for_slot(
@@ -215,6 +257,54 @@ fn targets_for_slot(
         ctx.endpoint,
         slot,
     )
+}
+
+async fn restore_interrupted_active_container(
+    ctx: &EndpointDeploymentContext<'_>,
+    slot: jiji_network::BackendSlot,
+    active_name: &str,
+) -> anyhow::Result<()> {
+    report_progress(ctx, "restoring interrupted active container");
+    container_ops::start(ctx.session, ctx.engine, active_name)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Active container '{active_name}' is stopped and could not be restarted: {error}"
+            )
+        })?;
+
+    let active_targets = targets_for_slot(ctx, slot);
+    let (health_port, health_config) = active_targets
+        .first()
+        .map(|target| (target.port, target.healthcheck.as_ref()))
+        .unwrap_or((0, None));
+    let health_plan = health_check::plan_for_candidate(
+        ctx.engine,
+        active_name,
+        backend_address(ctx.endpoint, slot),
+        health_port,
+        health_config,
+    );
+    health_check::wait_until_healthy(ctx.session, ctx.engine, active_name, &health_plan)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "Active container '{active_name}' restarted but did not become healthy: {error}"
+            )
+        })?;
+
+    if !ctx.skip_proxy {
+        report_progress(ctx, "restoring active proxy route");
+        activate_proxy_routes(ctx, &active_targets)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Active container '{active_name}' restarted, but its proxy route could not be restored: {error}"
+                )
+            })?;
+    }
+
+    Ok(())
 }
 
 /// Stops and removes `candidate_name`, returning a suffix describing the outcome for inclusion in
@@ -291,4 +381,40 @@ async fn rollback_after_proxy_failure(
 
     warnings.push_str(&discard_candidate(ctx, candidate_name).await);
     warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{health_check_progress_detail, proxy_activation_progress_detail, RouteTarget};
+    use jiji_config::HealthcheckConfig;
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    #[test]
+    fn health_check_progress_includes_the_configured_timeout() {
+        assert_eq!(
+            health_check_progress_detail(Duration::from_secs(90)),
+            "waiting for health check (up to 90s)"
+        );
+    }
+
+    #[test]
+    fn proxy_progress_distinguishes_its_second_health_gate() {
+        let targets = vec![RouteTarget {
+            route_name: "demo-web-3000".to_string(),
+            address: Ipv4Addr::LOCALHOST,
+            port: 3000,
+            hosts: vec![],
+            tls: false,
+            path_prefix: None,
+            healthcheck: Some(
+                serde_yaml::from_str::<HealthcheckConfig>("deploy_timeout: 60s\n").unwrap(),
+            ),
+        }];
+
+        assert_eq!(
+            proxy_activation_progress_detail(&targets),
+            "configuring proxy route (health timeout 60s)"
+        );
+    }
 }

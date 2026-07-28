@@ -8,7 +8,9 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::deploy::{select_target_endpoints, DEFAULT_MAX_DIR_UPLOAD_BYTES};
-use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
+use crate::deploy_transaction::{
+    deploy_endpoint, EndpointDeploymentContext, EndpointOutcome, EndpointProgress,
+};
 use crate::{audit, container_runtime, env_resolution, proxy, registry, ssh_adapter, version_tag};
 
 /// Zero-downtime slot cycle onto a specific, already-published image tag: builds on the same
@@ -251,8 +253,12 @@ pub async fn run(
         let sessions = sessions.clone();
         let images = images.clone();
         let project_root = project_root.clone();
+        let progress = rollback_spinner.handle();
 
         service_futures.push(move || async move {
+            let progress: EndpointProgress = Arc::new(move |identity, detail| {
+                progress.set_message(&format!("Rolling back {identity}: {detail}"));
+            });
             let mut outcomes = Vec::new();
             let mut sibling_failed = false;
             for endpoint in &endpoints {
@@ -279,6 +285,7 @@ pub async fn run(
                     project_root: &project_root,
                     skip_proxy: false,
                     max_dir_upload_bytes: DEFAULT_MAX_DIR_UPLOAD_BYTES,
+                    progress: Some(progress.clone()),
                 };
                 let outcome = deploy_endpoint(&ctx).await;
                 if !matches!(outcome, EndpointOutcome::Deployed { .. }) {

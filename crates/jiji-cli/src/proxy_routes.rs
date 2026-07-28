@@ -4,7 +4,12 @@ use jiji_config::{ContainerEngine, HealthcheckConfig, ProxyConfig, SslValue};
 use jiji_network::{BackendSlot, ServiceEndpointPlan};
 use jiji_ssh::SshSession;
 
-use crate::container_runtime::backend_address;
+use crate::container_runtime::{backend_address, exec_prefix};
+use crate::health_check;
+
+const DEFAULT_PROXY_DEPLOY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DEFAULT_PROXY_HEALTH_TIMEOUT: &str = "5s";
+const PROXY_DEPLOY_TIMEOUT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct RouteTarget {
     pub route_name: String,
@@ -70,6 +75,7 @@ pub fn targets_for_service(
 
 pub fn render_deploy_command(engine: ContainerEngine, target: &RouteTarget) -> String {
     let mut args = vec![format!("--target={}:{}", target.address, target.port)];
+    let mut deploy_timeout = DEFAULT_PROXY_DEPLOY_TIMEOUT;
     for host in &target.hosts {
         args.push(format!("--host={host}"));
     }
@@ -95,26 +101,39 @@ pub fn render_deploy_command(engine: ContainerEngine, target: &RouteTarget) -> S
         if let Some(interval) = &check.interval {
             args.push(format!("--health-check-interval={interval}"));
         }
-        if let Some(timeout) = &check.timeout {
-            args.push(format!("--health-check-timeout={timeout}"));
-        }
-        if let Some(deploy_timeout) = &check.deploy_timeout {
-            args.push(format!("--deploy-timeout={deploy_timeout}"));
+        args.push(format!(
+            "--health-check-timeout={}",
+            check
+                .timeout
+                .as_deref()
+                .unwrap_or(DEFAULT_PROXY_HEALTH_TIMEOUT)
+        ));
+        if let Some(configured_deploy_timeout) = &check.deploy_timeout {
+            args.push(format!("--deploy-timeout={configured_deploy_timeout}"));
+            if let Some(parsed) = health_check::parse_duration(configured_deploy_timeout) {
+                deploy_timeout = parsed;
+            }
         }
     }
+    let process_timeout = deploy_timeout.saturating_add(PROXY_DEPLOY_TIMEOUT_GRACE);
+    let exec = exec_prefix(engine);
     format!(
-        "{engine} exec kamal-proxy kamal-proxy deploy {} {}",
+        "timeout --signal=TERM --kill-after=5s {}s {exec} kamal-proxy kamal-proxy deploy {} {}",
+        process_timeout.as_secs(),
         target.route_name,
         args.join(" ")
     )
 }
 
 pub fn render_remove_command(engine: ContainerEngine, route_name: &str) -> String {
-    format!("{engine} exec kamal-proxy kamal-proxy remove {route_name}")
+    format!(
+        "{} kamal-proxy kamal-proxy remove {route_name}",
+        exec_prefix(engine)
+    )
 }
 
 pub fn render_list_command(engine: ContainerEngine) -> String {
-    format!("{engine} exec kamal-proxy kamal-proxy list")
+    format!("{} kamal-proxy kamal-proxy list", exec_prefix(engine))
 }
 
 pub async fn deploy_route(
@@ -125,11 +144,17 @@ pub async fn deploy_route(
     let command = render_deploy_command(engine, target);
     let result = session.execute(&command).await?;
     if !result.success {
+        let timeout_hint = if result.code == Some(124) {
+            " The proxy deployment exceeded Jiji's outer timeout and was terminated."
+        } else {
+            ""
+        };
         anyhow::bail!(
-            "Could not deploy proxy route '{}' on {}: {}",
+            "Could not deploy proxy route '{}' on {}: {}{}",
             target.route_name,
             session.host(),
-            result.stderr.trim()
+            result.stderr.trim(),
+            timeout_hint
         );
     }
     Ok(())
@@ -161,8 +186,9 @@ pub async fn verify_route(
     let result = session.execute(&command).await?;
     if !result.success || !result.stdout.contains(route_name) {
         anyhow::bail!(
-            "Proxy route '{route_name}' is not listed by kamal-proxy on {}. Inspect it with `{engine} exec kamal-proxy kamal-proxy list`.",
-            session.host()
+            "Proxy route '{route_name}' is not listed by kamal-proxy on {}. Inspect it with `{} kamal-proxy kamal-proxy list`.",
+            session.host(),
+            exec_prefix(engine)
         );
     }
     Ok(())
@@ -237,11 +263,13 @@ targets:
         .unwrap();
         let target = &targets_for_service("demo", "web", Some(&proxy), &endpoint, slot)[0];
         let command = render_deploy_command(ContainerEngine::Docker, target);
-        assert!(command.starts_with("docker exec kamal-proxy kamal-proxy deploy demo-web-3000"));
+        assert!(command.contains("docker exec kamal-proxy kamal-proxy deploy demo-web-3000"));
+        assert!(command.starts_with("timeout --signal=TERM --kill-after=5s 65s"));
         assert!(command.contains("--target="));
         assert!(command.contains("--host=example.com"));
         assert!(command.contains("--health-check-path=/health"));
         assert!(command.contains("--health-check-interval=10s"));
+        assert!(command.contains("--health-check-timeout=5s"));
         assert!(command.contains("--deploy-timeout=60s"));
         assert!(!command.contains("--health-check-cmd"));
     }
@@ -255,8 +283,22 @@ targets:
         .unwrap();
         let target = &targets_for_service("demo", "web", Some(&proxy), &endpoint, slot)[0];
         let command = render_deploy_command(ContainerEngine::Podman, target);
+        assert!(command
+            .contains("podman exec --no-session kamal-proxy kamal-proxy deploy demo-web-3000"));
         assert!(command.contains("--health-check-cmd=\"test -f /ready\""));
         assert!(command.contains("--health-check-cmd-runtime=podman"));
+    }
+
+    #[test]
+    fn podman_route_management_disables_exec_session_tracking() {
+        assert_eq!(
+            render_remove_command(ContainerEngine::Podman, "demo-web-3000"),
+            "podman exec --no-session kamal-proxy kamal-proxy remove demo-web-3000"
+        );
+        assert_eq!(
+            render_list_command(ContainerEngine::Podman),
+            "podman exec --no-session kamal-proxy kamal-proxy list"
+        );
     }
 
     #[test]

@@ -122,6 +122,15 @@ pub async fn run(
             1,
         );
     }
+    if let Some(engine::EngineStatus::Upgraded { from, to }) = executor.engine_status() {
+        Ui::say(
+            &format!(
+                "{} upgraded from {from} to {to} on {executor_identity}",
+                config.builder.engine
+            ),
+            1,
+        );
+    }
 
     // Everything from here that can fail must still let `executor.finish()` run (staging
     // cleanup, tunnel cancellation, session close) -- so every failure is captured into

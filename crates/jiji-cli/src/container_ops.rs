@@ -85,6 +85,16 @@ pub async fn create_and_start(
     ensure_success(session, &command, &result)
 }
 
+pub async fn start(
+    session: &SshSession,
+    engine: ContainerEngine,
+    name: &str,
+) -> anyhow::Result<()> {
+    let command = format!("{engine} start {name}");
+    let result = session.execute(&command).await?;
+    ensure_success(session, &command, &result)
+}
+
 pub async fn stop(session: &SshSession, engine: ContainerEngine, name: &str) -> anyhow::Result<()> {
     let command = format!("{engine} stop {name}");
     let result = session.execute(&command).await?;

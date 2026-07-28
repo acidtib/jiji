@@ -887,7 +887,7 @@ async fn stage_host(
             &format!("/etc/systemd/system/podman-restart.service.d/jiji-network-{slug}.conf"),
             "0644",
             &format!(
-                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=/usr/bin/podman start --all --filter restart-policy=unless-stopped\n"
+                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=podman start --all --filter restart-policy=unless-stopped\n"
             ),
         )
         .await?;

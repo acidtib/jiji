@@ -6,6 +6,7 @@ use jiji_ssh::SshSession;
 use thiserror::Error;
 
 use crate::container_ops;
+use crate::container_runtime::exec_prefix;
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 const DEFAULT_DEPLOY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -67,7 +68,7 @@ pub fn plan_for_candidate(
         .and_then(|check| {
             if let Some(cmd) = &check.cmd {
                 let runtime = check.cmd_runtime.unwrap_or(engine);
-                Some(format!("{runtime} exec {container_name} {cmd}"))
+                Some(format!("{} {container_name} {cmd}", exec_prefix(runtime)))
             } else {
                 check.path.as_ref().map(|path| {
                     let timeout = check
@@ -162,7 +163,10 @@ mod tests {
             3000,
             Some(&check),
         );
-        assert_eq!(plan.command, "podman exec demo-web-a test -f /ready");
+        assert_eq!(
+            plan.command,
+            "podman exec --no-session demo-web-a test -f /ready"
+        );
     }
 
     #[test]

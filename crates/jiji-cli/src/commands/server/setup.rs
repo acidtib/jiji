@@ -137,6 +137,9 @@ pub async fn run(
             Ok(EngineStatus::Installed(version)) => {
                 Ui::say(&format!("{engine} installed ({version})"), 2);
             }
+            Ok(EngineStatus::Upgraded { from, to }) => {
+                Ui::say(&format!("{engine} upgraded ({from} -> {to})"), 2);
+            }
             Err(err) => {
                 Ui::error(&format!("  {err}"));
                 failures.push((name.clone(), err.to_string()));

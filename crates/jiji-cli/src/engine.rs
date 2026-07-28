@@ -2,11 +2,17 @@ use jiji_config::ContainerEngine;
 use jiji_ssh::SshSession;
 
 const DOCKER_MIN_VERSION: (u64, u64, u64) = (29, 3, 0);
-const PODMAN_MIN_VERSION: (u64, u64, u64) = (4, 9, 3);
+const PODMAN_MIN_VERSION: (u64, u64, u64) = (5, 8, 4);
+const PODMAN_STATIC_VERSION: &str = "5.8.4";
+const PODMAN_STATIC_AMD64_SHA256: &str =
+    "a58765fe8be6ab3fb79f892f1a027b4ce4a7e8eb589df1ef960c167cbde08d69";
+const PODMAN_STATIC_ARM64_SHA256: &str =
+    "a2f6b73cc0f7018e2e8518338a4ec27db70148e1af86e16719235605aefd1df3";
 
 pub enum EngineStatus {
     AlreadyInstalled(String),
     Installed(String),
+    Upgraded { from: String, to: String },
 }
 
 struct OsInfo {
@@ -15,10 +21,11 @@ struct OsInfo {
     version_codename: String,
 }
 
-/// Checks whether `engine` is installed on the remote host and, if not, installs it. Refuses to
-/// proceed (rather than silently continuing) if an already-installed engine is below the
-/// minimum supported version — matches the POC's behavior of never auto-upgrading in place. Used
-/// both for a `jiji server setup`-managed deployment host and a `builder.remote` host (see
+/// Checks whether `engine` is installed on the remote host and, if not, installs it. Podman is
+/// upgraded in place when its distro package is too old because supported Debian and Ubuntu
+/// releases do not package a version new enough for current CDI specifications. Docker still
+/// requires an operator-managed upgrade when an installed version is too old. Used both for a
+/// `jiji server setup`-managed deployment host and a `builder.remote` host (see
 /// `remote_build.rs::preflight`) -- jiji provisions the engine on either, but never anything else
 /// on a builder host (no network/proxy setup, no Buildx/`podman manifest` installation).
 pub async fn ensure_engine(
@@ -26,18 +33,46 @@ pub async fn ensure_engine(
     engine: ContainerEngine,
 ) -> anyhow::Result<EngineStatus> {
     let name = engine.to_string();
+    let mut previous_version = None;
 
     if is_installed(session, &name).await? {
         let version = version_of(session, &name).await?;
-        check_min_version(&name, &version, min_version(engine))?;
-        return Ok(EngineStatus::AlreadyInstalled(version));
+        if version_is_supported(&version, min_version(engine)) {
+            if engine == ContainerEngine::Podman {
+                reconcile_managed_podman_static_configuration(session).await?;
+            }
+            return Ok(EngineStatus::AlreadyInstalled(version));
+        }
+        if engine != ContainerEngine::Podman {
+            check_min_version(&name, &version, min_version(engine))?;
+        }
+        previous_version = Some(version);
     }
 
     install(session, engine).await?;
 
     let version = version_of(session, &name).await?;
     check_min_version(&name, &version, min_version(engine))?;
-    Ok(EngineStatus::Installed(version))
+    Ok(match previous_version {
+        Some(from) => EngineStatus::Upgraded { from, to: version },
+        None => EngineStatus::Installed(version),
+    })
+}
+
+async fn reconcile_managed_podman_static_configuration(session: &SshSession) -> anyhow::Result<()> {
+    let command = format!(
+        "if test -f /etc/containers/containers.conf.d/99-jiji-static.conf; then {}; systemctl daemon-reload; fi",
+        podman_static_configuration_command()
+    );
+    let result = session.execute(&command).await?;
+    if !result.success {
+        anyhow::bail!(
+            "Could not reconcile Jiji's Podman configuration on {}: {}",
+            session.host(),
+            result.stderr.trim()
+        );
+    }
+    Ok(())
 }
 
 fn min_version(engine: ContainerEngine) -> (u64, u64, u64) {
@@ -86,6 +121,10 @@ fn check_min_version(
         );
     }
     Ok(())
+}
+
+fn version_is_supported(version_output: &str, min: (u64, u64, u64)) -> bool {
+    parse_version(version_output).is_none_or(|found| found >= min)
 }
 
 fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
@@ -215,7 +254,8 @@ fn podman_install_commands(os: &OsInfo) -> anyhow::Result<Vec<String>> {
         "ubuntu" | "debian" => Ok(vec![
             "export DEBIAN_FRONTEND=noninteractive".to_string(),
             "apt-get update -qq".to_string(),
-            "apt-get install -y -qq podman curl git".to_string(),
+            "apt-get install -y -qq ca-certificates curl git iptables tar uidmap".to_string(),
+            podman_static_install_command(),
             policy_cmd,
         ]),
         "fedora" | "centos" | "rhel" => Ok(vec![
@@ -229,9 +269,46 @@ fn podman_install_commands(os: &OsInfo) -> anyhow::Result<Vec<String>> {
     }
 }
 
+fn podman_static_install_command() -> String {
+    format!(
+        "set -eu; \
+arch=$(dpkg --print-architecture); \
+case \"$arch\" in \
+amd64) checksum={PODMAN_STATIC_AMD64_SHA256} ;; \
+arm64) checksum={PODMAN_STATIC_ARM64_SHA256} ;; \
+*) echo \"Unsupported architecture '$arch' for the pinned Podman static bundle. Install Podman {PODMAN_STATIC_VERSION} or newer manually.\" >&2; exit 1 ;; \
+esac; \
+asset=podman-linux-$arch.tar.gz; \
+tmp=$(mktemp -d); \
+trap 'rm -rf \"$tmp\"' EXIT; \
+curl -fsSL \"https://github.com/mgoltzsche/podman-static/releases/download/v{PODMAN_STATIC_VERSION}/$asset\" -o \"$tmp/$asset\"; \
+echo \"$checksum  $tmp/$asset\" | sha256sum -c -; \
+tar -xzf \"$tmp/$asset\" -C \"$tmp\"; \
+cp -a --remove-destination \"$tmp/podman-linux-$arch/usr/local/.\" /usr/local/; \
+mkdir -p /etc/containers/containers.conf.d; \
+for config in storage.conf seccomp.json; do \
+test -e \"/etc/containers/$config\" || install -m 0644 \"$tmp/podman-linux-$arch/etc/containers/$config\" \"/etc/containers/$config\"; \
+done; \
+{}; \
+if test -f /etc/apparmor.d/podman; then \
+sed -Ei 's!^profile podman /usr/bin/podman !profile podman /usr/{{bin,local/bin}}/podman !' /etc/apparmor.d/podman; \
+command -v apparmor_parser >/dev/null 2>&1 && apparmor_parser -r /etc/apparmor.d/podman || true; \
+fi; \
+systemctl daemon-reload",
+        podman_static_configuration_command()
+    )
+}
+
+fn podman_static_configuration_command() -> &'static str {
+    "mkdir -p /etc/containers/containers.conf.d; printf '%s\\n' '[containers]' 'log_driver = \"k8s-file\"' '' '[engine]' 'runtime = \"/usr/local/bin/crun\"' 'cgroup_manager = \"cgroupfs\"' 'events_logger = \"file\"' > /etc/containers/containers.conf.d/99-jiji-static.conf"
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_version;
+    use super::{
+        parse_version, podman_install_commands, version_is_supported, OsInfo, PODMAN_MIN_VERSION,
+        PODMAN_STATIC_AMD64_SHA256, PODMAN_STATIC_ARM64_SHA256, PODMAN_STATIC_VERSION,
+    };
 
     #[test]
     fn parses_docker_version_output() {
@@ -249,5 +326,53 @@ mod tests {
     #[test]
     fn returns_none_for_unparseable_output() {
         assert_eq!(parse_version("not a version"), None);
+    }
+
+    #[test]
+    fn requires_a_recent_podman_version() {
+        assert!(!version_is_supported(
+            "podman version 4.9.3",
+            PODMAN_MIN_VERSION
+        ));
+        assert!(version_is_supported(
+            "podman version 5.8.4",
+            PODMAN_MIN_VERSION
+        ));
+        assert!(version_is_supported(
+            "podman version 6.0.2",
+            PODMAN_MIN_VERSION
+        ));
+    }
+
+    #[test]
+    fn installs_pinned_static_podman_on_ubuntu() {
+        let commands = podman_install_commands(&OsInfo {
+            id: "ubuntu".to_string(),
+            version_id: "24.04".to_string(),
+            version_codename: "noble".to_string(),
+        })
+        .unwrap();
+        let install = commands.join("\n");
+
+        assert!(install.contains(&format!(
+            "releases/download/v{PODMAN_STATIC_VERSION}/$asset"
+        )));
+        assert!(install.contains(PODMAN_STATIC_AMD64_SHA256));
+        assert!(install.contains(PODMAN_STATIC_ARM64_SHA256));
+        assert!(install.contains("sha256sum -c -"));
+        assert!(install.contains("cp -a --remove-destination"));
+        assert!(install.contains("test -e \"/etc/containers/$config\" || install"));
+        assert!(install.contains("99-jiji-static.conf"));
+        assert!(install.contains("runtime = \"/usr/local/bin/crun\""));
+        assert!(!install.contains("apt-get install -y -qq podman"));
+    }
+
+    #[test]
+    fn managed_static_configuration_pins_the_bundled_runtime() {
+        let command = super::podman_static_configuration_command();
+
+        assert!(command.contains("runtime = \"/usr/local/bin/crun\""));
+        assert!(command.contains("cgroup_manager = \"cgroupfs\""));
+        assert!(command.contains("log_driver = \"k8s-file\""));
     }
 }

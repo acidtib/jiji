@@ -10,7 +10,9 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::audit;
-use crate::deploy_transaction::{deploy_endpoint, EndpointDeploymentContext, EndpointOutcome};
+use crate::deploy_transaction::{
+    deploy_endpoint, EndpointDeploymentContext, EndpointOutcome, EndpointProgress,
+};
 use crate::{
     build_engine, build_executor, build_plan, container_runtime, engine, env_resolution, proxy,
     registry, ssh_adapter, version_tag,
@@ -191,6 +193,15 @@ pub async fn run(
             Ui::say(
                 &format!(
                     "{} {version} installed on {executor_identity}",
+                    config.builder.engine
+                ),
+                1,
+            );
+        }
+        if let Some(engine::EngineStatus::Upgraded { from, to }) = executor.engine_status() {
+            Ui::say(
+                &format!(
+                    "{} upgraded from {from} to {to} on {executor_identity}",
                     config.builder.engine
                 ),
                 1,
@@ -497,8 +508,12 @@ pub async fn run(
         let sessions = sessions.clone();
         let engine = config.builder.engine;
         let project_root = project_root.clone();
+        let progress = deploy_spinner.handle();
 
         service_futures.push(move || async move {
+            let progress: EndpointProgress = Arc::new(move |identity, detail| {
+                progress.set_message(&format!("Deploying {identity}: {detail}"));
+            });
             let mut outcomes = Vec::new();
             let mut sibling_failed = false;
             for endpoint in &endpoints {
@@ -524,6 +539,7 @@ pub async fn run(
                     project_root: &project_root,
                     skip_proxy,
                     max_dir_upload_bytes: DEFAULT_MAX_DIR_UPLOAD_BYTES,
+                    progress: Some(progress.clone()),
                 };
                 let outcome = deploy_endpoint(&ctx).await;
                 if !matches!(outcome, EndpointOutcome::Deployed { .. }) {

@@ -173,8 +173,25 @@ pub struct SpinnerGuard {
 }
 
 impl SpinnerGuard {
+    pub fn handle(&self) -> SpinnerHandle {
+        SpinnerHandle {
+            bar: self.bar.clone(),
+        }
+    }
+
     pub fn finish(&self, message: &str) {
         self.bar.finish_with_message(message.to_string());
+    }
+}
+
+#[derive(Clone)]
+pub struct SpinnerHandle {
+    bar: ProgressBar,
+}
+
+impl SpinnerHandle {
+    pub fn set_message(&self, message: &str) {
+        self.bar.set_message(message.to_string());
     }
 }
 
@@ -186,7 +203,8 @@ impl Drop for SpinnerGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::format_duration;
+    use super::{format_duration, SpinnerHandle};
+    use indicatif::ProgressBar;
     use std::time::Duration;
 
     #[test]
@@ -194,5 +212,15 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(81)), "81ms");
         assert_eq!(format_duration(Duration::from_millis(1_240)), "1.2s");
         assert_eq!(format_duration(Duration::from_millis(12_840)), "12s");
+    }
+
+    #[test]
+    fn spinner_handle_updates_the_shared_message() {
+        let bar = ProgressBar::hidden();
+        let handle = SpinnerHandle { bar: bar.clone() };
+
+        handle.set_message("waiting for health check");
+
+        assert_eq!(bar.message(), "waiting for health check");
     }
 }
