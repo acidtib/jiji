@@ -2,37 +2,75 @@ use jiji_tui::Ui;
 
 use super::{close_all, connect_targets, read_all};
 use crate::audit::{self, AuditStatus};
-use crate::lock;
+use crate::lock::{self, LockScope};
+
+/// Parses `--replica`/`--service`/`--scope` (mutually exclusive, enforced by clap) into the
+/// `LockScope` to release, defaulting to the project-maintenance lock `jiji lock` has always
+/// targeted when none are given.
+fn resolve_scope(
+    replica: Option<&str>,
+    service: Option<&str>,
+    scope: Option<&str>,
+) -> anyhow::Result<LockScope> {
+    if let Some(replica_id) = replica {
+        return Ok(LockScope::LogicalReplica {
+            replica_id: replica_id.to_string(),
+        });
+    }
+    if let Some(service) = service {
+        return Ok(LockScope::ServiceScale {
+            service: service.to_string(),
+        });
+    }
+    if let Some(scope) = scope {
+        return match scope {
+            "host-runtime" => Ok(LockScope::HostRuntime),
+            "proxy" => Ok(LockScope::HostGlobalProxy),
+            other => anyhow::bail!(
+                "Unknown --scope '{other}'. Use 'host-runtime' or 'proxy' (or --replica/--service for those scopes)."
+            ),
+        };
+    }
+    Ok(LockScope::ProjectMaintenance)
+}
 
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
     hosts: Option<&str>,
     services: Option<&str>,
+    replica: Option<&str>,
+    service: Option<&str>,
+    scope: Option<&str>,
 ) -> anyhow::Result<()> {
     Ui::section("Lock Release:");
     let started_at = std::time::Instant::now();
+    let target_scope = resolve_scope(replica, service, scope)?;
+    let explicit_scope = replica.is_some() || service.is_some() || scope.is_some();
 
     Ui::section("Connecting:");
     let targets = connect_targets(environment, config_file, hosts, services, false).await?;
 
-    Ui::section("Checking Existing Locks:");
-    let statuses = read_all(&targets).await?;
-    let locked_count = statuses.iter().filter(|(_, info)| info.is_some()).count();
-    if locked_count == 0 {
-        Ui::warn("No deployment locks found.");
-        close_all(&targets.sessions).await;
-        return Ok(());
+    if !explicit_scope {
+        Ui::section("Checking Existing Locks:");
+        let statuses = read_all(&targets).await?;
+        let locked_count = statuses.iter().filter(|(_, info)| info.is_some()).count();
+        if locked_count == 0 {
+            Ui::warn("No deployment locks found.");
+            close_all(&targets.sessions).await;
+            return Ok(());
+        }
     }
 
     Ui::section("Removing Lock Files:");
+    Ui::say(&format!("Scope: {target_scope}"), 1);
     let names: Vec<String> = targets.sessions.keys().cloned().collect();
     let operations: Vec<_> = names
         .iter()
         .map(|name| targets.sessions.get(name).expect("connected above").clone())
         .map(|session| {
-            let project = targets.project.clone();
-            move || async move { lock::force_remove_lock(&session, &project).await }
+            let path = target_scope.lock_path(&targets.project);
+            move || async move { lock::force_remove_lock(&session, &path).await }
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;
@@ -49,6 +87,8 @@ pub async fn run(
                     "lock_release",
                     AuditStatus::Success,
                     format!("released by {}", lock::current_user()),
+                    Some(&target_scope.to_string()),
+                    None,
                     Some(started_at.elapsed()),
                 )
                 .await;
@@ -70,4 +110,54 @@ pub async fn run(
 
     Ui::success("\nDeployment lock released.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_to_project_maintenance_when_nothing_is_given() {
+        assert_eq!(
+            resolve_scope(None, None, None).unwrap(),
+            LockScope::ProjectMaintenance
+        );
+    }
+
+    #[test]
+    fn replica_flag_selects_logical_replica_scope() {
+        assert_eq!(
+            resolve_scope(Some("web-abc123"), None, None).unwrap(),
+            LockScope::LogicalReplica {
+                replica_id: "web-abc123".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn service_flag_selects_service_scale_scope() {
+        assert_eq!(
+            resolve_scope(None, Some("web"), None).unwrap(),
+            LockScope::ServiceScale {
+                service: "web".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn scope_flag_accepts_host_runtime_and_proxy() {
+        assert_eq!(
+            resolve_scope(None, None, Some("host-runtime")).unwrap(),
+            LockScope::HostRuntime
+        );
+        assert_eq!(
+            resolve_scope(None, None, Some("proxy")).unwrap(),
+            LockScope::HostGlobalProxy
+        );
+    }
+
+    #[test]
+    fn scope_flag_rejects_an_unknown_value() {
+        assert!(resolve_scope(None, None, Some("bogus")).is_err());
+    }
 }

@@ -3,7 +3,9 @@
 #MISE dir="{{config_root}}"
 set -e
 
-cargo build --bin jiji_dev
+cargo build --bin jiji_dev --bin jiji-agent
 mkdir -p "$HOME/.local/bin"
 cp target/debug/jiji_dev "$HOME/.local/bin/jiji_dev"
+cp target/debug/jiji-agent "$HOME/.local/bin/jiji-agent"
 echo "Installed jiji_dev to $HOME/.local/bin/jiji_dev"
+echo "Installed jiji-agent to $HOME/.local/bin/jiji-agent"

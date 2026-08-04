@@ -62,12 +62,17 @@ pub async fn run(
         })?;
         let options = ssh_adapter::connect_options(&name, &named_server, &ssh)?;
         let engine = config.builder.engine;
-        let network = plan.enabled.then_some(proxy::ProxyNetwork {
-            bridge_name: server_plan.bridge_name.clone(),
-            bridge_interface: server_plan.bridge_interface.clone(),
-            proxy_address: server_plan.proxy_address,
-            dns_address: server_plan.dns_address,
-        });
+        let network = if plan.enabled {
+            Some(proxy::ProxyNetwork {
+                bridge_name: server_plan.bridge_name.clone(),
+                bridge_interface: server_plan.bridge_interface.clone(),
+                proxy_address: server_plan.proxy_address,
+                dns_address: server_plan.dns_address,
+                public_host: proxy::parse_public_host(server_plan)?,
+            })
+        } else {
+            None
+        };
         operations.push(move || async move {
             let result = async {
                 let session = SshSession::connect(&options).await?;

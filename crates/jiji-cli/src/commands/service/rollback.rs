@@ -7,10 +7,10 @@ use jiji_network::{NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
-use crate::commands::deploy::{select_target_endpoints, DEFAULT_MAX_DIR_UPLOAD_BYTES};
-use crate::deploy_transaction::{
-    deploy_endpoint, EndpointDeploymentContext, EndpointOutcome, EndpointProgress,
-};
+use crate::cascade::{add_cascaded_dependents, compute_service_waves, deploy_service_endpoints};
+use crate::commands::deploy::select_target_endpoints;
+use crate::deploy_transaction::EndpointOutcome;
+use crate::lock::{LockRequest, LockScope};
 use crate::{audit, container_runtime, env_resolution, proxy, registry, ssh_adapter, version_tag};
 
 /// Zero-downtime slot cycle onto a specific, already-published image tag: builds on the same
@@ -72,7 +72,29 @@ pub async fn run(
         );
     }
 
-    let selected = select_target_endpoints(&plan, hosts, services)?;
+    let mut selected: Vec<ServiceEndpointPlan> = select_target_endpoints(&plan, hosts, services)?
+        .into_iter()
+        .cloned()
+        .collect();
+    let mut replica_ids: BTreeMap<String, String> = BTreeMap::new();
+    for endpoint in &selected {
+        let service = config
+            .services
+            .get(&endpoint.service)
+            .expect("checked by select_target_endpoints");
+        let replica_id = crate::placement::endpoint_replica_id(
+            &plan.project,
+            &endpoint.service,
+            service,
+            &endpoint.server,
+        )
+        .expect("selected endpoint is eligible for its service");
+        replica_ids.insert(endpoint.identity.clone(), replica_id);
+    }
+    // A rolled-back upstream's `network_mode: service:<upstream>` dependents must be rolled back
+    // too in the same invocation, in the same order `jiji deploy` cascades them -- see
+    // `add_cascaded_dependents`.
+    add_cascaded_dependents(&config, &plan, &mut selected, &mut replica_ids)?;
     Ui::say(
         &format!(
             "Rolling back {} endpoint(s) to version '{version}': {}",
@@ -88,7 +110,8 @@ pub async fn run(
 
     // Resolved purely from configuration before any network I/O, so a bad `image:`/`build:` setup
     // (e.g. an already-tagged image with no room for `--version`) fails fast instead of after
-    // reconciling the network or connecting to hosts.
+    // reconciling the network or connecting to hosts. Computed after cascading, so a cascaded-in
+    // dependent's own image gets resolved too.
     Ui::section("Resolving Images:");
     let selected_service_names: BTreeSet<String> = selected
         .iter()
@@ -108,47 +131,8 @@ pub async fn run(
         images.insert(service_name.clone(), image);
     }
 
-    crate::commands::lock::with_deployment_lock(
-        environment,
-        config_file,
-        hosts,
-        &config.project,
-        format!(
-            "jiji service rollback: {} to {version}",
-            selected_service_names
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        lock_options,
-        || async {
-    // Rollback still performs a VIP cutover, so the installed network generation must be current
-    // first -- same precondition `jiji deploy`/`jiji service restart` enforce.
-    crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
-
-    let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded_env, loaded_from) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
-    if let Some(loaded_from) = &loaded_from {
-        Ui::say(
-            &format!("Environment loaded from: {}", loaded_from.display()),
-            1,
-        );
-    }
-
-    let shared_env = config.environment.clone().unwrap_or_default();
-    let mut resolved_envs: BTreeMap<String, env_resolution::ResolvedEnvironment> = BTreeMap::new();
-    for service_name in &selected_service_names {
-        let service = config.services.get(service_name).expect("checked above");
-        let merged = env_resolution::merge_environment(&shared_env, &service.environment);
-        let resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
-            .with_context(|| {
-                format!("Could not resolve environment for service '{service_name}'")
-            })?;
-        resolved_envs.insert(service_name.clone(), resolved);
-    }
-
+    // Connect once, before locking: only the servers actually hosting a selected endpoint, never
+    // every configured server.
     let server_names: BTreeSet<String> = selected.iter().map(|e| e.server.clone()).collect();
     let mut named_servers: Vec<(String, NamedServer)> = server_names
         .iter()
@@ -202,165 +186,274 @@ pub async fn run(
         );
     }
 
-    Ui::section("Verifying Proxy:");
-    for (server_name, session) in &sessions {
-        let serves_proxy = selected.iter().any(|endpoint| {
-            &endpoint.server == server_name
-                && config
-                    .services
-                    .get(&endpoint.service)
-                    .and_then(|service| service.proxy.as_ref())
-                    .is_some()
-        });
-        if !serves_proxy {
-            continue;
-        }
-        let server_plan = &plan.servers[server_name];
-        let network = Some(proxy::ProxyNetwork {
-            bridge_name: server_plan.bridge_name.clone(),
-            bridge_interface: server_plan.bridge_interface.clone(),
-            proxy_address: server_plan.proxy_address,
-            dns_address: server_plan.dns_address,
-        });
-        if let Err(error) =
-            proxy::ensure_proxy(session, config.builder.engine, network, false).await
-        {
-            close_all(&sessions).await;
-            return Err(error.context(format!("kamal-proxy is not ready on '{server_name}'")));
-        }
-    }
-
-    let rollback_spinner = Ui::spinner(&format!("Rolling back {} endpoint(s)", selected.len()));
-    let engine = config.builder.engine;
-    let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
+    let mut lock_requests: Vec<LockRequest> = Vec::new();
     for endpoint in &selected {
-        endpoints_by_service
-            .entry(endpoint.service.clone())
-            .or_default()
-            .push((*endpoint).clone());
-    }
-
-    let mut service_futures = Vec::new();
-    for (service_name, endpoints) in endpoints_by_service {
         let service = config
             .services
-            .get(&service_name)
-            .expect("checked above")
+            .get(&endpoint.service)
+            .expect("checked above when connecting");
+        let replica_id = replica_ids
+            .get(&endpoint.identity)
+            .expect("computed above")
             .clone();
-        let resolved_env = resolved_envs
-            .get(&service_name)
-            .expect("resolved above")
-            .clone();
-        let plan = plan.clone();
-        let sessions = sessions.clone();
-        let images = images.clone();
-        let project_root = project_root.clone();
-        let progress = rollback_spinner.handle();
-
-        service_futures.push(move || async move {
-            let progress: EndpointProgress = Arc::new(move |identity, detail| {
-                progress.set_message(&format!("Rolling back {identity}: {detail}"));
-            });
-            let mut outcomes = Vec::new();
-            let mut sibling_failed = false;
-            for endpoint in &endpoints {
-                if sibling_failed {
-                    outcomes.push((
-                        endpoint.identity.clone(),
-                        EndpointOutcome::SkippedAfterSiblingFailure,
-                    ));
-                    continue;
-                }
-                let session = sessions.get(&endpoint.server).expect("connected above");
-                let server = &plan.servers[&endpoint.server];
-                let image = images.get(&service_name).expect("resolved above");
-                let ctx = EndpointDeploymentContext {
-                    session,
-                    plan: &plan,
-                    server,
-                    endpoint,
-                    service_name: &service_name,
-                    service: &service,
-                    engine,
-                    image,
-                    resolved_env: &resolved_env,
-                    project_root: &project_root,
-                    skip_proxy: false,
-                    max_dir_upload_bytes: DEFAULT_MAX_DIR_UPLOAD_BYTES,
-                    progress: Some(progress.clone()),
-                };
-                let outcome = deploy_endpoint(&ctx).await;
-                if !matches!(outcome, EndpointOutcome::Deployed { .. }) {
-                    sibling_failed = true;
-                }
-                outcomes.push((endpoint.identity.clone(), outcome));
-            }
-            outcomes
-        });
+        lock_requests.push(LockRequest::new(
+            LockScope::LogicalReplica { replica_id },
+            endpoint.server.clone(),
+        ));
+        if service.proxy.is_some() {
+            lock_requests.push(LockRequest::new(
+                LockScope::HostGlobalProxy,
+                endpoint.server.clone(),
+            ));
+        }
     }
 
-    let results = pool.execute_concurrent(service_futures).await;
-    drop(rollback_spinner);
-
-    let server_by_identity: BTreeMap<String, String> = selected
-        .iter()
-        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
-        .collect();
-    let endpoint_outcomes = results.iter().flatten().map(|(identity, outcome)| {
-        (
-            identity.clone(),
-            server_by_identity
-                .get(identity)
-                .expect("every rolled-back identity was selected above")
-                .clone(),
-            matches!(outcome, EndpointOutcome::Deployed { .. }),
-        )
-    });
-    audit::record_endpoints_by_server(
+    let rollback_result = crate::commands::lock::with_locks(
+        &pool,
         &sessions,
-        &plan.project,
-        "service_rollback",
-        Some(&format!("version '{version}'")),
-        endpoint_outcomes,
-        Some(started_at.elapsed()),
+        &config.project,
+        lock_requests,
+        format!(
+            "jiji service rollback: {} to {version}",
+            selected_service_names
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        lock_options,
+        || async {
+            // Rollback still performs a VIP cutover, so the installed network generation must be current
+            // first -- same precondition `jiji deploy`/`jiji service restart` enforce.
+            crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
+
+            let project_root = env_resolution::project_root_from_config_path(&path);
+            let (loaded_env, loaded_from) = env_resolution::load_env_file(
+                &project_root,
+                environment,
+                config.secrets_path.as_deref(),
+            )?;
+            if let Some(loaded_from) = &loaded_from {
+                Ui::say(
+                    &format!("Environment loaded from: {}", loaded_from.display()),
+                    1,
+                );
+            }
+
+            let shared_env = config.environment.clone().unwrap_or_default();
+            let mut resolved_envs: BTreeMap<String, env_resolution::ResolvedEnvironment> =
+                BTreeMap::new();
+            for service_name in &selected_service_names {
+                let service = config.services.get(service_name).expect("checked above");
+                let merged = env_resolution::merge_environment(&shared_env, &service.environment);
+                let resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
+                    .with_context(|| {
+                        format!("Could not resolve environment for service '{service_name}'")
+                    })?;
+                resolved_envs.insert(service_name.clone(), resolved);
+            }
+
+            Ui::section("Verifying Proxy:");
+            for (server_name, session) in &sessions {
+                let serves_proxy = selected.iter().any(|endpoint| {
+                    &endpoint.server == server_name
+                        && config
+                            .services
+                            .get(&endpoint.service)
+                            .and_then(|service| service.proxy.as_ref())
+                            .is_some()
+                });
+                if !serves_proxy {
+                    continue;
+                }
+                let server_plan = &plan.servers[server_name];
+                let network = Some(proxy::ProxyNetwork {
+                    bridge_name: server_plan.bridge_name.clone(),
+                    bridge_interface: server_plan.bridge_interface.clone(),
+                    proxy_address: server_plan.proxy_address,
+                    dns_address: server_plan.dns_address,
+                    public_host: proxy::parse_public_host(server_plan)?,
+                });
+                if let Err(error) =
+                    proxy::ensure_proxy(session, config.builder.engine, network, false).await
+                {
+                    return Err(
+                        error.context(format!("kamal-proxy is not ready on '{server_name}'"))
+                    );
+                }
+            }
+
+            let rollback_spinner =
+                Ui::spinner(&format!("Rolling back {} endpoint(s)", selected.len()));
+            let engine = config.builder.engine;
+            let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> =
+                BTreeMap::new();
+            for endpoint in &selected {
+                endpoints_by_service
+                    .entry(endpoint.service.clone())
+                    .or_default()
+                    .push((*endpoint).clone());
+            }
+
+            // A rolled-back upstream's cascaded dependents must be rolled back strictly after it,
+            // in a second dispatch wave -- see `compute_service_waves`.
+            let (dependents_of, wave_one, wave_two) =
+                compute_service_waves(&config, endpoints_by_service);
+
+            let build_wave =
+                |endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>>,
+                 presumed_failed: &BTreeMap<String, bool>| {
+                    endpoints_by_service
+                        .into_iter()
+                        .map(|(service_name, endpoints)| {
+                            let service = config
+                                .services
+                                .get(&service_name)
+                                .expect("checked above")
+                                .clone();
+                            let image = images.get(&service_name).expect("resolved above").clone();
+                            let images_by_identity: BTreeMap<String, String> = endpoints
+                                .iter()
+                                .map(|endpoint| (endpoint.identity.clone(), image.clone()))
+                                .collect();
+                            let resolved_env = resolved_envs
+                                .get(&service_name)
+                                .expect("resolved above")
+                                .clone();
+                            let plan = plan.clone();
+                            let sessions = sessions.clone();
+                            let replica_ids = replica_ids.clone();
+                            let project_root = project_root.clone();
+                            let progress = rollback_spinner.handle();
+                            let force_skip_proxy = dependents_of.contains_key(&service_name);
+                            let presumed_failed = presumed_failed
+                                .get(
+                                    config.services[&service_name]
+                                        .network_mode_dependency()
+                                        .unwrap_or_default(),
+                                )
+                                .copied()
+                                .unwrap_or(false);
+
+                            move || {
+                                deploy_service_endpoints(
+                                    sessions,
+                                    plan,
+                                    replica_ids,
+                                    service_name,
+                                    service,
+                                    images_by_identity,
+                                    resolved_env,
+                                    project_root,
+                                    engine,
+                                    force_skip_proxy,
+                                    endpoints,
+                                    progress,
+                                    presumed_failed,
+                                    "Rolling back",
+                                )
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+
+            let mutation_pool = SshPool::new(
+                if selected
+                    .iter()
+                    .any(|endpoint| config.services[&endpoint.service].proxy.is_some())
+                {
+                    1
+                } else {
+                    ssh.max_concurrent_starts as usize
+                },
+            );
+            let wave_one_futures = build_wave(wave_one, &BTreeMap::new());
+            let wave_one_tagged = mutation_pool.execute_concurrent(wave_one_futures).await;
+            let upstream_failed: BTreeMap<String, bool> = wave_one_tagged
+                .iter()
+                .map(|(service_name, outcomes)| {
+                    let failed = !outcomes
+                        .iter()
+                        .all(|(_, outcome)| matches!(outcome, EndpointOutcome::Deployed { .. }));
+                    (service_name.clone(), failed)
+                })
+                .collect();
+            let wave_two_futures = build_wave(wave_two, &upstream_failed);
+            let wave_two_tagged = mutation_pool.execute_concurrent(wave_two_futures).await;
+            let results: Vec<Vec<(String, EndpointOutcome)>> = wave_one_tagged
+                .into_iter()
+                .chain(wave_two_tagged)
+                .map(|(_service_name, outcomes)| outcomes)
+                .collect();
+            drop(rollback_spinner);
+
+            let server_by_identity: BTreeMap<String, String> = selected
+                .iter()
+                .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+                .collect();
+            let endpoint_outcomes = results.iter().flatten().map(|(identity, outcome)| {
+                (
+                    identity.clone(),
+                    server_by_identity
+                        .get(identity)
+                        .expect("every rolled-back identity was selected above")
+                        .clone(),
+                    matches!(outcome, EndpointOutcome::Deployed { .. }),
+                    match outcome {
+                        EndpointOutcome::Deployed { deployment_id, .. } => {
+                            Some(deployment_id.clone())
+                        }
+                        _ => None,
+                    },
+                )
+            });
+            audit::record_endpoints_by_server(
+                &sessions,
+                &plan.project,
+                "service_rollback",
+                Some(&format!("version '{version}'")),
+                endpoint_outcomes,
+                true,
+                Some(started_at.elapsed()),
+            )
+            .await;
+
+            Ui::progress("Rolling back", selected.len(), selected.len());
+            let mut failures = 0usize;
+            for outcomes in &results {
+                for (identity, outcome) in outcomes {
+                    match outcome {
+                        EndpointOutcome::Deployed { deployment_id, .. } => {
+                            Ui::result_ok(
+                                &format!("{identity}:"),
+                                &format!("rolled back to '{version}' ({})", &deployment_id[..12]),
+                            );
+                        }
+                        EndpointOutcome::Failed { error } => {
+                            Ui::result_error(&format!("{identity}:"), error);
+                            failures += 1;
+                        }
+                        EndpointOutcome::SkippedAfterSiblingFailure => {
+                            Ui::result_warn(
+                                &format!("{identity}:"),
+                                "skipped after a sibling replica failed",
+                            );
+                            failures += 1;
+                        }
+                    }
+                }
+            }
+
+            if failures > 0 {
+                anyhow::bail!("Rollback failed for {failures} endpoint(s); see the summary above.");
+            }
+
+            Ok(())
+        },
     )
     .await;
     close_all(&sessions).await;
-
-    Ui::progress("Rolling back", selected.len(), selected.len());
-    let mut failures = 0usize;
-    for outcomes in &results {
-        for (identity, outcome) in outcomes {
-            match outcome {
-                EndpointOutcome::Deployed { candidate_slot } => {
-                    Ui::result_ok(
-                        &format!("{identity}:"),
-                        &format!("rolled back to '{version}' (slot {candidate_slot})"),
-                    );
-                }
-                EndpointOutcome::Failed { error } => {
-                    Ui::result_error(&format!("{identity}:"), error);
-                    failures += 1;
-                }
-                EndpointOutcome::SkippedAfterSiblingFailure => {
-                    Ui::result_warn(
-                        &format!("{identity}:"),
-                        "skipped after a sibling replica failed",
-                    );
-                    failures += 1;
-                }
-            }
-        }
-    }
-
-    if failures > 0 {
-        anyhow::bail!("Rollback failed for {failures} endpoint(s); see the summary above.");
-    }
-
-    Ok(())
-        },
-    )
-    .await?;
+    rollback_result?;
     Ui::success_elapsed("Rollback completed.", started_at.elapsed());
     Ok(())
 }

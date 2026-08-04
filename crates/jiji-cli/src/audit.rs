@@ -57,6 +57,19 @@ pub struct AuditEntry {
     /// this field existed, or from a call site that doesn't track a start time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// The lock scope(s) (see `crate::lock::LockScope`'s `Display`, e.g. `"replica:web-abc123"`,
+    /// `"service-scale:web"`, `"host-runtime"`, `"project-maintenance"`, `"proxy"`) held while this
+    /// action ran, if any -- a comma-joined list when a single server-level entry summarizes
+    /// several locks. `None` for entries written before this field existed, or from an action that
+    /// takes no lock (e.g. `service prune`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_scope: Option<String>,
+    /// The single deployment ID this entry summarizes, when exactly one is unambiguous. `None`
+    /// for entries written before this field existed, for actions with no single deployment
+    /// (e.g. a batch `service_scale`/`service_remove` summary), or when a server-level entry
+    /// covers more than one deployment/replica.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
 }
 
 impl AuditEntry {
@@ -76,7 +89,19 @@ impl AuditEntry {
             actor: crate::lock::current_user(),
             message: message.into(),
             duration_ms: duration.map(|d| d.as_millis() as u64),
+            lock_scope: None,
+            deployment_id: None,
         }
+    }
+
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.lock_scope = Some(scope.into());
+        self
+    }
+
+    pub fn with_deployment_id(mut self, deployment_id: impl Into<String>) -> Self {
+        self.deployment_id = Some(deployment_id.into());
+        self
     }
 }
 
@@ -138,15 +163,24 @@ pub async fn append_entry(
 /// not a correctness gate -- a write failure here must never mask, override, or block the outcome
 /// of the command it's recording, so every call site can fire-and-forget this instead of threading
 /// its own error handling through.
+#[allow(clippy::too_many_arguments)]
 pub async fn record(
     session: &SshSession,
     project: &str,
     action: &str,
     status: AuditStatus,
     message: impl Into<String>,
+    scope: Option<&str>,
+    deployment_id: Option<&str>,
     duration: Option<Duration>,
 ) {
-    let entry = AuditEntry::new(action, status, message, duration);
+    let mut entry = AuditEntry::new(action, status, message, duration);
+    if let Some(scope) = scope {
+        entry = entry.with_scope(scope);
+    }
+    if let Some(deployment_id) = deployment_id {
+        entry = entry.with_deployment_id(deployment_id);
+    }
     if let Err(error) = append_entry(session, project, &entry).await {
         Ui::warn(&format!(
             "Could not write audit entry ({action}) on {}: {error}",
@@ -155,42 +189,67 @@ pub async fn record(
     }
 }
 
-/// Groups `(identity, server, succeeded)` triples by server and writes one audit entry per server
-/// via `record`, summarizing every endpoint touched on that server during this run -- the shared
-/// tail end of `jiji deploy`/`service restart`/`service rollback`, which all drive the same
-/// per-endpoint `deploy_transaction::deploy_endpoint` primitive and just differ in what image they
-/// deploy. Must be called before the caller closes `sessions`: the write reuses the same SSH
-/// session the command itself just used. A server with no session open (shouldn't happen -- every
-/// endpoint's server was connected to reach this point) is silently skipped rather than panicking,
-/// since a missing audit entry must never be treated as more severe than the command's own result.
+/// Groups `(identity, server, succeeded, deployment_id)` quadruples by server and writes one audit
+/// entry per server via `record`, summarizing every endpoint touched on that server during this
+/// run -- the shared tail end of `jiji deploy`/`service restart`/`service rollback`/`service
+/// remove`, which all drive the same per-endpoint `deploy_transaction::deploy_endpoint` primitive
+/// (or, for remove, an equivalent per-replica teardown) and just differ in what they do to each
+/// endpoint. When `locks_replicas` is true (deploy/restart/rollback/remove, which all actually
+/// hold a `LogicalReplica` lock per identity), `lock_scope` is derived from each identity's own
+/// `{project}:{service}:{replica_id}` shape, joined when a server entry covers several identities;
+/// `service prune` passes `false` since it takes no lock at all, so its entries get no scope
+/// label. `deployment_id` is populated only when the server entry covers exactly one identity,
+/// since it would otherwise be ambiguous. Must be called before the caller closes `sessions`: the
+/// write reuses the same SSH session the command itself just used. A server with no session open
+/// (shouldn't happen -- every endpoint's server was connected to reach this point) is silently
+/// skipped rather than panicking, since a missing audit entry must never be treated as more severe
+/// than the command's own result.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_endpoints_by_server(
     sessions: &BTreeMap<String, Arc<SshSession>>,
     project: &str,
     action: &str,
     detail: Option<&str>,
-    outcomes: impl IntoIterator<Item = (String, String, bool)>,
+    outcomes: impl IntoIterator<Item = (String, String, bool, Option<String>)>,
+    locks_replicas: bool,
     duration: Option<Duration>,
 ) {
-    let mut by_server: BTreeMap<String, Vec<(String, bool)>> = BTreeMap::new();
-    for (identity, server, succeeded) in outcomes {
+    let mut by_server: BTreeMap<String, Vec<(String, bool, Option<String>)>> = BTreeMap::new();
+    for (identity, server, succeeded, deployment_id) in outcomes {
         by_server
             .entry(server)
             .or_default()
-            .push((identity, succeeded));
+            .push((identity, succeeded, deployment_id));
     }
     for (server_name, endpoint_results) in &by_server {
         let Some(session) = sessions.get(server_name) else {
             continue;
         };
-        let all_succeeded = endpoint_results.iter().all(|(_, ok)| *ok);
+        let all_succeeded = endpoint_results.iter().all(|(_, ok, _)| *ok);
         let identities = endpoint_results
             .iter()
-            .map(|(identity, ok)| format!("{identity}{}", if *ok { "" } else { " (failed)" }))
+            .map(|(identity, ok, _)| format!("{identity}{}", if *ok { "" } else { " (failed)" }))
             .collect::<Vec<_>>()
             .join(", ");
         let summary = match detail {
             Some(detail) => format!("{detail}: {identities}"),
             None => identities,
+        };
+        let scope = locks_replicas.then(|| {
+            endpoint_results
+                .iter()
+                .map(|(identity, _, _)| {
+                    format!(
+                        "replica:{}",
+                        identity.rsplit(':').next().unwrap_or(identity)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        let deployment_id = match endpoint_results.as_slice() {
+            [(_, _, Some(deployment_id))] => Some(deployment_id.as_str()),
+            _ => None,
         };
         record(
             session,
@@ -202,6 +261,8 @@ pub async fn record_endpoints_by_server(
                 AuditStatus::Failed
             },
             summary,
+            scope.as_deref(),
+            deployment_id,
             duration,
         )
         .await;
@@ -318,6 +379,32 @@ mod tests {
             r#"{"timestamp":1,"action":"deploy","status":"success","actor":"x","message":"m"}"#;
         let parsed: AuditEntry = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.duration_ms, None);
+        assert_eq!(parsed.lock_scope, None);
+        assert_eq!(parsed.deployment_id, None);
+    }
+
+    #[test]
+    fn with_scope_and_with_deployment_id_round_trip_through_json() {
+        let entry = AuditEntry::new(
+            "deploy",
+            AuditStatus::Success,
+            "demo:web:app deployed",
+            None,
+        )
+        .with_scope("replica:web-abc123")
+        .with_deployment_id("abcdef1234567890");
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.lock_scope.as_deref(), Some("replica:web-abc123"));
+        assert_eq!(parsed.deployment_id.as_deref(), Some("abcdef1234567890"));
+    }
+
+    #[test]
+    fn entries_without_scope_or_deployment_id_omit_them_from_json() {
+        let entry = AuditEntry::new("service_prune", AuditStatus::Success, "pruned", None);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("lock_scope"));
+        assert!(!json.contains("deployment_id"));
     }
 
     #[test]

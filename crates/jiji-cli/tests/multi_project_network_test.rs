@@ -114,13 +114,12 @@ impl server::Handler for TestServer {
             .filter(|received| *received == &command)
             .count();
 
-        // `capture_installed_generation`'s combined `if test -L ...` command needs exactly two
-        // lines of output (see `network::setup::parse_installed_generation`) regardless of which
+        // `capture_installed_generation` needs exactly one line of output regardless of which
         // project's slug it's checking -- a plain default-success empty response would otherwise
         // break every setup run, not just this test (mirrors `server_setup_test.rs`'s identical
         // special case).
         let response = if command.contains("if test -L ") && command.contains("/current") {
-            success("-\n-\n")
+            success("-\n")
         } else {
             self.responses
                 .get(&format!("{command}#{occurrence}"))

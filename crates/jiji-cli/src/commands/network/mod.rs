@@ -1,3 +1,10 @@
+pub mod assess;
+pub mod backup;
 pub(crate) mod bridge;
+pub mod catalog;
+pub mod compact;
+pub mod diagnostics;
+pub mod import;
+pub mod membership;
 pub mod plan;
 pub mod setup;

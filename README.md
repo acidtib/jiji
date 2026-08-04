@@ -115,9 +115,10 @@ Full guides, configuration reference, and troubleshooting: **[jiji.run/docs](htt
 
 ## Development
 
-This is a Cargo workspace with six crates in `crates/`: `jiji-core`,
-`jiji-tui`, `jiji-config`, `jiji-network`, `jiji-ssh`, `jiji-cli` (binary name
-`jiji`, plus a `jiji_dev` binary for local iteration).
+This is a Cargo workspace with seven crates in `crates/`: `jiji-core`,
+`jiji-tui`, `jiji-config`, `jiji-network`, `jiji-ssh`, `jiji-agent`,
+`jiji-cli` (binary name `jiji`, plus a `jiji_dev` binary for local
+iteration).
 
 ```bash
 # Run the CLI

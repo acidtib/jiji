@@ -409,6 +409,8 @@ mod tests {
                 actor: "a".into(),
                 message: "ok".into(),
                 duration_ms: Some(100),
+                lock_scope: None,
+                deployment_id: None,
             },
             AuditEntry {
                 timestamp: 2,
@@ -417,6 +419,8 @@ mod tests {
                 actor: "a".into(),
                 message: "failed".into(),
                 duration_ms: None,
+                lock_scope: None,
+                deployment_id: None,
             },
         ];
         let row = summarize(entries.iter());

@@ -8,6 +8,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use jiji_agent::AgentPaths;
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
@@ -96,7 +97,7 @@ impl server::Handler for TestServer {
         // Commands with no canned response (e.g. the many install-step shell commands a test
         // doesn't care about individually) succeed with empty output by default.
         let response = if command.contains("if test -L ") && command.contains("/current") {
-            success("-\n-\n")
+            success("-\n")
         } else if command.contains("inspect kamal-proxy --format '{{.State.Status}}'") {
             success("running\n")
         } else {
@@ -172,8 +173,14 @@ fn add_network_setup_responses(responses: &mut HashMap<String, CannedResponse>) 
         "/etc/jiji/network/{}",
         jiji_network::systemd_unit_slug("testproject")
     );
+    let command = format!("test -s {dir}/public.key && cat {dir}/public.key");
+    responses.insert(command.clone(), success("test-wireguard-public-key\n"));
     responses.insert(
-        format!("test -s {dir}/public.key && cat {dir}/public.key"),
+        format!("{command}#2"),
+        success("test-wireguard-public-key\n"),
+    );
+    responses.insert(
+        format!("cat {dir}/public.key"),
         success("test-wireguard-public-key\n"),
     );
 }
@@ -352,6 +359,133 @@ async fn reports_an_already_installed_engine() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let binary_path = dir.path().join("fake-jiji-agent");
+    std::fs::write(&binary_path, b"fake agent bytes").expect("write fake agent binary");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env("JIJI_AGENT_BINARY", &binary_path)
+        .output()
+        .expect("run jiji server setup");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let paths = AgentPaths::default_for_project("testproject");
+    let commands = received.lock().unwrap().clone();
+    assert!(
+        commands.iter().any(|c| c.starts_with("install -d -m 0700 ")
+            && c.contains(&paths.project_dir.display().to_string())),
+        "expected agent directories to be created: {commands:?}"
+    );
+    assert!(
+        commands.contains(&format!(
+            "install -m 0755 /dev/stdin {}",
+            paths.binary_path.display()
+        )),
+        "expected the agent binary to be uploaded: {commands:?}"
+    );
+    assert!(
+        commands.contains(&format!(
+            "install -m 0644 /dev/stdin {}",
+            paths.unit_path.display()
+        )),
+        "expected the agent systemd unit to be written: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains(&format!("systemctl enable --now {}", paths.unit_name))),
+        "expected the agent unit to be enabled and started: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_agent_binary_fails_authoritative_server_setup() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    // Points `JIJI_AGENT_BINARY` at a path that doesn't exist rather than unsetting it: this
+    // process's own working tree already has a real `jiji-agent` built next to `jiji` in
+    // `target/debug/`, which is the intended production discovery path
+    // (`find_local_agent_binary`'s current-exe fallback) and would otherwise make this "no
+    // binary available" scenario unreachable in-repo.
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env("JIJI_AGENT_BINARY", dir.path().join("does-not-exist"))
+        .output()
+        .expect("run jiji server setup");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Phase 3 requires the authoritative jiji agent"),
+        "stdout: {stdout}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let commands = received.lock().unwrap().clone();
+    assert!(
+        !commands.iter().any(|c| c.contains("/etc/jiji/agent/")),
+        "no agent commands should be sent without the required binary: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_address() {
     // `write_config` names the server `web1` with a loopback test-server address as its `host:`
     // -- `-H web1` must match the config-key name (mirroring `NetworkPlan::select_hosts`'s
@@ -399,7 +533,7 @@ async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_addre
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn filtered_setup_reconciles_changed_network_on_every_host_but_limits_engine_and_proxy() {
+async fn filtered_setup_bootstraps_from_one_seed_without_reconciling_that_seed() {
     let client_key =
         PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
     let mut responses = HashMap::new();
@@ -447,15 +581,21 @@ async fn filtered_setup_reconciles_changed_network_on_every_host_but_limits_engi
         "the selected host must receive engine setup: {new_commands:?}"
     );
     assert!(
+        !existing_commands
+            .iter()
+            .any(|command| command.contains("wireguard.conf.input")),
+        "the seed must not have its network generation rewritten: {existing_commands:?}"
+    );
+    assert!(
         existing_commands
             .iter()
-            .any(|command| command.contains("jiji-network-restore-testproject-")),
-        "a stale topology must reconcile the existing host too: {existing_commands:?}"
+            .any(|command| command.contains("public.key")),
+        "the selected host must obtain the reachable seed's public key: {existing_commands:?}"
     );
     assert!(
         new_commands
             .iter()
-            .any(|command| command.contains("jiji-network-restore-testproject-")),
+            .any(|command| command.contains("wireguard.conf.input")),
         "a stale topology must reconcile the selected host: {new_commands:?}"
     );
     assert!(
@@ -469,6 +609,66 @@ async fn filtered_setup_reconciles_changed_network_on_every_host_but_limits_engi
             .iter()
             .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"),
         "the selected host must receive proxy setup: {new_commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn filtered_setup_enrolls_the_new_host_as_a_live_peer_on_the_seeds_own_interface() {
+    // Confirmed live (2026-07-30): before this fix, a targeted `-H new-host` run only ever staged
+    // the *new* host's own generation -- the seed's own WireGuard interface was never touched, so
+    // it never dialed out to the new host first. For a cloud+home mixed topology this broke
+    // connectivity outright: WireGuard can only learn a NATed peer's real, currently-routable
+    // endpoint from that peer's own first packet (its built-in endpoint roaming), so a brand-new
+    // server whose seed sits behind NAT with a private-LAN `host:` address could never reach that
+    // seed at all until the seed reached out first.
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (existing_addr, existing_received) =
+        spawn_test_server(client_key.public_key().clone(), responses.clone()).await;
+    let (new_addr, _new_received) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_two_server_config(dir.path(), existing_addr, new_addr, &key_path);
+
+    let output = run_jiji_server_setup_with_hosts(&config_path, "new-host");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let existing_commands = existing_received.lock().expect("received mutex poisoned");
+    assert!(
+        existing_commands.iter().any(|command| command
+            .starts_with("wg set ")
+            && command.contains("peer test-wireguard-public-key")
+            && command.contains("endpoint 127.0.0.1:")
+            && command.contains("persistent-keepalive 25")),
+        "the seed should receive a live `wg set` adding the new host as a peer: {existing_commands:?}"
+    );
+    assert!(
+        !existing_commands
+            .iter()
+            .any(|command| command.contains("wireguard.conf.input")),
+        "enrolling the new peer must not rewrite the seed's own generation: {existing_commands:?}"
     );
 }
 

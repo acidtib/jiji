@@ -2,17 +2,31 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use jiji_config::ContainerEngine;
+use jiji_network::CONTAINER_NAME;
 use jiji_ssh::SshSession;
 
-pub(crate) const CONTAINER_NAME: &str = "kamal-proxy";
-const IMAGE: &str = "ghcr.io/acidtib/kamal-proxy:jiji";
-// `pub(crate)`: reused by `crate::proxy_teardown` to clean these up when kamal-proxy itself is
-// torn down (no project needs it anymore).
-pub(crate) const CONFIG_VOLUME: &str = "kamal-proxy-config";
-pub(crate) const CERTS_DIR: &str = "/etc/jiji/certs";
-// `pub(crate)`: `proxy_ingress` needs the same ports for its Docker-only nftables DNAT workaround.
-pub(crate) const INTERNAL_HTTP_PORT: u16 = 8080;
-pub(crate) const INTERNAL_HTTPS_PORT: u16 = 8443;
+fn engine_kind(engine: ContainerEngine) -> jiji_network::BridgeEngineKind {
+    match engine {
+        ContainerEngine::Docker => jiji_network::BridgeEngineKind::Docker,
+        ContainerEngine::Podman => jiji_network::BridgeEngineKind::Podman,
+    }
+}
+
+/// `ProxyNetwork::public_host` needs a parsed address (used to scope the ingress nftables DNAT to
+/// traffic actually addressed to this server), while `ServerPlan::public_host` is a plain `String`
+/// (WireGuard enrollment already requires it to be a literal public IPv4 address whenever private
+/// networking is enabled, but nothing enforces that when it isn't).
+pub(crate) fn parse_public_host(
+    server_plan: &jiji_network::ServerPlan,
+) -> anyhow::Result<Ipv4Addr> {
+    server_plan.public_host.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Server '{}' host '{}' must be a public IPv4 address for kamal-proxy's ingress rule",
+            server_plan.name,
+            server_plan.public_host
+        )
+    })
+}
 
 pub enum ProxyStatus {
     AlreadyRunning,
@@ -29,6 +43,10 @@ pub struct ProxyNetwork {
     pub bridge_interface: String,
     pub proxy_address: Ipv4Addr,
     pub dns_address: Ipv4Addr,
+    /// This server's own public IP -- the ingress nftables rule restricts its DNAT to traffic
+    /// actually addressed here, so it never hijacks cross-host mesh traffic merely passing through
+    /// this host's `prerouting` hook on its way to a different peer (see `proxy_ingress.rs`).
+    pub public_host: Ipv4Addr,
 }
 
 /// Ensures kamal-proxy is running with the current image/engine, and (if `network` is given)
@@ -58,7 +76,7 @@ pub async fn ensure_proxy(
     network: Option<ProxyNetwork>,
     force: bool,
 ) -> anyhow::Result<ProxyStatus> {
-    let fingerprint = config_fingerprint(engine);
+    let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
     let status = if !force && is_current_and_running(session, engine, &fingerprint).await? {
         ProxyStatus::AlreadyRunning
     } else {
@@ -82,7 +100,12 @@ pub async fn ensure_proxy(
         // bridge networks. Re-applied on every call, from any project sharing this host, so it
         // self-heals and always targets a currently-attached address.
         if engine == ContainerEngine::Docker {
-            crate::proxy_ingress::ensure_ingress_rule(session, network.proxy_address).await?;
+            crate::proxy_ingress::ensure_ingress_rule(
+                session,
+                network.proxy_address,
+                network.public_host,
+            )
+            .await?;
         }
     }
 
@@ -97,13 +120,13 @@ async fn recreate(
 ) -> anyhow::Result<()> {
     run_required(
         session,
-        &format!("mkdir -p {CERTS_DIR}"),
+        &format!("mkdir -p {}", jiji_network::CERTS_DIR),
         "create certificate directory",
     )
     .await?;
     run_required(
         session,
-        &format!("{engine} pull {IMAGE}"),
+        &format!("{engine} pull {}", jiji_network::IMAGE),
         "pull kamal-proxy image",
     )
     .await?;
@@ -111,7 +134,7 @@ async fn recreate(
     let remove = session
         .execute(&format!("{engine} container rm -f {CONTAINER_NAME}"))
         .await?;
-    if !remove.success && !is_missing_container_error(&remove.stderr) {
+    if !remove.success && !jiji_network::is_missing_container_error(&remove.stderr) {
         anyhow::bail!(
             "Could not replace kamal-proxy on {}: {}. Remove the existing '{}' container and retry the command.",
             session.host(),
@@ -120,7 +143,12 @@ async fn recreate(
         );
     }
 
-    let command = run_command(engine, network, fingerprint);
+    let run_network = network.map(|network| jiji_network::ProxyRunNetwork {
+        bridge_name: &network.bridge_name,
+        proxy_address: network.proxy_address,
+    });
+    let command =
+        jiji_network::render_run_command(engine_kind(engine), run_network.as_ref(), fingerprint);
     run_required(session, &command, "start kamal-proxy").await?;
     wait_until_running(session, engine).await
 }
@@ -147,7 +175,7 @@ async fn ensure_attached(
         );
     }
 
-    if let Some(existing) = attached_address(&result.stdout, &network.bridge_name) {
+    if let Some(existing) = jiji_network::attached_address(&result.stdout, &network.bridge_name) {
         if existing == network.proxy_address {
             return Ok(());
         }
@@ -175,19 +203,6 @@ async fn ensure_attached(
     Ok(())
 }
 
-/// Parses `{{json .NetworkSettings.Networks}}` output (an object keyed by network name, each value
-/// carrying at least an `IPAddress` field) and returns the address attached to `bridge_name`, if
-/// any. A separate, pure function so the parsing logic is unit-testable without a live container
-/// engine.
-fn attached_address(networks_json: &str, bridge_name: &str) -> Option<Ipv4Addr> {
-    let value: serde_json::Value = serde_json::from_str(networks_json.trim()).ok()?;
-    let address = value.get(bridge_name)?.get("IPAddress")?.as_str()?;
-    if address.is_empty() {
-        return None;
-    }
-    address.parse().ok()
-}
-
 async fn is_current_and_running(
     session: &SshSession,
     engine: ContainerEngine,
@@ -198,69 +213,8 @@ async fn is_current_and_running(
             "{engine} inspect {CONTAINER_NAME} --format '{{{{.State.Status}}}} {{{{index .Config.Labels \"jiji.proxy-config\"}}}} {{{{.Config.Image}}}}'"
         ))
         .await?;
-    Ok(result.success && result.stdout.trim() == format!("running {fingerprint} {IMAGE}"))
-}
-
-fn run_command(
-    engine: ContainerEngine,
-    network: Option<&ProxyNetwork>,
-    fingerprint: &str,
-) -> String {
-    let runtime = match engine {
-        ContainerEngine::Docker => {
-            " --volume /var/run/docker.sock:/var/run/docker.sock".to_string()
-        }
-        ContainerEngine::Podman => concat!(
-            " --privileged --user root --pid=host --cgroupns=host",
-            " --volume /run:/run",
-            " --volume /usr/bin:/usr/bin:ro",
-            " --volume /usr/lib:/usr/lib:ro",
-            " --volume /lib:/lib:ro",
-            " --volume /lib64:/lib64:ro",
-            " --volume /var/lib/containers:/var/lib/containers"
-        )
-        .to_string(),
-    };
-
-    // Confirmed live: Docker (and Podman) refuse to `network connect` *anything* to a container
-    // created with `--network none` -- "none" is an exclusive private mode, not an empty set of
-    // attachments. So the network that triggered this (re)creation must be attached right here,
-    // as the primary network; every other project's bridge is added afterward via `ensure_attached`
-    // (`network connect`), which works fine once there's at least one real network already. A
-    // project with `network.enabled: false` still falls back to `--network none` -- if that
-    // project is ever the one that (re)creates kamal-proxy on a host shared with network-enabled
-    // projects, those projects' `network connect` calls will fail until a network-enabled
-    // project's own `ensure_proxy` recreates the container; documented as a known limitation
-    // rather than solved here, since disabling private networking is an explicit opt-out.
-    let network_args = network.map_or_else(
-        || " --network none".to_string(),
-        |network| {
-            format!(
-                " --network {} --ip {}",
-                network.bridge_name, network.proxy_address
-            )
-        },
-    );
-
-    format!(
-        "{engine} run --name {CONTAINER_NAME}{network_args} --detach \
-         --restart unless-stopped --label jiji.managed=true \
-         --label jiji.proxy-config={fingerprint} \
-         --volume {CONFIG_VOLUME}:/home/kamal-proxy/.config/kamal-proxy \
-         --volume {CERTS_DIR}:/jiji-certs:ro{runtime} \
-         --publish 80:{INTERNAL_HTTP_PORT} --publish 443:{INTERNAL_HTTPS_PORT} \
-         {IMAGE} kamal-proxy run --http-port {INTERNAL_HTTP_PORT} \
-         --https-port {INTERNAL_HTTPS_PORT}"
-    )
-}
-
-/// Identity used purely to decide "does the running container need replacing" (image/engine
-/// drift) -- deliberately excludes any project's network address, since kamal-proxy can be
-/// attached to several projects' bridges at once and none of them singularly identifies "the"
-/// container's configuration anymore. Bumped to v3 (from v2, which embedded one project's
-/// proxy/dns address) as part of the multi-homing change.
-fn config_fingerprint(engine: ContainerEngine) -> String {
-    format!("v3-{engine}")
+    Ok(result.success
+        && result.stdout.trim() == format!("running {fingerprint} {}", jiji_network::IMAGE))
 }
 
 async fn wait_until_running(session: &SshSession, engine: ContainerEngine) -> anyhow::Result<()> {
@@ -298,11 +252,6 @@ async fn run_required(session: &SshSession, command: &str, action: &str) -> anyh
     Ok(())
 }
 
-fn is_missing_container_error(stderr: &str) -> bool {
-    let stderr = stderr.to_ascii_lowercase();
-    stderr.contains("no such container") || stderr.contains("no container with name or id")
-}
-
 /// Disconnects kamal-proxy from `bridge_name` if it's attached, tolerating "kamal-proxy doesn't
 /// exist" and "not attached to this network" as success (returning `false`, not an error). Used
 /// by `commands/server/teardown.rs` before removing a project's bridge network -- kamal-proxy may
@@ -318,7 +267,7 @@ pub async fn disconnect_bridge_if_attached(
     if result.success {
         return Ok(true);
     }
-    if is_missing_container_error(&result.stderr) {
+    if jiji_network::is_missing_container_error(&result.stderr) {
         return Ok(false);
     }
     let stderr = result.stderr.to_ascii_lowercase();
@@ -342,65 +291,12 @@ mod tests {
             bridge_interface: "jijib1234567".to_string(),
             proxy_address: proxy_address.parse().unwrap(),
             dns_address: "10.0.2.2".parse().unwrap(),
+            public_host: "203.0.113.10".parse().unwrap(),
         }
     }
 
-    #[test]
-    fn docker_run_omits_network_when_none_given_and_never_sets_dns() {
-        let command = run_command(ContainerEngine::Docker, None, "v3-docker");
-
-        assert!(command.contains("ghcr.io/acidtib/kamal-proxy:jiji"));
-        assert!(command.contains("--network none --detach"));
-        assert!(!command.contains("--ip"));
-        assert!(!command.contains("--dns"));
-        assert!(command.contains("--publish 80:8080 --publish 443:8443"));
-        assert!(command.contains("/var/run/docker.sock:/var/run/docker.sock"));
-        assert!(command.contains("--restart unless-stopped"));
-    }
-
-    #[test]
-    fn docker_run_attaches_the_given_network_as_primary_at_creation() {
-        // `--network none` is a Docker/Podman-exclusive private mode: a container created with it
-        // can never have a real network `connect`ed afterward (confirmed live). So whichever
-        // project's `ensure_proxy` call (re)creates the container must attach *its* network right
-        // here, not rely purely on a later `network connect`.
-        let net = network("jiji-demo-9f8e7d6c", "10.0.2.9");
-        let command = run_command(ContainerEngine::Docker, Some(&net), "v3-docker");
-
-        assert!(command.contains("--network jiji-demo-9f8e7d6c --ip 10.0.2.9 --detach"));
-        assert!(!command.contains("--network none"));
-        assert!(!command.contains("--dns"));
-    }
-
-    #[test]
-    fn podman_run_has_command_health_check_access() {
-        let command = run_command(ContainerEngine::Podman, None, "v3-podman");
-
-        assert!(command.contains("--privileged --user root --pid=host --cgroupns=host"));
-        assert!(command.contains("/var/lib/containers:/var/lib/containers"));
-        assert!(!command.contains("docker.sock"));
-    }
-
-    #[test]
-    fn attached_address_finds_the_named_network_and_ignores_others() {
-        let json = r#"{"jiji-other-1a2b3c4d":{"IPAddress":"10.0.1.5"},"jiji-demo-9f8e7d6c":{"IPAddress":"10.0.2.9"}}"#;
-        assert_eq!(
-            attached_address(json, "jiji-demo-9f8e7d6c"),
-            Some("10.0.2.9".parse().unwrap())
-        );
-        assert_eq!(attached_address(json, "jiji-missing"), None);
-    }
-
-    #[test]
-    fn attached_address_handles_none_and_empty_address() {
-        assert_eq!(attached_address("{}", "jiji-demo"), None);
-        assert_eq!(
-            attached_address(r#"{"jiji-demo":{"IPAddress":""}}"#, "jiji-demo"),
-            None
-        );
-        assert_eq!(attached_address("null", "jiji-demo"), None);
-        assert_eq!(attached_address("not json", "jiji-demo"), None);
-    }
+    // `render_run_command`/`attached_address` moved to `jiji_network::proxy_script` (Phase 9,
+    // shared with the agent's native reconciliation) and are tested there.
 
     #[test]
     fn network_test_helper_still_builds_the_expected_struct() {

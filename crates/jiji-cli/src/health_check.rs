@@ -15,9 +15,8 @@ const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct HealthCheckPlan {
     /// Always a real, single-shot command: an HTTP/command check when configured, or a
     /// container-readiness check (`{engine} inspect ... | grep -qx running`) otherwise. Keeping
-    /// this a plain `String` (never absent) lets the exact same command be reused as the
-    /// authoritative gate `service_network::commit_after_health_check` re-runs before flipping
-    /// the VIP, instead of maintaining two different notions of "healthy".
+    /// this a plain `String` (never absent) gives the deployment transaction one authoritative
+    /// gate before it publishes the candidate as active.
     pub command: String,
     pub interval: Duration,
     pub deploy_timeout: Duration,

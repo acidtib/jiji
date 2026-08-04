@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Context;
+use jiji_agent::catalog::{CatalogRecord, DeploymentState, HealthState};
 use jiji_config::{validate_config, Config, NamedServer, Ssh};
 use jiji_network::{NetworkPlan, NetworkPlanner};
 use jiji_ssh::{SshPool, SshSession};
@@ -9,7 +10,7 @@ use jiji_tui::Ui;
 
 use crate::commands::deploy::{select_target_endpoints, split_comma_trimmed};
 use crate::commands::proxy::logs::{effective_lines, render_logs_command, stream_logs};
-use crate::{container_runtime, service_network, ssh_adapter};
+use crate::{container_runtime, ssh_adapter};
 
 pub struct LogsOptions<'a> {
     pub environment: Option<&'a str>,
@@ -109,6 +110,10 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
             session,
             &plan,
             endpoint,
+            config
+                .services
+                .get(&endpoint.service)
+                .expect("selected service is configured"),
             config.builder.engine,
             effective_lines,
             since,
@@ -120,16 +125,16 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
         return result;
     }
 
-    // Cached per server, not re-fetched per endpoint: several selected endpoints commonly share
-    // one server/session, and the active-slots file is a single per-host read.
-    let mut active_slots_cache: BTreeMap<String, jiji_network::ActiveSlotState> = BTreeMap::new();
+    // Catalog state is cached per server: every local agent exposes the converged project view,
+    // and several selected replicas commonly share one SSH session.
+    let mut catalog_cache: BTreeMap<String, Vec<CatalogRecord>> = BTreeMap::new();
     let mut failures = Vec::new();
     for endpoint in &selected {
         let session = sessions.get(&endpoint.server).expect("connected above");
-        if !active_slots_cache.contains_key(&endpoint.server) {
-            match service_network::load_active_slots(session, &plan).await {
-                Ok(state) => {
-                    active_slots_cache.insert(endpoint.server.clone(), state);
+        if !catalog_cache.contains_key(&endpoint.server) {
+            match crate::agent_client::catalog(session, &plan.project).await {
+                Ok(records) => {
+                    catalog_cache.insert(endpoint.server.clone(), records);
                 }
                 Err(error) => {
                     Ui::error(&format!("{}: {error}", endpoint.identity));
@@ -138,18 +143,37 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
                 }
             }
         }
-        let active_slot = active_slots_cache
+        let service = config
+            .services
+            .get(&endpoint.service)
+            .expect("selected service is configured");
+        let replica_id = crate::placement::endpoint_replica_id(
+            &plan.project,
+            &endpoint.service,
+            service,
+            &endpoint.server,
+        )?;
+        let active = catalog_cache
             .get(&endpoint.server)
             .expect("inserted above")
-            .active_slot(&endpoint.identity);
-        let Some(slot) = active_slot else {
+            .iter()
+            .find(|record| {
+                record.replica_id == replica_id
+                    && record.state == DeploymentState::Active
+                    && record.health == HealthState::Healthy
+            });
+        let Some(active) = active else {
             Ui::warn(&format!(
                 "{}: no active container, skipping",
                 endpoint.identity
             ));
             continue;
         };
-        let container = container_runtime::container_name(&plan.project, &endpoint.service, slot);
+        let container = container_runtime::dynamic_container_name(
+            &plan.project,
+            &endpoint.service,
+            &active.deployment_id,
+        );
         let command = render_logs_command(
             config.builder.engine,
             &container,
@@ -199,24 +223,39 @@ async fn follow_endpoint(
     session: &SshSession,
     plan: &NetworkPlan,
     endpoint: &jiji_network::ServiceEndpointPlan,
+    service: &jiji_config::Service,
     engine: jiji_config::ContainerEngine,
     lines: Option<u32>,
     since: Option<&str>,
     grep: Option<&str>,
     grep_options: Option<&str>,
 ) -> anyhow::Result<()> {
-    let active_slot = service_network::load_active_slots(session, plan)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?
-        .active_slot(&endpoint.identity);
-    let Some(slot) = active_slot else {
+    let replica_id = crate::placement::endpoint_replica_id(
+        &plan.project,
+        &endpoint.service,
+        service,
+        &endpoint.server,
+    )?;
+    let active = crate::agent_client::catalog(session, &plan.project)
+        .await?
+        .into_iter()
+        .find(|record| {
+            record.replica_id == replica_id
+                && record.state == DeploymentState::Active
+                && record.health == HealthState::Healthy
+        });
+    let Some(active) = active else {
         anyhow::bail!(
             "Service '{}' has no active container on '{}'. Deploy it first with `jiji deploy`.",
             endpoint.service,
             endpoint.server
         );
     };
-    let container = container_runtime::container_name(&plan.project, &endpoint.service, slot);
+    let container = container_runtime::dynamic_container_name(
+        &plan.project,
+        &endpoint.service,
+        &active.deployment_id,
+    );
     let command = render_logs_command(engine, &container, lines, since, grep, grep_options, true);
     stream_logs(session, &command).await
 }

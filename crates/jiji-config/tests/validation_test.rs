@@ -74,6 +74,241 @@ services:
 }
 
 #[test]
+fn replicas_and_placement_have_distributed_defaults() {
+    let config: jiji_config::Config = serde_yaml::from_str(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  web:
+    image: nginx
+    servers: [one]
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.services["web"].replicas, 1);
+    assert_eq!(
+        config.services["web"].placement,
+        jiji_config::PlacementPolicy::Spread
+    );
+}
+
+#[test]
+fn stop_first_and_local_state_cannot_be_scaled() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  database:
+    image: postgres
+    servers: [one]
+    replicas: 2
+    stop_first: true
+    volumes: [data:/var/lib/postgresql/data]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "STOP_FIRST_REQUIRES_SINGLETON"));
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "STATEFUL_SCALE"));
+}
+
+#[test]
+fn container_namespace_networking_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  sidecar:
+    image: busybox
+    servers: [one]
+    network_mode: container:other
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "UNSUPPORTED_NETWORK_MODE"));
+}
+
+#[test]
+fn network_mode_service_referencing_undefined_service_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "UNDEFINED_NETWORK_MODE_SERVICE"));
+}
+
+#[test]
+fn network_mode_service_self_reference_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_SERVICE_SELF_REFERENCE"));
+}
+
+#[test]
+fn network_mode_service_chain_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+  sonarr-sidecar:
+    image: sonarr
+    servers: [one]
+    network_mode: service:qbittorrent
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_SERVICE_CHAIN_UNSUPPORTED"));
+}
+
+#[test]
+fn network_mode_service_server_mismatch_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+  two: { host: 10.0.0.2 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+  qbittorrent:
+    image: qbittorrent
+    servers: [two]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_SERVICE_SERVER_MISMATCH"));
+}
+
+#[test]
+fn network_mode_service_dependent_still_rejects_scale_and_proxy() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+    replicas: 2
+    proxy:
+      port: 8080
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NON_BRIDGE_SCALE"));
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NON_BRIDGE_PROXY"));
+}
+
+#[test]
+fn network_mode_service_valid_dependency_validates_cleanly() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result
+        .errors
+        .iter()
+        .any(|error| error.code.starts_with("NETWORK_MODE_SERVICE")
+            || error.code == "UNDEFINED_NETWORK_MODE_SERVICE"));
+}
+
+#[test]
 fn ssh_section_with_zero_port_reports_invalid_port() {
     let raw = parse(
         r#"

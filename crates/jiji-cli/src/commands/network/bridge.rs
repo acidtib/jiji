@@ -2,10 +2,8 @@ use std::net::Ipv4Addr;
 
 use anyhow::Context;
 use jiji_config::ContainerEngine;
-use jiji_network::{BackendSlot, Ipv4Cidr, NetworkPlan, ServerPlan};
+use jiji_network::{Ipv4Cidr, NetworkPlan, ServerPlan};
 use jiji_ssh::SshSession;
-
-use crate::container_runtime::{backend_address, container_name};
 
 /// Netavark reconfigures the kernel bridge when a Podman container is attached and can remove
 /// dnsmasq's secondary `/32` address. Re-applying it is idempotent and lets Aardvark forward the
@@ -58,12 +56,6 @@ impl BridgeMigration {
             .iter()
             .find_map(|(name, address)| (name == "kamal-proxy").then_some(*address))
     }
-
-    pub fn previous_container_address(&self, name: &str) -> Option<Ipv4Addr> {
-        self.attachments
-            .iter()
-            .find_map(|(attached, address)| (attached == name).then_some(*address))
-    }
 }
 
 impl<'a> BridgeProvisioner<'a> {
@@ -86,13 +78,12 @@ impl<'a> BridgeProvisioner<'a> {
         }
     }
 
-    pub fn render_restore_script(&self) -> anyhow::Result<String> {
-        let create_network = match self.engine {
-            ContainerEngine::Docker => self.render_docker_network(),
-            ContainerEngine::Podman => self.render_podman_network(),
-        };
-        let peer_input_rules = self
-            .server
+    /// Peer endpoint hosts, parsed as the public IPv4 addresses the rendered script's per-peer
+    /// WireGuard `INPUT` firewall rules need. Shared with `jiji-agent`'s `LocalRuntimeConfig`,
+    /// which carries the same parsed list so the agent's native bring-up (Phase 9) never has to
+    /// duplicate this parsing.
+    pub fn peer_public_ips(&self) -> anyhow::Result<Vec<Ipv4Addr>> {
+        self.server
             .peers
             .iter()
             .map(|peer| {
@@ -101,86 +92,49 @@ impl<'a> BridgeProvisioner<'a> {
                     .rsplit_once(':')
                     .map(|(host, _)| host)
                     .unwrap_or(&peer.endpoint);
-                host.parse::<Ipv4Addr>().map(|address| {
-                    format!(
-                        "ensure_rule INPUT -p udp -s {address}/32 --dport {} -j ACCEPT",
-                        self.server.wireguard_port
-                    )
-                })
+                host.parse::<Ipv4Addr>()
             })
             .collect::<Result<Vec<_>, _>>()
-            .context("WireGuard firewall rules require server hosts to be public IPv4 addresses")?
-            .join("\n");
+            .context("WireGuard firewall rules require server hosts to be public IPv4 addresses")
+    }
 
-        let bridge_name = &self.server.bridge_name;
-        let bridge_interface = &self.server.bridge_interface;
-        let wireguard_interface = &self.server.wireguard_interface;
-        Ok(format!(
-            r#"#!/bin/sh
-set -eu
+    fn script_params<'p>(
+        &'p self,
+        peer_public_ips: &'p [Ipv4Addr],
+    ) -> jiji_network::BridgeScriptParams<'p> {
+        jiji_network::BridgeScriptParams {
+            bridge_name: &self.server.bridge_name,
+            bridge_interface: &self.server.bridge_interface,
+            wireguard_interface: &self.server.wireguard_interface,
+            container_subnet: self.server.container_subnet,
+            bridge_gateway: self.server.bridge_gateway,
+            dns_address: self.server.dns_address,
+            container_cidr: self.plan.container_cidr,
+            wireguard_port: self.server.wireguard_port,
+            peer_public_ips,
+            public_host: &self.server.public_host,
+        }
+    }
 
-{create_network}
-test "$actual_subnet" = "{subnet}" || {{ echo "{bridge_name} network subnet is $actual_subnet, expected {subnet}. Stop attached containers with: {engine} ps --filter network={bridge_name}. Remove the incompatible bridge with: {engine} network rm {bridge_name}. Then rerun jiji network setup --hosts {public_host} from the deployment machine." >&2; exit 1; }}
-test "$actual_gateway" = "{gateway}" || {{ echo "{bridge_name} network gateway is $actual_gateway, expected {gateway}. Stop attached containers with: {engine} ps --filter network={bridge_name}. Remove the incompatible bridge with: {engine} network rm {bridge_name}. Then rerun jiji network setup --hosts {public_host} from the deployment machine." >&2; exit 1; }}
-{engine_option_validation}
+    fn engine_kind(&self) -> jiji_network::BridgeEngineKind {
+        match self.engine {
+            ContainerEngine::Docker => jiji_network::BridgeEngineKind::Docker,
+            ContainerEngine::Podman => jiji_network::BridgeEngineKind::Podman,
+        }
+    }
 
-ip address replace {dns_address}/32 dev {bridge_interface}
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-
-ensure_rule() {{
-  if ! iptables -C "$@" 2>/dev/null; then
-    iptables -I "$@"
-  fi
-}}
-
-ensure_rule FORWARD -i {bridge_interface} -o {wireguard_interface} -s {subnet} -d {container_cidr} -j ACCEPT
-ensure_rule FORWARD -i {wireguard_interface} -o {bridge_interface} -s {container_cidr} -d {subnet} -j ACCEPT
-if iptables -n -L DOCKER-USER >/dev/null 2>&1; then
-  ensure_rule DOCKER-USER -i {bridge_interface} -o {wireguard_interface} -s {subnet} -d {container_cidr} -j ACCEPT
-  ensure_rule DOCKER-USER -i {wireguard_interface} -o {bridge_interface} -s {container_cidr} -d {subnet} -j ACCEPT
-fi
-{peer_input_rules}
-"#,
-            subnet = self.server.container_subnet,
-            gateway = self.server.bridge_gateway,
-            dns_address = self.server.dns_address,
-            container_cidr = self.plan.container_cidr,
-            engine = self.engine,
-            public_host = self.server.public_host,
-            engine_option_validation = self.engine_option_validation(),
+    pub fn render_restore_script(&self) -> anyhow::Result<String> {
+        let peer_public_ips = self.peer_public_ips()?;
+        let params = self.script_params(&peer_public_ips);
+        Ok(jiji_network::render_restore_script(
+            self.engine_kind(),
+            &params,
         ))
     }
 
     pub fn render_existing_validation_command(&self) -> String {
-        let bridge_name = &self.server.bridge_name;
-        let inspect = match self.engine {
-            ContainerEngine::Docker => {
-                format!(
-                    "if ! docker network inspect {bridge_name} >/dev/null 2>&1; then exit 0; fi; \
-                     actual_subnet=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Subnet}}}}'); \
-                     actual_gateway=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Gateway}}}}'); \
-                     actual_gateway_mode=$(docker network inspect {bridge_name} --format '{{{{index .Options \"com.docker.network.bridge.gateway_mode_ipv4\"}}}}'); \
-                     actual_trusted_interfaces=$(docker network inspect {bridge_name} --format '{{{{index .Options \"com.docker.network.bridge.trusted_host_interfaces\"}}}}')"
-                )
-            }
-            ContainerEngine::Podman => {
-                format!(
-                    "if ! podman network inspect {bridge_name} >/dev/null 2>&1; then exit 0; fi; \
-                     actual_subnet=$(podman network inspect {bridge_name} --format '{{{{(index .Subnets 0).Subnet}}}}'); \
-                     actual_gateway=$(podman network inspect {bridge_name} --format '{{{{(index .Subnets 0).Gateway}}}}')"
-                )
-            }
-        };
-        format!(
-            "set -eu; {inspect}; \
-             test \"$actual_subnet\" = \"{subnet}\" || {{ echo \"Existing {bridge_name} bridge subnet is $actual_subnet, expected {subnet}. Stop the containers listed by: {engine} ps --filter network={bridge_name}. Remove it with: {engine} network rm {bridge_name}. Then retry network setup.\" >&2; exit 1; }}; \
-             test \"$actual_gateway\" = \"{gateway}\" || {{ echo \"Existing {bridge_name} bridge gateway is $actual_gateway, expected {gateway}. Stop the containers listed by: {engine} ps --filter network={bridge_name}. Remove it with: {engine} network rm {bridge_name}. Then retry network setup.\" >&2; exit 1; }}; \
-             {engine_options}",
-            subnet = self.server.container_subnet,
-            gateway = self.server.bridge_gateway,
-            engine = self.engine,
-            engine_options = self.engine_option_validation(),
-        )
+        let params = self.script_params(&[]);
+        jiji_network::render_existing_validation_command(self.engine_kind(), &params)
     }
 
     pub async fn inspect_migration(
@@ -223,7 +177,6 @@ fi
         );
         let result = session.execute(&list).await?;
         require_success(session, &list, &result)?;
-        let expected = self.planned_attachment_addresses();
         let mut attachments = Vec::new();
         for name in result
             .stdout
@@ -231,9 +184,9 @@ fi
             .map(str::trim)
             .filter(|name| !name.is_empty())
         {
-            if !expected.contains_key(name) {
+            if name != "kamal-proxy" {
                 anyhow::bail!(
-                    "Cannot migrate bridge '{bridge}' on {} while unknown container '{name}' is attached. Remove or disconnect that container, then retry `jiji network setup`.",
+                    "Cannot change bridge CIDR while service container '{name}' is attached on {}. Dynamic deployment addresses are durable catalog leases; remove the affected service deployment, rerun `jiji network setup`, then deploy it again.",
                     session.host()
                 );
             }
@@ -348,21 +301,6 @@ fi
 
     fn planned_attachment_addresses(&self) -> std::collections::BTreeMap<String, Ipv4Addr> {
         let mut addresses = std::collections::BTreeMap::new();
-        for endpoint in self
-            .plan
-            .endpoints
-            .values()
-            .filter(|endpoint| endpoint.server == self.server.name)
-        {
-            addresses.insert(
-                container_name(&self.plan.project, &endpoint.service, BackendSlot::A),
-                backend_address(endpoint, BackendSlot::A),
-            );
-            addresses.insert(
-                container_name(&self.plan.project, &endpoint.service, BackendSlot::B),
-                backend_address(endpoint, BackendSlot::B),
-            );
-        }
         addresses.insert("kamal-proxy".to_string(), self.server.proxy_address);
         addresses
     }
@@ -383,61 +321,6 @@ fi
                 "podman network create --subnet {subnet} --gateway {gateway} \
                  --interface-name {interface} {bridge} >/dev/null"
             ),
-        }
-    }
-
-    pub fn render_systemd_unit(&self) -> String {
-        let engine_dependency = match self.engine {
-            ContainerEngine::Docker => "docker.service",
-            ContainerEngine::Podman => "network-online.target",
-        };
-        let wireguard_interface = &self.server.wireguard_interface;
-        let slug = jiji_network::systemd_unit_slug(&self.plan.project);
-        let network_dir = crate::commands::network::setup::network_dir(&slug);
-        format!(
-            "[Unit]\nDescription=Restore jiji private container network\nAfter=network-online.target wg-quick@{wireguard_interface}.service {engine_dependency}\nRequires=wg-quick@{wireguard_interface}.service\n\n[Service]\nType=oneshot\nExecStart={network_dir}/restore.sh\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n"
-        )
-    }
-
-    fn render_docker_network(&self) -> String {
-        let bridge_name = &self.server.bridge_name;
-        let bridge_interface = &self.server.bridge_interface;
-        let wireguard_interface = &self.server.wireguard_interface;
-        format!(
-            "if ! docker network inspect {bridge_name} >/dev/null 2>&1; then\n  docker network create --driver bridge --subnet {subnet} --gateway {gateway} --opt com.docker.network.bridge.name={bridge_interface} --opt com.docker.network.bridge.enable_ip_masquerade=false --opt com.docker.network.bridge.gateway_mode_ipv4=routed --opt com.docker.network.bridge.trusted_host_interfaces={wireguard_interface} {bridge_name} >/dev/null\nfi\nactual_subnet=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Subnet}}}}')\nactual_gateway=$(docker network inspect {bridge_name} --format '{{{{(index .IPAM.Config 0).Gateway}}}}')\nactual_gateway_mode=$(docker network inspect {bridge_name} --format '{{{{index .Options \"com.docker.network.bridge.gateway_mode_ipv4\"}}}}')\nactual_trusted_interfaces=$(docker network inspect {bridge_name} --format '{{{{index .Options \"com.docker.network.bridge.trusted_host_interfaces\"}}}}')",
-            subnet = self.server.container_subnet,
-            gateway = self.server.bridge_gateway,
-        )
-    }
-
-    fn render_podman_network(&self) -> String {
-        let bridge_name = &self.server.bridge_name;
-        let bridge_interface = &self.server.bridge_interface;
-        format!(
-            "if ! podman network inspect {bridge_name} >/dev/null 2>&1; then\n  podman network create --subnet {subnet} --gateway {gateway} --interface-name {bridge_interface} {bridge_name} >/dev/null\nfi\n\
-             if ! ip link show {bridge_interface} >/dev/null 2>&1; then\n\
-               ip link add name {bridge_interface} type bridge\n\
-             fi\n\
-             ip link set {bridge_interface} up\n\
-             ip address replace {gateway}/{prefix} dev {bridge_interface}\n\
-             actual_subnet=$(podman network inspect {bridge_name} --format '{{{{(index .Subnets 0).Subnet}}}}')\n\
-             actual_gateway=$(podman network inspect {bridge_name} --format '{{{{(index .Subnets 0).Gateway}}}}')",
-            subnet = self.server.container_subnet,
-            gateway = self.server.bridge_gateway,
-            prefix = self.server.container_subnet.prefix(),
-        )
-    }
-
-    fn engine_option_validation(&self) -> String {
-        let bridge_name = &self.server.bridge_name;
-        let wireguard_interface = &self.server.wireguard_interface;
-        match self.engine {
-            ContainerEngine::Docker => {
-                format!(
-                    "test \"$actual_gateway_mode\" = \"routed\" || {{ echo \"{bridge_name} Docker network is not in routed gateway mode. Stop attached containers with: docker ps --filter network={bridge_name}. Remove the incompatible bridge with: docker network rm {bridge_name}. Then rerun jiji network setup from the deployment machine.\" >&2; exit 1; }}\ntest \"$actual_trusted_interfaces\" = \"{wireguard_interface}\" || {{ echo \"{bridge_name} Docker network does not trust {wireguard_interface}. Stop attached containers with: docker ps --filter network={bridge_name}. Remove the incompatible bridge with: docker network rm {bridge_name}. Then rerun jiji network setup from the deployment machine.\" >&2; exit 1; }}"
-                )
-            }
-            ContainerEngine::Podman => String::new(),
         }
     }
 }
@@ -562,23 +445,6 @@ services:
     }
 
     #[test]
-    fn restore_unit_orders_docker_after_engine_and_wireguard() {
-        let plan = plan();
-        let server = &plan.servers["app"];
-        let rendered =
-            BridgeProvisioner::new(ContainerEngine::Docker, &plan, server).render_systemd_unit();
-        assert!(rendered.contains(&format!(
-            "After=network-online.target wg-quick@{}.service docker.service",
-            server.wireguard_interface
-        )));
-        assert!(rendered.contains(&format!(
-            "Requires=wg-quick@{}.service",
-            server.wireguard_interface
-        )));
-        assert!(rendered.contains("RemainAfterExit=yes"));
-    }
-
-    #[test]
     fn existing_bridge_validation_never_removes_the_network() {
         let plan = plan();
         let server = &plan.servers["app"];
@@ -597,21 +463,13 @@ services:
     }
 
     #[test]
-    fn migration_maps_each_service_slot_and_proxy_to_the_new_plan() {
+    fn migration_only_assigns_the_shared_proxy_a_fixed_address() {
         let plan = plan();
         let server = &plan.servers["app"];
         let bridge = BridgeProvisioner::new(ContainerEngine::Docker, &plan, server);
         let addresses = bridge.planned_attachment_addresses();
-        let endpoint = &plan.endpoints["demo:web:app"];
 
-        assert_eq!(
-            addresses["demo-web-a"],
-            backend_address(endpoint, BackendSlot::A)
-        );
-        assert_eq!(
-            addresses["demo-web-b"],
-            backend_address(endpoint, BackendSlot::B)
-        );
+        assert_eq!(addresses.len(), 1);
         assert_eq!(addresses["kamal-proxy"], server.proxy_address);
     }
 

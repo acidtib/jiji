@@ -293,6 +293,15 @@ ssh:
 #   # Note: Service domain is always 'jiji' - containers reach each other via <project>-<service>.jiji
 #   # Jiji validates that these ranges do not overlap.
 #
+#   # DNS forwarders (default: 1.1.1.1, 8.8.8.8): every jiji-managed service container's
+#   # resolv.conf only ever gets this project's own agent as its nameserver, which is
+#   # authoritative for the .jiji zone only. Any other hostname (a normal internet API,
+#   # a package registry, etc.) is forwarded to these resolvers instead. Override to point
+#   # at a home router, Pi-hole, or other local resolver instead of the public default.
+#   dns_forwarders:
+#     - "1.1.1.1"
+#     - "8.8.8.8"
+#
 # Network Configuration Examples:
 # ==============================
 #
@@ -435,10 +444,14 @@ services:
     # nginx:latest -> docker.io/library/nginx:latest
     # owner/image:tag -> docker.io/owner/image:tag
     image: nginx:latest
-    # Server targets: Reference servers by name from the servers section
+    # Eligible placement set. This does not mean "one copy per server".
     servers:
       - vps-prod
       - home-server
+    # Desired total replicas across the eligible servers (default: 1).
+    # `spread` prefers distinct hosts; `packed` fills hosts in deterministic order.
+    replicas: 1
+    placement: spread
     # Port Mappings: Map host ports to container ports
     # Supported formats:
     #   - "8000"                           # Container port only (host port auto-assigned)
@@ -883,15 +896,27 @@ services:
 # network_mode: Container network mode
 #   - Type: string
 #   - Default: "bridge"
-#   - Examples: "bridge", "host", "none", "container:<name|id>"
-#   - Options:
-#     - "bridge" - Default Docker/Podman bridge network (isolated)
-#     - "host" - Use host's network stack directly (no isolation)
-#     - "none" - No networking
-#     - "container:<name>" - Share network namespace with another container
-#   - Use Cases:
-#     - "host" for services needing low-latency or full network access
-#     - "none" for security-sensitive containers with no network needs
+#   - Supported values:
+#     - "bridge" - Default Docker/Podman bridge network (isolated). Required for `proxy:`,
+#       and required if `replicas` > 1.
+#     - "service:<other-service-name>" - Shares that other ("upstream") service's container
+#       network namespace instead of getting its own dynamically-leased address (the standard
+#       "VPN killswitch" pattern: a torrent client sharing a VPN gateway container's network
+#       stack, so all its traffic is forced through the tunnel). Naming the upstream here is
+#       itself the dependency declaration; there is no separate `depends_on` field. The
+#       upstream must itself use `network_mode: bridge` (chained sharing is not supported),
+#       and this service's `servers` must be a subset of the upstream's `servers`. A
+#       dependent can't set `replicas` above 1 or configure its own `proxy:` -- traffic
+#       reaches it through the upstream's own `proxy:` route, at the upstream's address.
+#       Redeploying the upstream automatically redeploys every dependent too, after the
+#       upstream's own deploy finishes (a dependent's old container becomes network-orphaned
+#       once the upstream's old container is torn down). This is not itself zero-downtime
+#       with respect to upstream churn: there is a brief gap between the upstream's cutover
+#       completing and each dependent's own redeploy completing.
+#   - "host" and "none" are accepted by the schema but are not currently implemented by any
+#     runtime code path -- setting either one is silently ignored and the service still gets
+#     normal bridge networking. Only "bridge" and "service:<name>" actually change behavior
+#     today. Docker's native "container:<id>" syntax is explicitly rejected by validation.
 #
 # devices: Device mappings for hardware access
 #   - Type: array of strings
@@ -940,8 +965,8 @@ services:
 # stop_first: Stop old container before starting new one
 #   - Type: boolean
 #   - Default: false
-#   - When false: Zero-downtime deployment (start new on the other backend
-#     slot, health-check it, cut over, then stop old)
+#   - When false: Zero-downtime deployment (start new at a freshly leased
+#     dynamic address, health-check it, cut over, then stop old)
 #   - When true: Stop-first deployment (stop old → start new)
 #   - Use for stateful services that cannot have two instances running:
 #     - Databases with file locks (SQLite, LevelDB, embedded stores)

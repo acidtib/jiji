@@ -103,6 +103,20 @@ pub fn service_nat_table_name(project: &str) -> String {
     )
 }
 
+/// Deterministic TCP port for the agent's signed-membership anti-entropy listener, one per
+/// project (not per server, same rationale as [`wireguard_port`]). A distinct range from
+/// `wireguard_port`'s `51820..=55819` keeps the two purposes visibly non-overlapping even though
+/// UDP and TCP ports don't actually share a namespace.
+pub fn membership_replication_port(project: &str) -> u16 {
+    56000 + (salted_hash("replication-membership", project) % 2000) as u16
+}
+
+/// Deterministic TCP port for the agent's signed-catalog anti-entropy listener, one per project.
+/// See [`membership_replication_port`]; kept in a disjoint range from it purely for clarity.
+pub fn catalog_replication_port(project: &str) -> u16 {
+    58000 + (salted_hash("replication-catalog", project) % 2000) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +196,30 @@ mod tests {
             assert_eq!(bridge_network_name(project), bridge_network_name(project));
             assert_eq!(systemd_unit_slug(project), systemd_unit_slug(project));
             assert_eq!(wireguard_port(project), wireguard_port(project));
+            assert_eq!(
+                membership_replication_port(project),
+                membership_replication_port(project)
+            );
+            assert_eq!(
+                catalog_replication_port(project),
+                catalog_replication_port(project)
+            );
+        }
+    }
+
+    #[test]
+    fn replication_ports_are_in_range_and_never_collide_with_each_other() {
+        for project in adversarial_inputs() {
+            let membership = membership_replication_port(project);
+            let catalog = catalog_replication_port(project);
+            assert!(
+                (56000..58000).contains(&membership),
+                "{project:?} -> {membership}"
+            );
+            assert!(
+                (58000..60000).contains(&catalog),
+                "{project:?} -> {catalog}"
+            );
         }
     }
 

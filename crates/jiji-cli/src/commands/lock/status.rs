@@ -2,17 +2,23 @@ use serde::Serialize;
 
 use jiji_tui::Ui;
 
-use super::{close_all, connect_targets, read_all};
+use super::{close_all, connect_targets, discover_all};
 use crate::lock;
+
+#[derive(Serialize)]
+struct LockStatus {
+    scope: String,
+    message: String,
+    acquired_by: String,
+    acquired_at: u64,
+    pid: u32,
+}
 
 #[derive(Serialize)]
 struct HostStatus {
     host: String,
     locked: bool,
-    message: Option<String>,
-    acquired_by: Option<String>,
-    acquired_at: Option<u64>,
-    pid: Option<u32>,
+    locks: Vec<LockStatus>,
 }
 
 pub async fn run(
@@ -27,19 +33,25 @@ pub async fn run(
         Ui::section("Connecting:");
     }
     let targets = connect_targets(environment, config_file, hosts, services, json).await?;
-    let statuses = read_all(&targets).await?;
+    let statuses = discover_all(&targets).await?;
     close_all(&targets.sessions).await;
 
     if json {
         let hosts_json: Vec<HostStatus> = statuses
             .iter()
-            .map(|(name, info)| HostStatus {
+            .map(|(name, locks)| HostStatus {
                 host: name.clone(),
-                locked: info.is_some(),
-                message: info.as_ref().map(|info| info.message.clone()),
-                acquired_by: info.as_ref().map(|info| info.acquired_by.clone()),
-                acquired_at: info.as_ref().map(|info| info.acquired_at),
-                pid: info.as_ref().map(|info| info.pid),
+                locked: !locks.is_empty(),
+                locks: locks
+                    .iter()
+                    .map(|(scope, info)| LockStatus {
+                        scope: scope.to_string(),
+                        message: info.message.clone(),
+                        acquired_by: info.acquired_by.clone(),
+                        acquired_at: info.acquired_at,
+                        pid: info.pid,
+                    })
+                    .collect(),
             })
             .collect();
         let locked = hosts_json.iter().filter(|host| host.locked).count();
@@ -58,28 +70,30 @@ pub async fn run(
     Ui::section("Status:");
     let locked: Vec<_> = statuses
         .iter()
-        .filter_map(|(name, info)| info.as_ref().map(|info| (name, info)))
+        .filter(|(_, locks)| !locks.is_empty())
         .collect();
     if locked.is_empty() {
-        Ui::say("No active deployment locks.", 1);
+        Ui::say("No active locks.", 1);
     } else {
         Ui::say(&format!("{} host(s) locked:", locked.len()), 1);
-        for (name, info) in &locked {
-            Ui::say(
-                &format!(
-                    "{name}: \"{}\" by {} ({} ago)",
-                    info.message,
-                    info.acquired_by,
-                    lock::format_age(info.age_seconds())
-                ),
-                2,
-            );
+        for (name, locks) in &locked {
+            for (scope, info) in locks {
+                Ui::say(
+                    &format!(
+                        "{name} [{scope}]: \"{}\" by {} ({} ago)",
+                        info.message,
+                        info.acquired_by,
+                        lock::format_age(info.age_seconds())
+                    ),
+                    2,
+                );
+            }
         }
     }
 
     let unlocked: Vec<&String> = statuses
         .iter()
-        .filter(|(_, info)| info.is_none())
+        .filter(|(_, locks)| locks.is_empty())
         .map(|(name, _)| name)
         .collect();
     if !unlocked.is_empty() {

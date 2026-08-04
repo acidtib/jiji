@@ -249,13 +249,25 @@ fn active_slots_path() -> String {
     )
 }
 
+fn agent_catalog_command() -> String {
+    "/etc/jiji/agent/demo-354b6884/bin/jiji-agent request --socket \
+     /etc/jiji/agent/demo-354b6884/agent.sock # jiji-request:catalog-list"
+        .to_string()
+}
+
+fn active_catalog_response() -> CannedResponse {
+    success(
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn logs_reads_the_active_slot_container_for_a_configured_service() {
+async fn logs_reads_the_active_catalog_deployment_for_a_configured_service() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
+    responses.insert(agent_catalog_command(), active_catalog_response());
     responses.insert(
-        "docker logs --timestamps --tail=100 demo-web-a".to_string(),
+        "docker logs --timestamps --tail=100 demo-web-abcdef123456".to_string(),
         success("hello from web\n"),
     );
 
@@ -269,17 +281,21 @@ async fn logs_reads_the_active_slot_container_for_a_configured_service() {
     assert!(stdout.contains("hello from web"), "stdout: {stdout}");
 
     let received = harness.received.lock().unwrap().clone();
-    assert!(received.contains(&active_slots_path()));
+    assert!(received.contains(&agent_catalog_command()));
+    assert!(!received.contains(&active_slots_path()));
     assert!(received
         .iter()
-        .any(|c| c == "docker logs --timestamps --tail=100 demo-web-a"));
+        .any(|c| c == "docker logs --timestamps --tail=100 demo-web-abcdef123456"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_skips_a_service_with_no_active_container_instead_of_failing() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(active_slots_path(), success(""));
+    responses.insert(
+        agent_catalog_command(),
+        success(r#"{"Ok":{"type":"catalog_list","records":[]}}"#),
+    );
 
     let (_harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path));

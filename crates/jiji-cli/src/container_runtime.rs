@@ -1,24 +1,7 @@
 use std::net::Ipv4Addr;
 
 use jiji_config::{CommandValue, ContainerEngine, CpusValue, Service};
-use jiji_network::{BackendSlot, NetworkedContainerRun, ServerPlan, ServiceEndpointPlan};
-
-/// `BackendSlot`'s array index is private to `jiji-network`, so this maps a slot to its concrete
-/// planned address for callers (proxy routing, health checks) that need it outside container-run
-/// construction (which `NetworkedContainerRun::for_endpoint` already indexes internally).
-pub fn backend_address(endpoint: &ServiceEndpointPlan, slot: BackendSlot) -> Ipv4Addr {
-    match slot {
-        BackendSlot::A => endpoint.backend_addresses[0],
-        BackendSlot::B => endpoint.backend_addresses[1],
-    }
-}
-
-/// Fixed per-slot container name. Unlike the superseded rename-based model, this name never
-/// changes: the old and candidate containers coexist under distinct names/addresses for the
-/// whole cutover, so there is no rename step and nothing to preserve explicitly.
-pub fn container_name(project: &str, service: &str, slot: BackendSlot) -> String {
-    format!("{project}-{service}-{slot}")
-}
+use jiji_network::{NetworkedContainerRun, ServerPlan};
 
 /// Jiji does not need persistent exec sessions. Disabling them avoids Podman clients waiting on
 /// stale session state after the process inside the container has already exited.
@@ -75,6 +58,127 @@ pub fn render_labels(project: &str, service: &str, server: &str) -> Vec<String> 
         "--label".to_string(),
         "jiji.resource=service".to_string(),
     ]
+}
+
+pub fn render_dynamic_labels(
+    project: &str,
+    service: &str,
+    server: &str,
+    replica_id: &str,
+    deployment_id: &str,
+    lease_address: Ipv4Addr,
+    lifecycle: &str,
+) -> Vec<String> {
+    let mut labels = render_labels(project, service, server);
+    for value in [
+        "jiji.catalog-managed=true".to_string(),
+        format!("jiji.replica={replica_id}"),
+        format!("jiji.deployment={deployment_id}"),
+        format!("jiji.lease={lease_address}"),
+        format!("jiji.lifecycle={lifecycle}"),
+    ] {
+        labels.push("--label".to_string());
+        labels.push(value);
+    }
+    labels
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_dynamic_run(
+    engine: ContainerEngine,
+    project: &str,
+    service_name: &str,
+    server_name: &str,
+    replica_id: &str,
+    deployment_id: &str,
+    image: &str,
+    address: Ipv4Addr,
+    server: &ServerPlan,
+    service: &Service,
+    mount_args: &[String],
+    env_file_path: &str,
+) -> NetworkedContainerRun {
+    let name = dynamic_container_name(project, service_name, deployment_id);
+    let mut run = NetworkedContainerRun::dynamic(engine, name, image, address, server);
+    run.extra_args = vec![
+        "--detach".to_string(),
+        "--restart".to_string(),
+        service.restart.unwrap_or_default().to_string(),
+    ];
+    run.extra_args.extend(render_dynamic_labels(
+        project,
+        service_name,
+        server_name,
+        replica_id,
+        deployment_id,
+        address,
+        "candidate",
+    ));
+    run.extra_args.extend(render_ports(&service.ports));
+    run.extra_args.extend(mount_args.iter().cloned());
+    run.extra_args.push("--env-file".to_string());
+    run.extra_args.push(env_file_path.to_string());
+    run.extra_args.extend(render_resource_options(service));
+    run.command = render_command(&service.command);
+    run
+}
+
+/// Builds the run for a `network_mode: service:<other>` dependent: joins `target_container_name`'s
+/// network namespace instead of leasing its own address. `upstream_address` is the upstream's
+/// current address, kept only for the `jiji.lease` label and observability -- it is never rendered
+/// into `--ip`, since the dependent has no address of its own (see
+/// `NetworkedContainerRun::shared`). Ports are deliberately not rendered here: they belong to
+/// whichever service owns the shared network namespace, never to the dependent.
+#[allow(clippy::too_many_arguments)]
+pub fn build_shared_run(
+    engine: ContainerEngine,
+    project: &str,
+    service_name: &str,
+    server_name: &str,
+    replica_id: &str,
+    deployment_id: &str,
+    image: &str,
+    target_container_name: &str,
+    upstream_address: Ipv4Addr,
+    server: &ServerPlan,
+    service: &Service,
+    mount_args: &[String],
+    env_file_path: &str,
+) -> NetworkedContainerRun {
+    let name = dynamic_container_name(project, service_name, deployment_id);
+    let mut run = NetworkedContainerRun::shared(
+        engine,
+        name,
+        image,
+        target_container_name,
+        upstream_address,
+        server,
+    );
+    run.extra_args = vec![
+        "--detach".to_string(),
+        "--restart".to_string(),
+        service.restart.unwrap_or_default().to_string(),
+    ];
+    run.extra_args.extend(render_dynamic_labels(
+        project,
+        service_name,
+        server_name,
+        replica_id,
+        deployment_id,
+        upstream_address,
+        "candidate",
+    ));
+    run.extra_args.extend(mount_args.iter().cloned());
+    run.extra_args.push("--env-file".to_string());
+    run.extra_args.push(env_file_path.to_string());
+    run.extra_args.extend(render_resource_options(service));
+    run.command = render_command(&service.command);
+    run
+}
+
+pub fn dynamic_container_name(project: &str, service: &str, deployment_id: &str) -> String {
+    let suffix = deployment_id.get(..12).unwrap_or(deployment_id);
+    format!("{project}-{service}-{suffix}")
 }
 
 /// Raw passthrough: each `ports` entry becomes `-p {value}` unmodified (no transformation of
@@ -159,74 +263,12 @@ pub fn render_command(command: &Option<CommandValue>) -> Vec<String> {
     }
 }
 
-/// Builds the ordered flag list inserted between the fixed network/DNS block
-/// (`NetworkedContainerRun::for_endpoint` already renders that part) and the image name:
-/// `--detach --restart {policy} {labels} -p {ports}... {mounts} --env-file {path}
-/// {resource options}`. `policy` defaults to `unless-stopped` when the service doesn't set
-/// `restart:`.
-#[allow(clippy::too_many_arguments)]
-pub fn render_extra_args(
-    service: &Service,
-    project: &str,
-    service_name: &str,
-    server: &str,
-    mount_args: &[String],
-    env_file_path: &str,
-) -> Vec<String> {
-    let mut args = vec![
-        "--detach".to_string(),
-        "--restart".to_string(),
-        service.restart.unwrap_or_default().to_string(),
-    ];
-    args.extend(render_labels(project, service_name, server));
-    args.extend(render_ports(&service.ports));
-    args.extend(mount_args.iter().cloned());
-    args.push("--env-file".to_string());
-    args.push(env_file_path.to_string());
-    args.extend(render_resource_options(service));
-    args
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_run(
-    engine: ContainerEngine,
-    project: &str,
-    service_name: &str,
-    server_name: &str,
-    image: &str,
-    endpoint: &ServiceEndpointPlan,
-    server: &ServerPlan,
-    slot: BackendSlot,
-    service: &Service,
-    mount_args: &[String],
-    env_file_path: &str,
-) -> NetworkedContainerRun {
-    let name = container_name(project, service_name, slot);
-    let mut run = NetworkedContainerRun::for_endpoint(engine, name, image, endpoint, server, slot);
-    run.extra_args = render_extra_args(
-        service,
-        project,
-        service_name,
-        server_name,
-        mount_args,
-        env_file_path,
-    );
-    run.command = render_command(&service.command);
-    run
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn service(yaml: &str) -> Service {
         serde_yaml::from_str(yaml).unwrap()
-    }
-
-    #[test]
-    fn container_name_is_project_service_slot() {
-        assert_eq!(container_name("demo", "web", BackendSlot::A), "demo-web-a");
-        assert_eq!(container_name("demo", "web", BackendSlot::B), "demo-web-b");
     }
 
     #[test]
@@ -375,54 +417,5 @@ cap_add: ["SYS_ADMIN"]
             vec!["./run.sh".to_string(), "--flag".to_string()]
         );
         assert!(render_command(&None).is_empty());
-    }
-
-    #[test]
-    fn extra_args_never_contain_inline_env_flags() {
-        let service = service("image: example/web\nservers: [app]\nports: [\"3000\"]\n");
-        let args = render_extra_args(
-            &service,
-            "demo",
-            "web",
-            "app",
-            &[],
-            "/root/.jiji/demo/env/web-app.env",
-        );
-        assert!(args.contains(&"--env-file".to_string()));
-        assert!(args.contains(&"/root/.jiji/demo/env/web-app.env".to_string()));
-        assert!(!args.iter().any(|a| a == "-e"));
-    }
-
-    #[test]
-    fn docker_and_podman_extra_args_are_identical_modulo_engine() {
-        let service = service("image: example/web\nservers: [app]\n");
-        let docker_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
-        let podman_args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
-        assert_eq!(docker_args, podman_args);
-    }
-
-    #[test]
-    fn restart_policy_defaults_to_unless_stopped() {
-        let service = service("image: example/web\nservers: [app]\n");
-        let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
-        let restart_index = args.iter().position(|a| a == "--restart").unwrap();
-        assert_eq!(args[restart_index + 1], "unless-stopped");
-    }
-
-    #[test]
-    fn restart_policy_is_configurable() {
-        for (yaml_value, flag_value) in [
-            ("unless-stopped", "unless-stopped"),
-            ("always", "always"),
-            ("on-failure", "on-failure"),
-            ("no", "no"),
-        ] {
-            let service = service(&format!(
-                "image: example/web\nservers: [app]\nrestart: {yaml_value}\n"
-            ));
-            let args = render_extra_args(&service, "demo", "web", "app", &[], "/env");
-            let restart_index = args.iter().position(|a| a == "--restart").unwrap();
-            assert_eq!(args[restart_index + 1], flag_value);
-        }
     }
 }

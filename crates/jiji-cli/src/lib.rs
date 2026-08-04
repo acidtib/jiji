@@ -1,8 +1,12 @@
+mod agent_client;
+mod agent_install;
 mod audit;
+mod backup_crypto;
 mod build_context;
 mod build_engine;
 mod build_executor;
 mod build_plan;
+mod cascade;
 mod cli;
 mod commands;
 mod config_loading;
@@ -15,16 +19,17 @@ mod health_check;
 mod image_teardown;
 mod local_exec;
 mod lock;
+mod membership_authority;
 mod mounts;
 mod network_guard;
 mod network_teardown;
+pub mod placement;
 mod proxy;
 mod proxy_ingress;
 mod proxy_routes;
 mod proxy_teardown;
 mod registry;
 mod remote_build;
-pub mod service_network;
 mod ssh_adapter;
 mod teardown_plan;
 mod version_tag;
@@ -87,6 +92,7 @@ pub async fn run() {
             yes,
             lock_timeout,
             force_lock,
+            wait_for_peers,
         }) => {
             if let Err(err) = commands::deploy::run(
                 cli.environment.as_deref(),
@@ -101,6 +107,7 @@ pub async fn run() {
                 *yes,
                 *lock_timeout,
                 *force_lock,
+                *wait_for_peers,
             )
             .await
             {
@@ -234,6 +241,209 @@ pub async fn run() {
                     cli.config_file.as_deref(),
                 ) {
                     jiji_tui::Ui::error(&format!("Network planning failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Catalog => {
+                if let Err(err) = commands::network::catalog::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Network catalog inspection failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Diagnostics { json } => {
+                if let Err(err) = commands::network::diagnostics::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    *json,
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Control-plane diagnostics failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Assess => {
+                if let Err(err) = commands::network::assess::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Cutover assessment failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Import { dry_run, yes } => {
+                if let Err(err) = commands::network::import::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    *dry_run,
+                    *yes,
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Import failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Compact => {
+                if let Err(err) = commands::network::compact::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Control-plane compaction failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Backup {
+                output,
+                passphrase_file,
+            } => {
+                if let Err(err) = commands::network::backup::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    std::path::Path::new(output),
+                    std::path::Path::new(passphrase_file),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Control-plane backup failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Restore {
+                input,
+                passphrase_file,
+            } => {
+                if let Err(err) = commands::network::backup::restore(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    std::path::Path::new(input),
+                    std::path::Path::new(passphrase_file),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Control-plane restore failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Recover {
+                input,
+                passphrase_file,
+                yes,
+            } => {
+                if let Err(err) = commands::network::backup::recover(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    std::path::Path::new(input),
+                    std::path::Path::new(passphrase_file),
+                    *yes,
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Control-plane recovery failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Decommission { server, seed } => {
+                if let Err(err) = commands::network::membership::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    server,
+                    seed,
+                    commands::network::membership::Change::Decommission,
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Network decommission failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::UpdateEndpoint {
+                server,
+                endpoint,
+                seed,
+            } => {
+                if let Err(err) = commands::network::membership::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    server,
+                    seed,
+                    commands::network::membership::Change::Endpoint(endpoint.clone()),
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Network endpoint update failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::RotateKey {
+                server,
+                public_key,
+                endpoint,
+                seed,
+            } => {
+                if let Err(err) = commands::network::membership::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    server,
+                    seed,
+                    commands::network::membership::Change::RotateKey {
+                        public_key: public_key.clone(),
+                        endpoint: endpoint.clone(),
+                    },
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Network key rotation failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::Replace {
+                server,
+                public_key,
+                endpoint,
+                seed,
+            } => {
+                if let Err(err) = commands::network::membership::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    server,
+                    seed,
+                    commands::network::membership::Change::Replace {
+                        public_key: public_key.clone(),
+                        endpoint: endpoint.clone(),
+                    },
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Network replacement failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            NetworkCommands::RotateAuthority { finalize } => {
+                if let Err(err) = commands::network::membership::rotate_authority(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    *finalize,
+                )
+                .await
+                {
+                    jiji_tui::Ui::error(&format!("Membership authority rotation failed: {err}"));
                     std::process::exit(1);
                 }
             }
@@ -412,7 +622,36 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            ServiceCommands::Remove { yes, volumes } => {
+            ServiceCommands::Scale {
+                replicas,
+                reset,
+                dry_run,
+                yes,
+            } => {
+                if let Err(err) = commands::service::scale::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *replicas,
+                    *reset,
+                    *dry_run,
+                    *yes,
+                    cli.host_env,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Service scale failed: {err}"));
+                    std::process::exit(1);
+                }
+            }
+            ServiceCommands::Remove {
+                yes,
+                volumes,
+                lock_timeout,
+                force_lock,
+            } => {
                 if let Err(err) = commands::service::remove::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
@@ -420,6 +659,8 @@ pub async fn run() {
                     cli.services.as_deref(),
                     *yes,
                     *volumes,
+                    *lock_timeout,
+                    *force_lock,
                 )
                 .await
                 {
@@ -484,12 +725,19 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            LockCommands::Release => {
+            LockCommands::Release {
+                replica,
+                service,
+                scope,
+            } => {
                 if let Err(err) = commands::lock::release::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     cli.hosts.as_deref(),
                     cli.services.as_deref(),
+                    replica.as_deref(),
+                    service.as_deref(),
+                    scope.as_deref(),
                 )
                 .await
                 {

@@ -582,6 +582,8 @@ mod tests {
             image: None,
             build: None,
             servers: Vec::new(),
+            replicas: 1,
+            placement: Default::default(),
             ports: Vec::new(),
             volumes: Vec::new(),
             files: Vec::new(),

@@ -220,7 +220,7 @@ fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
 
 const AUDIT_READ: &str = "tail -n 20 .jiji/demo/audit.log 2>/dev/null || true";
 const AUDIT_READ_ALL: &str = "cat .jiji/demo/audit.log 2>/dev/null || true";
-const LOCK_PATH: &str = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
+const LOCK_PATH: &str = "cat .jiji/demo/locks/maintenance.lock/info.json 2>/dev/null || true";
 
 fn run_jiji_audit(config_path: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));

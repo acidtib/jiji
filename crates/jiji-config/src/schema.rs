@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::net::Ipv4Addr;
 
 /// Top-level jiji configuration (`.jiji/deploy.yml`).
 ///
@@ -176,6 +177,13 @@ pub struct Network {
     pub management_cidr: Option<String>,
     #[serde(default)]
     pub container_cidr: Option<String>,
+    /// Forwarded to for any DNS query outside this project's own `.jiji` zone (see
+    /// `jiji-agent/src/dns.rs`) -- without this, a jiji-managed service container could never
+    /// resolve a normal internet hostname at all, since its `resolv.conf` only ever gets this
+    /// project's own agent as its nameserver. Defaults to public resolvers; override to point at
+    /// a home router, Pi-hole, or other local resolver instead.
+    #[serde(default = "default_dns_forwarders")]
+    pub dns_forwarders: Vec<Ipv4Addr>,
 }
 
 impl Network {
@@ -190,6 +198,14 @@ impl Network {
             .as_deref()
             .unwrap_or(jiji_core::DEFAULT_CONTAINER_CIDR)
     }
+}
+
+/// The default forwarders used both by serde (when `network:` is present but omits
+/// `dns_forwarders`) and by callers resolving a fully-absent `network:` section (`Config.network`
+/// is itself `Option<Network>` -- see `NetworkPlanner::plan`'s equivalent `unwrap_or` pattern for
+/// `management_cidr`/`container_cidr`).
+pub fn default_dns_forwarders() -> Vec<Ipv4Addr> {
+    vec![Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)]
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -359,6 +375,23 @@ impl fmt::Display for RestartPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlacementPolicy {
+    #[default]
+    Spread,
+    Packed,
+}
+
+impl fmt::Display for PlacementPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlacementPolicy::Spread => write!(f, "spread"),
+            PlacementPolicy::Packed => write!(f, "packed"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Service {
     #[serde(default)]
@@ -367,6 +400,10 @@ pub struct Service {
     pub build: Option<BuildValue>,
     #[serde(default)]
     pub servers: Vec<String>,
+    #[serde(default = "default_replicas")]
+    pub replicas: u32,
+    #[serde(default)]
+    pub placement: PlacementPolicy,
     #[serde(default)]
     pub ports: Vec<String>,
     #[serde(default)]
@@ -403,6 +440,16 @@ pub struct Service {
     pub restart: Option<RestartPolicy>,
 }
 
+impl Service {
+    /// The upstream service name this service depends on, if `network_mode` is `service:<name>`
+    /// (Docker Compose's shorthand for sharing another container's network namespace). Naming the
+    /// upstream this way is itself the dependency declaration -- there is no separate
+    /// `depends_on` field.
+    pub fn network_mode_dependency(&self) -> Option<&str> {
+        self.network_mode.strip_prefix("service:")
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -437,6 +484,10 @@ fn default_dns_retries() -> u32 {
 
 fn default_retain() -> u32 {
     3
+}
+
+fn default_replicas() -> u32 {
+    1
 }
 
 fn default_network_mode() -> String {

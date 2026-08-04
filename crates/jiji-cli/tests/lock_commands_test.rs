@@ -109,6 +109,14 @@ impl server::Handler for TestServer {
             .responses
             .get(&format!("{command}#{occurrence}"))
             .or_else(|| self.responses.get(&command))
+            .or_else(|| {
+                self.responses.iter().find_map(|(pattern, response)| {
+                    pattern
+                        .strip_prefix("CONTAINS:")
+                        .filter(|needle| command.contains(needle))
+                        .map(|_| response)
+                })
+            })
             .cloned()
             .unwrap_or_else(|| success(""));
 
@@ -210,7 +218,7 @@ fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
     (dir, key_path, client_key)
 }
 
-const LOCK_PATH: &str = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
+const LOCK_PATH: &str = "cat .jiji/demo/locks/maintenance.lock/info.json 2>/dev/null || true";
 
 fn run_jiji_lock(config_path: &std::path::Path, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));
@@ -244,6 +252,15 @@ async fn acquire_writes_a_lock_file_that_status_and_show_then_report() {
     responses.insert(format!("{LOCK_PATH}#1"), success(""));
     responses.insert(format!("{LOCK_PATH}#2"), success(locked_body));
     responses.insert(format!("{LOCK_PATH}#3"), success(locked_body));
+    // `status`/`show` discover every lock via a `find`-based script rather than reading the
+    // single project-maintenance path directly; matched by substring since the mock server can't
+    // persist real files for the script to actually find.
+    responses.insert(
+        "CONTAINS:find .jiji/demo/locks".to_string(),
+        success(&format!(
+            "LOCKPATH:.jiji/demo/locks/maintenance.lock/info.json\n{locked_body}\n"
+        )),
+    );
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path);
@@ -259,7 +276,7 @@ async fn acquire_writes_a_lock_file_that_status_and_show_then_report() {
     assert!(
         received
             .iter()
-            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")
+            .any(|c| c.contains("mkdir .jiji/demo/locks/maintenance.lock")
                 && c.contains("install -m 0600 /dev/stdin")),
         "lock file should have been written atomically: {received:?}"
     );
@@ -300,7 +317,7 @@ async fn acquire_without_force_fails_fast_when_already_locked_and_force_override
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")),
+            .any(|c| c.contains("mkdir .jiji/demo/locks/maintenance.lock")),
         "a blocked acquire must never write a lock file"
     );
 
@@ -316,7 +333,7 @@ async fn acquire_without_force_fails_fast_when_already_locked_and_force_override
             .lock()
             .unwrap()
             .iter()
-            .any(|c| c.contains("mkdir .jiji/demo/deploy.lock")),
+            .any(|c| c.contains("mkdir .jiji/demo/locks/maintenance.lock")),
         "--force must still write the new lock file"
     );
 }
@@ -343,10 +360,38 @@ async fn release_removes_the_lock_file() {
     let received = harness.received.lock().unwrap().clone();
     assert!(
         received.iter().any(|command| {
-            command.contains("rm -f .jiji/demo/deploy.lock/info.json")
-                && command.contains("rmdir .jiji/demo/deploy.lock")
+            command.contains("rm -f .jiji/demo/locks/maintenance.lock/info.json")
+                && command.contains("rmdir .jiji/demo/locks/maintenance.lock")
         }),
         "received: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn release_replica_flag_targets_the_replica_lock_not_maintenance() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let harness = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let release = run_jiji_lock(&config_path, &["release", "--replica", "web-abc123"]);
+    assert!(
+        release.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&release.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received.iter().any(|command| {
+            command.contains("rm -f .jiji/demo/locks/replica/web-abc123.lock/info.json")
+        }),
+        "should target the replica lock, not maintenance: {received:?}"
+    );
+    assert!(
+        !received
+            .iter()
+            .any(|command| command.contains("locks/maintenance.lock/info.json")),
+        "an explicit --replica release must not touch the maintenance lock: {received:?}"
     );
 }
 

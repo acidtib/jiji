@@ -500,6 +500,8 @@ mod tests {
             image: None,
             build: None,
             servers: vec!["one".into(), "two".into(), "three".into()],
+            replicas: 1,
+            placement: Default::default(),
             ports: vec![],
             volumes: vec![],
             files: vec![],

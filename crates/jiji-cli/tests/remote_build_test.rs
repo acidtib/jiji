@@ -61,6 +61,23 @@ fn no_exit_status() -> CannedResponse {
     }
 }
 
+fn default_response(command: &str) -> CannedResponse {
+    let body = if command.contains("# jiji-request:catalog-list") {
+        r#"{"Ok":{"type":"catalog_list","records":[]}}"#
+    } else if command.contains("# jiji-request:desired-read") {
+        r#"{"Ok":{"type":"desired_state","record":null}}"#
+    } else if command.contains("# jiji-request:allocate-address") {
+        r#"{"Ok":{"type":"address_lease","deployment_id":"test-deploy","replica_id":"web-test","address":"100.64.0.10","state":"active"}}"#
+    } else if command.contains("# jiji-request:catalog-commit") {
+        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"app","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"registry.example.com/demo-web:v1","state":"active","health":"healthy"}}}"#
+    } else if command.contains("# jiji-request:release-address") {
+        r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else {
+        ""
+    };
+    success(body)
+}
+
 #[derive(Clone)]
 struct TestServer {
     authorized_key: PublicKey,
@@ -208,7 +225,7 @@ impl server::Handler for TestServer {
             .get(&format!("{command}#{occurrence}"))
             .or_else(|| self.responses.get(&command))
             .cloned()
-            .unwrap_or_else(|| success(""));
+            .unwrap_or_else(|| default_response(&command));
 
         if !response.stdout.is_empty() {
             session.data(channel, response.stdout)?;
@@ -1199,10 +1216,11 @@ ssh:
             .replace("APP_PORT", "0"),
     )
     .expect("parse generation config");
-    let generation = NetworkPlanner::new()
+    let network_plan = NetworkPlanner::new()
         .plan(&generation_config)
-        .expect("network plan")
-        .generation;
+        .expect("network plan");
+    let generation = network_plan.mesh_generation;
+    let service_runtime_generation = generation.clone();
     let slug = jiji_network::systemd_unit_slug("demo");
     let network_dir = format!("/etc/jiji/network/{slug}");
 
@@ -1210,8 +1228,12 @@ ssh:
     let staging_root = ".jiji/demo/builds/run.dep456";
     let mut responses = HashMap::new();
     responses.insert(
-        format!("cat {network_dir}/generation 2>/dev/null || true"),
+        format!("cat {network_dir}/mesh-generation 2>/dev/null || true"),
         success(&format!("{generation}\n")),
+    );
+    responses.insert(
+        format!("cat {network_dir}/service-runtime-generation 2>/dev/null || true"),
+        success(&format!("{service_runtime_generation}\n")),
     );
     responses.insert(
         format!("cat {network_dir}/service-nat-current/active-slots"),

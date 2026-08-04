@@ -6,6 +6,9 @@ use crate::commands::network::setup::{
 };
 use crate::container_ops;
 
+/// Phase 9 stopped installing this drop-in (the agent's own container reconciliation already
+/// covers the same "restart on boot" job, so the drop-in was a second, uncoordinated path doing
+/// the same thing). Removal here is migration-only cleanup for hosts provisioned before Phase 9.
 fn podman_restart_dropin_path(slug: &str) -> String {
     format!("/etc/systemd/system/podman-restart.service.d/jiji-network-{slug}.conf")
 }
@@ -34,7 +37,10 @@ async fn read_installed_generation(
     project: &str,
 ) -> anyhow::Result<Option<String>> {
     let slug = jiji_network::systemd_unit_slug(project);
-    let command = format!("cat {}/generation 2>/dev/null || true", network_dir(&slug));
+    let command = format!(
+        "cat {}/mesh-generation 2>/dev/null || true",
+        network_dir(&slug)
+    );
     let result = session.execute(&command).await?;
     let trimmed = result.stdout.trim();
     Ok(if trimmed.is_empty() {
@@ -47,22 +53,46 @@ async fn read_installed_generation(
 /// Stops and disables every jiji-authored systemd unit for this project, tolerating units that
 /// are already absent or already stopped (mirrors `network/setup.rs`'s own first-install rollback
 /// path, which uses the identical `2>/dev/null || true` pattern for the same reason). Only removes
-/// this project's own podman-restart drop-in file (one file per project, see `network/setup.rs`)
-/// -- other projects' drop-ins, and the shared `podman-restart.service` itself, are untouched.
+/// this project's own podman-restart drop-in file, if present from a pre-Phase-9 install (one file
+/// per project, see `podman_restart_dropin_path`) -- other projects' drop-ins, and the shared
+/// `podman-restart.service` itself, are untouched.
+///
+/// Disables each unit in its own `systemctl` invocation rather than one call listing all of them:
+/// `jiji-dns-{slug}`/`jiji-service-nat-{slug}` are legacy-only and normally absent on any host that
+/// never predates the distributed control plane, `jiji-network-restore-{slug}` is legacy-only as
+/// of Phase 9 (the agent now brings the bridge/DNS up natively instead of depending on this unit,
+/// see `bridge_bringup.rs`), and `systemctl disable --now` given multiple unit names aborts on the
+/// first one that doesn't exist without touching the rest (confirmed live) -- a single combined
+/// call would silently leave `wg-quick@{wireguard_interface}` (listed last) running.
+fn render_stop_and_disable_units_command(project: &str) -> String {
+    let slug = jiji_network::systemd_unit_slug(project);
+    let wireguard_interface = jiji_network::wireguard_interface_name(project);
+    let units = [
+        format!("jiji-dns-{slug}.service"),
+        format!("jiji-service-nat-{slug}.service"),
+        format!("jiji-network-restore-{slug}.service"),
+        format!("wg-quick@{wireguard_interface}.service"),
+    ];
+    let disable_each = units
+        .iter()
+        .map(|unit| format!("systemctl disable --now {unit} 2>/dev/null || true"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "{disable_each}; \
+         rm -f /etc/systemd/system/jiji-dns-{slug}.service \
+         /etc/systemd/system/jiji-service-nat-{slug}.service \
+         /etc/systemd/system/jiji-network-restore-{slug}.service"
+    )
+}
+
 pub async fn stop_and_disable_units(
     session: &SshSession,
     engine: ContainerEngine,
     project: &str,
 ) -> anyhow::Result<()> {
     let slug = jiji_network::systemd_unit_slug(project);
-    let wireguard_interface = jiji_network::wireguard_interface_name(project);
-    let command = format!(
-        "systemctl disable --now jiji-dns-{slug}.service jiji-service-nat-{slug}.service \
-         jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true; \
-         rm -f /etc/systemd/system/jiji-dns-{slug}.service \
-         /etc/systemd/system/jiji-service-nat-{slug}.service \
-         /etc/systemd/system/jiji-network-restore-{slug}.service"
-    );
+    let command = render_stop_and_disable_units_command(project);
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
 
@@ -199,13 +229,7 @@ mod tests {
     fn unit_disable_command_includes_every_jiji_authored_unit_for_this_project() {
         let slug = jiji_network::systemd_unit_slug("demo");
         let wireguard_interface = jiji_network::wireguard_interface_name("demo");
-        let command = format!(
-            "systemctl disable --now jiji-dns-{slug}.service jiji-service-nat-{slug}.service \
-             jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true; \
-             rm -f /etc/systemd/system/jiji-dns-{slug}.service \
-             /etc/systemd/system/jiji-service-nat-{slug}.service \
-             /etc/systemd/system/jiji-network-restore-{slug}.service"
-        );
+        let command = render_stop_and_disable_units_command("demo");
         for unit in [
             format!("jiji-dns-{slug}.service"),
             format!("jiji-service-nat-{slug}.service"),
@@ -218,5 +242,26 @@ mod tests {
         assert!(command.contains(&format!(
             "rm -f /etc/systemd/system/jiji-dns-{slug}.service"
         )));
+    }
+
+    // Regression guard for a live-confirmed bug: `systemctl disable --now A B C D` aborts on the
+    // first unit name that doesn't exist and never touches the rest, so a single combined
+    // invocation silently left `wg-quick@...` (listed last) running whenever the legacy-only
+    // `jiji-dns`/`jiji-service-nat` units (listed first) were absent, which is the common case.
+    // Each unit must get its own independent `systemctl disable --now` invocation.
+    #[test]
+    fn each_unit_is_disabled_in_its_own_systemctl_invocation() {
+        let command = render_stop_and_disable_units_command("demo");
+        let wireguard_interface = jiji_network::wireguard_interface_name("demo");
+        let slug = jiji_network::systemd_unit_slug("demo");
+        for unit in [
+            format!("jiji-dns-{slug}.service"),
+            format!("jiji-service-nat-{slug}.service"),
+            format!("jiji-network-restore-{slug}.service"),
+            format!("wg-quick@{wireguard_interface}.service"),
+        ] {
+            assert!(command.contains(&format!("systemctl disable --now {unit} 2>/dev/null")));
+        }
+        assert_eq!(command.matches("systemctl disable --now").count(), 4);
     }
 }

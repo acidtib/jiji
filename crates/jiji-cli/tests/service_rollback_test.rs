@@ -33,12 +33,31 @@ fn success(stdout: &str) -> CannedResponse {
     }
 }
 
-fn failure() -> CannedResponse {
-    CannedResponse {
-        success: false,
-        stdout: String::new(),
-        stderr: "no such object".to_string(),
-    }
+fn default_response(command: &str) -> CannedResponse {
+    let body = if command.contains("# jiji-request:catalog-list") {
+        r#"{"Ok":{"type":"catalog_list","records":[]}}"#
+    } else if command.contains("# jiji-request:allocate-address") {
+        r#"{"Ok":{"type":"address_lease","deployment_id":"test-deploy","replica_id":"web-test","address":"100.64.0.10","state":"active"}}"#
+    } else if command.contains("# jiji-request:catalog-commit") {
+        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"node-test","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}}"#
+    } else if command.contains("# jiji-request:release-address") {
+        r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else {
+        ""
+    };
+    success(body)
+}
+
+fn agent_catalog_command() -> String {
+    "/etc/jiji/agent/demo-354b6884/bin/jiji-agent request --socket \
+     /etc/jiji/agent/demo-354b6884/agent.sock # jiji-request:catalog-list"
+        .to_string()
+}
+
+fn active_catalog_response() -> CannedResponse {
+    success(
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"olddeployment1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
+    )
 }
 
 #[derive(Clone)]
@@ -112,7 +131,7 @@ impl server::Handler for TestServer {
             .responses
             .get(&command)
             .cloned()
-            .unwrap_or_else(|| success(""));
+            .unwrap_or_else(|| default_response(&command));
 
         if !response.stdout.is_empty() {
             session.data(channel, response.stdout)?;
@@ -230,7 +249,16 @@ fn plan_generation(addr: SocketAddr) -> String {
     let plan = NetworkPlanner::new()
         .plan(&config)
         .expect("build test plan");
-    plan.generation
+    plan.mesh_generation
+}
+
+fn service_runtime_generation(addr: SocketAddr) -> String {
+    let yaml = config_yaml(addr, std::path::Path::new("/dev/null"));
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
 }
 
 fn run_jiji_service_rollback(config_path: &std::path::Path, version: &str) -> std::process::Output {
@@ -273,7 +301,14 @@ fn active_slots_path() -> String {
 }
 
 fn generation_path() -> String {
-    format!("cat {}/generation 2>/dev/null || true", network_dir())
+    format!("cat {}/mesh-generation 2>/dev/null || true", network_dir())
+}
+
+fn service_runtime_generation_path() -> String {
+    format!(
+        "cat {}/service-runtime-generation 2>/dev/null || true",
+        network_dir()
+    )
 }
 
 fn mktemp_command() -> String {
@@ -294,10 +329,6 @@ fn inspect_status_command(name: &str) -> String {
     format!("docker inspect {name} --format '{{{{.State.Status}}}}'")
 }
 
-fn readiness_health_command(name: &str) -> String {
-    format!("docker inspect {name} --format '{{{{.State.Status}}}}' | grep -qx running")
-}
-
 fn image_inspect_command(image: &str) -> String {
     format!("docker image inspect {image} >/dev/null 2>&1")
 }
@@ -307,16 +338,21 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
 
-    let old_name = "demo-web-a";
-    let candidate_name = "demo-web-b";
+    let old_name = "demo-web-olddeploymen";
     let target_image = "docker.io/example/web:v1.2.3";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        success(&format!(
+            "{}\n",
+            service_runtime_generation(SocketAddr::from(([127, 0, 0, 1], 0)))
+        )),
+    );
     responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(inspect_status_command(old_name), success("running\n"));
-    responses.insert(inspect_status_command(candidate_name), failure());
     responses.insert(image_inspect_command(target_image), success(""));
-    responses.insert(readiness_health_command(candidate_name), success(""));
+    responses.insert(agent_catalog_command(), active_catalog_response());
     responses.insert(mktemp_command(), cutover_generation_path("abc123"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
@@ -328,14 +364,14 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stdout.contains(target_image), "stdout: {stdout}");
     assert!(
-        stdout.contains("demo:web:app: rolled back to 'v1.2.3' (slot b)"),
+        stdout.contains("demo:web:app: rolled back to 'v1.2.3' ("),
         "stdout: {stdout}"
     );
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
         received.iter().any(|c| c.contains("docker run")
-            && c.contains(candidate_name)
+            && c.contains("--name demo-web-")
             && c.contains(target_image)),
         "candidate should have been created from the requested version, not the currently running \
          image: {received:?}"
@@ -357,15 +393,19 @@ async fn rollback_resolves_a_build_only_service_from_the_registry_without_inspec
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
 
-    let candidate_name = "demo-web-a";
     // Default registry is local, port 31270 -- see `jiji-config::schema::default_registry_port`.
     let target_image = "localhost:31270/demo-web:v9";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        success(&format!(
+            "{}\n",
+            service_runtime_generation(SocketAddr::from(([127, 0, 0, 1], 0)))
+        )),
+    );
     responses.insert(active_slots_path(), success(""));
-    responses.insert(inspect_status_command(candidate_name), failure());
     responses.insert(image_inspect_command(target_image), success(""));
-    responses.insert(readiness_health_command(candidate_name), success(""));
     responses.insert(mktemp_command(), cutover_generation_path("def456"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
@@ -387,7 +427,7 @@ async fn rollback_resolves_a_build_only_service_from_the_registry_without_inspec
     );
     assert!(
         received.iter().any(|c| c.contains("docker run")
-            && c.contains(candidate_name)
+            && c.contains("--name demo-web-")
             && c.contains(target_image)),
         "candidate should have been created from the registry-resolved version: {received:?}"
     );
@@ -452,5 +492,146 @@ ssh:
     assert!(
         stderr.contains("already has an explicit tag"),
         "stderr: {stderr}"
+    );
+}
+
+/// "gluetun" (upstream, `network_mode: bridge`) and "qbittorrent" (dependent, `network_mode:
+/// service:gluetun`), both on a single server, both with untagged static images -- verifies `jiji
+/// service rollback` cascades a `network_mode: service:<upstream>` dependent the same way `jiji
+/// deploy`/`jiji service restart` do (see `crate::cascade`).
+fn config_yaml_with_dependent(addr: SocketAddr, key_path: &std::path::Path) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: docker }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  gluetun:
+    image: qmcgaw/gluetun
+    servers: [app]
+  qbittorrent:
+    image: linuxserver/qbittorrent
+    servers: [app]
+    network_mode: service:gluetun
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn generation_with_dependent(addr: SocketAddr) -> String {
+    let yaml = config_yaml_with_dependent(addr, std::path::Path::new("/dev/null"));
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
+}
+
+fn run_jiji_service_rollback_with_args(
+    config_path: &std::path::Path,
+    version: &str,
+    extra_args: &[&str],
+) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jiji"));
+    command
+        .arg("service")
+        .arg("rollback")
+        .arg("--version")
+        .arg(version)
+        .arg("-c")
+        .arg(config_path);
+    for arg in extra_args {
+        command.arg(arg);
+    }
+    command.output().expect("run jiji service rollback")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_the_upstream_cascades_and_sequences_its_dependent() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = generation_with_dependent(SocketAddr::from(([127, 0, 0, 1], 0)));
+
+    // gluetun's own real, deterministically-derived replica_id: the same catalog record must
+    // satisfy both gluetun's own "is there a previous deployment" lookup (by replica_id) and
+    // qbittorrent's upstream-resolution lookup (by service+owner_node_id).
+    let gluetun_replica_id = jiji_cli::placement::replica_id("demo", "gluetun", 0);
+    let old_gluetun_name = "demo-gluetun-oldgluetunde";
+    let catalog_response = success(&format!(
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"{gluetun_replica_id}","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"oldgluetundeploy1234567","address":"100.64.0.20","ports":[],"image":"docker.io/qmcgaw/gluetun:v1.0.0","state":"active","health":"healthy"}}]}}}}"#
+    ));
+
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+    responses.insert(agent_catalog_command(), catalog_response);
+    responses.insert(
+        inspect_status_command(old_gluetun_name),
+        success("running\n"),
+    );
+    responses.insert(
+        image_inspect_command("docker.io/qmcgaw/gluetun:v1.2.3"),
+        success(""),
+    );
+    responses.insert(
+        image_inspect_command("docker.io/linuxserver/qbittorrent:v1.2.3"),
+        success(""),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(
+        dir.path(),
+        &config_yaml_with_dependent(harness.addr, &key_path),
+    );
+
+    // Only gluetun is explicitly selected; qbittorrent must be cascaded in automatically.
+    let output = run_jiji_service_rollback_with_args(&config_path, "v1.2.3", &["-S", "gluetun"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.contains("demo:qbittorrent:"),
+        "the cascaded dependent should appear in the rollback results: {stdout}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let gluetun_create = received
+        .iter()
+        .position(|c| c.contains("docker run --name demo-gluetun-") && c.contains("v1.2.3"));
+    let qbittorrent_create = received
+        .iter()
+        .position(|c| c.contains("docker run --name demo-qbittorrent-") && c.contains("v1.2.3"));
+    assert!(
+        gluetun_create.is_some() && qbittorrent_create.is_some(),
+        "both the upstream and its cascaded dependent should have been rolled back to v1.2.3: {received:?}"
+    );
+    assert!(
+        gluetun_create.unwrap() < qbittorrent_create.unwrap(),
+        "gluetun must be rolled back before qbittorrent attaches to its namespace: {received:?}"
+    );
+    assert!(
+        received.iter().any(|c| {
+            c.contains("docker run --name demo-qbittorrent-")
+                && c.contains("--network container:demo-gluetun-")
+                && !c.contains("--ip")
+        }),
+        "qbittorrent should join gluetun's own newly-created container: {received:?}"
+    );
+    assert!(
+        received.contains(&format!("docker rm -f {old_gluetun_name}")),
+        "gluetun's previous container should have been removed after rolling back: {received:?}"
     );
 }

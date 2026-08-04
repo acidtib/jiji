@@ -12,7 +12,7 @@ use crate::{build_engine, engine, registry, remote_build};
 
 pub enum BuildExecutor {
     Local,
-    Remote(remote_build::RemoteBuildExecutor),
+    Remote(Box<remote_build::RemoteBuildExecutor>),
 }
 
 impl BuildExecutor {
@@ -35,7 +35,7 @@ impl BuildExecutor {
                     plan,
                 )
                 .await?;
-                Ok(BuildExecutor::Remote(remote))
+                Ok(BuildExecutor::Remote(Box::new(remote)))
             }
         }
     }

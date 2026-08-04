@@ -21,7 +21,7 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
     let plan = NetworkPlanner::new().plan(&config)?;
 
     Ui::section("Network Plan:");
-    Ui::say(&format!("Generation: {}", plan.generation), 1);
+    Ui::say(&format!("Mesh generation: {}", plan.mesh_generation), 1);
     Ui::say(&format!("Management CIDR: {}", plan.management_cidr), 1);
     Ui::say(&format!("Container CIDR: {}", plan.container_cidr), 1);
     Ui::say(&format!("Project: {}", plan.project), 1);
@@ -55,16 +55,7 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
     Ui::section("Endpoints:");
     for endpoint in plan.endpoints.values() {
         Ui::say(&endpoint.identity, 1);
-        Ui::say(&format!("dns:        {}", endpoint.dns_name), 2);
-        Ui::say(&format!("server-dns: {}", endpoint.server_dns_name), 2);
-        Ui::say(&format!("vip:        {}", endpoint.address), 2);
-        Ui::say(
-            &format!(
-                "backends:   a={} b={}",
-                endpoint.backend_addresses[0], endpoint.backend_addresses[1]
-            ),
-            2,
-        );
+        Ui::say("address:    dynamically leased by the owner agent", 2);
     }
 
     Ok(())

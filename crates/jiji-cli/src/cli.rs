@@ -100,6 +100,12 @@ pub enum Commands {
         lock_timeout: u64,
         #[arg(long, help = "Replace an existing deployment lock")]
         force_lock: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "After a successful deploy, best-effort check up to N other peers' catalogs for the new deployment (never blocks past a short bound, never affects the exit code)"
+        )]
+        wait_for_peers: Option<u32>,
     },
     #[command(about = "Build and push images for services with `build:` configured")]
     Build {
@@ -213,8 +219,32 @@ pub enum LockCommands {
         #[arg(long, help = "Force acquire even if already locked (use with caution)")]
         force: bool,
     },
-    #[command(about = "Release the deployment lock")]
-    Release,
+    #[command(
+        about = "Release a lock (defaults to the project-maintenance lock; use --replica/--service/--scope to target a finer-grained one)"
+    )]
+    Release {
+        #[arg(
+            long,
+            value_name = "REPLICA_ID",
+            conflicts_with_all = ["service", "scope"],
+            help = "Release the logical-replica lock for this replica ID instead"
+        )]
+        replica: Option<String>,
+        #[arg(
+            long,
+            value_name = "SERVICE",
+            conflicts_with_all = ["replica", "scope"],
+            help = "Release the service-scale lock for this service instead"
+        )]
+        service: Option<String>,
+        #[arg(
+            long,
+            value_name = "host-runtime|proxy",
+            conflicts_with_all = ["replica", "service"],
+            help = "Release the named host-scoped lock instead (host-runtime or proxy)"
+        )]
+        scope: Option<String>,
+    },
     #[command(about = "Check current lock status")]
     Status {
         #[arg(long, help = "Output as JSON")]
@@ -276,7 +306,7 @@ pub enum ServiceCommands {
         )]
         container_id: Option<String>,
     },
-    #[command(about = "Restart running services with a zero-downtime slot cycle")]
+    #[command(about = "Restart running services with a zero-downtime replacement")]
     Restart {
         #[arg(long, value_name = "SECONDS", default_value_t = 300)]
         lock_timeout: u64,
@@ -284,13 +314,28 @@ pub enum ServiceCommands {
         force_lock: bool,
     },
     #[command(
-        about = "Roll back services to a previously built image via a zero-downtime slot cycle (requires --version)"
+        about = "Roll back services to a previously built image via a zero-downtime replacement (requires --version)"
     )]
     Rollback {
         #[arg(long, value_name = "SECONDS", default_value_t = 300)]
         lock_timeout: u64,
         #[arg(long, help = "Replace an existing deployment lock")]
         force_lock: bool,
+    },
+    #[command(about = "Change the desired replica count for one service")]
+    Scale {
+        #[arg(long, value_name = "N", conflicts_with = "reset")]
+        replicas: Option<u32>,
+        #[arg(
+            long,
+            conflicts_with = "replicas",
+            help = "Reset to the configured replica count"
+        )]
+        reset: bool,
+        #[arg(long, help = "Print the scale plan without changing state")]
+        dry_run: bool,
+        #[arg(short = 'y', long, help = "Skip the confirmation prompt")]
+        yes: bool,
     },
     #[command(about = "Remove services from servers")]
     Remove {
@@ -301,6 +346,10 @@ pub enum ServiceCommands {
             help = "Also remove jiji-owned named volumes for selected services"
         )]
         volumes: bool,
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+        lock_timeout: u64,
+        #[arg(long, help = "Replace an existing lock on an affected replica")]
+        force_lock: bool,
     },
     #[command(about = "Clean up old container images")]
     Prune {
@@ -392,4 +441,98 @@ pub enum NetworkCommands {
     Setup,
     #[command(about = "Print the deterministic private network plan without changing hosts")]
     Plan,
+    #[command(about = "Inspect the replicated service catalog on selected hosts")]
+    Catalog,
+    #[command(about = "Inspect self-healing, replication, quota, and component diagnostics")]
+    Diagnostics {
+        #[arg(long, help = "Emit one JSON object per server")]
+        json: bool,
+    },
+    #[command(
+        about = "Read-only comparison of a host's current resources against the distributed control plane"
+    )]
+    Assess,
+    #[command(
+        about = "One-way import of catalog history from a stopped old installation (operator convenience, not a compatibility layer)"
+    )]
+    Import {
+        #[arg(
+            long,
+            help = "Report what would be imported without committing anything"
+        )]
+        dry_run: bool,
+        #[arg(short = 'y', long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
+    #[command(about = "Compact superseded replicated operation history")]
+    Compact,
+    #[command(about = "Export an encrypted operator-controlled control-plane backup")]
+    Backup {
+        #[arg(long, value_name = "PATH")]
+        output: String,
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: String,
+    },
+    #[command(about = "Restore authenticated state into surviving hosts in the same epoch")]
+    Restore {
+        #[arg(long, value_name = "PATH")]
+        input: String,
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: String,
+    },
+    #[command(about = "Recover a lost control plane into a new fenced recovery epoch")]
+    Recover {
+        #[arg(long, value_name = "PATH")]
+        input: String,
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: String,
+        #[arg(short = 'y', long, help = "Confirm destructive epoch advancement")]
+        yes: bool,
+    },
+    #[command(about = "Publish an authenticated node tombstone through one reachable seed")]
+    Decommission {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, value_name = "SEED")]
+        seed: String,
+    },
+    #[command(about = "Publish a changed public endpoint through one reachable seed")]
+    UpdateEndpoint {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, value_name = "IP:PORT")]
+        endpoint: String,
+        #[arg(long, value_name = "SEED")]
+        seed: String,
+    },
+    #[command(about = "Rotate a node's WireGuard transport key through one reachable seed")]
+    RotateKey {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, value_name = "PUBLIC_KEY")]
+        public_key: String,
+        #[arg(long, value_name = "IP:PORT")]
+        endpoint: String,
+        #[arg(long, value_name = "SEED")]
+        seed: String,
+    },
+    #[command(about = "Fence and replace a node identity through one reachable seed")]
+    Replace {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, value_name = "PUBLIC_KEY")]
+        public_key: String,
+        #[arg(long, value_name = "IP:PORT")]
+        endpoint: String,
+        #[arg(long, value_name = "SEED")]
+        seed: String,
+    },
+    #[command(about = "Rotate the project membership authority across all enrolled hosts")]
+    RotateAuthority {
+        #[arg(
+            long,
+            help = "Retire the previous private signer after every host has accepted the new authority"
+        )]
+        finalize: bool,
+    },
 }

@@ -190,6 +190,7 @@ pub async fn run(
                 .expect("every pruned identity was selected above")
                 .clone(),
             succeeded,
+            None,
         )
     });
     audit::record_endpoints_by_server(
@@ -198,6 +199,7 @@ pub async fn run(
         "service_prune",
         None,
         endpoint_outcomes,
+        false,
         Some(started_at.elapsed()),
     )
     .await;

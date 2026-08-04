@@ -1,7 +1,7 @@
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::SshSession;
 
-use crate::{container_ops, proxy, proxy_ingress, proxy_routes};
+use crate::{container_ops, proxy_ingress, proxy_routes};
 
 /// Every `{project}-{service}-{port}` route name a proxy-enabled service in this project
 /// would register, computed purely from config. No `NetworkPlan`/session needed: kamal-proxy
@@ -28,17 +28,18 @@ pub fn compute_route_candidates(config: &Config, project: &str) -> Vec<String> {
 }
 
 /// No routes if the kamal-proxy container itself doesn't exist (already-idempotent: a prior
-/// teardown may already have removed it), checked via an existence precheck rather than matching
-/// on `docker exec`'s "no such container" stderr wording.
+/// teardown may already have removed it) or isn't currently running (confirmed live: a stopped
+/// container can't serve any route, and `podman exec`/`docker exec` refuse outright with "can
+/// only create exec sessions on running containers" -- a hard error here would otherwise make an
+/// unrelated stopped kamal-proxy block this entire host's teardown). Checked via an existence/
+/// state precheck rather than matching on exec's stderr wording.
 pub async fn list_routes(
     session: &SshSession,
     engine: ContainerEngine,
 ) -> anyhow::Result<Vec<String>> {
-    if container_ops::inspect_status(session, engine, proxy::CONTAINER_NAME)
-        .await?
-        .is_none()
-    {
-        return Ok(Vec::new());
+    match container_ops::inspect_status(session, engine, jiji_network::CONTAINER_NAME).await? {
+        Some(status) if status == "running" => {}
+        _ => return Ok(Vec::new()),
     }
     let command = proxy_routes::render_list_command(engine);
     let result = session.execute(&command).await?;
@@ -132,13 +133,13 @@ pub async fn teardown_proxy_container_if_unused(
     if !remaining.is_empty() {
         return Ok(ProxyContainerOutcome::RetainedInUseBy(remaining));
     }
-    if !container_ops::remove_if_present(session, engine, proxy::CONTAINER_NAME).await? {
+    if !container_ops::remove_if_present(session, engine, jiji_network::CONTAINER_NAME).await? {
         return Ok(ProxyContainerOutcome::AlreadyAbsent);
     }
     // Nothing needs kamal-proxy anymore, so its exclusive resources (not shared with any
     // service) are orphaned too. Both are recreated from scratch by the next `server setup`, so
     // there's no data-loss concern in removing them now.
-    container_ops::remove_volume_if_present(session, engine, proxy::CONFIG_VOLUME).await?;
+    container_ops::remove_volume_if_present(session, engine, jiji_network::CONFIG_VOLUME).await?;
     remove_certs_dir(session).await?;
     // Only Docker's `ensure_proxy` ever installs this (see `proxy_ingress`); harmlessly a no-op
     // on Podman, where it was never created.
@@ -149,12 +150,12 @@ pub async fn teardown_proxy_container_if_unused(
 }
 
 async fn remove_certs_dir(session: &SshSession) -> anyhow::Result<()> {
-    let command = format!("rm -rf {}", proxy::CERTS_DIR);
+    let command = format!("rm -rf {}", jiji_network::CERTS_DIR);
     let result = session.execute(&command).await?;
     if !result.success {
         anyhow::bail!(
             "Could not remove {} on {}: {}",
-            proxy::CERTS_DIR,
+            jiji_network::CERTS_DIR,
             session.host(),
             result.stderr.trim()
         );

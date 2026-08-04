@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use jiji_agent::api::{RequestBody, ResponseBody};
+use jiji_agent::catalog::{DeploymentState, HealthState};
 use jiji_config::{validate_config, ContainerEngine, NamedServer};
-use jiji_network::{BackendSlot, NetworkPlanner};
+use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::deploy::select_target_endpoints;
-use crate::{
-    audit, container_ops, container_runtime, proxy_routes, service_network, ssh_adapter,
-    volume_teardown,
-};
+use crate::lock::{LockRequest, LockScope};
+use crate::{audit, container_ops, container_runtime, proxy_routes, ssh_adapter, volume_teardown};
 
 #[derive(Debug)]
 enum RemoveStepResult {
@@ -20,6 +21,7 @@ enum RemoveStepResult {
     Failed { error: String },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
@@ -27,6 +29,8 @@ pub async fn run(
     services: Option<&str>,
     yes: bool,
     remove_volumes: bool,
+    lock_timeout: u64,
+    force_lock: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Service Remove:");
     let started_at = std::time::Instant::now();
@@ -69,18 +73,15 @@ pub async fn run(
             .services
             .get(&endpoint.service)
             .expect("network plan endpoints only reference configured services");
-        let a = container_runtime::container_name(&plan.project, &endpoint.service, BackendSlot::A);
-        let b = container_runtime::container_name(&plan.project, &endpoint.service, BackendSlot::B);
         Ui::say(
-            &format!("{}: containers '{a}', '{b}'", endpoint.identity),
+            &format!("{}: all catalog-managed deployments", endpoint.identity),
             1,
         );
-        for route in proxy_routes::targets_for_service(
+        for route in proxy_routes::targets_for_address(
             &plan.project,
             &endpoint.service,
             service.proxy.as_ref(),
-            endpoint,
-            BackendSlot::A,
+            plan.servers[&endpoint.server].proxy_address,
         ) {
             Ui::say(&format!("proxy route '{}'", route.route_name), 2);
         }
@@ -179,83 +180,201 @@ pub async fn run(
         );
     }
 
-    Ui::section("Removing:");
-    let engine = config.builder.engine;
-    let mut operations = Vec::with_capacity(selected.len());
+    // Discover the replica IDs each selected endpoint actually owns before locking, so removal
+    // locks exactly those replicas (same granularity as deploy/restart/rollback) rather than a
+    // coarser whole-service lock. An endpoint with nothing owned takes no lock for it.
+    let mut discover_operations = Vec::with_capacity(selected.len());
     for endpoint in &selected {
-        let identity = endpoint.identity.clone();
         let endpoint = (*endpoint).clone();
         let session = sessions
             .get(&endpoint.server)
             .expect("connected above")
             .clone();
         let project = plan.project.clone();
-        let plan = plan.clone();
-        let service = config
-            .services
-            .get(&endpoint.service)
-            .expect("network plan endpoints only reference configured services")
-            .clone();
-        let volume_candidates = if remove_volumes {
-            volume_teardown::compute_candidates_for_service(&config, &endpoint.service)
-        } else {
-            Vec::new()
-        };
+        discover_operations.push(move || async move {
+            let records = crate::agent_client::catalog(&session, &project).await?;
+            let replica_ids: BTreeSet<String> = records
+                .into_iter()
+                .filter(|record| {
+                    record.service == endpoint.service
+                        && record.owner_node_id == endpoint.server
+                        && !matches!(
+                            record.state,
+                            DeploymentState::Stopped | DeploymentState::Tombstoned
+                        )
+                })
+                .map(|record| record.replica_id)
+                .collect();
+            anyhow::Ok((endpoint.server.clone(), replica_ids))
+        });
+    }
+    let mut lock_requests: Vec<LockRequest> = Vec::new();
+    for result in pool.execute_concurrent(discover_operations).await {
+        let (server, replica_ids) = result?;
+        for replica_id in replica_ids {
+            lock_requests.push(LockRequest::new(
+                LockScope::LogicalReplica { replica_id },
+                server.clone(),
+            ));
+        }
+    }
+    let proxy_hosts: BTreeSet<String> = selected
+        .iter()
+        .filter(|endpoint| config.services[&endpoint.service].proxy.is_some())
+        .map(|endpoint| endpoint.server.clone())
+        .collect();
+    for host in proxy_hosts {
+        lock_requests.push(LockRequest::new(LockScope::HostGlobalProxy, host));
+    }
 
-        operations.push(move || async move {
-            let mut steps = Vec::new();
+    let remove_result = crate::commands::lock::with_locks(
+        &pool,
+        &sessions,
+        &plan.project,
+        lock_requests,
+        format!(
+            "jiji service remove: {}",
+            selected
+                .iter()
+                .map(|endpoint| endpoint.identity.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        crate::commands::lock::AutomaticLockOptions {
+            timeout: lock_timeout,
+            force: force_lock,
+        },
+        || async {
+            Ui::section("Removing:");
+            let engine = config.builder.engine;
+            let mut operations = Vec::with_capacity(selected.len());
+            for endpoint in &selected {
+                let identity = endpoint.identity.clone();
+                let endpoint = (*endpoint).clone();
+                let session = sessions
+                    .get(&endpoint.server)
+                    .expect("connected above")
+                    .clone();
+                let project = plan.project.clone();
+                let proxy_address = plan.servers[&endpoint.server].proxy_address;
+                let service = config
+                    .services
+                    .get(&endpoint.service)
+                    .expect("network plan endpoints only reference configured services")
+                    .clone();
+                let volume_candidates = if remove_volumes {
+                    volume_teardown::compute_candidates_for_service(&config, &endpoint.service)
+                } else {
+                    Vec::new()
+                };
 
-            for slot in [BackendSlot::A, BackendSlot::B] {
-                let name = container_runtime::container_name(&project, &endpoint.service, slot);
-                let result = remove_container(&session, engine, &name).await;
-                steps.push((format!("container '{name}'"), result));
-            }
+                operations.push(move || async move {
+                    let mut steps = Vec::new();
+                    let mut retired_deployment_ids: Vec<String> = Vec::new();
 
-            for route in proxy_routes::targets_for_service(
-                &project,
-                &endpoint.service,
-                service.proxy.as_ref(),
-                &endpoint,
-                BackendSlot::A,
-            ) {
-                let result =
-                    match proxy_routes::remove_route(&session, engine, &route.route_name).await {
-                        Ok(()) => RemoveStepResult::Removed,
-                        Err(error) => RemoveStepResult::Failed {
-                            error: error.to_string(),
-                        },
+                    let records = match crate::agent_client::catalog(&session, &project).await {
+                        Ok(records) => records,
+                        Err(error) => {
+                            steps.push((
+                                "service catalog".to_string(),
+                                RemoveStepResult::Failed {
+                                    error: error.to_string(),
+                                },
+                            ));
+                            return (identity, steps, retired_deployment_ids);
+                        }
                     };
-                steps.push((format!("proxy route '{}'", route.route_name), result));
-            }
+                    let owned = records
+                        .into_iter()
+                        .filter(|record| {
+                            record.service == endpoint.service
+                                && record.owner_node_id == endpoint.server
+                                && !matches!(
+                                    record.state,
+                                    DeploymentState::Stopped | DeploymentState::Tombstoned
+                                )
+                        })
+                        .collect::<Vec<_>>();
+                    if owned.is_empty() {
+                        steps.push((
+                            "catalog deployments".to_string(),
+                            RemoveStepResult::AlreadyAbsent,
+                        ));
+                    }
+                    for record in owned {
+                        let name = container_runtime::dynamic_container_name(
+                            &project,
+                            &endpoint.service,
+                            &record.deployment_id,
+                        );
+                        let result = remove_container(&session, engine, &name).await;
+                        let removed = !matches!(result, RemoveStepResult::Failed { .. });
+                        steps.push((format!("container '{name}'"), result));
+                        if removed {
+                            let retire_result =
+                                retire_deployment(&session, &project, &record).await;
+                            if matches!(retire_result, RemoveStepResult::Removed) {
+                                retired_deployment_ids.push(record.deployment_id.clone());
+                            }
+                            steps.push((
+                                format!("catalog deployment '{}'", record.deployment_id),
+                                retire_result,
+                            ));
+                        }
+                    }
 
-            match service_network::deactivate_slot(&session, &plan, &endpoint.identity).await {
-                Ok(()) => steps.push(("VIP mapping".to_string(), RemoveStepResult::Removed)),
-                Err(error) => steps.push((
-                    "VIP mapping".to_string(),
-                    RemoveStepResult::Failed {
-                        error: error.to_string(),
-                    },
-                )),
-            }
+                    for route in proxy_routes::targets_for_address(
+                        &project,
+                        &endpoint.service,
+                        service.proxy.as_ref(),
+                        proxy_address,
+                    ) {
+                        let result =
+                            match proxy_routes::remove_route(&session, engine, &route.route_name)
+                                .await
+                            {
+                                Ok(()) => RemoveStepResult::Removed,
+                                Err(error) => RemoveStepResult::Failed {
+                                    error: error.to_string(),
+                                },
+                            };
+                        steps.push((format!("proxy route '{}'", route.route_name), result));
+                    }
 
-            if !volume_candidates.is_empty() {
-                match volume_teardown::discover(&session, engine, &volume_candidates, &project)
-                    .await
-                {
-                    Ok(discovered) => {
-                        match volume_teardown::remove(&session, engine, &discovered).await {
-                            Ok(results) => {
-                                for (name, removed) in results {
-                                    let matching = discovered.iter().find(|v| v.name == name);
-                                    let result = if removed {
-                                        RemoveStepResult::Removed
-                                    } else {
-                                        match matching.and_then(|v| v.blocked_by.clone()) {
-                                            Some(reason) => RemoveStepResult::Retained { reason },
-                                            None => RemoveStepResult::AlreadyAbsent,
+                    if !volume_candidates.is_empty() {
+                        match volume_teardown::discover(
+                            &session,
+                            engine,
+                            &volume_candidates,
+                            &project,
+                        )
+                        .await
+                        {
+                            Ok(discovered) => {
+                                match volume_teardown::remove(&session, engine, &discovered).await {
+                                    Ok(results) => {
+                                        for (name, removed) in results {
+                                            let matching =
+                                                discovered.iter().find(|v| v.name == name);
+                                            let result = if removed {
+                                                RemoveStepResult::Removed
+                                            } else {
+                                                match matching.and_then(|v| v.blocked_by.clone()) {
+                                                    Some(reason) => {
+                                                        RemoveStepResult::Retained { reason }
+                                                    }
+                                                    None => RemoveStepResult::AlreadyAbsent,
+                                                }
+                                            };
+                                            steps.push((format!("volume '{name}'"), result));
                                         }
-                                    };
-                                    steps.push((format!("volume '{name}'"), result));
+                                    }
+                                    Err(error) => steps.push((
+                                        "volumes".to_string(),
+                                        RemoveStepResult::Failed {
+                                            error: error.to_string(),
+                                        },
+                                    )),
                                 }
                             }
                             Err(error) => steps.push((
@@ -266,80 +385,142 @@ pub async fn run(
                             )),
                         }
                     }
-                    Err(error) => steps.push((
-                        "volumes".to_string(),
-                        RemoveStepResult::Failed {
-                            error: error.to_string(),
-                        },
-                    )),
+
+                    (identity, steps, retired_deployment_ids)
+                });
+            }
+
+            let results = pool.execute_concurrent(operations).await;
+
+            let server_by_identity: BTreeMap<String, String> = selected
+                .iter()
+                .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
+                .collect();
+            let endpoint_outcomes =
+                results
+                    .iter()
+                    .map(|(identity, steps, retired_deployment_ids)| {
+                        let succeeded = !steps
+                            .iter()
+                            .any(|(_, result)| matches!(result, RemoveStepResult::Failed { .. }));
+                        let deployment_id = match retired_deployment_ids.as_slice() {
+                            [deployment_id] => Some(deployment_id.clone()),
+                            _ => None,
+                        };
+                        (
+                            identity.clone(),
+                            server_by_identity
+                                .get(identity)
+                                .expect("every removed identity was selected above")
+                                .clone(),
+                            succeeded,
+                            deployment_id,
+                        )
+                    });
+            audit::record_endpoints_by_server(
+                &sessions,
+                &plan.project,
+                "service_remove",
+                None,
+                endpoint_outcomes,
+                true,
+                Some(started_at.elapsed()),
+            )
+            .await;
+
+            Ui::section("Remove Summary:");
+            let mut failures = 0usize;
+            for (identity, steps, _) in &results {
+                Ui::say(&format!("{identity}:"), 1);
+                let mut has_failure = false;
+                for (resource, result) in steps {
+                    match result {
+                        RemoveStepResult::Removed => Ui::say(&format!("{resource}: removed"), 2),
+                        RemoveStepResult::AlreadyAbsent => {
+                            Ui::say(&format!("{resource}: already absent"), 2)
+                        }
+                        RemoveStepResult::Retained { reason } => {
+                            Ui::warn(&format!("  {resource}: retained ({reason})"))
+                        }
+                        RemoveStepResult::Failed { error } => {
+                            Ui::error(&format!("  {resource}: failed ({error})"));
+                            has_failure = true;
+                        }
+                    }
+                }
+                if has_failure {
+                    failures += 1;
                 }
             }
 
-            (identity, steps)
-        });
-    }
+            if failures > 0 {
+                anyhow::bail!("Removal failed for {failures} endpoint(s); see the summary above.");
+            }
 
-    let results = pool.execute_concurrent(operations).await;
-
-    let server_by_identity: BTreeMap<String, String> = selected
-        .iter()
-        .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
-        .collect();
-    let endpoint_outcomes = results.iter().map(|(identity, steps)| {
-        let succeeded = !steps
-            .iter()
-            .any(|(_, result)| matches!(result, RemoveStepResult::Failed { .. }));
-        (
-            identity.clone(),
-            server_by_identity
-                .get(identity)
-                .expect("every removed identity was selected above")
-                .clone(),
-            succeeded,
-        )
-    });
-    audit::record_endpoints_by_server(
-        &sessions,
-        &plan.project,
-        "service_remove",
-        None,
-        endpoint_outcomes,
-        Some(started_at.elapsed()),
+            Ok(())
+        },
     )
     .await;
     close_all(&sessions).await;
-
-    Ui::section("Remove Summary:");
-    let mut failures = 0usize;
-    for (identity, steps) in &results {
-        Ui::say(&format!("{identity}:"), 1);
-        let mut has_failure = false;
-        for (resource, result) in steps {
-            match result {
-                RemoveStepResult::Removed => Ui::say(&format!("{resource}: removed"), 2),
-                RemoveStepResult::AlreadyAbsent => {
-                    Ui::say(&format!("{resource}: already absent"), 2)
-                }
-                RemoveStepResult::Retained { reason } => {
-                    Ui::warn(&format!("  {resource}: retained ({reason})"))
-                }
-                RemoveStepResult::Failed { error } => {
-                    Ui::error(&format!("  {resource}: failed ({error})"));
-                    has_failure = true;
-                }
-            }
-        }
-        if has_failure {
-            failures += 1;
-        }
-    }
-
-    if failures > 0 {
-        anyhow::bail!("Removal failed for {failures} endpoint(s); see the summary above.");
-    }
-
+    remove_result?;
     Ui::success_elapsed("Removal completed.", started_at.elapsed());
     Ok(())
+}
+
+async fn retire_deployment(
+    session: &SshSession,
+    project: &str,
+    record: &jiji_agent::catalog::CatalogRecord,
+) -> RemoveStepResult {
+    let committed = crate::agent_client::call(
+        session,
+        project,
+        Some(format!("remove:catalog:{}", record.deployment_id)),
+        RequestBody::CatalogCommit {
+            service: record.service.clone(),
+            replica_id: record.replica_id.clone(),
+            deployment_id: record.deployment_id.clone(),
+            address: record.address.to_string(),
+            ports: record.ports.clone(),
+            image: record.image.clone(),
+            state: DeploymentState::Tombstoned,
+            health: HealthState::Unhealthy,
+        },
+    )
+    .await;
+    if let Err(error) = committed {
+        return RemoveStepResult::Failed {
+            error: error.to_string(),
+        };
+    }
+    if !matches!(committed, Ok(ResponseBody::CatalogCommitted { .. })) {
+        return RemoveStepResult::Failed {
+            error: "agent returned an unexpected catalog response".to_string(),
+        };
+    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    match crate::agent_client::call(
+        session,
+        project,
+        Some(format!("remove:lease:{}", record.deployment_id)),
+        RequestBody::ReleaseAddress {
+            deployment_id: record.deployment_id.clone(),
+            timestamp,
+        },
+    )
+    .await
+    {
+        Ok(ResponseBody::AddressReleased { .. }) => RemoveStepResult::Removed,
+        Ok(_) => RemoveStepResult::Failed {
+            error: "agent returned an unexpected address-release response".to_string(),
+        },
+        Err(error) => RemoveStepResult::Failed {
+            error: error.to_string(),
+        },
+    }
 }
 
 async fn remove_container(

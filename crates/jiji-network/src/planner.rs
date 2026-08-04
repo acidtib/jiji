@@ -9,8 +9,6 @@ use std::net::Ipv4Addr;
 
 pub const CONTAINER_SERVER_PREFIX: u8 = 21;
 const SERVER_BUCKET_CAPACITY: usize = 8;
-const ENDPOINT_BUCKET_CAPACITY: usize = 16;
-const FIRST_CONTAINER_OFFSET: u64 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkPlan {
@@ -20,8 +18,9 @@ pub struct NetworkPlan {
     pub container_cidr: Ipv4Cidr,
     pub servers: BTreeMap<String, ServerPlan>,
     pub endpoints: BTreeMap<String, ServiceEndpointPlan>,
-    pub dns_records: BTreeMap<String, DnsRecord>,
-    pub generation: String,
+    /// Hash of membership, WireGuard, routed subnets, and bridge infrastructure.
+    /// Service-only changes must never change this value.
+    pub mesh_generation: String,
 }
 
 impl NetworkPlan {
@@ -143,20 +142,6 @@ pub struct ServiceEndpointPlan {
     pub project: String,
     pub service: String,
     pub server: String,
-    /// Stable address published in DNS. No container binds this address directly.
-    pub address: Ipv4Addr,
-    /// Deterministic blue/green addresses used by old and replacement containers.
-    pub backend_addresses: [Ipv4Addr; 2],
-    /// Aggregate service name, shared by every replica.
-    pub dns_name: String,
-    /// Replica-specific name for this service endpoint.
-    pub server_dns_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DnsRecord {
-    pub name: String,
-    pub addresses: Vec<Ipv4Addr>,
 }
 
 #[derive(Debug, Default)]
@@ -266,16 +251,13 @@ impl NetworkPlanner {
         }
 
         let endpoints = plan_endpoints(config, &base_servers)?;
-        let dns_records = plan_dns(&endpoints);
         let servers = populate_server_networks(base_servers);
-        let generation = generation_checksum(
+        let mesh_generation = mesh_generation_checksum(
             enabled,
             &config.project,
             management_cidr,
             container_cidr,
             &servers,
-            &endpoints,
-            &dns_records,
         );
 
         Ok(NetworkPlan {
@@ -285,8 +267,7 @@ impl NetworkPlanner {
             container_cidr,
             servers,
             endpoints,
-            dns_records,
-            generation,
+            mesh_generation,
         })
     }
 }
@@ -321,51 +302,7 @@ fn plan_endpoints(
 
     let mut endpoints = BTreeMap::new();
     for (server_name, identities) in identities_by_server {
-        let server = &servers[&server_name];
-        let assignable = server
-            .container_subnet
-            .address_count()
-            .saturating_sub(FIRST_CONTAINER_OFFSET + 1);
-        let canonical_identities: Vec<String> = identities
-            .iter()
-            .flat_map(|(identity, _)| {
-                [
-                    endpoint_address_identity(identity, "vip"),
-                    endpoint_address_identity(identity, "backend-a"),
-                    endpoint_address_identity(identity, "backend-b"),
-                ]
-            })
-            .collect();
-        let assignments = allocate_bucketed(
-            &canonical_identities,
-            assignable,
-            ENDPOINT_BUCKET_CAPACITY,
-            "service endpoints",
-        )?;
         for (endpoint_identity, service) in identities {
-            let address_for = |role: &str| {
-                let allocation_identity = endpoint_address_identity(&endpoint_identity, role);
-                let slot = assignments[&allocation_identity];
-                server
-                    .container_subnet
-                    .address(FIRST_CONTAINER_OFFSET + slot)
-                    .expect("validated service address offset")
-            };
-            let address = address_for("vip");
-            let backend_addresses = [address_for("backend-a"), address_for("backend-b")];
-            let dns_name = format!(
-                "{}-{}.{}.",
-                config.project,
-                service,
-                jiji_core::DEFAULT_SERVICE_DOMAIN
-            );
-            let server_dns_name = format!(
-                "{}-{}-{}.{}.",
-                config.project,
-                service,
-                server_name,
-                jiji_core::DEFAULT_SERVICE_DOMAIN
-            );
             endpoints.insert(
                 endpoint_identity.clone(),
                 ServiceEndpointPlan {
@@ -373,39 +310,11 @@ fn plan_endpoints(
                     project: config.project.clone(),
                     service,
                     server: server_name.clone(),
-                    address,
-                    backend_addresses,
-                    dns_name,
-                    server_dns_name,
                 },
             );
         }
     }
     Ok(endpoints)
-}
-
-fn endpoint_address_identity(endpoint_identity: &str, role: &str) -> String {
-    format!("{endpoint_identity}:{role}")
-}
-
-fn plan_dns(endpoints: &BTreeMap<String, ServiceEndpointPlan>) -> BTreeMap<String, DnsRecord> {
-    let mut records: BTreeMap<String, DnsRecord> = BTreeMap::new();
-    for endpoint in endpoints.values() {
-        for name in [&endpoint.dns_name, &endpoint.server_dns_name] {
-            records
-                .entry(name.clone())
-                .or_insert_with(|| DnsRecord {
-                    name: name.clone(),
-                    addresses: Vec::new(),
-                })
-                .addresses
-                .push(endpoint.address);
-        }
-    }
-    for record in records.values_mut() {
-        record.addresses.sort_unstable();
-    }
-    records
 }
 
 fn populate_server_networks(
@@ -489,14 +398,12 @@ fn allocate_bucketed(
     Ok(assignments)
 }
 
-fn generation_checksum(
+fn mesh_generation_checksum(
     enabled: bool,
     project: &str,
     management_cidr: Ipv4Cidr,
     container_cidr: Ipv4Cidr,
     servers: &BTreeMap<String, ServerPlan>,
-    endpoints: &BTreeMap<String, ServiceEndpointPlan>,
-    dns_records: &BTreeMap<String, DnsRecord>,
 ) -> String {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, if enabled { "enabled" } else { "disabled" });
@@ -521,22 +428,10 @@ fn generation_checksum(
             }
         }
     }
-    for endpoint in endpoints.values() {
-        hash_field(&mut hasher, &endpoint.identity);
-        hash_field(&mut hasher, &endpoint.address.to_string());
-        for address in endpoint.backend_addresses {
-            hash_field(&mut hasher, &address.to_string());
-        }
-        hash_field(&mut hasher, &endpoint.dns_name);
-        hash_field(&mut hasher, &endpoint.server_dns_name);
-    }
-    for record in dns_records.values() {
-        hash_field(&mut hasher, &record.name);
-        for address in &record.addresses {
-            hash_field(&mut hasher, &address.to_string());
-        }
-    }
+    finish_generation(hasher)
+}
 
+fn finish_generation(hasher: Sha256) -> String {
     let mut generation = String::with_capacity(64);
     for byte in hasher.finalize() {
         write!(generation, "{byte:02x}").expect("writing to a String cannot fail");
@@ -590,7 +485,31 @@ network:
         let first = planner.plan(&base_config()).unwrap();
         let second = planner.plan(&base_config()).unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.generation.len(), 64);
+        assert_eq!(first.mesh_generation.len(), 64);
+    }
+
+    #[test]
+    fn service_changes_leave_mesh_generation_unchanged() {
+        let planner = NetworkPlanner::new();
+        let original = planner.plan(&base_config()).unwrap();
+        let mut changed = base_config();
+        changed.services.remove("redis");
+        let changed = planner.plan(&changed).unwrap();
+
+        assert_eq!(original.mesh_generation, changed.mesh_generation);
+        assert_eq!(original.endpoints.len(), 3);
+        assert_eq!(changed.endpoints.len(), 2);
+    }
+
+    #[test]
+    fn host_changes_invalidate_mesh_generation() {
+        let planner = NetworkPlanner::new();
+        let original = planner.plan(&base_config()).unwrap();
+        let mut changed = base_config();
+        changed.servers.get_mut("app").unwrap().host = "203.0.113.99".to_string();
+        let changed = planner.plan(&changed).unwrap();
+
+        assert_ne!(original.mesh_generation, changed.mesh_generation);
     }
 
     #[test]
@@ -647,7 +566,7 @@ network:
     }
 
     #[test]
-    fn plans_peers_routes_firewalls_and_replica_dns() {
+    fn plans_peers_routes_firewalls_and_configured_endpoints() {
         let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
         let app = &plan.servers["app"];
         let data = &plan.servers["data"];
@@ -664,37 +583,20 @@ network:
             vec![data.container_subnet]
         );
 
-        let web = &plan.dns_records["demo-web.jiji."];
-        assert_eq!(web.addresses.len(), 2);
-        assert!(web.addresses.windows(2).all(|pair| pair[0] < pair[1]));
-        let app_web = &plan.dns_records["demo-web-app.jiji."];
-        assert_eq!(
-            app_web.addresses,
-            vec![plan.endpoints["demo:web:app"].address]
-        );
-        let data_web = &plan.dns_records["demo-web-data.jiji."];
-        assert_eq!(
-            data_web.addresses,
-            vec![plan.endpoints["demo:web:data"].address]
-        );
-        assert_eq!(plan.dns_records["demo-redis.jiji."].addresses.len(), 1);
-        assert_eq!(
-            plan.dns_records["demo-redis-data.jiji."].addresses,
-            vec![plan.endpoints["demo:redis:data"].address]
-        );
+        assert_eq!(plan.endpoints.len(), 3);
     }
 
     #[test]
     fn selected_hosts_are_a_view_of_the_complete_plan() {
         let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
-        let generation = plan.generation.clone();
+        let generation = plan.mesh_generation.clone();
         let selected = plan.select_hosts(&["203.0.113.10".to_string()]).unwrap();
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name, "app");
         assert_eq!(selected[0].peers.len(), 1);
         assert_eq!(plan.servers.len(), 2);
-        assert_eq!(plan.generation, generation);
+        assert_eq!(plan.mesh_generation, generation);
     }
 
     #[test]
@@ -720,39 +622,11 @@ network:
     #[test]
     fn selected_services_are_a_view_of_the_complete_plan() {
         let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
-        let generation = plan.generation.clone();
         let selected = plan.select_endpoints(&["web".to_string()]).unwrap();
 
         assert_eq!(selected.len(), 2);
         assert!(selected.iter().all(|endpoint| endpoint.service == "web"));
         assert_eq!(plan.endpoints.len(), 3);
-        assert_eq!(plan.dns_records.len(), 5);
-        assert_eq!(plan.generation, generation);
-    }
-
-    #[test]
-    fn service_addresses_exclude_infrastructure_and_broadcast() {
-        let plan = NetworkPlanner::new().plan(&base_config()).unwrap();
-        let mut all_addresses = BTreeSet::new();
-        for endpoint in plan.endpoints.values() {
-            let server = &plan.servers[&endpoint.server];
-            for address in
-                std::iter::once(endpoint.address).chain(endpoint.backend_addresses.iter().copied())
-            {
-                let offset =
-                    u32::from(address) as u64 - u32::from(server.container_subnet.network()) as u64;
-                assert!(offset >= FIRST_CONTAINER_OFFSET);
-                assert!(offset < server.container_subnet.address_count() - 1);
-                assert_ne!(address, server.bridge_gateway);
-                assert_ne!(address, server.dns_address);
-                assert_ne!(address, server.proxy_address);
-                assert!(
-                    all_addresses.insert((endpoint.server.clone(), address)),
-                    "endpoint addresses must be unique per server"
-                );
-            }
-            assert!(!endpoint.backend_addresses.contains(&endpoint.address));
-        }
     }
 
     #[test]

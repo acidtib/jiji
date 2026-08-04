@@ -18,94 +18,49 @@
 //! re-applies the same rule, idempotently, targeting whichever project's address it was just
 //! given (kamal-proxy listens on every attached interface, so any currently-attached address
 //! reaches the same process).
+//!
+//! Before Phase 9, boot persistence for this rule (nftables state doesn't survive a reboot on its
+//! own) was a dedicated `jiji-proxy-ingress-restore.service` unit this module installed and
+//! enabled. Since Phase 9, every project's `jiji-agent` reconciles this same rule continuously
+//! (`jiji-agent/src/proxy_bringup.rs`, using the identical `jiji_network::render_nftables`), so as
+//! long as at least one project's agent is running on a host, the rule converges on its own within
+//! one reconcile tick -- no separate persistence unit is installed for new hosts. `ensure_ingress_rule`
+//! here remains for `jiji server setup`/`jiji proxy restart`'s own synchronous, on-demand apply
+//! (the same "one-time synchronous priming plus continuous background reconciliation" pattern used
+//! for the bridge/WireGuard bring-up, see `commands/network/setup.rs`); `remove_ingress_rule`'s
+//! unit cleanup is migration-only, for hosts provisioned before Phase 9.
 
 use std::net::Ipv4Addr;
 
 use jiji_config::ContainerEngine;
+use jiji_network::INGRESS_TABLE;
 use jiji_ssh::SshSession;
 
-use crate::proxy::{INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT};
-
-const TABLE: &str = "jiji_proxy_ingress";
 const RULES_DIR: &str = "/etc/jiji/proxy-ingress";
 const RULES_PATH: &str = "/etc/jiji/proxy-ingress/rules.nft";
 const RESTORE_SCRIPT_PATH: &str = "/etc/jiji/proxy-ingress/restore.sh";
 const UNIT_PATH: &str = "/etc/systemd/system/jiji-proxy-ingress-restore.service";
 const UNIT_NAME: &str = "jiji-proxy-ingress-restore.service";
 
-pub fn render_nftables(address: Ipv4Addr) -> String {
-    format!(
-        "delete table ip {TABLE}\n\
-         table ip {TABLE} {{\n\
-         \tchain prerouting {{\n\
-         \t\ttype nat hook prerouting priority dstnat - 5; policy accept;\n\
-         \t\ttcp dport 80 dnat to {address}:{INTERNAL_HTTP_PORT}\n\
-         \t\ttcp dport 443 dnat to {address}:{INTERNAL_HTTPS_PORT}\n\
-         \t}}\n\
-         \tchain output {{\n\
-         \t\ttype nat hook output priority dstnat - 5; policy accept;\n\
-         \t\ttcp dport 80 dnat to {address}:{INTERNAL_HTTP_PORT}\n\
-         \t\ttcp dport 443 dnat to {address}:{INTERNAL_HTTPS_PORT}\n\
-         \t}}\n\
-         }}\n"
-    )
-}
-
-/// `nft add table ip {TABLE} 2>/dev/null || true` before the file's own leading `delete table`
-/// line matters here specifically for a cold boot, when the table doesn't exist yet and `delete`
-/// alone would fail -- mirrors `commands/network/setup.rs::render_service_nat_restore`, the same
-/// pattern for the analogous per-project VIP-mapping restore script.
-fn render_restore_script() -> String {
-    format!(
-        "#!/bin/sh\nset -eu\nnft add table ip {TABLE} 2>/dev/null || true\n\
-         nft --check --file {RULES_PATH}\nnft --file {RULES_PATH}\n"
-    )
-}
-
-fn render_unit() -> String {
-    format!(
-        "[Unit]\n\
-         Description=Restore jiji kamal-proxy public ingress DNAT\n\
-         After=docker.service network-online.target\n\
-         Wants=network-online.target\n\
-         ConditionPathExists={RULES_PATH}\n\
-         \n\
-         [Service]\n\
-         Type=oneshot\n\
-         ExecStart={RESTORE_SCRIPT_PATH}\n\
-         RemainAfterExit=yes\n\
-         \n\
-         [Install]\n\
-         WantedBy=multi-user.target\n"
-    )
-}
-
-/// Idempotent: safe to call on every `ensure_proxy`, from any project sharing this host. Writes
-/// the ruleset, restore script, and boot-persistence unit, applies it immediately (via the same
-/// restore script a reboot would run), and enables the unit so a reboot restores it (nftables
-/// rules don't otherwise survive one).
-pub async fn ensure_ingress_rule(session: &SshSession, address: Ipv4Addr) -> anyhow::Result<()> {
+/// Idempotent: safe to call on every `ensure_proxy`, from any project sharing this host.
+pub async fn ensure_ingress_rule(
+    session: &SshSession,
+    address: Ipv4Addr,
+    public_host: Ipv4Addr,
+) -> anyhow::Result<()> {
     write_remote_file(
         session,
         &format!("mkdir -p {RULES_DIR}"),
         "0644",
         RULES_PATH,
-        &render_nftables(address),
+        &jiji_network::render_nftables(address, public_host),
     )
     .await?;
-    write_remote_file(
-        session,
-        "true",
-        "0750",
-        RESTORE_SCRIPT_PATH,
-        &render_restore_script(),
-    )
-    .await?;
-    write_remote_file(session, "true", "0644", UNIT_PATH, &render_unit()).await?;
 
+    // Pre-creating the table tolerates a cold boot, when it doesn't exist yet and the ruleset's
+    // own leading `delete table` line would otherwise fail.
     let command = format!(
-        "set -eu; {RESTORE_SCRIPT_PATH}; \
-         systemctl daemon-reload; systemctl enable --now {UNIT_NAME} >/dev/null"
+        "set -eu; nft add table ip {INGRESS_TABLE} 2>/dev/null || true; nft --file {RULES_PATH}"
     );
     run_required(
         session,
@@ -116,12 +71,13 @@ pub async fn ensure_ingress_rule(session: &SshSession, address: Ipv4Addr) -> any
 }
 
 /// Used only when kamal-proxy's own container is removed (no project has routes left) --
-/// tolerates the rule already being absent.
+/// tolerates the rule already being absent. The unit/script cleanup is migration-only: new hosts
+/// never install them (Phase 9), but a host provisioned before Phase 9 may still have them.
 pub async fn remove_ingress_rule(session: &SshSession) -> anyhow::Result<()> {
     let command = format!(
         "systemctl disable --now {UNIT_NAME} >/dev/null 2>&1 || true; \
-         rm -f {UNIT_PATH}; systemctl daemon-reload; \
-         nft delete table ip {TABLE} 2>/dev/null || true; rm -rf {RULES_DIR}"
+         rm -f {UNIT_PATH} {RESTORE_SCRIPT_PATH}; systemctl daemon-reload; \
+         nft delete table ip {INGRESS_TABLE} 2>/dev/null || true; rm -rf {RULES_DIR}"
     );
     run_required(
         session,
@@ -134,28 +90,19 @@ pub async fn remove_ingress_rule(session: &SshSession) -> anyhow::Result<()> {
 pub async fn refresh_from_surviving_attachment(
     session: &SshSession,
     engine: ContainerEngine,
+    public_host: Ipv4Addr,
 ) -> anyhow::Result<bool> {
     if engine != ContainerEngine::Docker {
         return Ok(false);
     }
     let command = "docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{printf \"%s %s\\n\" $name $network.IPAddress}}{{end}}' kamal-proxy 2>/dev/null || true";
     let result = session.execute(command).await?;
-    let address = surviving_proxy_address(&result.stdout);
+    let address = jiji_network::surviving_proxy_address(&result.stdout);
     if let Some(address) = address {
-        ensure_ingress_rule(session, address).await?;
+        ensure_ingress_rule(session, address, public_host).await?;
         return Ok(true);
     }
     Ok(false)
-}
-
-fn surviving_proxy_address(output: &str) -> Option<Ipv4Addr> {
-    output.lines().find_map(|line| {
-        let (network, address) = line.split_once(' ')?;
-        network
-            .starts_with("jiji-")
-            .then(|| address.parse::<Ipv4Addr>().ok())
-            .flatten()
-    })
 }
 
 async fn write_remote_file(
@@ -199,57 +146,5 @@ async fn run_required(session: &SshSession, command: &str, action: &str) -> anyh
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nftables_dnats_both_public_ports_to_the_given_address_in_both_chains() {
-        let rendered = render_nftables("100.107.192.4".parse().unwrap());
-        assert!(rendered.starts_with(&format!("delete table ip {TABLE}\n")));
-        assert_eq!(
-            rendered
-                .matches("tcp dport 80 dnat to 100.107.192.4:8080")
-                .count(),
-            2
-        );
-        assert_eq!(
-            rendered
-                .matches("tcp dport 443 dnat to 100.107.192.4:8443")
-                .count(),
-            2
-        );
-        assert!(rendered.contains("chain prerouting"));
-        assert!(rendered.contains("chain output"));
-    }
-
-    #[test]
-    fn unit_runs_the_restore_script_and_survives_reboot() {
-        let unit = render_unit();
-        assert!(unit.contains(&format!("ExecStart={RESTORE_SCRIPT_PATH}")));
-        assert!(unit.contains("WantedBy=multi-user.target"));
-        assert!(unit.contains(&format!("ConditionPathExists={RULES_PATH}")));
-    }
-
-    #[test]
-    fn restore_script_pre_creates_the_table_before_deleting_it() {
-        // A cold boot starts with no nftables state at all -- the rules file's own leading
-        // `delete table` line would fail without this, exactly as reproduced live.
-        let script = render_restore_script();
-        let add_pos = script.find(&format!("nft add table ip {TABLE}")).unwrap();
-        let apply_pos = script.find(&format!("nft --file {RULES_PATH}")).unwrap();
-        assert!(add_pos < apply_pos);
-        assert!(script.starts_with("#!/bin/sh\nset -eu\n"));
-    }
-
-    #[test]
-    fn surviving_address_ignores_non_jiji_networks() {
-        assert_eq!(
-            surviving_proxy_address(
-                "bridge 172.17.0.2\njiji-other 100.107.192.4\njiji-third 100.107.200.4\n"
-            ),
-            Some("100.107.192.4".parse().unwrap())
-        );
-        assert_eq!(surviving_proxy_address("bridge 172.17.0.2\n"), None);
-    }
-}
+// `render_nftables`/`surviving_proxy_address` moved to `jiji_network::proxy_script` (Phase 9,
+// shared with the agent's native reconciliation) and are tested there.

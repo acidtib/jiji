@@ -14,7 +14,7 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::commands::deploy::split_comma_trimmed;
-use crate::lock::LockInfo;
+use crate::lock::{LockInfo, LockRequest, LockScope};
 use crate::ssh_adapter;
 
 /// SSH sessions for every server a `jiji lock` subcommand targets, plus the project name the
@@ -131,8 +131,8 @@ pub(super) async fn read_all(
         .iter()
         .map(|name| targets.sessions.get(name).expect("connected above").clone())
         .map(|session| {
-            let project = targets.project.clone();
-            move || async move { crate::lock::read_lock(&session, &project).await }
+            let path = LockScope::ProjectMaintenance.lock_path(&targets.project);
+            move || async move { crate::lock::read_lock(&session, &path).await }
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;
@@ -141,6 +141,31 @@ pub(super) async fn read_all(
         .into_iter()
         .zip(results)
         .map(|(name, result)| result.map(|info| (name, info)))
+        .collect()
+}
+
+/// Discovers every lock present on every target host concurrently (project-maintenance,
+/// host-runtime, per-service, per-replica, and the host-global proxy lock) -- unlike `read_all`,
+/// which only ever checks the single project-maintenance lock `jiji lock` targeted before Phase 7.
+/// Results are returned in the same (sorted) host-name order every time.
+pub(super) async fn discover_all(
+    targets: &LockTargets,
+) -> anyhow::Result<Vec<(String, Vec<(LockScope, LockInfo)>)>> {
+    let names: Vec<String> = targets.sessions.keys().cloned().collect();
+    let operations: Vec<_> = names
+        .iter()
+        .map(|name| targets.sessions.get(name).expect("connected above").clone())
+        .map(|session| {
+            let project = targets.project.clone();
+            move || async move { crate::lock::discover_locks(&session, &project).await }
+        })
+        .collect();
+    let results = targets.pool.execute_concurrent(operations).await;
+
+    names
+        .into_iter()
+        .zip(results)
+        .map(|(name, result)| result.map(|locks| (name, locks)))
         .collect()
 }
 
@@ -156,11 +181,16 @@ pub(crate) struct AutomaticLockOptions {
     pub force: bool,
 }
 
-pub(crate) async fn with_deployment_lock<F, Fut>(
-    environment: Option<&str>,
-    config_file: Option<&str>,
-    hosts: Option<&str>,
+/// Acquires `locks` over an already-connected session map the caller owns, runs `operation()`,
+/// then releases -- this never opens or closes a session itself, so a command that already
+/// connected its working session set (to select endpoints, stage mounts, etc.) doesn't pay for a
+/// second, separate connection episode just to hold a lock. The caller remains responsible for
+/// closing `sessions` once, after this returns.
+pub(crate) async fn with_locks<F, Fut>(
+    pool: &SshPool,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
     project: &str,
+    locks: Vec<LockRequest>,
     message: String,
     options: AutomaticLockOptions,
     operation: F,
@@ -169,33 +199,23 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    Ui::section("Acquiring Deployment Lock:");
-    let targets = connect_targets(environment, config_file, hosts, None, true).await?;
-    let locks = match crate::lock::OwnedDeploymentLocks::acquire(
-        &targets.pool,
-        &targets.sessions,
+    Ui::section("Acquiring Locks:");
+    let requested = locks.len();
+    let owned = crate::lock::OwnedDeploymentLocks::acquire(
+        pool,
+        sessions,
         project,
+        locks,
         message,
         options.timeout,
         options.force,
     )
-    .await
-    {
-        Ok(locks) => locks,
-        Err(error) => {
-            close_all(&targets.sessions).await;
-            return Err(error);
-        }
-    };
-    Ui::say(
-        &format!("Acquired on {} server(s).", targets.sessions.len()),
-        1,
-    );
+    .await?;
+    Ui::say(&format!("Acquired {requested} lock(s)."), 1);
 
     let operation_result = operation().await;
-    Ui::section("Releasing Deployment Lock:");
-    let release_result = locks.release(&targets.pool, &targets.sessions).await;
-    close_all(&targets.sessions).await;
+    Ui::section("Releasing Locks:");
+    let release_result = owned.release(pool, sessions).await;
     match (operation_result, release_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),

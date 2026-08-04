@@ -7,10 +7,11 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
 use crate::audit::{self, AuditStatus};
+use crate::lock::{LockRequest, LockScope};
 use crate::teardown_plan::ServerTeardownPlan;
 use crate::{
-    container_ops, env_resolution, image_teardown, network_teardown, proxy_teardown,
-    service_network, ssh_adapter, teardown_plan, volume_teardown,
+    agent_install, container_ops, env_resolution, image_teardown, network_teardown, proxy_teardown,
+    ssh_adapter, teardown_plan, volume_teardown,
 };
 
 #[derive(Debug)]
@@ -216,60 +217,86 @@ pub async fn run(
         }
     }
 
-    Ui::section("Tearing Down:");
-    for (name, plan) in &plans {
-        let session = sessions.get(name).expect("connected above");
-        Ui::say(&format!("{name}:"), 1);
-        let steps = execute_host_teardown(
-            session,
-            engine,
-            &network_plan,
-            &project,
-            plan,
-            remove_volumes,
-        )
-        .await;
-        for (resource, result) in &steps {
-            match result {
-                TeardownStepResult::Removed => Ui::say(&format!("{resource}: removed"), 2),
-                TeardownStepResult::AlreadyAbsent => {
-                    Ui::say(&format!("{resource}: already absent"), 2)
+    let lock_requests: Vec<LockRequest> = plans
+        .keys()
+        .map(|name| LockRequest::new(LockScope::HostRuntime, name.clone()))
+        .collect();
+    let teardown_result = crate::commands::lock::with_locks(
+        &pool,
+        &sessions,
+        &project,
+        lock_requests,
+        format!(
+            "jiji server teardown: {}",
+            plans.keys().cloned().collect::<Vec<_>>().join(", ")
+        ),
+        crate::commands::lock::AutomaticLockOptions {
+            timeout: 300,
+            force: false,
+        },
+        || async {
+            Ui::section("Tearing Down:");
+            for (name, plan) in &plans {
+                let session = sessions.get(name).expect("connected above");
+                Ui::say(&format!("{name}:"), 1);
+                let steps = execute_host_teardown(
+                    session,
+                    engine,
+                    &network_plan,
+                    name,
+                    &project,
+                    plan,
+                    remove_volumes,
+                    &config,
+                )
+                .await;
+                for (resource, result) in &steps {
+                    match result {
+                        TeardownStepResult::Removed => Ui::say(&format!("{resource}: removed"), 2),
+                        TeardownStepResult::AlreadyAbsent => {
+                            Ui::say(&format!("{resource}: already absent"), 2)
+                        }
+                        TeardownStepResult::Retained { reason } => {
+                            Ui::warn(&format!("  {resource}: retained ({reason})"))
+                        }
+                        TeardownStepResult::Failed { error } => {
+                            Ui::error(&format!("  {resource}: failed ({error})"))
+                        }
+                    }
                 }
-                TeardownStepResult::Retained { reason } => {
-                    Ui::warn(&format!("  {resource}: retained ({reason})"))
-                }
-                TeardownStepResult::Failed { error } => {
-                    Ui::error(&format!("  {resource}: failed ({error})"))
-                }
+                // Written after teardown, deliberately: teardown's own "project staging directory"
+                // step (above) already `rm -rf`s `.jiji/{project}` -- the same directory audit entries
+                // live under -- since it holds plaintext secrets. Recording here recreates that
+                // directory containing nothing but this one entry, which is the intended outcome: a
+                // forensic record that this project's remote state was torn down survives the teardown
+                // that produced it, without resurrecting any of the secret-bearing scratch data it held.
+                let failed = steps
+                    .iter()
+                    .any(|(_, result)| matches!(result, TeardownStepResult::Failed { .. }));
+                audit::record(
+                    session,
+                    &project,
+                    "server_teardown",
+                    if failed {
+                        AuditStatus::Failed
+                    } else {
+                        AuditStatus::Success
+                    },
+                    format!("{} step(s)", steps.len()),
+                    Some(&LockScope::HostRuntime.to_string()),
+                    None,
+                    Some(started_at.elapsed()),
+                )
+                .await;
+                outcomes.insert(name.clone(), HostTeardownOutcome::Completed { steps });
             }
-        }
-        // Written after teardown, deliberately: teardown's own "project staging directory"
-        // step (above) already `rm -rf`s `.jiji/{project}` -- the same directory audit entries
-        // live under -- since it holds plaintext secrets. Recording here recreates that
-        // directory containing nothing but this one entry, which is the intended outcome: a
-        // forensic record that this project's remote state was torn down survives the teardown
-        // that produced it, without resurrecting any of the secret-bearing scratch data it held.
-        let failed = steps
-            .iter()
-            .any(|(_, result)| matches!(result, TeardownStepResult::Failed { .. }));
-        audit::record(
-            session,
-            &project,
-            "server_teardown",
-            if failed {
-                AuditStatus::Failed
-            } else {
-                AuditStatus::Success
-            },
-            format!("{} step(s)", steps.len()),
-            Some(started_at.elapsed()),
-        )
-        .await;
-        outcomes.insert(name.clone(), HostTeardownOutcome::Completed { steps });
-    }
 
+            print_summary_and_exit(&outcomes)
+        },
+    )
+    .await;
     close_all(&sessions).await;
-    print_summary_and_exit(&outcomes)
+    teardown_result
 }
 
 /// Runs every teardown step for one host, in the order the approved plan specifies: proxy routes,
@@ -277,13 +304,16 @@ pub async fn run(
 /// container, then the service VIP/NAT mappings, then the network layer. Never returns an error
 /// itself -- every failure is captured as a `Failed` step so the rest of this host's teardown (and
 /// every other host) can still proceed.
+#[allow(clippy::too_many_arguments)]
 async fn execute_host_teardown(
     session: &SshSession,
     engine: ContainerEngine,
     network_plan: &jiji_network::NetworkPlan,
+    server_name: &str,
     project: &str,
     plan: &ServerTeardownPlan,
     remove_volumes: bool,
+    config: &jiji_config::Config,
 ) -> Vec<(String, TeardownStepResult)> {
     let mut steps = Vec::new();
 
@@ -309,7 +339,7 @@ async fn execute_host_teardown(
     }
 
     let mut application_layer_failed = false;
-    for container in &plan.containers {
+    for container in order_containers_for_removal(&plan.containers, config) {
         if let Err(error) = container_ops::stop_if_running(session, engine, &container.name).await {
             steps.push((
                 format!("container '{}'", container.name),
@@ -466,7 +496,19 @@ async fn execute_host_teardown(
                 "kamal-proxy network attachment".to_string(),
                 present_or_absent(was_attached),
             ));
-            match crate::proxy_ingress::refresh_from_surviving_attachment(session, engine).await {
+            let ingress_result =
+                match crate::proxy::parse_public_host(&network_plan.servers[server_name]) {
+                    Ok(public_host) => {
+                        crate::proxy_ingress::refresh_from_surviving_attachment(
+                            session,
+                            engine,
+                            public_host,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+            match ingress_result {
                 Ok(_) => {}
                 Err(error) => steps.push((
                     "kamal-proxy ingress rule".to_string(),
@@ -482,30 +524,6 @@ async fn execute_host_teardown(
                 error: error.to_string(),
             },
         )),
-    }
-
-    // A prior teardown run may have already removed /etc/jiji/network entirely, in which case
-    // there is no active-slots file left to read -- `installed_generation` (read from that same
-    // tree) is a reliable proxy for "nothing is left to deactivate," avoiding a hard error from
-    // `load_active_slots` that would otherwise make a second teardown run non-idempotent.
-    if plan.network.installed_generation.is_none() {
-        steps.push((
-            "service VIP mappings".to_string(),
-            TeardownStepResult::AlreadyAbsent,
-        ));
-    } else {
-        match service_network::deactivate_project(session, network_plan, project).await {
-            Ok(()) => steps.push((
-                "service VIP mappings".to_string(),
-                TeardownStepResult::Removed,
-            )),
-            Err(error) => steps.push((
-                "service VIP mappings".to_string(),
-                TeardownStepResult::Failed {
-                    error: error.to_string(),
-                },
-            )),
-        }
     }
 
     // Application removal must precede network removal, and a failed application-layer step must
@@ -600,7 +618,48 @@ async fn execute_host_teardown(
         ));
     }
 
+    // The agent is removed last, alongside the rest of the network layer above it -- gated behind
+    // the same `application_layer_failed` early return, since a failed container removal is
+    // reason enough to leave every other host-level resource, including the agent, in place for
+    // the operator to investigate.
+    match agent_install::remove_agent(session, project).await {
+        Ok(was_present) => steps.push(("jiji agent".to_string(), present_or_absent(was_present))),
+        Err(error) => steps.push((
+            "jiji agent".to_string(),
+            TeardownStepResult::Failed {
+                error: error.to_string(),
+            },
+        )),
+    }
+
     steps
+}
+
+/// A `network_mode: service:<upstream>` dependent shares its upstream's container network
+/// namespace (`--network container:<id>`), so the engine refuses to remove the upstream's
+/// container while the dependent's still exists ("has dependent containers which must be
+/// removed before it", confirmed live on Podman) -- stopping the upstream first would also sever
+/// the dependent's own network stack. Stable-partitions containers into dependents first, then
+/// everything else, so a dependent is always stopped/removed before the upstream it shares a
+/// namespace with. Config only supports one level of chaining (an upstream can't itself be a
+/// dependent), so a single partition pass is sufficient -- no dependent can depend on another
+/// dependent.
+fn order_containers_for_removal<'a>(
+    containers: &'a [container_ops::ContainerSummary],
+    config: &jiji_config::Config,
+) -> Vec<&'a container_ops::ContainerSummary> {
+    let is_dependent = |container: &container_ops::ContainerSummary| -> bool {
+        container
+            .service
+            .as_ref()
+            .and_then(|service_name| config.services.get(service_name))
+            .is_some_and(|service| service.network_mode_dependency().is_some())
+    };
+    let (mut dependents, mut rest): (Vec<_>, Vec<_>) = containers
+        .iter()
+        .partition(|container| is_dependent(container));
+    dependents.append(&mut rest);
+    dependents
 }
 
 fn present_or_absent(was_present: bool) -> TeardownStepResult {
@@ -665,5 +724,72 @@ fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
 async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     for session in sessions.values() {
         session.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use container_ops::ContainerSummary;
+
+    fn config(yaml: &str) -> jiji_config::Config {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    fn container(name: &str, service: &str) -> ContainerSummary {
+        ContainerSummary {
+            name: name.to_string(),
+            project: Some("demo".to_string()),
+            service: Some(service.to_string()),
+            server: Some("app".to_string()),
+            status: "running".to_string(),
+        }
+    }
+
+    #[test]
+    fn dependent_container_is_ordered_before_its_upstream() {
+        let config = config(
+            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  gluetun:\n    image: qmcgaw/gluetun\n  qbittorrent:\n    image: linuxserver/qbittorrent\n    network_mode: service:gluetun\n",
+        );
+        // Discovery order matches the engine's own listing, which has no relationship to the
+        // dependency graph -- the upstream ('gluetun') is listed first here on purpose, to prove
+        // the ordering function is what fixes it, not incidental discovery order.
+        let containers = vec![
+            container("demo-gluetun-abc123456789", "gluetun"),
+            container("demo-qbittorrent-def123456789", "qbittorrent"),
+        ];
+        let ordered = order_containers_for_removal(&containers, &config);
+        assert_eq!(
+            ordered.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["demo-qbittorrent-def123456789", "demo-gluetun-abc123456789"]
+        );
+    }
+
+    #[test]
+    fn containers_without_a_dependency_relationship_keep_their_relative_order() {
+        let config = config(
+            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n  worker:\n    image: example/worker\n",
+        );
+        let containers = vec![
+            container("demo-web-abc123456789", "web"),
+            container("demo-worker-def123456789", "worker"),
+        ];
+        let ordered = order_containers_for_removal(&containers, &config);
+        assert_eq!(
+            ordered.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["demo-web-abc123456789", "demo-worker-def123456789"]
+        );
+    }
+
+    #[test]
+    fn a_container_whose_service_no_longer_exists_in_config_is_treated_as_non_dependent() {
+        // Discovery finds containers by label, independent of current config (see
+        // `list_managed_containers`'s own doc comment) -- a service since removed from config must
+        // not panic or be misclassified here.
+        let config =
+            config("project: demo\nbuilder: { engine: docker }\nservers: {}\nservices: {}\n");
+        let containers = vec![container("demo-stale-abc123456789", "removed-service")];
+        let ordered = order_containers_for_removal(&containers, &config);
+        assert_eq!(ordered.len(), 1);
     }
 }

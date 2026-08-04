@@ -1,18 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context;
 use jiji_config::{validate_config, Config, ContainerEngine, NamedServer};
-use jiji_network::{
-    ActiveSlotState, DnsRecord, Ipv4Cidr, NetworkPlan, NetworkPlanner, ServerPlan,
-    ServiceNatArtifacts,
-};
+use jiji_network::{Ipv4Cidr, NetworkPlan, NetworkPlanner, ServerPlan};
 use jiji_ssh::{CommandResult, SshPool, SshSession};
 use jiji_tui::Ui;
 use sha2::{Digest, Sha256};
 
 use super::bridge::{BridgeMigration, BridgeProvisioner};
+use crate::lock::{LockRequest, LockScope};
 use crate::ssh_adapter;
 
 // Every path lives under a project-scoped subdirectory of the shared `/etc/jiji/network` parent
@@ -43,27 +42,10 @@ pub(crate) fn network_current(slug: &str) -> String {
     format!("{}/current", network_dir(slug))
 }
 
-pub(crate) fn service_nat_generations(slug: &str) -> String {
-    format!("{}/service-nat-generations", network_dir(slug))
-}
-
-pub(crate) fn service_nat_current(slug: &str) -> String {
-    format!("{}/service-nat-current", network_dir(slug))
-}
-
-fn dns_generations(slug: &str) -> String {
-    format!("{}/dns-generations", network_dir(slug))
-}
-
-fn dns_current(slug: &str) -> String {
-    format!("{}/dns-current", network_dir(slug))
-}
-
-// Bumped because this change makes every existing host's generation and artifact layout
-// incompatible (project-scoped paths, per-project WireGuard/bridge names) -- an intentional
-// breaking change, not a mistake; every already-provisioned host needs `jiji server teardown` +
-// `jiji server setup` after upgrading.
-const NETWORK_ARTIFACT_VERSION: u32 = 4;
+// Version 5 separates immutable mesh artifacts from service-runtime/DNS
+// artifacts. It is an intentional clean break: older monolithic installations
+// must be torn down and set up again rather than activated through this code.
+const NETWORK_ARTIFACT_VERSION: u32 = 5;
 
 struct ConnectedHost {
     name: String,
@@ -73,7 +55,11 @@ struct ConnectedHost {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InstalledGeneration {
     network: Option<String>,
-    dns: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActivationDomains {
+    mesh: bool,
 }
 
 pub async fn run(
@@ -110,21 +96,150 @@ pub async fn run(
     }
 
     let target_names = selected_host_names(&plan, hosts)?;
-    apply(&config, &plan, &target_names).await
+
+    // A dedicated connection purely to hold the project-maintenance lock: `apply` (and the
+    // `connect_all`/`apply_connected` it drives) manages its own independent connect/close cycle.
+    let ssh = config.ssh.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No `ssh:` section is configured. Add at least `ssh.user:` before running network setup."
+        )
+    })?;
+    let mut named_targets: Vec<(String, NamedServer)> = config
+        .servers
+        .iter()
+        .filter(|(name, _)| target_names.contains(*name))
+        .map(|(name, server)| (name.clone(), server.clone()))
+        .collect();
+    named_targets.sort_by(|a, b| a.0.cmp(&b.0));
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let mut lock_connect_options = Vec::with_capacity(named_targets.len());
+    for (name, server) in &named_targets {
+        lock_connect_options.push(ssh_adapter::connect_options(name, server, ssh)?);
+    }
+    let operations: Vec<_> = lock_connect_options
+        .into_iter()
+        .map(|options| move || async move { SshSession::connect(&options).await })
+        .collect();
+    let connections = pool.execute_concurrent(operations).await;
+    let mut lock_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
+    let mut lock_failures = Vec::new();
+    for ((name, server), connection) in named_targets.iter().zip(connections) {
+        match connection {
+            Ok(session) => {
+                lock_sessions.insert(name.clone(), Arc::new(session));
+            }
+            Err(error) => lock_failures.push(format!("{name} ({}): {error}", server.host)),
+        }
+    }
+    if !lock_failures.is_empty() {
+        for session in lock_sessions.values() {
+            session.close().await;
+        }
+        anyhow::bail!(
+            "Could not connect to server(s): {}. Restore SSH access and retry.",
+            lock_failures.join(", ")
+        );
+    }
+    let lock_requests: Vec<LockRequest> = named_targets
+        .iter()
+        .map(|(name, _)| LockRequest::new(LockScope::ProjectMaintenance, name.clone()))
+        .collect();
+
+    let setup_result = crate::commands::lock::with_locks(
+        &pool,
+        &lock_sessions,
+        &config.project,
+        lock_requests,
+        "jiji network setup".to_string(),
+        crate::commands::lock::AutomaticLockOptions {
+            timeout: 300,
+            force: false,
+        },
+        || async { apply(&config, &plan, &target_names).await },
+    )
+    .await;
+    for session in lock_sessions.values() {
+        session.close().await;
+    }
+    setup_result
 }
 
 pub(crate) async fn reconcile_for_deploy(
-    config: &Config,
-    plan: &NetworkPlan,
+    _config: &Config,
+    _plan: &NetworkPlan,
 ) -> anyhow::Result<()> {
-    reconcile_cluster(config, plan, "jiji deploy", false).await
+    // Membership, WireGuard repair, DNS, catalog, and desired placement are agent-owned.
+    // A service deployment must never compile or fan out a cluster-wide network generation.
+    Ok(())
 }
 
 pub(crate) async fn reconcile_for_server_setup(
     config: &Config,
     plan: &NetworkPlan,
+    target_names: &BTreeSet<String>,
 ) -> anyhow::Result<()> {
-    reconcile_cluster(config, plan, "jiji server setup", true).await
+    if target_names.len() == plan.servers.len() {
+        return reconcile_cluster(config, plan, "jiji server setup", true).await;
+    }
+    let hosts = connect_enrollment_hosts(config, target_names).await?;
+    let result = apply_connected(config, plan, target_names, &hosts, true).await;
+    close_all(&hosts).await;
+    result.context(
+        "Could not bootstrap the selected host through a reachable seed; existing offline peers are not required",
+    )
+}
+
+async fn connect_enrollment_hosts(
+    config: &Config,
+    target_names: &BTreeSet<String>,
+) -> anyhow::Result<Vec<ConnectedHost>> {
+    let ssh = config
+        .ssh
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
+    let mut names = target_names.iter().cloned().collect::<Vec<_>>();
+    let mut seeds = config
+        .servers
+        .keys()
+        .filter(|name| !target_names.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    seeds.sort();
+    names.extend(seeds);
+    let mut hosts = Vec::new();
+    let mut seed_found = false;
+    for name in names {
+        let server = &config.servers[&name];
+        let options = ssh_adapter::connect_options(&name, server, ssh)?;
+        match SshSession::connect(&options).await {
+            Ok(session) => {
+                let is_target = target_names.contains(&name);
+                Ui::say(&format!("{name} ({}): connected", server.host), 1);
+                hosts.push(ConnectedHost { name, session });
+                if !is_target {
+                    seed_found = true;
+                    break;
+                }
+            }
+            Err(error) if target_names.contains(&name) => {
+                close_all(&hosts).await;
+                return Err(error).with_context(|| {
+                    format!("Could not connect to required enrollment target '{name}'")
+                });
+            }
+            Err(error) => {
+                Ui::warn(&format!(
+                    "Seed candidate {name} ({}) is unavailable: {error}",
+                    server.host
+                ));
+            }
+        }
+    }
+    if config.servers.len() > target_names.len() && !seed_found {
+        close_all(&hosts).await;
+        anyhow::bail!("No existing seed server is reachable for enrollment");
+    }
+    Ok(hosts)
 }
 
 async fn reconcile_cluster(
@@ -141,28 +256,39 @@ async fn reconcile_cluster(
     })?;
     let mut stale_hosts = Vec::new();
     for host in &hosts {
-        match crate::network_guard::generation_is_current(&host.session, plan).await {
-            Ok(true) => {}
-            Ok(false) => stale_hosts.push(host.name.clone()),
-            Err(error) => {
-                close_all(&hosts).await;
-                return Err(error).with_context(|| {
-                    format!(
-                        "Could not inspect the installed network generation on '{}'. Restore SSH access and retry `jiji deploy`.",
-                        host.name
-                    )
-                });
+        let mesh_current = if retry_command == "jiji deploy" {
+            // Membership and WireGuard are agent-owned. Deploy must neither
+            // gate on nor mutate the old compiled mesh generation.
+            true
+        } else {
+            match crate::network_guard::generation_is_current(&host.session, plan).await {
+                Ok(current) => current,
+                Err(error) => {
+                    close_all(&hosts).await;
+                    return Err(error).with_context(|| {
+                            format!(
+                                "Could not inspect the installed mesh generation on '{}'. Restore SSH access and retry `jiji deploy`.",
+                                host.name
+                            )
+                        });
+                }
             }
+        };
+        if !mesh_current {
+            stale_hosts.push(format!("{} (mesh)", host.name));
         }
     }
 
     if stale_hosts.is_empty() {
+        for host in &hosts {
+            remove_legacy_service_runtime(&host.session, plan).await?;
+        }
         close_all(&hosts).await;
         if report_current {
             Ui::say(
                 &format!(
-                    "Network generation {} is already active on every configured server.",
-                    &plan.generation[..12]
+                    "Mesh {} is already active on every configured server.",
+                    &plan.mesh_generation[..12]
                 ),
                 1,
             );
@@ -173,13 +299,20 @@ async fn reconcile_cluster(
     Ui::section("Network Reconciliation:");
     Ui::say(
         &format!(
-            "Network topology changed; applying generation {} to all configured servers.",
-            &plan.generation[..12]
+            "Network state changed; reconciling mesh {} on all configured servers.",
+            &plan.mesh_generation[..12],
         ),
         1,
     );
     print_network_requirements(config, plan);
-    let result = apply_connected(config, plan, &target_names, &hosts).await;
+    let result = apply_connected(
+        config,
+        plan,
+        &target_names,
+        &hosts,
+        retry_command != "jiji deploy",
+    )
+    .await;
     close_all(&hosts).await;
     result.context(format!(
         "Network reconciliation failed for stale host(s): {}. Fix the reported network error and retry `{retry_command}`.",
@@ -194,15 +327,15 @@ async fn apply(
 ) -> anyhow::Result<()> {
     Ui::say(
         &format!(
-            "Applying generation {} to: {}",
-            &plan.generation[..12],
+            "Applying mesh {} to: {}",
+            &plan.mesh_generation[..12],
             target_names.iter().cloned().collect::<Vec<_>>().join(", ")
         ),
         1,
     );
     print_network_requirements(config, plan);
     let hosts = connect_all(config).await?;
-    let result = apply_connected(config, plan, target_names, &hosts).await;
+    let result = apply_connected(config, plan, target_names, &hosts, true).await;
     close_all(&hosts).await;
     result
 }
@@ -286,9 +419,21 @@ async fn apply_connected(
     plan: &NetworkPlan,
     target_names: &BTreeSet<String>,
     hosts: &[ConnectedHost],
+    allow_mesh_changes: bool,
 ) -> anyhow::Result<()> {
     let slug = jiji_network::systemd_unit_slug(&plan.project);
     let mut migrations = BTreeMap::new();
+    let mut mesh_current = BTreeMap::new();
+    for host in hosts
+        .iter()
+        .filter(|host| target_names.contains(&host.name))
+    {
+        mesh_current.insert(
+            host.name.clone(),
+            !allow_mesh_changes
+                || crate::network_guard::generation_is_current(&host.session, plan).await?,
+        );
+    }
 
     Ui::section("Preflight:");
     for host in hosts
@@ -296,7 +441,12 @@ async fn apply_connected(
         .filter(|host| target_names.contains(&host.name))
     {
         require_root(&host.session).await?;
+        reject_monolithic_generation(&host.session, &slug).await?;
         ensure_engine_available(&host.session, config.builder.engine).await?;
+        if mesh_current[&host.name] {
+            Ui::say(&format!("{}: mesh address ranges unchanged", host.name), 1);
+            continue;
+        }
         if let Some(migration) = inspect_conflicts(
             &host.session,
             &host.name,
@@ -324,6 +474,13 @@ async fn apply_connected(
         .iter()
         .filter(|host| target_names.contains(&host.name))
     {
+        if mesh_current[&host.name] {
+            Ui::say(
+                &format!("{}: existing mesh prerequisites retained", host.name),
+                1,
+            );
+            continue;
+        }
         install_prerequisites(&host.session, &slug).await?;
         ensure_keypair(&host.session, &slug).await?;
         Ui::say(
@@ -349,7 +506,54 @@ async fn apply_connected(
         }
         public_keys.insert(host.name.clone(), result.stdout.trim().to_string());
     }
-    let artifact_generation = artifact_generation(&plan.generation, &public_keys);
+    // A targeted `-H` run only ever connects the target(s) plus at most one seed (see
+    // `connect_enrollment_hosts`), so the loop above never has a key for any *other* project
+    // member. `artifact_generation` hashes over this whole map, though, and a hash computed from
+    // only 1-2 keys will almost never match a generation last installed with the full project's
+    // keys -- forcing a real re-activation, which renders a *new* wireguard.conf from this same
+    // incomplete map (`render_wireguard` silently skips any peer it has no key for). Confirmed
+    // live (2026-07-30): this silently dropped every other already-configured server as a
+    // WireGuard peer on the targeted host, breaking cross-host replication until a full
+    // `jiji network setup` was run to rebuild the complete peer set. Recovering an absent
+    // member's key from whichever connected host most recently installed a full generation (they
+    // must have connected to that member directly at the time) closes the gap without requiring
+    // this invocation to reach every host itself.
+    if public_keys.len() < plan.servers.len() {
+        for host in hosts {
+            if public_keys.len() == plan.servers.len() {
+                break;
+            }
+            for (name, key) in read_installed_peer_keys(&host.session, &slug).await {
+                if plan.servers.contains_key(&name) {
+                    public_keys.entry(name).or_insert(key);
+                }
+            }
+        }
+    }
+    let artifact_generation = artifact_generation(&plan.mesh_generation, &public_keys);
+    let target_hosts = hosts
+        .iter()
+        .filter(|host| target_names.contains(&host.name))
+        .collect::<Vec<_>>();
+    let mut previous = BTreeMap::new();
+    for host in &target_hosts {
+        previous.insert(
+            host.name.clone(),
+            capture_installed_generation(&host.session, &slug).await?,
+        );
+    }
+    let desired_network = format!("{}/{artifact_generation}", network_generations(&slug));
+    let activation_domains = previous
+        .iter()
+        .map(|(name, installed)| {
+            (
+                name.clone(),
+                ActivationDomains {
+                    mesh: installed.network.as_deref() != Some(desired_network.as_str()),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     Ui::section("Staging Network Configuration:");
     for host in hosts
@@ -365,32 +569,22 @@ async fn apply_connected(
             &public_keys,
             &artifact_generation,
             &slug,
+            activation_domains[&host.name],
         )
         .await
         .with_context(|| {
             format!(
                 "Could not stage generation {} on '{}'. No host generation was activated. Fix the reported error and rerun `jiji network setup`.",
-                plan.generation, host.name
+                plan.mesh_generation, host.name
             )
         })?;
         Ui::say(&format!("{}: generation staged", host.name), 1);
     }
 
-    let target_hosts = hosts
-        .iter()
-        .filter(|host| target_names.contains(&host.name))
-        .collect::<Vec<_>>();
-    let mut previous = BTreeMap::new();
-    for host in &target_hosts {
-        previous.insert(
-            host.name.clone(),
-            capture_installed_generation(&host.session, &slug).await?,
-        );
-    }
     let rollback_context = RollbackContext {
         previous: &previous,
+        activation_domains: &activation_domains,
         migrations: &migrations,
-        config,
         plan,
         engine: config.builder.engine,
     };
@@ -399,6 +593,7 @@ async fn apply_connected(
     let mut attempted = Vec::new();
     for host in &target_hosts {
         attempted.push(*host);
+        let domains = activation_domains[&host.name];
         let bridge = BridgeProvisioner::new(config.builder.engine, plan, &plan.servers[&host.name]);
         if let Some(migration) = migrations.get(&host.name) {
             if let Err(error) = bridge.detach_for_migration(&host.session, migration).await {
@@ -414,11 +609,11 @@ async fn apply_connected(
         }
         if let Err(error) = activate_host(
             &host.session,
-            config.builder.engine,
             &plan.servers[&host.name],
-            &plan.generation,
+            &plan.mesh_generation,
             &artifact_generation,
             &slug,
+            domains.mesh,
         )
         .await
         {
@@ -446,12 +641,19 @@ async fn apply_connected(
                 .await;
             }
             if migration.includes_proxy() && config.builder.engine == ContainerEngine::Docker {
-                if let Err(error) = crate::proxy_ingress::ensure_ingress_rule(
-                    &host.session,
-                    plan.servers[&host.name].proxy_address,
-                )
-                .await
-                {
+                let server_plan = &plan.servers[&host.name];
+                let ingress_result = match crate::proxy::parse_public_host(server_plan) {
+                    Ok(public_host) => {
+                        crate::proxy_ingress::ensure_ingress_rule(
+                            &host.session,
+                            server_plan.proxy_address,
+                            public_host,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = ingress_result {
                     return rollback_transaction(
                         &attempted,
                         &rollback_context,
@@ -466,9 +668,51 @@ async fn apply_connected(
         Ui::say(&format!("{}: generation activated", host.name), 1);
     }
 
+    // Only the target host(s)' own generation is staged/activated above -- a seed connected purely
+    // for enrollment (see `connect_enrollment_hosts`) never has its own interface touched by that
+    // loop. Without this, the seed never dials out to a brand-new target first, which is fatal
+    // (not just slow) for a cloud+home mixed topology: WireGuard can only ever learn a NATed peer's
+    // real, currently-routable endpoint from that peer's own first packet (its built-in endpoint
+    // roaming), and a target whose seed is a private-LAN-addressed home server can never reach that
+    // declared address from the public internet at all until the seed reaches out first. Applying
+    // this directly as a live `wg set` (matching exactly what `jiji-agent`'s own incremental
+    // reconciliation -- `wireguard.rs::plan_reconciliation`/`runtime.rs::apply_action` -- would
+    // eventually do on its own) closes that gap immediately rather than depending on signed
+    // membership replication reaching the seed and its own reconcile tick running before
+    // `verify_host` below's connectivity check, which was failing outright.
+    if let Some(seed) = hosts.iter().find(|host| !target_names.contains(&host.name)) {
+        for host in &target_hosts {
+            if let Err(error) = enroll_target_with_seed(
+                &seed.session,
+                &plan.servers[&seed.name],
+                &host.name,
+                &public_keys,
+            )
+            .await
+            {
+                return rollback_transaction(
+                    &attempted,
+                    &rollback_context,
+                    &host.name,
+                    "seed enrollment",
+                    error,
+                )
+                .await;
+            }
+        }
+    }
+
     Ui::section("Verifying Network:");
     for host in &target_hosts {
-        if let Err(error) = verify_host(&host.session, &plan.servers[&host.name], plan).await {
+        if let Err(error) = verify_host(
+            &host.session,
+            &plan.servers[&host.name],
+            plan,
+            activation_domains[&host.name],
+            &public_keys,
+        )
+        .await
+        {
             return rollback_transaction(
                 &attempted,
                 &rollback_context,
@@ -478,85 +722,91 @@ async fn apply_connected(
             )
             .await;
         }
-        Ui::say(
-            &format!("{}: WireGuard, bridge, routes, and DNS ready", host.name),
-            1,
-        );
+        let verified = if activation_domains[&host.name].mesh {
+            "mesh"
+        } else {
+            "installed state"
+        };
+        Ui::say(&format!("{}: {verified} ready", host.name), 1);
     }
 
-    Ui::section("Reconciling Service Mappings:");
     for host in &target_hosts {
-        crate::service_network::reconcile_slots(&host.session, plan, &host.name)
-            .await
-            .with_context(|| {
-                format!(
-                    "Network generation {} is active on '{}', but stale service VIP mappings could not be reconciled. Fix the reported error and rerun `jiji network setup`.",
-                    plan.generation, host.name
-                )
-            })?;
-        Ui::say(
-            &format!("{}: service mappings match configured topology", host.name),
-            1,
-        );
-        if proxy_container_exists(&host.session, config.builder.engine).await? {
-            reconcile_proxy_routes_after_migration(&host.session, config, plan, &host.name, None)
-                .await?;
-            Ui::say(
-                &format!("{}: proxy routes match planned addresses", host.name),
-                1,
-            );
-        }
+        remove_legacy_service_runtime(&host.session, plan).await?;
     }
 
     Ui::success("Private network setup completed.");
     Ok(())
 }
 
-async fn proxy_container_exists(
-    session: &SshSession,
-    engine: ContainerEngine,
-) -> anyhow::Result<bool> {
-    let command = format!("{engine} container inspect kamal-proxy >/dev/null 2>&1");
-    let result = session.execute(&command).await?;
-    Ok(result.success)
+/// Applies `target_name` as a live WireGuard peer directly on `seed`'s own interface. See the
+/// call site in `apply_connected` for why this is necessary, not just an optimization.
+async fn enroll_target_with_seed(
+    seed_session: &SshSession,
+    seed_server: &ServerPlan,
+    target_name: &str,
+    public_keys: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    let Some(peer) = seed_server
+        .peers
+        .iter()
+        .find(|peer| peer.server == target_name)
+    else {
+        anyhow::bail!(
+            "'{target_name}' is not a peer in the seed's own network plan; this should never happen for two servers in the same project"
+        );
+    };
+    let public_key = public_keys.get(target_name).ok_or_else(|| {
+        anyhow::anyhow!("no enrolled WireGuard public key was read for '{target_name}'")
+    })?;
+    let allowed_ips = peer
+        .allowed_ips
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let command = format!(
+        "wg set {} peer {public_key} endpoint {} allowed-ips {allowed_ips} persistent-keepalive 25",
+        seed_server.wireguard_interface, peer.endpoint
+    );
+    let result = seed_session.execute(&command).await?;
+    ensure_success(seed_session, &command, &result)
 }
 
-async fn reconcile_proxy_routes_after_migration(
+async fn remove_legacy_service_runtime(
     session: &SshSession,
-    config: &Config,
     plan: &NetworkPlan,
-    server_name: &str,
-    previous: Option<&BridgeMigration>,
 ) -> anyhow::Result<()> {
-    let state = crate::service_network::load_active_slots(session, plan).await?;
-    for endpoint in plan
-        .endpoints
-        .values()
-        .filter(|endpoint| endpoint.server == server_name)
-    {
-        let Some(slot) = state.active_slot(&endpoint.identity) else {
-            continue;
-        };
-        let service = &config.services[&endpoint.service];
-        for mut target in crate::proxy_routes::targets_for_service(
-            &plan.project,
-            &endpoint.service,
-            service.proxy.as_ref(),
-            endpoint,
-            slot,
-        ) {
-            if let Some(previous) = previous {
-                let name = crate::container_runtime::container_name(
-                    &plan.project,
-                    &endpoint.service,
-                    slot,
-                );
-                if let Some(address) = previous.previous_container_address(&name) {
-                    target.address = address;
-                }
-            }
-            crate::proxy_routes::deploy_route(session, config.builder.engine, &target).await?;
-        }
+    let slug = jiji_network::systemd_unit_slug(&plan.project);
+    let table = jiji_network::service_nat_table_name(&plan.project);
+    let root = network_dir(&slug);
+    // Each legacy unit is disabled in its own invocation (not one call listing both) since
+    // `systemctl disable --now A B` aborts on the first unit name that doesn't exist without
+    // touching the rest -- confirmed live to silently skip real units this way (see
+    // `network_teardown.rs::stop_and_disable_units`'s doc comment for the reproduction).
+    let command = format!(
+        "set -eu; \
+         systemctl disable --now jiji-dns-{slug}.service 2>/dev/null || true; \
+         systemctl disable --now jiji-service-nat-{slug}.service 2>/dev/null || true; \
+         rm -f /etc/systemd/system/jiji-dns-{slug}.service /etc/systemd/system/jiji-service-nat-{slug}.service \
+           {root}/restore-service-nat.sh {root}/service-runtime-generation; \
+         rm -rf {root}/dns-current {root}/dns-generations {root}/service-nat-current {root}/service-nat-generations; \
+         nft delete table ip {table} 2>/dev/null || true; \
+         systemctl daemon-reload"
+    );
+    let result = session.execute(&command).await?;
+    ensure_success(session, &command, &result)
+}
+
+async fn reject_monolithic_generation(session: &SshSession, slug: &str) -> anyhow::Result<()> {
+    let legacy = format!("{}/generation", network_dir(slug));
+    let result = session
+        .execute(&format!("cat {legacy} 2>/dev/null || true"))
+        .await?;
+    if !result.stdout.trim().is_empty() {
+        anyhow::bail!(
+            "Host {} has a monolithic network generation installed. This development build requires clean separated mesh/service-runtime state; run `jiji server teardown` followed by `jiji server setup`.",
+            session.host()
+        );
     }
     Ok(())
 }
@@ -765,11 +1015,11 @@ async fn install_prerequisites(session: &SshSession, slug: &str) -> anyhow::Resu
         "set -eu; \
 if command -v apt-get >/dev/null 2>&1; then \
   apt-get update -qq; \
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools dnsmasq-base dnsutils iptables nftables; \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools dnsutils iptables nftables; \
 elif command -v dnf >/dev/null 2>&1; then \
-  dnf install -y wireguard-tools dnsmasq bind-utils iptables nftables; \
+  dnf install -y wireguard-tools bind-utils iptables nftables; \
 else \
-  echo 'Unsupported package manager. Install wireguard-tools, dnsmasq, DNS query tools, iptables, and nftables manually.' >&2; exit 1; \
+  echo 'Unsupported package manager. Install wireguard-tools, DNS query tools, iptables, and nftables manually.' >&2; exit 1; \
 fi; \
 install -d -m 0700 /etc/jiji/network; install -d -m 0700 {project_dir}; install -d -m 0700 /etc/wireguard"
     );
@@ -806,6 +1056,7 @@ async fn ensure_engine_available(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stage_host(
     session: &SshSession,
     engine: ContainerEngine,
@@ -814,31 +1065,33 @@ async fn stage_host(
     public_keys: &BTreeMap<String, String>,
     artifact_generation: &str,
     slug: &str,
+    domains: ActivationDomains,
 ) -> anyhow::Result<()> {
-    let bridge = BridgeProvisioner::new(engine, plan, server);
-    let generation_dir = format!("{}/{artifact_generation}", network_generations(slug));
-    let command = format!("install -d -m 0750 {generation_dir}");
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)?;
-    let wireguard = render_wireguard(server, public_keys)?;
-    write_staged_file(
-        session,
-        &format!("{generation_dir}/wireguard.conf.input"),
-        "0600",
-        &wireguard,
-    )
-    .await?;
-    let private_key_path = private_key_path(slug);
-    // `wg-quick strip` requires its own filename (minus `.conf`) to itself be a valid interface
-    // name (<=15 chars) -- `server.wireguard_interface` is already 12 chars, leaving no room for
-    // any suffix, so this is a short, fixed, non-project-derived name instead (confirmed live: a
-    // per-project staged name here made `wg-quick strip` fail outright). Matches the original
-    // single-project code's behavior of using one shared transient staging path; two projects'
-    // `network setup` runs racing on the exact same host at the exact same moment could stomp
-    // this file, but that's the same class of accepted, out-of-scope concurrent-invocation risk
-    // documented for the rest of this change, not a new one.
-    let staged_wireguard_path = "/etc/wireguard/jiji-stage.conf";
-    let finalize_wireguard = format!(
+    if domains.mesh {
+        let bridge = BridgeProvisioner::new(engine, plan, server);
+        let generation_dir = format!("{}/{artifact_generation}", network_generations(slug));
+        let command = format!("install -d -m 0750 {generation_dir}");
+        let result = session.execute(&command).await?;
+        ensure_success(session, &command, &result)?;
+        let wireguard = render_wireguard(server, public_keys)?;
+        write_staged_file(
+            session,
+            &format!("{generation_dir}/wireguard.conf.input"),
+            "0600",
+            &wireguard,
+        )
+        .await?;
+        let private_key_path = private_key_path(slug);
+        // `wg-quick strip` requires its own filename (minus `.conf`) to itself be a valid interface
+        // name (<=15 chars) -- `server.wireguard_interface` is already 12 chars, leaving no room for
+        // any suffix, so this is a short, fixed, non-project-derived name instead (confirmed live: a
+        // per-project staged name here made `wg-quick strip` fail outright). Matches the original
+        // single-project code's behavior of using one shared transient staging path; two projects'
+        // `network setup` runs racing on the exact same host at the exact same moment could stomp
+        // this file, but that's the same class of accepted, out-of-scope concurrent-invocation risk
+        // documented for the rest of this change, not a new one.
+        let staged_wireguard_path = "/etc/wireguard/jiji-stage.conf";
+        let finalize_wireguard = format!(
         "set -eu; private_key=$(cat {private_key_path}); \
          sed \"s|__JIJI_PRIVATE_KEY__|$private_key|\" {generation_dir}/wireguard.conf.input > {generation_dir}/wireguard.conf.new; \
          chmod 0600 {generation_dir}/wireguard.conf.new; \
@@ -852,93 +1105,34 @@ async fn stage_host(
          fi; \
          rm -f {generation_dir}/wireguard.conf.input {staged_wireguard_path}"
     );
-    let result = session.execute(&finalize_wireguard).await?;
-    ensure_success(session, &finalize_wireguard, &result)?;
+        let result = session.execute(&finalize_wireguard).await?;
+        ensure_success(session, &finalize_wireguard, &result)?;
 
-    // Legitimately host-global, not project-scoped: `net.ipv4.ip_forward=1` benefits every
-    // project on the host, and `network_teardown`'s `remove_compiled_state` never removes it
-    // (see that module's notes) rather than tracking multi-project reference counts for it.
-    write_staged_file(
-        session,
-        "/etc/sysctl.d/99-jiji-network.conf",
-        "0644",
-        "net.ipv4.ip_forward=1\n",
-    )
-    .await?;
-    write_generation_file(
-        session,
-        &format!("{generation_dir}/restore.sh"),
-        "0750",
-        &bridge.render_restore_script()?,
-    )
-    .await?;
-    stage_dns_generation(
-        session,
-        artifact_generation,
-        &render_dns_config(server, &plan.dns_records),
-        slug,
-    )
-    .await?;
-    write_generation_file(
-        session,
-        &format!("{generation_dir}/generation"),
-        "0644",
-        &format!("{}\n", plan.generation),
-    )
-    .await?;
-    let empty_nat = ServiceNatArtifacts::render(plan, &ActiveSlotState::default())?;
-    initialize_service_nat(session, &empty_nat, slug).await?;
-    write_empty_nat_if_inactive(session, &empty_nat.nftables, slug).await?;
-    write_staged_file(
-        session,
-        &format!("{}/restore-service-nat.sh", network_dir(slug)),
-        "0750",
-        &render_service_nat_restore(plan),
-    )
-    .await?;
-    write_staged_file(
-        session,
-        &format!("/etc/systemd/system/jiji-network-restore-{slug}.service"),
-        "0644",
-        &bridge.render_systemd_unit(),
-    )
-    .await?;
-    if engine == ContainerEngine::Podman {
-        // One drop-in file per project rather than one shared, edited-in-place file: turns a
-        // stateful merge problem (tracking every project's own `After=`/`Requires=` entry inside
-        // one file) into a simple idempotent add/remove-file problem, matching every other
-        // per-project resource here. `podman-restart.service` itself is host-global, so it picks
-        // up every project's drop-in automatically.
-        let restore_dns = super::bridge::render_podman_dns_address_command(
-            engine,
-            &server.bridge_interface,
-            server.dns_address,
-        )
-        .expect("Podman always renders a DNS address reconciliation command");
+        // Legitimately host-global, not project-scoped: `net.ipv4.ip_forward=1` benefits every
+        // project on the host, and `network_teardown`'s `remove_compiled_state` never removes it
+        // (see that module's notes) rather than tracking multi-project reference counts for it.
         write_staged_file(
             session,
-            &format!("/etc/systemd/system/podman-restart.service.d/jiji-network-{slug}.conf"),
+            "/etc/sysctl.d/99-jiji-network.conf",
             "0644",
-            &format!(
-                "[Unit]\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\n\n[Service]\nExecStartPost=podman start --all --filter restart-policy=unless-stopped\nExecStartPost={restore_dns}\n",
-            ),
+            "net.ipv4.ip_forward=1\n",
+        )
+        .await?;
+        write_generation_file(
+            session,
+            &format!("{generation_dir}/restore.sh"),
+            "0750",
+            &bridge.render_restore_script()?,
+        )
+        .await?;
+        write_generation_file(
+            session,
+            &format!("{generation_dir}/mesh-generation"),
+            "0644",
+            &format!("{}\n", plan.mesh_generation),
         )
         .await?;
     }
-    write_staged_file(
-        session,
-        &format!("/etc/systemd/system/jiji-service-nat-{slug}.service"),
-        "0644",
-        &render_service_nat_unit(slug),
-    )
-    .await?;
-    write_staged_file(
-        session,
-        &format!("/etc/systemd/system/jiji-dns-{slug}.service"),
-        "0644",
-        &render_dns_unit(slug),
-    )
-    .await?;
     Ok(())
 }
 
@@ -980,98 +1174,18 @@ async fn write_generation_file(
     ensure_success(session, &command, &result)
 }
 
-async fn write_file_if_absent(
-    session: &SshSession,
-    path: &str,
-    mode: &str,
-    content: &str,
-) -> anyhow::Result<()> {
-    let command = format!(
-        "set -eu; if test -e {path}; then cat >/dev/null; else install -D -m {mode} /dev/stdin {path}; fi"
-    );
-    let result = session
-        .execute_with_input(&command, content.as_bytes())
-        .await?;
-    ensure_success(session, &command, &result)
-}
-
-async fn initialize_service_nat(
-    session: &SshSession,
-    artifacts: &ServiceNatArtifacts,
-    slug: &str,
-) -> anyhow::Result<()> {
-    let initial = format!("{}/initial", service_nat_generations(slug));
-    let current = service_nat_current(slug);
-    let command = format!("install -d -m 0750 {initial}");
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)?;
-    write_file_if_absent(
-        session,
-        &format!("{initial}/active-slots"),
-        "0644",
-        &artifacts.state,
-    )
-    .await?;
-    write_file_if_absent(
-        session,
-        &format!("{initial}/service-nat.nft"),
-        "0644",
-        &artifacts.nftables,
-    )
-    .await?;
-    let command = format!(
-        "set -eu; if ! test -L {current}; then ln -s {initial} {current}.new; mv -T {current}.new {current}; fi"
-    );
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)
-}
-
-async fn write_empty_nat_if_inactive(
-    session: &SshSession,
-    nftables: &str,
-    slug: &str,
-) -> anyhow::Result<()> {
-    let current = service_nat_current(slug);
-    let command = format!(
-        "set -eu; if test -s {current}/active-slots; then cat >/dev/null; else install -m 0644 /dev/stdin {current}/service-nat.nft; fi"
-    );
-    let result = session
-        .execute_with_input(&command, nftables.as_bytes())
-        .await?;
-    ensure_success(session, &command, &result)
-}
-
-async fn stage_dns_generation(
-    session: &SshSession,
-    generation: &str,
-    config: &str,
-    slug: &str,
-) -> anyhow::Result<()> {
-    let directory = format!("{}/{generation}", dns_generations(slug));
-    let command = format!("install -d -m 0755 {directory}");
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)?;
-    let path = format!("{directory}/dns.conf");
-    write_generation_file(session, &path, "0644", config).await?;
-    let command = format!("dnsmasq --test --conf-file={path}");
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)
-}
-
 async fn capture_installed_generation(
     session: &SshSession,
     slug: &str,
 ) -> anyhow::Result<InstalledGeneration> {
     let current = network_current(slug);
-    let dns_current = dns_current(slug);
     let command = format!(
         "set -eu; \
          if test -L {current}; then \
            readlink -f {current}; \
          else \
            printf '%s\\n' -; \
-         fi; \
-         if test -L {dns_current}; then readlink -f {dns_current}; else printf '%s\\n' -; fi"
+         fi"
     );
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
@@ -1085,8 +1199,8 @@ async fn capture_installed_generation(
 
 fn parse_installed_generation(value: &str, slug: &str) -> anyhow::Result<InstalledGeneration> {
     let lines = value.lines().collect::<Vec<_>>();
-    if lines.len() != 2 {
-        anyhow::bail!("expected two generation paths, received {}", lines.len());
+    if lines.len() != 1 {
+        anyhow::bail!("expected one generation path, received {}", lines.len());
     }
     let parse = |value: &str, root: &str| -> anyhow::Result<Option<String>> {
         if value == "-" {
@@ -1099,18 +1213,33 @@ fn parse_installed_generation(value: &str, slug: &str) -> anyhow::Result<Install
     };
     Ok(InstalledGeneration {
         network: parse(lines[0], &format!("{}/", network_generations(slug)))?,
-        dns: parse(lines[1], &format!("{}/", dns_generations(slug)))?,
     })
 }
 
 async fn activate_host(
     session: &SshSession,
-    engine: ContainerEngine,
     server: &ServerPlan,
-    generation: &str,
+    mesh_generation: &str,
     artifact_generation: &str,
     slug: &str,
+    activate_mesh: bool,
 ) -> anyhow::Result<()> {
+    let command = render_activation_command(
+        server,
+        mesh_generation,
+        artifact_generation,
+        slug,
+        activate_mesh,
+    );
+    let result = session.execute(&command).await?;
+    ensure_success(session, &command, &result)
+}
+
+/// Since Phase 9, nothing manages WireGuard routes on this interface but this codebase itself
+/// (native `ip link`/`wg set` bring-up has no `wg-quick`-equivalent automatic route programming),
+/// so both a fresh bring-up and a rollback's resync must apply this explicitly rather than relying
+/// on a side effect of `wg-quick up`/`systemctl restart wg-quick@...` the way earlier phases did.
+fn render_route_sync(server: &ServerPlan) -> String {
     let iface = &server.wireguard_interface;
     let expected_routes = server
         .peers
@@ -1118,7 +1247,7 @@ async fn activate_host(
         .flat_map(|peer| peer.allowed_ips.iter())
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let route_sync = if expected_routes.is_empty() {
+    if expected_routes.is_empty() {
         format!(
             "for route in $(ip -4 route show dev {iface} | awk '{{print $1}}'); do ip route del \"$route\" dev {iface}; done"
         )
@@ -1132,64 +1261,62 @@ async fn activate_host(
             "for route in $(ip -4 route show dev {iface} | awk '{{print $1}}'); do case \"$route\" in {}) ;; *) ip route del \"$route\" dev {iface} ;; esac; done; {replacements}",
             expected_routes.join("|")
         )
-    };
+    }
+}
+
+fn render_activation_command(
+    server: &ServerPlan,
+    mesh_generation: &str,
+    artifact_generation: &str,
+    slug: &str,
+    activate_mesh: bool,
+) -> String {
+    let iface = &server.wireguard_interface;
+    let route_sync = render_route_sync(server);
     let network_generation = format!("{}/{artifact_generation}", network_generations(slug));
-    let dns_generation = format!("{}/{artifact_generation}", dns_generations(slug));
     let network_current = network_current(slug);
-    let dns_current = dns_current(slug);
     let network_dir = network_dir(slug);
     let wireguard_config_path = wireguard_config_path(iface);
-    let units = format!(
-        "wg-quick@{iface}.service jiji-network-restore-{slug}.service jiji-service-nat-{slug}.service jiji-dns-{slug}.service"
-    );
-    let enable_engine_restart = match engine {
-        ContainerEngine::Docker => "",
-        ContainerEngine::Podman => "systemctl enable podman-restart.service >/dev/null; ",
+    let private_key_path = private_key_path(slug);
+    let mesh_activation = if activate_mesh {
+        format!(
+            "sysctl --system >/dev/null; \
+             test -s {network_generation}/wireguard.conf; \
+             test -x {network_generation}/restore.sh; \
+             test \"$(cat {network_generation}/mesh-generation)\" = '{mesh_generation}'; \
+             ln -sfn {network_generation} {network_current}.new; \
+             mv -Tf {network_current}.new {network_current}; \
+             ln -sfn {network_current}/wireguard.conf {wireguard_config_path}.new; \
+             mv -Tf {wireguard_config_path}.new {wireguard_config_path}; \
+             ln -sfn {network_current}/restore.sh {network_dir}/restore.sh.new; \
+             mv -Tf {network_dir}/restore.sh.new {network_dir}/restore.sh; \
+             ln -sfn {network_current}/mesh-generation {network_dir}/mesh-generation.new; \
+             mv -Tf {network_dir}/mesh-generation.new {network_dir}/mesh-generation; \
+             if ! ip link show dev {iface} >/dev/null 2>&1; then ip link add {iface} type wireguard; fi; \
+             wg set {iface} private-key {private_key_path} listen-port {wireguard_port}; \
+             ip address replace {management}/32 dev {iface}; \
+             ip link set {iface} up; \
+             bash -c 'wg syncconf {iface} <(wg-quick strip {wireguard_config_path})'; \
+             {route_sync}; \
+             sh {network_dir}/restore.sh;",
+            management = server.management_address,
+            wireguard_port = server.wireguard_port,
+        )
+    } else {
+        "true".to_string()
     };
-    let restart_engine_containers = match engine {
-        ContainerEngine::Docker => "",
-        ContainerEngine::Podman => "systemctl restart podman-restart.service; ",
-    };
-    let command = format!(
+    let mesh_activation = mesh_activation.trim().trim_end_matches(';');
+    format!(
         "set -eu; \
-         sysctl --system >/dev/null; \
          systemctl daemon-reload; \
-         systemctl enable {units} >/dev/null; \
-         {enable_engine_restart}\
-         test -s {network_generation}/wireguard.conf; \
-         test -x {network_generation}/restore.sh; \
-         test \"$(cat {network_generation}/generation)\" = '{generation}'; \
-         test -s {dns_generation}/dns.conf; \
-         ln -sfn {network_generation} {network_current}.new; \
-         mv -Tf {network_current}.new {network_current}; \
-         ln -sfn {dns_generation} {dns_current}.new; \
-         mv -Tf {dns_current}.new {dns_current}; \
-         ln -sfn {network_current}/wireguard.conf {wireguard_config_path}.new; \
-         mv -Tf {wireguard_config_path}.new {wireguard_config_path}; \
-         ln -sfn {network_current}/restore.sh {network_dir}/restore.sh.new; \
-         mv -Tf {network_dir}/restore.sh.new {network_dir}/restore.sh; \
-         ln -sfn {network_current}/generation {network_dir}/generation.new; \
-         mv -Tf {network_dir}/generation.new {network_dir}/generation; \
-         if systemctl is-active --quiet wg-quick@{iface}.service && ip -o -4 address show dev {iface} | grep -F ' {management}/32 ' >/dev/null; then \
-           bash -c 'wg syncconf {iface} <(wg-quick strip {wireguard_config_path})'; \
-           {route_sync}; \
-         else \
-           systemctl restart wg-quick@{iface}.service; \
-         fi; \
-         systemctl restart jiji-network-restore-{slug}.service; \
-         {restart_engine_containers}\
-         systemctl restart jiji-service-nat-{slug}.service; \
-         systemctl restart jiji-dns-{slug}.service",
-        management = server.management_address,
-    );
-    let result = session.execute(&command).await?;
-    ensure_success(session, &command, &result)
+         {mesh_activation}"
+    )
 }
 
 struct RollbackContext<'a> {
     previous: &'a BTreeMap<String, InstalledGeneration>,
+    activation_domains: &'a BTreeMap<String, ActivationDomains>,
     migrations: &'a BTreeMap<String, BridgeMigration>,
-    config: &'a Config,
     plan: &'a NetworkPlan,
     engine: ContainerEngine,
 }
@@ -1205,10 +1332,10 @@ async fn rollback_transaction(
         "Network {phase} failed on {failed_host}: {cause}. Rolling back attempted hosts."
     ));
     let slug = jiji_network::systemd_unit_slug(&context.plan.project);
-    let wireguard_interface = jiji_network::wireguard_interface_name(&context.plan.project);
     let mut rollback_failures = Vec::new();
     for host in attempted.iter().rev() {
         let state = &context.previous[&host.name];
+        let domains = context.activation_domains[&host.name];
         if let Some(migration) = context.migrations.get(&host.name) {
             let bridge = BridgeProvisioner::new(
                 context.engine,
@@ -1227,9 +1354,19 @@ async fn rollback_transaction(
             }
             if context.engine == ContainerEngine::Docker {
                 if let Some(address) = migration.previous_proxy_address() {
-                    if let Err(error) =
-                        crate::proxy_ingress::ensure_ingress_rule(&host.session, address).await
-                    {
+                    let ingress_result =
+                        match crate::proxy::parse_public_host(&context.plan.servers[&host.name]) {
+                            Ok(public_host) => {
+                                crate::proxy_ingress::ensure_ingress_rule(
+                                    &host.session,
+                                    address,
+                                    public_host,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error),
+                        };
+                    if let Err(error) = ingress_result {
                         rollback_failures.push(format!(
                             "{}: previous bridge was restored but proxy ingress was not: {error}",
                             host.name
@@ -1243,35 +1380,15 @@ async fn rollback_transaction(
             &host.session,
             state,
             &slug,
-            &wireguard_interface,
+            &context.plan.servers[&host.name],
             context.engine,
             &context.plan.project,
+            domains,
         )
         .await;
         if let Err(error) = rollback {
             rollback_failures.push(format!("{}: {error}", host.name));
             continue;
-        }
-        if let Some(migration) = context
-            .migrations
-            .get(&host.name)
-            .filter(|migration| migration.includes_proxy())
-        {
-            if let Err(error) = reconcile_proxy_routes_after_migration(
-                &host.session,
-                context.config,
-                context.plan,
-                &host.name,
-                Some(migration),
-            )
-            .await
-            {
-                rollback_failures.push(format!(
-                    "{}: previous network was restored but proxy routes were not: {error}",
-                    host.name
-                ));
-                continue;
-            }
         }
         Ui::say(
             &format!(
@@ -1298,24 +1415,25 @@ async fn rollback_host(
     session: &SshSession,
     state: &InstalledGeneration,
     slug: &str,
-    wireguard_interface: &str,
+    server: &ServerPlan,
     engine: ContainerEngine,
     project: &str,
+    domains: ActivationDomains,
 ) -> anyhow::Result<()> {
-    let command = render_rollback_command(state, slug, wireguard_interface);
+    let command = render_rollback_command(state, slug, server, domains);
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
 
-    // Confirmed live: a first-install activation can fail *inside* `restore.sh` (run via
-    // `systemctl restart jiji-network-restore-{slug}.service`) after it has already created
-    // engine-level resources, including the bridge network.
-    // `render_rollback_command` only reverts jiji's own compiled-state symlinks/units; it has no
-    // way to know what a partially-run *external* script did. On a first install (no previous
-    // generation to fall back to -- if there were, restarting that generation's own idempotent
-    // `restore.sh` already reconciles engine state correctly), also remove whatever engine
-    // resources this attempt may have created, using the exact same primitives `jiji server
-    // teardown` uses, so a failed `jiji network setup` never leaves orphaned infrastructure behind.
-    if state.network.is_none() {
+    // Confirmed live: a first-install activation can fail *inside* `restore.sh` (run directly via
+    // `sh {network_dir}/restore.sh`, no systemd unit involved since Phase 9) after it has already
+    // created engine-level resources, including the bridge network.
+    // `render_rollback_command` only reverts jiji's own compiled-state symlinks; it has no way to
+    // know what a partially-run *external* script did. On a first install (no previous generation
+    // to fall back to -- if there were, rerunning that generation's own idempotent `restore.sh`
+    // already reconciles engine state correctly), also remove whatever engine resources this
+    // attempt may have created, using the exact same primitives `jiji server teardown` uses, so a
+    // failed `jiji network setup` never leaves orphaned infrastructure behind.
+    if domains.mesh && state.network.is_none() {
         crate::network_teardown::remove_bridge_and_engine_network(session, engine, project)
             .await
             .with_context(|| {
@@ -1331,46 +1449,51 @@ async fn rollback_host(
 fn render_rollback_command(
     state: &InstalledGeneration,
     slug: &str,
-    wireguard_interface: &str,
+    server: &ServerPlan,
+    domains: ActivationDomains,
 ) -> String {
+    let wireguard_interface = &server.wireguard_interface;
     let network_current = network_current(slug);
     let network_dir = network_dir(slug);
     let wireguard_config_path = wireguard_config_path(wireguard_interface);
-    let network = match &state.network {
-        Some(path) => format!(
+    let network = if domains.mesh {
+        match &state.network {
+            Some(path) => format!(
             "ln -sfn {path} {network_current}.new; \
              mv -Tf {network_current}.new {network_current}; \
              ln -sfn {network_current}/wireguard.conf {wireguard_config_path}.new; \
              mv -Tf {wireguard_config_path}.new {wireguard_config_path}; \
              ln -sfn {network_current}/restore.sh {network_dir}/restore.sh.new; \
              mv -Tf {network_dir}/restore.sh.new {network_dir}/restore.sh; \
-             ln -sfn {network_current}/generation {network_dir}/generation.new; \
-             mv -Tf {network_dir}/generation.new {network_dir}/generation"
-        ),
-        None => format!(
-            "systemctl stop jiji-dns-{slug}.service jiji-service-nat-{slug}.service jiji-network-restore-{slug}.service wg-quick@{wireguard_interface}.service 2>/dev/null || true; \
-             rm -f {network_current} {wireguard_config_path} {network_dir}/restore.sh {network_dir}/generation"
-        ),
-    };
-    let dns_current = dns_current(slug);
-    let dns = match &state.dns {
-        Some(path) => {
-            format!("ln -sfn {path} {dns_current}.new; mv -Tf {dns_current}.new {dns_current}")
+             ln -sfn {network_current}/mesh-generation {network_dir}/mesh-generation.new; \
+             mv -Tf {network_dir}/mesh-generation.new {network_dir}/mesh-generation"
+            ),
+            // No previous generation ever existed, so this attempt's own bring-up (if it got that
+            // far) is the only thing that could have created the interface -- tear it down rather
+            // than leave a stray link with no compiled state pointing at it.
+            None => format!(
+            "ip link delete {wireguard_interface} 2>/dev/null || true; \
+             rm -f {network_current} {wireguard_config_path} {network_dir}/restore.sh {network_dir}/mesh-generation"
+            ),
         }
-        None => format!("rm -f {dns_current}"),
+    } else {
+        "true".to_string()
     };
-    let restart = if state.network.is_some() {
+    let restart_mesh = if domains.mesh && state.network.is_some() {
+        // The interface itself was already up before this failed attempt began (a previous
+        // generation exists); the private key and listen port are stable across a project's
+        // generations (never regenerated once bootstrapped), so only the peer set and routes --
+        // both generation-dependent -- need resyncing against the just-restored `wireguard.conf`.
         format!(
-            "systemctl daemon-reload; \
-             systemctl restart wg-quick@{wireguard_interface}.service; \
-             systemctl restart jiji-network-restore-{slug}.service; \
-             systemctl restart jiji-service-nat-{slug}.service; \
-             systemctl restart jiji-dns-{slug}.service"
+            "bash -c 'wg syncconf {wireguard_interface} <(wg-quick strip {wireguard_config_path})'; \
+             {route_sync}; \
+             sh {network_dir}/restore.sh",
+            route_sync = render_route_sync(server),
         )
     } else {
         "true".to_string()
     };
-    format!("set -eu; {network}; {dns}; {restart}")
+    format!("set -eu; {network}; systemctl daemon-reload; {restart_mesh}")
 }
 
 impl InstalledGeneration {
@@ -1400,36 +1523,71 @@ fn artifact_generation(plan_generation: &str, public_keys: &BTreeMap<String, Str
     format!("{plan_generation}-v{NETWORK_ARTIFACT_VERSION}-{key_digest}")
 }
 
+/// Best-effort: reads whichever peers' public keys `session`'s own currently-installed
+/// `wireguard.conf` already recorded (from the last time it was configured with the full project
+/// member set). Returns an empty map on any failure -- no previous generation installed, no
+/// current symlink yet, an unreadable file -- since this is purely a fallback for filling gaps in
+/// `apply_connected`'s own freshly-read keys, never a hard requirement.
+async fn read_installed_peer_keys(session: &SshSession, slug: &str) -> BTreeMap<String, String> {
+    let current = network_current(slug);
+    let command = format!(
+        "set -eu; if test -L {current}; then cat \"$(readlink -f {current})/wireguard.conf\" 2>/dev/null; fi"
+    );
+    match session.execute(&command).await {
+        Ok(result) if result.success => parse_wireguard_peer_keys(&result.stdout),
+        _ => BTreeMap::new(),
+    }
+}
+
+/// Parses the `# {server}` / `PublicKey = {key}` pairs `render_wireguard` writes inside each
+/// `[Peer]` block. Tolerant of anything else in the file (comments, blank lines, an `[Interface]`
+/// section) -- only lines inside a `[Peer]` block are ever considered.
+fn parse_wireguard_peer_keys(content: &str) -> BTreeMap<String, String> {
+    let mut keys = BTreeMap::new();
+    let mut current_name: Option<String> = None;
+    let mut in_peer = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[Peer]" {
+            in_peer = true;
+            current_name = None;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_peer = false;
+            current_name = None;
+            continue;
+        }
+        if !in_peer {
+            continue;
+        }
+        if let Some(name) = trimmed.strip_prefix("# ") {
+            current_name = Some(name.trim().to_string());
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("PublicKey = ") {
+            if let Some(name) = current_name.take() {
+                keys.insert(name, value.trim().to_string());
+            }
+        }
+    }
+    keys
+}
+
 async fn verify_host(
     session: &SshSession,
     server: &ServerPlan,
     plan: &NetworkPlan,
+    domains: ActivationDomains,
+    public_keys: &BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
-    let dns_check = plan
-        .dns_records
-        .values()
-        .next()
-        .map(|record| {
-            format!(
-                "test -n \"$(dig +time=2 +tries=1 +short @{} {})\" || {{ echo 'DNS verification failed: {} did not resolve {}' >&2; exit 1; }}",
-                server.dns_address,
-                record.name.trim_end_matches('.'),
-                server.dns_address,
-                record.name.trim_end_matches('.'),
-            )
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "dig +time=2 +tries=1 @{} . SOA >/dev/null || {{ echo 'DNS verification failed: {} did not answer' >&2; exit 1; }}",
-                server.dns_address, server.dns_address
-            )
-        });
     let peer_checks = server
         .peers
         .iter()
+        .filter(|peer| public_keys.contains_key(&peer.server))
         .map(|peer| {
             format!(
-                "ping -c 1 -W 3 {} >/dev/null || {{ echo \"WireGuard peer verification failed: {} ({}) could not reach {} ({})\" >&2; exit 1; }}",
+                "attempt=0; until ping -c 1 -W 3 {} >/dev/null; do attempt=$((attempt + 1)); [ \"$attempt\" -ge 5 ] && {{ echo \"WireGuard peer verification failed after 5 attempts: {} ({}) could not reach {} ({})\" >&2; exit 1; }}; sleep 1; done",
                 peer.management_address,
                 server.name,
                 server.management_address,
@@ -1441,22 +1599,22 @@ async fn verify_host(
         .join("; ");
     let slug = jiji_network::systemd_unit_slug(&plan.project);
     let network_dir = network_dir(&slug);
-    let command = format!(
-        "set -eu; \
-         wg show {wireguard_interface} >/dev/null; \
-         ip link show {bridge_interface} >/dev/null; \
-         ip -4 address show dev {bridge_interface} | grep -F '{bridge_gateway}' >/dev/null; \
-         test \"$(cat {network_dir}/generation)\" = '{generation}'; \
-         systemctl is-active --quiet jiji-network-restore-{slug}.service; \
-         systemctl is-active --quiet jiji-service-nat-{slug}.service; \
-         systemctl is-active --quiet jiji-dns-{slug}.service; \
-         {dns_check}; \
-         {peer_checks}",
-        wireguard_interface = server.wireguard_interface,
-        bridge_interface = server.bridge_interface,
-        bridge_gateway = server.bridge_gateway,
-        generation = plan.generation,
-    );
+    let mesh_check = if domains.mesh {
+        format!(
+            "wg show {wireguard_interface} >/dev/null; \
+             ip link show {bridge_interface} >/dev/null; \
+             ip -4 address show dev {bridge_interface} | grep -F '{bridge_gateway}' >/dev/null; \
+             test \"$(cat {network_dir}/mesh-generation)\" = '{mesh_generation}'; \
+             {peer_checks}",
+            wireguard_interface = server.wireguard_interface,
+            bridge_interface = server.bridge_interface,
+            bridge_gateway = server.bridge_gateway,
+            mesh_generation = plan.mesh_generation,
+        )
+    } else {
+        "true".to_string()
+    };
+    let command = format!("set -eu; {mesh_check}");
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)
 }
@@ -1470,12 +1628,9 @@ fn render_wireguard(
         server.management_address, server.wireguard_port
     );
     for peer in &server.peers {
-        let public_key = public_keys.get(&peer.server).ok_or_else(|| {
-            anyhow::anyhow!(
-                "No WireGuard public key was collected for server '{}'",
-                peer.server
-            )
-        })?;
+        let Some(public_key) = public_keys.get(&peer.server) else {
+            continue;
+        };
         output.push_str(&format!(
             "\n[Peer]\n# {}\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = {}\nPersistentKeepalive = 25\n",
             peer.server,
@@ -1489,46 +1644,6 @@ fn render_wireguard(
         ));
     }
     Ok(output)
-}
-
-fn render_dns_config(server: &ServerPlan, records: &BTreeMap<String, DnsRecord>) -> String {
-    let mut output = format!(
-        "port=53\nno-hosts\nlocal=/jiji/\nbind-dynamic\nlisten-address={}\n",
-        server.dns_address
-    );
-    for record in records.values() {
-        for address in &record.addresses {
-            output.push_str(&format!(
-                "host-record={},{}\n",
-                record.name.trim_end_matches('.'),
-                address
-            ));
-        }
-    }
-    output
-}
-
-fn render_dns_unit(slug: &str) -> String {
-    let current = dns_current(slug);
-    format!(
-        "[Unit]\nDescription=jiji static service DNS\nAfter=jiji-network-restore-{slug}.service jiji-service-nat-{slug}.service\nRequires=jiji-network-restore-{slug}.service jiji-service-nat-{slug}.service\nConditionPathExists={current}/dns.conf\n\n[Service]\nType=simple\nExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file={current}/dns.conf\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n"
-    )
-}
-
-fn render_service_nat_restore(plan: &NetworkPlan) -> String {
-    let slug = jiji_network::systemd_unit_slug(&plan.project);
-    let current = service_nat_current(&slug);
-    let table = jiji_network::service_nat_table_name(&plan.project);
-    format!(
-        "#!/bin/sh\nset -eu\nnft add table ip {table} 2>/dev/null || true\nnft --check --file {current}/service-nat.nft\nnft --file {current}/service-nat.nft\n"
-    )
-}
-
-fn render_service_nat_unit(slug: &str) -> String {
-    format!(
-        "[Unit]\nDescription=Restore jiji service VIP mappings\nAfter=jiji-network-restore-{slug}.service\nRequires=jiji-network-restore-{slug}.service\nBefore=jiji-dns-{slug}.service\n\n[Service]\nType=oneshot\nExecStart={}/restore-service-nat.sh\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n",
-        network_dir(slug)
-    )
 }
 
 fn ensure_success(
@@ -1590,96 +1705,117 @@ services:
     }
 
     #[test]
-    fn dns_rendering_contains_all_replica_addresses() {
+    fn parse_wireguard_peer_keys_recovers_exactly_what_render_wireguard_wrote() {
+        // Round-trip regression guard for the targeted-`-H` peer-drop fix: an installed
+        // `wireguard.conf` must yield back the same peer keys `render_wireguard` put there, since
+        // `apply_connected` relies on parsing an existing host's config to fill gaps for project
+        // members it didn't connect to this invocation.
         let plan = plan();
-        let rendered = render_dns_config(&plan.servers["app"], &plan.dns_records);
-        assert!(rendered.contains("local=/jiji/"));
-        assert!(rendered.contains("bind-dynamic"));
-        assert!(!rendered.contains("no-resolv"));
-        let web = &plan.dns_records["demo-web.jiji."];
-        for address in &web.addresses {
-            assert!(rendered.contains(&format!("host-record=demo-web.jiji,{address}")));
-        }
+        let keys = BTreeMap::from([
+            ("app".to_string(), "app-public-key".to_string()),
+            ("data".to_string(), "data-public-key".to_string()),
+        ]);
+        // Rendered from "app"'s own perspective: only lists its peer ("data"), never itself.
+        let rendered = render_wireguard(&plan.servers["app"], &keys).unwrap();
+        let recovered = parse_wireguard_peer_keys(&rendered);
+        assert_eq!(
+            recovered.get("data").map(String::as_str),
+            Some("data-public-key")
+        );
+        assert!(
+            !recovered.contains_key("app"),
+            "a host's own [Interface] section has no PublicKey line to mistake for a peer's"
+        );
     }
 
     #[test]
-    fn dns_unit_reads_the_atomically_selected_generation() {
+    fn parse_wireguard_peer_keys_ignores_non_peer_sections_and_garbage() {
+        let content = "[Interface]\n\
+             Address = 198.18.1.10/32\n\
+             PrivateKey = something\n\
+             \n\
+             [Peer]\n\
+             # data\n\
+             PublicKey = data-public-key\n\
+             Endpoint = 203.0.113.20:51820\n\
+             AllowedIPs = 198.18.1.20/32, 100.64.8.0/21\n\
+             PersistentKeepalive = 25\n";
+        let recovered = parse_wireguard_peer_keys(content);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered.get("data").map(String::as_str),
+            Some("data-public-key")
+        );
+    }
+
+    #[test]
+    fn combined_activation_never_contains_an_empty_command() {
+        let plan = plan();
         let slug = jiji_network::systemd_unit_slug("demo");
-        let rendered = render_dns_unit(&slug);
-        let expected_current = dns_current(&slug);
-        assert!(rendered.contains(&format!("ConditionPathExists={expected_current}/dns.conf")));
-        assert!(rendered.contains(&format!("--conf-file={expected_current}/dns.conf")));
+        let command = render_activation_command(
+            &plan.servers["app"],
+            &plan.mesh_generation,
+            "mesh-artifact",
+            &slug,
+            true,
+        );
+        assert!(!command.contains("; ;"), "command: {command}");
     }
 
     #[test]
     fn installed_generation_parser_rejects_paths_outside_managed_roots() {
         let slug = jiji_network::systemd_unit_slug("demo");
         let generations = network_generations(&slug);
-        let dns_generations = dns_generations(&slug);
-        let state = parse_installed_generation(
-            &format!("{generations}/abc\n{dns_generations}/abc\n"),
-            &slug,
-        )
-        .unwrap();
+        let state = parse_installed_generation(&format!("{generations}/abc\n"), &slug).unwrap();
         assert_eq!(state.network_name(), "abc");
-        assert!(
-            parse_installed_generation(&format!("/tmp/abc\n{dns_generations}/abc\n"), &slug)
-                .is_err()
-        );
-        assert!(parse_installed_generation(
-            &format!("{generations}/abc extra\n{dns_generations}/abc\n"),
-            &slug
-        )
-        .is_err());
+        assert!(parse_installed_generation("/tmp/abc\n", &slug).is_err());
+        assert!(parse_installed_generation(&format!("{generations}/abc extra\n"), &slug).is_err());
     }
 
     #[test]
-    fn rollback_selects_both_previous_generations_before_restarting_services() {
+    fn rollback_selects_the_previous_mesh_before_restarting_services() {
+        let plan = plan();
+        let server = &plan.servers["app"];
         let slug = jiji_network::systemd_unit_slug("demo");
-        let wireguard_interface = jiji_network::wireguard_interface_name("demo");
+        let wireguard_interface = &server.wireguard_interface;
         let state = InstalledGeneration {
             network: Some(format!("{}/old", network_generations(&slug))),
-            dns: Some(format!("{}/old", dns_generations(&slug))),
         };
-        let command = render_rollback_command(&state, &slug, &wireguard_interface);
+        let command =
+            render_rollback_command(&state, &slug, server, ActivationDomains { mesh: true });
         let network_switch = command
             .find(&format!("ln -sfn {}/old", network_generations(&slug)))
             .unwrap();
-        let dns_switch = command
-            .find(&format!("ln -sfn {}/old", dns_generations(&slug)))
-            .unwrap();
-        let restart = command.find("systemctl restart wg-quick").unwrap();
+        let restart = command.find("wg syncconf").unwrap();
         assert!(network_switch < restart);
-        assert!(dns_switch < restart);
         assert!(command.contains(&format!(
             "ln -sfn {}/wireguard.conf {}.new",
             network_current(&slug),
-            wireguard_config_path(&wireguard_interface)
+            wireguard_config_path(wireguard_interface)
         )));
     }
 
     #[test]
     fn first_install_rollback_removes_only_jiji_managed_live_paths() {
+        let plan = plan();
+        let server = &plan.servers["app"];
         let slug = jiji_network::systemd_unit_slug("demo");
-        let wireguard_interface = jiji_network::wireguard_interface_name("demo");
+        let wireguard_interface = &server.wireguard_interface;
         let command = render_rollback_command(
-            &InstalledGeneration {
-                network: None,
-                dns: None,
-            },
+            &InstalledGeneration { network: None },
             &slug,
-            &wireguard_interface,
+            server,
+            ActivationDomains { mesh: true },
         );
-        assert!(command.contains(&format!("systemctl stop jiji-dns-{slug}.service")));
+        assert!(command.contains(&format!("ip link delete {wireguard_interface}")));
         assert!(command.contains(&format!(
-            "rm -f {} {} {}/restore.sh {}/generation",
+            "rm -f {} {} {}/restore.sh {}/mesh-generation",
             network_current(&slug),
-            wireguard_config_path(&wireguard_interface),
+            wireguard_config_path(wireguard_interface),
             network_dir(&slug),
             network_dir(&slug),
         )));
-        assert!(command.contains(&format!("rm -f {}", dns_current(&slug))));
-        assert!(!command.contains("systemctl restart"));
+        assert!(!command.contains("wg syncconf"));
     }
 
     #[test]

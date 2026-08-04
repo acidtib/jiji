@@ -4,7 +4,7 @@ use jiji_tui::Ui;
 
 use super::{close_all, connect_targets, read_all};
 use crate::audit::{self, AuditStatus};
-use crate::lock::{self, LockInfo};
+use crate::lock::{self, LockInfo, LockScope};
 
 pub async fn run(
     environment: Option<&str>,
@@ -75,8 +75,8 @@ pub async fn run(
             .values()
             .cloned()
             .map(|session| {
-                let project = targets.project.clone();
-                move || async move { lock::force_remove_lock(&session, &project).await }
+                let path = LockScope::ProjectMaintenance.lock_path(&targets.project);
+                move || async move { lock::force_remove_lock(&session, &path).await }
             })
             .collect();
         for result in targets.pool.execute_concurrent(operations).await {
@@ -96,9 +96,9 @@ pub async fn run(
         .iter()
         .map(|name| targets.sessions.get(name).expect("connected above").clone())
         .map(|session| {
-            let project = targets.project.clone();
+            let path = LockScope::ProjectMaintenance.lock_path(&targets.project);
             let info = info.clone();
-            move || async move { lock::acquire_lock(&session, &project, &info).await }
+            move || async move { lock::acquire_lock(&session, &path, &info).await }
         })
         .collect();
     let results = targets.pool.execute_concurrent(operations).await;
@@ -135,7 +135,8 @@ pub async fn run(
         Ui::section("Rolling Back Partial Locks:");
         for name in &acquired {
             let session = targets.sessions.get(name).expect("connected above");
-            match lock::release_owned_lock(session, &targets.project, &lock_id).await {
+            let path = LockScope::ProjectMaintenance.lock_path(&targets.project);
+            match lock::release_owned_lock(session, &path, &lock_id).await {
                 Ok(lock::ReleaseOwnedResult::Released) => {
                     Ui::say(&format!("{name}: rolled back"), 1)
                 }
@@ -160,6 +161,8 @@ pub async fn run(
             "lock_acquire",
             AuditStatus::Success,
             format!("\"{message}\" by {}", lock::current_user()),
+            Some(&LockScope::ProjectMaintenance.to_string()),
+            None,
             Some(started_at.elapsed()),
         )
         .await;

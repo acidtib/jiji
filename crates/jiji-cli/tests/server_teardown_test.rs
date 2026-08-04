@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use jiji_agent::AgentPaths;
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
@@ -276,6 +277,18 @@ fn list_managed_containers_command(engine: &str, project: &str) -> String {
     )
 }
 
+fn network_attachment_count_command(engine: &str, network: &str) -> String {
+    format!("{engine} ps -a --filter network={network} --format '{{{{.Names}}}}'")
+}
+
+fn network_rm_command(engine: &str, name: &str) -> String {
+    format!("{engine} network rm {name}")
+}
+
+fn network_rm_force_command(engine: &str, name: &str) -> String {
+    format!("{engine} network rm --force {name}")
+}
+
 fn list_other_project_containers_command(engine: &str) -> String {
     format!(
         "{engine} ps -a --filter label=jiji.managed=true --format '{{{{.Names}}}}|{{{{.Label \"jiji.project\"}}}}|{{{{.Label \"jiji.service\"}}}}|{{{{.Label \"jiji.server\"}}}}|{{{{.State}}}}'"
@@ -346,6 +359,45 @@ async fn full_successful_teardown_reports_fully_torn_down() {
             .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
         "a successful teardown should still append a final audit entry, recreating the staging \
          directory it just removed with nothing but this one record: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removes_the_jiji_agent_scoped_to_this_project() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let responses = one_container_responses("docker");
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
+
+    let output = run_jiji_teardown(&config_path, &["-y"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let paths = AgentPaths::default_for_project("demo");
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received.contains(&format!("systemctl is-active --quiet {}", paths.unit_name)),
+        "teardown should probe the agent unit before removing it: {received:?}"
+    );
+    assert!(
+        received.iter().any(|c| c
+            .contains(&format!("systemctl disable --now {}", paths.unit_name))
+            && c.contains(&format!("rm -f {}", paths.unit_path.display()))
+            && c.contains(&format!("rm -rf {}", paths.project_dir.display()))),
+        "the agent's unit, unit file, and project directory should all be removed: {received:?}"
+    );
+
+    // Regression guard, mirroring `network_teardown.rs`'s equivalent: the removal command is
+    // anchored to this project's own derived paths, never a sibling project's.
+    let other_paths = AgentPaths::default_for_project("some-other-project");
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains(&other_paths.project_dir.display().to_string())),
+        "teardown must never reference another project's agent directory: {received:?}"
     );
 }
 
@@ -483,6 +535,125 @@ async fn another_projects_container_is_left_untouched_not_blocking() {
             .any(|command| command.starts_with("docker inspect --format")
                 && command.contains("kamal-proxy")),
         "ingress must be refreshed even when this project's bridge was already detached: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn network_removal_retries_with_force_when_podman_reports_a_stale_attachment() {
+    // Confirmed live against a real casa-lab teardown: Podman can report a bridge as having
+    // "associated containers" immediately after that bridge's last container was force-removed
+    // earlier in this same teardown run -- its own network backend's cleanup lags the container
+    // removal by a beat. Teardown's own attachment precondition (`network_attachment_count`,
+    // canned as zero here) has already confirmed nothing real is left, so a plain `network rm`
+    // failing this way must be retried with `--force` and still report the network as removed,
+    // not surface a spurious failure to the operator.
+    let (dir, key_path, client_key) = setup_test_dir();
+    let bridge = jiji_network::bridge_network_name("demo");
+    let mut responses = HashMap::new();
+    responses.insert(
+        list_managed_containers_command("podman", "demo"),
+        success(""),
+    );
+    responses.insert(
+        format!("podman network inspect {bridge} >/dev/null 2>&1"),
+        success(""),
+    );
+    responses.insert(
+        network_attachment_count_command("podman", &bridge),
+        success(""),
+    );
+    responses.insert(
+        network_rm_command("podman", &bridge),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: format!(
+                "\"{bridge}\" has associated containers with it. Use -f to forcibly delete containers and pods: network is being used"
+            ),
+        },
+    );
+    responses.insert(network_rm_force_command("podman", &bridge), success(""));
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "podman"));
+
+    let output = run_jiji_teardown(&config_path, &["-y"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("jiji bridge network: removed"),
+        "stdout: {stdout}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received.contains(&network_rm_command("podman", &bridge)),
+        "the plain removal should have been attempted first: {received:?}"
+    );
+    assert!(
+        received.contains(&network_rm_force_command("podman", &bridge)),
+        "the forced retry should have run after the plain removal reported a stale attachment: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_kamal_proxy_is_treated_as_having_no_routes_instead_of_failing_discovery() {
+    // Confirmed live: a kamal-proxy container that exists but isn't running (state "exited",
+    // "created", etc.) can't be exec'ed into -- `podman exec`/`docker exec` refuse with "can only
+    // create exec sessions on running containers". Before this fix, `list_routes` only checked
+    // whether the container existed at all, so it still tried to exec `kamal-proxy list` against a
+    // present-but-stopped container and surfaced that engine error as a hard discovery failure,
+    // making teardown treat the whole host as unreachable. A stopped proxy is by definition
+    // serving nothing, so this must be treated the same as "no routes" and teardown must still
+    // proceed to remove it.
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        list_managed_containers_command("podman", "demo"),
+        success(""),
+    );
+    responses.insert(
+        inspect_status_command("podman", "kamal-proxy"),
+        success("exited\n"),
+    );
+    responses.insert(
+        "podman exec --no-session kamal-proxy kamal-proxy list".to_string(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "Error: can only create exec sessions on running containers: container state improper".to_string(),
+        },
+    );
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "podman"));
+
+    let output = run_jiji_teardown(&config_path, &["-y"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !stdout.contains("could not discover"),
+        "a stopped kamal-proxy must not fail discovery: stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("kamal-proxy container: removed"),
+        "the stopped kamal-proxy container should still be force-removed: stdout: {stdout}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.contains(&"podman exec --no-session kamal-proxy kamal-proxy list".to_string()),
+        "a stopped kamal-proxy must never be exec'ed into: {received:?}"
+    );
+    assert!(
+        received.contains(&remove_container_command("podman", "kamal-proxy")),
+        "the stopped kamal-proxy container should still be removed via force-remove: {received:?}"
     );
 }
 

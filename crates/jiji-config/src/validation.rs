@@ -1,6 +1,10 @@
 use crate::remote_builder::parse_remote_builder_uri;
 use crate::schema::{Config, SshConfigFiles};
 
+const MAX_SERVICES: usize = 500;
+const MAX_REPLICAS: u32 = 2_000;
+const MAX_NODES: usize = 32;
+
 #[derive(Debug, Clone)]
 pub struct ValidationError {
     pub path: String,
@@ -82,7 +86,30 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     let mut errors = Vec::new();
     let warnings = Vec::new();
 
+    if config.servers.len() > MAX_NODES {
+        errors.push(ValidationError {
+            path: "servers".to_string(),
+            message: format!(
+                "A project supports at most {MAX_NODES} servers; {} are configured",
+                config.servers.len()
+            ),
+            code: "TOO_MANY_SERVERS",
+        });
+    }
+    if config.services.len() > MAX_SERVICES {
+        errors.push(ValidationError {
+            path: "services".to_string(),
+            message: format!(
+                "A project supports at most {MAX_SERVICES} services; {} are configured",
+                config.services.len()
+            ),
+            code: "TOO_MANY_SERVICES",
+        });
+    }
+
+    let mut total_replicas = 0_u32;
     for (name, service) in &config.services {
+        total_replicas = total_replicas.saturating_add(service.replicas);
         if service.servers.is_empty() {
             errors.push(ValidationError {
                 path: format!("services.{name}.servers"),
@@ -106,6 +133,115 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 });
             }
         }
+        if service.stop_first && service.replicas > 1 {
+            errors.push(ValidationError {
+                path: format!("services.{name}.replicas"),
+                message: format!("Service '{name}' uses stop_first and must remain a singleton"),
+                code: "STOP_FIRST_REQUIRES_SINGLETON",
+            });
+        }
+        if service.network_mode.starts_with("container:") {
+            errors.push(ValidationError {
+                path: format!("services.{name}.network_mode"),
+                message: format!(
+                    "Service '{name}' uses unsupported container namespace networking"
+                ),
+                code: "UNSUPPORTED_NETWORK_MODE",
+            });
+        }
+        if service.replicas > 1 && service.network_mode != "bridge" {
+            errors.push(ValidationError {
+                path: format!("services.{name}.network_mode"),
+                message: format!("Service '{name}' can only scale with project bridge networking"),
+                code: "NON_BRIDGE_SCALE",
+            });
+        }
+        if service.network_mode != "bridge" && service.proxy.is_some() {
+            errors.push(ValidationError {
+                path: format!("services.{name}.proxy"),
+                message: format!(
+                    "Service '{name}' cannot use proxy ingress without project bridge networking"
+                ),
+                code: "NON_BRIDGE_PROXY",
+            });
+        }
+        if let Some(upstream_name) = service.network_mode_dependency() {
+            if upstream_name == name {
+                errors.push(ValidationError {
+                    path: format!("services.{name}.network_mode"),
+                    message: format!(
+                        "Service '{name}' cannot use network_mode: service:{name} to reference itself"
+                    ),
+                    code: "NETWORK_MODE_SERVICE_SELF_REFERENCE",
+                });
+            } else if let Some(upstream) = config.services.get(upstream_name) {
+                if upstream.network_mode_dependency().is_some() {
+                    errors.push(ValidationError {
+                        path: format!("services.{name}.network_mode"),
+                        message: format!(
+                            "Service '{name}' cannot depend on '{upstream_name}', which is itself a network_mode:service dependent; chained namespace sharing is not supported"
+                        ),
+                        code: "NETWORK_MODE_SERVICE_CHAIN_UNSUPPORTED",
+                    });
+                }
+                if !service
+                    .servers
+                    .iter()
+                    .all(|host| upstream.servers.contains(host))
+                {
+                    errors.push(ValidationError {
+                        path: format!("services.{name}.servers"),
+                        message: format!(
+                            "Service '{name}' shares '{upstream_name}''s network namespace, so its 'servers' must be a subset of '{upstream_name}''s servers"
+                        ),
+                        code: "NETWORK_MODE_SERVICE_SERVER_MISMATCH",
+                    });
+                }
+            } else {
+                let mut available: Vec<&str> = config.services.keys().map(String::as_str).collect();
+                available.sort_unstable();
+                errors.push(ValidationError {
+                    path: format!("services.{name}.network_mode"),
+                    message: format!(
+                        "Service '{name}' references undefined service '{upstream_name}' in network_mode. Available services: {}",
+                        available.join(", ")
+                    ),
+                    code: "UNDEFINED_NETWORK_MODE_SERVICE",
+                });
+            }
+        }
+        let has_local_state = !service.volumes.is_empty()
+            || !service.files.is_empty()
+            || !service.directories.is_empty();
+        if service.replicas > 1 && has_local_state {
+            errors.push(ValidationError {
+                path: format!("services.{name}.replicas"),
+                message: format!(
+                    "Service '{name}' cannot scale local volumes, files, or directories implicitly"
+                ),
+                code: "STATEFUL_SCALE",
+            });
+        }
+        if service.replicas > 1
+            && (service.privileged || !service.devices.is_empty() || service.gpus.is_some())
+        {
+            errors.push(ValidationError {
+                path: format!("services.{name}.replicas"),
+                message: format!(
+                    "Service '{name}' cannot scale exclusive host devices, GPUs, or privileged access"
+                ),
+                code: "EXCLUSIVE_RESOURCE_SCALE",
+            });
+        }
+    }
+    if total_replicas > MAX_REPLICAS {
+        errors.push(ValidationError {
+            path: "services".to_string(),
+            message: format!(
+                "A project supports at most {MAX_REPLICAS} logical replicas; {total_replicas} are configured"
+            ),
+            code: "TOO_MANY_REPLICAS",
+        });
     }
 
     validate_builder(config, &mut errors);

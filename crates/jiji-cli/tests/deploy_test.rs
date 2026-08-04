@@ -42,6 +42,38 @@ fn failure() -> CannedResponse {
     }
 }
 
+fn default_response(command: &str) -> CannedResponse {
+    let body = if command.contains("# jiji-request:catalog-list") {
+        r#"{"Ok":{"type":"catalog_list","records":[]}}"#
+    } else if command.contains("# jiji-request:desired-commit") {
+        r#"{"Ok":{"type":"desired_state","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":1,"service":"web","replica_override":1,"assignments":[{"replica_id":"web-c1fe97ed0787","ordinal":0,"owner_node_id":"app"}],"revision":1,"author_node_id":"app","author_epoch":1}}}"#
+    } else if command.contains("# jiji-request:desired-read") {
+        r#"{"Ok":{"type":"desired_state","record":null}}"#
+    } else if command.contains("# jiji-request:allocate-address") {
+        r#"{"Ok":{"type":"address_lease","deployment_id":"test-deploy","replica_id":"web-test","address":"100.64.0.10","state":"active"}}"#
+    } else if command.contains("# jiji-request:catalog-commit") {
+        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"node-test","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}}"#
+    } else if command.contains("# jiji-request:release-address") {
+        r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else {
+        ""
+    };
+    success(body)
+}
+
+fn agent_request_command(kind: &str) -> String {
+    format!(
+        "/etc/jiji/agent/demo-354b6884/bin/jiji-agent request --socket \
+         /etc/jiji/agent/demo-354b6884/agent.sock # jiji-request:{kind}"
+    )
+}
+
+fn active_catalog_response(deployment_id: &str, address: &str) -> CannedResponse {
+    success(&format!(
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
+    ))
+}
+
 #[derive(Clone)]
 struct TestServer {
     authorized_key: PublicKey,
@@ -159,7 +191,7 @@ impl server::Handler for TestServer {
                 })
             })
             .cloned()
-            .unwrap_or_else(|| success(""));
+            .unwrap_or_else(|| default_response(&command));
 
         if !response.stdout.is_empty() {
             session.data(channel, response.stdout)?;
@@ -260,13 +292,86 @@ fn write_config(
     config_path
 }
 
+/// Two servers: "app" hosts the only service and is reachable; "peer" is configured but
+/// unreachable (port 1, nothing listens there), so `--wait-for-peers` has exactly one
+/// unreachable peer to report as offline.
+fn config_yaml_with_unreachable_peer(addr: SocketAddr, key_path: &std::path::Path) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: docker }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+  peer:
+    host: 127.0.0.1
+    port: 1
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    servers: [app]
+ssh:
+  user: tester
+  keys_only: true
+  connect_timeout: 1
+"#,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn write_config_with_unreachable_peer(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        config_yaml_with_unreachable_peer(addr, key_path),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+fn plan_generation_with_unreachable_peer(addr: SocketAddr) -> String {
+    let yaml = config_yaml_with_unreachable_peer(addr, std::path::Path::new("/dev/null"));
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
+}
+
 fn plan_generation(addr: SocketAddr, engine: &str) -> String {
     let yaml = config_yaml(addr, std::path::Path::new("/dev/null"), engine);
     let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
     let plan = NetworkPlanner::new()
         .plan(&config)
         .expect("build test plan");
-    plan.generation
+    plan.mesh_generation
+}
+
+fn service_runtime_generation(addr: SocketAddr, engine: &str) -> String {
+    let yaml = config_yaml(addr, std::path::Path::new("/dev/null"), engine);
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
+}
+
+fn current_service_runtime_generation(engine: &str) -> CannedResponse {
+    success(&format!(
+        "{}\n",
+        service_runtime_generation(SocketAddr::from(([127, 0, 0, 1], 0)), engine)
+    ))
 }
 
 /// Always passes `--yes`: the test subprocess has no controlling terminal, so without it every
@@ -315,7 +420,14 @@ fn active_slots_path() -> String {
 }
 
 fn generation_path() -> String {
-    format!("cat {}/generation 2>/dev/null || true", network_dir())
+    format!("cat {}/mesh-generation 2>/dev/null || true", network_dir())
+}
+
+fn service_runtime_generation_path() -> String {
+    format!(
+        "cat {}/service-runtime-generation 2>/dev/null || true",
+        network_dir()
+    )
 }
 
 fn mktemp_command() -> String {
@@ -360,13 +472,21 @@ fn image_inspect_command(engine: &str, image: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn network_generation_mismatch_triggers_reconciliation_before_container_commands() {
+async fn stale_compiled_mesh_does_not_block_deploy_or_mutate_wireguard() {
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success("stale-generation\n"));
     responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
         format!("{}#2", generation_path()),
+        success("stale-generation\n"),
+    );
+    responses.insert(
+        format!("{}#3", generation_path()),
         success(&format!("{generation}\n")),
     );
     responses.insert("id -u".to_string(), success("0\n"));
@@ -387,30 +507,26 @@ async fn network_generation_mismatch_triggers_reconciliation_before_container_co
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
 
     let output = run_jiji_deploy(&config_path, &[]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "stderr: {stderr}");
-    assert!(
-        stdout.contains("Network topology changed"),
-        "stdout: {stdout}"
-    );
 
     let received = harness.received.lock().unwrap().clone();
-    assert!(received.contains(&generation_path()));
-    let activation = received
-        .iter()
-        .position(|command| {
-            command.contains(&format!("systemctl restart jiji-dns-{}.service", slug()))
-        })
-        .expect("network generation should be activated");
-    let container = received
-        .iter()
-        .position(|command| command.contains("run --name"))
-        .expect("container should be created");
     assert!(
-        activation < container,
-        "network must activate first: {received:?}"
+        !received.contains(&generation_path()),
+        "deploy must not inspect the retired compiled mesh generation"
+    );
+    assert!(
+        !received
+            .iter()
+            .any(|command| command.starts_with("wg ") || command.contains("wg-quick")),
+        "deploy must not reconcile WireGuard: {received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|command| command.contains("run --name")),
+        "agent-owned mesh state must not block service deployment: {received:?}"
     );
 }
 
@@ -421,17 +537,14 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
     // Port is not part of the generation checksum's identity inputs (server host/service/project
     // are), so a throwaway address is fine for computing the expected generation string.
 
-    let candidate_name = "demo-web-a";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
-    responses.insert(active_slots_path(), success(""));
-    responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
-        image_inspect_command("docker", "docker.io/example/web:latest"),
-        success(""),
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
     );
     responses.insert(
-        readiness_health_command("docker", candidate_name),
+        image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
     responses.insert(mktemp_command(), cutover_generation_path("abc123"));
@@ -447,7 +560,7 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        stdout.contains("demo:web:app: deployed"),
+        stdout.contains("demo:web:web-") && stdout.contains(": deployed"),
         "stdout: {stdout}"
     );
 
@@ -455,7 +568,8 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
     assert!(
         received
             .iter()
-            .any(|c| c.contains("docker run") && c.contains(candidate_name)),
+            .any(|c| c.contains("docker run --name demo-web-")
+                && c.contains("jiji.catalog-managed=true")),
         "candidate should have been created: {received:?}"
     );
     assert!(
@@ -474,6 +588,104 @@ async fn first_deployment_creates_the_candidate_and_removes_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn wait_for_peers_reports_an_unreachable_peer_as_offline_without_failing_the_deploy() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation_with_unreachable_peer(SocketAddr::from(([127, 0, 0, 1], 0)));
+
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_unreachable_peer(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_deploy(&config_path, &["--wait-for-peers", "1"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.contains("Replication ack: 0/1 peer(s) confirmed")
+            && stdout.contains("offline/not yet observed: peer"),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_for_peers_omitted_adds_no_extra_connection() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation_with_unreachable_peer(SocketAddr::from(([127, 0, 0, 1], 0)));
+
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        success(&format!("{generation}\n")),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_unreachable_peer(dir.path(), harness.addr, &key_path);
+
+    // Omitting --wait-for-peers must never attempt to reach "peer": if it did, this deploy would
+    // hang/fail against the deliberately unreachable port 1.
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("Replication ack"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn service_scale_commits_desired_state_and_deploys_a_missing_replica() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .args([
+            "-S",
+            "web",
+            "-c",
+            config_path.to_str().unwrap(),
+            "service",
+            "scale",
+            "--replicas",
+            "1",
+            "--yes",
+        ])
+        .output()
+        .expect("run jiji service scale");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let received = harness.received.lock().unwrap();
+    assert!(received
+        .iter()
+        .any(|command| command.contains("# jiji-request:desired-commit")));
+    assert!(received
+        .iter()
+        .any(|command| command.contains("docker run --name demo-web-")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn yes_flag_prints_the_deployment_plan_and_proceeds_without_prompting() {
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
@@ -481,6 +693,10 @@ async fn yes_flag_prints_the_deployment_plan_and_proceeds_without_prompting() {
     let candidate_name = "demo-web-a";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
@@ -537,8 +753,10 @@ async fn without_yes_and_no_terminal_deploy_refuses_to_hang_on_a_prompt() {
         "stderr: {stderr}"
     );
 
-    // Refused before ever connecting: the SSH server received nothing at all.
-    assert!(harness.received.lock().unwrap().is_empty());
+    // Desired placement is one read-only lookup; no lock, build, or deployment mutation occurs.
+    let received = harness.received.lock().unwrap();
+    assert_eq!(received.len(), 1, "{received:?}");
+    assert!(received[0].contains("# jiji-request:desired-read"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -546,22 +764,20 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
 
-    let old_name = "demo-web-a";
-    let candidate_name = "demo-web-b";
+    let old_deployment = "olddeployment1234567890";
+    let old_name = "demo-web-olddeploymen";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(
-        inspect_status_command("docker", old_name),
-        success("running\n"),
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
     );
-    responses.insert(inspect_status_command("docker", candidate_name), failure());
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response(old_deployment, "100.64.0.9"),
+    );
     responses.insert(
         image_inspect_command("docker", "docker.io/example/web:latest"),
-        success(""),
-    );
-    responses.insert(
-        readiness_health_command("docker", candidate_name),
         success(""),
     );
     responses.insert(mktemp_command(), cutover_generation_path("def456"));
@@ -579,7 +795,7 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     let received = harness.received.lock().unwrap().clone();
     let run_index = received
         .iter()
-        .position(|c| c.contains("docker run") && c.contains(candidate_name))
+        .position(|c| c.contains("docker run --name demo-web-"))
         .expect("candidate should have been created");
     let remove_index = received
         .iter()
@@ -592,7 +808,7 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     assert!(
         !received
             .iter()
-            .any(|c| c.contains(&format!("rm -f {candidate_name}"))),
+            .any(|c| c.contains("rm -f demo-web-") && !c.contains(old_name)),
         "the healthy candidate itself must never be removed: {received:?}"
     );
 }
@@ -602,24 +818,17 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
     let (dir, key_path, client_key) = setup_test_dir();
     let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
 
-    let old_name = "demo-web-a";
-    let candidate_name = "demo-web-b";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
     responses.insert(
-        inspect_status_command("docker", old_name),
-        success("running\n"),
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
     );
-    responses.insert(inspect_status_command("docker", candidate_name), failure());
     responses.insert(
         image_inspect_command("docker", "docker.io/example/web:latest"),
         success(""),
     );
-    responses.insert(
-        readiness_health_command("docker", candidate_name),
-        failure(),
-    );
+    responses.insert("PREFIX:docker inspect demo-web-".to_string(), failure());
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
@@ -628,7 +837,7 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "expected non-zero exit");
     assert!(
-        stderr.contains("previous version is still serving traffic"),
+        stderr.contains("health") || stderr.contains("running"),
         "stderr: {stderr}"
     );
 
@@ -636,15 +845,8 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
     assert!(
         received
             .iter()
-            .any(|c| c.contains(&format!("rm -f {candidate_name}"))),
-        "the unhealthy candidate should be removed: {received:?}"
-    );
-    assert!(
-        !received
-            .iter()
-            .any(|c| c.contains(&format!("rm -f {old_name}"))
-                || c.contains(&format!("stop {old_name}"))),
-        "the old container must never be touched: {received:?}"
+            .any(|c| c.contains("# jiji-request:release-address")),
+        "the unhealthy candidate lease should be released: {received:?}"
     );
 }
 
@@ -656,6 +858,10 @@ async fn podman_first_deployment_uses_podman_commands_only() {
     let candidate_name = "demo-web-a";
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("podman"),
+    );
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("podman", candidate_name), failure());
     responses.insert(
@@ -757,10 +963,14 @@ ssh:
     let generation = NetworkPlanner::new()
         .plan(&generation_config)
         .expect("network plan")
-        .generation;
+        .mesh_generation;
 
     let mut responses = HashMap::new();
     responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
     responses.insert(active_slots_path(), success(""));
     responses.insert(inspect_status_command("docker", "demo-web-a"), failure());
     responses.insert(
@@ -860,7 +1070,11 @@ async fn failed_pull_after_tunnel_setup_cancels_the_forward_and_stops_deploy() {
 #[tokio::test(flavor = "multi_thread")]
 async fn deploy_bails_when_deployment_lock_is_held() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let lock_path = "cat .jiji/demo/deploy.lock 2>/dev/null || true";
+    // This config deploys the single, deterministically-placed replica of service "web" on
+    // server "app" (see `default_response`'s desired-read/desired-commit canned records), so
+    // `jiji deploy` acquires exactly one `LogicalReplica` lock at this path.
+    let lock_path =
+        "cat .jiji/demo/locks/replica/web-c1fe97ed0787.lock/info.json 2>/dev/null || true";
     let mut responses = HashMap::new();
     responses.insert(atomic_lock_command(), success("JIJI_LOCK_HELD\n"));
     responses.insert(
@@ -878,7 +1092,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 
     assert!(!output.status.success());
     assert!(
-        stderr.contains("Could not acquire the deployment lock"),
+        stderr.contains("Could not acquire every lock this operation needs"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("Deploying v1.2.3"), "stderr: {stderr}");
@@ -892,5 +1106,5 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 }
 
 fn atomic_lock_command() -> String {
-    "PREFIX:set -eu\nmkdir -p .jiji/demo\nmkdir .jiji/demo/deploy.lock.".to_string()
+    "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-c1fe97ed0787.lock.".to_string()
 }

@@ -31,12 +31,17 @@ fn success(stdout: &str) -> CannedResponse {
     }
 }
 
-fn failure() -> CannedResponse {
-    CannedResponse {
-        success: false,
-        stdout: String::new(),
-        stderr: "no such object".to_string(),
-    }
+fn default_response(command: &str) -> CannedResponse {
+    let body = if command.contains("# jiji-request:catalog-list") {
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#
+    } else if command.contains("# jiji-request:catalog-commit") {
+        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":3,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"stopped","health":"unhealthy"}}}"#
+    } else if command.contains("# jiji-request:release-address") {
+        r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else {
+        ""
+    };
+    success(body)
 }
 
 #[derive(Clone)]
@@ -109,8 +114,16 @@ impl server::Handler for TestServer {
         let response = self
             .responses
             .get(&command)
+            .or_else(|| {
+                self.responses.iter().find_map(|(pattern, response)| {
+                    pattern
+                        .strip_prefix("PREFIX:")
+                        .filter(|prefix| command.starts_with(prefix))
+                        .map(|_| response)
+                })
+            })
             .cloned()
-            .unwrap_or_else(|| success(""));
+            .unwrap_or_else(|| default_response(&command));
 
         if !response.stdout.is_empty() {
             session.data(channel, response.stdout)?;
@@ -231,43 +244,18 @@ fn run_jiji_service_remove(
     command.output().expect("run jiji service remove")
 }
 
-fn network_dir() -> String {
-    format!(
-        "/etc/jiji/network/{}",
-        jiji_network::systemd_unit_slug("demo")
-    )
-}
-
-fn active_slots_path() -> String {
-    format!("cat {}/service-nat-current/active-slots", network_dir())
-}
-
-fn mktemp_command() -> String {
-    format!(
-        "mktemp -d {}/service-nat-generations/cutover.XXXXXX",
-        network_dir()
-    )
-}
-
-fn cutover_generation_path(suffix: &str) -> CannedResponse {
-    success(&format!(
-        "{}/service-nat-generations/cutover.{suffix}\n",
-        network_dir()
-    ))
-}
-
 fn inspect_status_command(name: &str) -> String {
     format!("docker inspect {name} --format '{{{{.State.Status}}}}'")
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
+async fn remove_retires_catalog_deployment_and_removes_the_route() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
-    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
-    responses.insert(inspect_status_command("demo-web-a"), success("running\n"));
-    responses.insert(inspect_status_command("demo-web-b"), failure());
+    responses.insert(
+        inspect_status_command("demo-web-abcdef123456"),
+        success("running\n"),
+    );
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path));
@@ -277,22 +265,28 @@ async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.contains("container 'demo-web-a': removed"),
+        stdout.contains("container 'demo-web-abcdef123456': removed"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("container 'demo-web-b': already absent"),
+        stdout.contains("catalog deployment 'abcdef1234567890': removed"),
         "stdout: {stdout}"
     );
     assert!(
         stdout.contains("proxy route 'demo-web-3000': removed"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("VIP mapping: removed"), "stdout: {stdout}");
+    assert!(!stdout.contains("VIP mapping"), "stdout: {stdout}");
 
     let received = harness.received.lock().unwrap().clone();
-    assert!(received.contains(&"docker stop demo-web-a".to_string()));
-    assert!(received.contains(&"docker rm -f demo-web-a".to_string()));
+    assert!(received.contains(&"docker stop demo-web-abcdef123456".to_string()));
+    assert!(received.contains(&"docker rm -f demo-web-abcdef123456".to_string()));
+    assert!(received
+        .iter()
+        .any(|command| command.contains("# jiji-request:catalog-commit")));
+    assert!(received
+        .iter()
+        .any(|command| command.contains("# jiji-request:release-address")));
     assert!(
         received.contains(&"docker exec kamal-proxy kamal-proxy remove demo-web-3000".to_string())
     );
@@ -312,10 +306,10 @@ async fn remove_stops_both_slots_removes_the_route_and_deactivates_the_vip() {
 async fn remove_with_volumes_flag_removes_named_volumes() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(active_slots_path(), success("demo:web:app=a\n"));
-    responses.insert(mktemp_command(), cutover_generation_path("def456"));
-    responses.insert(inspect_status_command("demo-web-a"), failure());
-    responses.insert(inspect_status_command("demo-web-b"), failure());
+    responses.insert(
+        inspect_status_command("demo-web-abcdef123456"),
+        success("running\n"),
+    );
     responses.insert(
         "docker volume inspect web-web_storage >/dev/null 2>&1".to_string(),
         success(""),
@@ -357,4 +351,72 @@ async fn remove_without_yes_prompts_and_cancels_on_no_tty() {
         .arg(&config_path);
     let output = command.output().expect("run jiji service remove");
     assert!(!output.status.success());
+}
+
+/// A concurrent operation already holding the owned replica's lock blocks removal -- the first
+/// time `service remove` has ever taken a lock at all (see `crate::lock::LockScope::LogicalReplica`).
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_is_blocked_while_a_concurrent_operation_holds_the_replica_lock() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-c1fe97ed0787.lock.".to_string(),
+        success("JIJI_LOCK_HELD\n"),
+    );
+    responses.insert(
+        "cat .jiji/demo/locks/replica/web-c1fe97ed0787.lock/info.json 2>/dev/null || true"
+            .to_string(),
+        success(
+            r#"{"message":"jiji deploy: web","acquired_at":1000000000,"acquired_by":"alice","pid":123}"#,
+        ),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path));
+
+    let output = run_jiji_service_remove(&config_path, &["--lock-timeout", "0"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("Could not acquire every lock this operation needs"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("alice"), "stderr: {stderr}");
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.contains("docker stop")),
+        "no container should be touched while the replica lock is held: {received:?}"
+    );
+}
+
+/// Removing an endpoint with nothing owned in the catalog takes no *replica* lock -- there is no
+/// replica to serialize against (a `HostGlobalProxy` lock is still taken separately here, since
+/// this config's service has a `proxy:` route that removal unconditionally attempts to withdraw
+/// regardless of catalog ownership).
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_takes_no_replica_lock_when_nothing_is_owned() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        "/etc/jiji/agent/demo-354b6884/bin/jiji-agent request --socket \
+         /etc/jiji/agent/demo-354b6884/agent.sock # jiji-request:catalog-list"
+            .to_string(),
+        success(r#"{"Ok":{"type":"catalog_list","records":[]}}"#),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path));
+
+    let output = run_jiji_service_remove(&config_path, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("mkdir .jiji/demo/locks/replica")),
+        "removing something already absent must not acquire a replica lock: {received:?}"
+    );
 }

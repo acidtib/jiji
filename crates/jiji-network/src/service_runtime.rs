@@ -1,132 +1,6 @@
-use crate::{NetworkPlan, ServerPlan, ServiceEndpointPlan};
+use crate::ServerPlan;
 use jiji_config::ContainerEngine;
-use std::collections::BTreeMap;
-use std::fmt;
 use std::net::Ipv4Addr;
-use thiserror::Error;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendSlot {
-    A,
-    B,
-}
-
-impl BackendSlot {
-    pub fn other(self) -> Self {
-        match self {
-            Self::A => Self::B,
-            Self::B => Self::A,
-        }
-    }
-
-    fn index(self) -> usize {
-        match self {
-            Self::A => 0,
-            Self::B => 1,
-        }
-    }
-}
-
-impl fmt::Display for BackendSlot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::A => write!(formatter, "a"),
-            Self::B => write!(formatter, "b"),
-        }
-    }
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ServiceRuntimeError {
-    #[error(
-        "Active slot state contains malformed line {line}: '{value}'. Repair or remove the state file and retry."
-    )]
-    MalformedState { line: usize, value: String },
-
-    #[error(
-        "Active slot state references unknown endpoint '{identity}'. Run network setup to reconcile the installed topology."
-    )]
-    UnknownEndpoint { identity: String },
-
-    #[error("{0}")]
-    Remote(String),
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ActiveSlotState {
-    slots: BTreeMap<String, BackendSlot>,
-}
-
-impl ActiveSlotState {
-    pub fn parse(input: &str) -> Result<Self, ServiceRuntimeError> {
-        let mut slots = BTreeMap::new();
-        for (index, line) in input.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((identity, slot)) = line.split_once('=') else {
-                return Err(ServiceRuntimeError::MalformedState {
-                    line: index + 1,
-                    value: line.to_string(),
-                });
-            };
-            let slot = match slot {
-                "a" => BackendSlot::A,
-                "b" => BackendSlot::B,
-                _ => {
-                    return Err(ServiceRuntimeError::MalformedState {
-                        line: index + 1,
-                        value: line.to_string(),
-                    });
-                }
-            };
-            if identity.is_empty() || slots.insert(identity.to_string(), slot).is_some() {
-                return Err(ServiceRuntimeError::MalformedState {
-                    line: index + 1,
-                    value: line.to_string(),
-                });
-            }
-        }
-        Ok(Self { slots })
-    }
-
-    pub fn active_slot(&self, endpoint_identity: &str) -> Option<BackendSlot> {
-        self.slots.get(endpoint_identity).copied()
-    }
-
-    pub fn deployment_slot(&self, endpoint_identity: &str) -> BackendSlot {
-        self.active_slot(endpoint_identity)
-            .map(BackendSlot::other)
-            .unwrap_or(BackendSlot::A)
-    }
-
-    pub fn activate(&mut self, endpoint_identity: impl Into<String>, slot: BackendSlot) {
-        self.slots.insert(endpoint_identity.into(), slot);
-    }
-
-    pub fn deactivate(&mut self, endpoint_identity: &str) {
-        self.slots.remove(endpoint_identity);
-    }
-
-    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
-        self.slots.retain(|identity, _| keep(identity));
-    }
-
-    pub fn render(&self) -> String {
-        let mut output = String::new();
-        for (identity, slot) in &self.slots {
-            output.push_str(&format!("{identity}={slot}\n"));
-        }
-        output
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, BackendSlot)> {
-        self.slots
-            .iter()
-            .map(|(identity, slot)| (identity.as_str(), *slot))
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkedContainerRun {
@@ -135,33 +9,60 @@ pub struct NetworkedContainerRun {
     pub image: String,
     pub address: Ipv4Addr,
     pub dns_address: Ipv4Addr,
-    /// This project's bridge network name (`ServerPlan::bridge_name`), not the shared literal
-    /// `"jiji"` -- every project has its own bridge, see `naming::bridge_network_name`.
     pub bridge_name: String,
-    /// The project-scoped kernel bridge device. Podman/Netavark can remove the secondary
-    /// dnsmasq address while activating a container, so the CLI reconciles it after `podman run`.
     pub bridge_interface: String,
+    /// Set only for a `network_mode: service:<other>` dependent: the upstream service's current
+    /// container name to join via `--network container:<name>`. When set, `args()` omits
+    /// `--ip`/`--dns`/`--dns-search`/`--dns-option` entirely, since a namespace-sharing container
+    /// has no address or DNS configuration of its own -- it inherits the upstream's.
+    pub shared_with_container: Option<String>,
     pub extra_args: Vec<String>,
     pub command: Vec<String>,
 }
 
 impl NetworkedContainerRun {
-    pub fn for_endpoint(
+    pub fn dynamic(
         engine: ContainerEngine,
         container_name: impl Into<String>,
         image: impl Into<String>,
-        endpoint: &ServiceEndpointPlan,
+        address: Ipv4Addr,
         server: &ServerPlan,
-        slot: BackendSlot,
     ) -> Self {
         Self {
             engine,
             container_name: container_name.into(),
             image: image.into(),
-            address: endpoint.backend_addresses[slot.index()],
+            address,
             dns_address: server.dns_address,
             bridge_name: server.bridge_name.clone(),
             bridge_interface: server.bridge_interface.clone(),
+            shared_with_container: None,
+            extra_args: Vec::new(),
+            command: Vec::new(),
+        }
+    }
+
+    /// A `network_mode: service:<other>` dependent: shares `target_container`'s network
+    /// namespace instead of getting its own dynamically-leased bridge address. `address` is the
+    /// upstream's current address (kept for observability/health-check use, but never rendered
+    /// into the run command -- see `shared_with_container` above).
+    pub fn shared(
+        engine: ContainerEngine,
+        container_name: impl Into<String>,
+        image: impl Into<String>,
+        target_container: impl Into<String>,
+        address: Ipv4Addr,
+        server: &ServerPlan,
+    ) -> Self {
+        Self {
+            engine,
+            container_name: container_name.into(),
+            image: image.into(),
+            address,
+            dns_address: server.dns_address,
+            bridge_name: server.bridge_name.clone(),
+            bridge_interface: server.bridge_interface.clone(),
+            shared_with_container: Some(target_container.into()),
             extra_args: Vec::new(),
             command: Vec::new(),
         }
@@ -173,17 +74,25 @@ impl NetworkedContainerRun {
             "run".to_string(),
             "--name".to_string(),
             self.container_name.clone(),
-            "--network".to_string(),
-            self.bridge_name.clone(),
-            "--ip".to_string(),
-            self.address.to_string(),
-            "--dns".to_string(),
-            self.dns_address.to_string(),
-            "--dns-search".to_string(),
-            jiji_core::DEFAULT_SERVICE_DOMAIN.to_string(),
-            "--dns-option".to_string(),
-            "ndots:1".to_string(),
         ];
+        match &self.shared_with_container {
+            Some(target) => {
+                args.push("--network".to_string());
+                args.push(format!("container:{target}"));
+            }
+            None => {
+                args.push("--network".to_string());
+                args.push(self.bridge_name.clone());
+                args.push("--ip".to_string());
+                args.push(self.address.to_string());
+                args.push("--dns".to_string());
+                args.push(self.dns_address.to_string());
+                args.push("--dns-search".to_string());
+                args.push(jiji_core::DEFAULT_SERVICE_DOMAIN.to_string());
+                args.push("--dns-option".to_string());
+                args.push("ndots:1".to_string());
+            }
+        }
         args.extend(self.extra_args.clone());
         args.push(self.image.clone());
         args.extend(self.command.clone());
@@ -196,60 +105,6 @@ impl NetworkedContainerRun {
             .map(|argument| shell_escape(argument))
             .collect::<Vec<_>>()
             .join(" ")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceNatArtifacts {
-    pub state: String,
-    pub nftables: String,
-}
-
-impl ServiceNatArtifacts {
-    pub fn render(
-        plan: &NetworkPlan,
-        active: &ActiveSlotState,
-    ) -> Result<Self, ServiceRuntimeError> {
-        let mut elements = Vec::new();
-        for (identity, slot) in active.iter() {
-            let endpoint = plan.endpoints.get(identity).ok_or_else(|| {
-                ServiceRuntimeError::UnknownEndpoint {
-                    identity: identity.to_string(),
-                }
-            })?;
-            elements.push(format!(
-                "{} : {}",
-                endpoint.address,
-                endpoint.backend_addresses[slot.index()]
-            ));
-        }
-        let elements = if elements.is_empty() {
-            String::new()
-        } else {
-            format!("\t\telements = {{ {} }}\n", elements.join(", "))
-        };
-        let table = crate::naming::service_nat_table_name(&plan.project);
-        let nftables = format!(
-            "delete table ip {table}\n\
-             table ip {table} {{\n\
-             \tmap backends {{\n\
-             \t\ttype ipv4_addr : ipv4_addr\n\
-             {elements}\
-             \t}}\n\
-             \tchain prerouting {{\n\
-             \t\ttype nat hook prerouting priority dstnat - 5; policy accept;\n\
-             \t\tdnat ip to ip daddr map @backends\n\
-             \t}}\n\
-             \tchain output {{\n\
-             \t\ttype nat hook output priority dstnat - 5; policy accept;\n\
-             \t\tdnat ip to ip daddr map @backends\n\
-             \t}}\n\
-             }}\n"
-        );
-        Ok(Self {
-            state: active.render(),
-            nftables,
-        })
     }
 }
 
@@ -268,160 +123,50 @@ fn shell_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::NetworkPlanner;
-    use jiji_config::Config;
 
-    fn plan() -> NetworkPlan {
-        let config: Config = serde_yaml::from_str(
-            r#"
-project: demo
-builder: { engine: docker }
-servers:
-  app: { host: 203.0.113.10 }
-services:
-  web:
-    image: example/web
-    servers: [app]
-"#,
+    #[test]
+    fn dynamic_run_pins_address_dns_and_project_bridge() {
+        let config: jiji_config::Config = serde_yaml::from_str(
+            "project: demo\nbuilder: { engine: docker }\nservers:\n  app: { host: 203.0.113.10 }\nservices:\n  web: { image: nginx, servers: [app] }\n",
         )
         .unwrap();
-        NetworkPlanner::new().plan(&config).unwrap()
-    }
-
-    #[test]
-    fn deployment_uses_inactive_slot_and_rollback_returns_to_previous_slot() {
-        let plan = plan();
-        let endpoint = &plan.endpoints["demo:web:app"];
-        let mut state = ActiveSlotState::default();
-
-        let first = state.deployment_slot(&endpoint.identity);
-        assert_eq!(first, BackendSlot::A);
-        state.activate(&endpoint.identity, first);
-        let replacement = state.deployment_slot(&endpoint.identity);
-        assert_eq!(replacement, BackendSlot::B);
-        state.activate(&endpoint.identity, replacement);
-        assert_eq!(state.deployment_slot(&endpoint.identity), BackendSlot::A);
-
-        state.activate(&endpoint.identity, first);
-        assert_eq!(state.active_slot(&endpoint.identity), Some(BackendSlot::A));
-        state.deactivate(&endpoint.identity);
-        assert_eq!(state.active_slot(&endpoint.identity), None);
-    }
-
-    #[test]
-    fn replacement_and_stop_first_never_reuse_the_active_container_address() {
-        let plan = plan();
-        let endpoint = &plan.endpoints["demo:web:app"];
-        let mut state = ActiveSlotState::default();
-        state.activate(&endpoint.identity, BackendSlot::A);
-
-        let replacement_slot = state.deployment_slot(&endpoint.identity);
-        let old = NetworkedContainerRun::for_endpoint(
-            ContainerEngine::Docker,
-            "demo-web-old",
-            "example/web:v1",
-            endpoint,
-            &plan.servers["app"],
-            BackendSlot::A,
-        );
-        let replacement = NetworkedContainerRun::for_endpoint(
-            ContainerEngine::Docker,
-            "demo-web",
-            "example/web:v2",
-            endpoint,
-            &plan.servers["app"],
-            replacement_slot,
-        );
-
-        assert_ne!(old.address, replacement.address);
-        assert_eq!(replacement_slot, BackendSlot::B);
-        assert_eq!(state.deployment_slot(&endpoint.identity), replacement_slot);
-    }
-
-    #[test]
-    fn run_command_always_contains_planned_network_ip_and_dns() {
-        let plan = plan();
-        let endpoint = &plan.endpoints["demo:web:app"];
+        let plan = NetworkPlanner::new().plan(&config).unwrap();
         let server = &plan.servers["app"];
-        for engine in [ContainerEngine::Docker, ContainerEngine::Podman] {
-            for slot in [BackendSlot::A, BackendSlot::B] {
-                let command = NetworkedContainerRun::for_endpoint(
-                    engine,
-                    "demo-web",
-                    "example/web:v1",
-                    endpoint,
-                    server,
-                    slot,
-                )
-                .shell_command();
-                assert!(command.contains(&format!(
-                    "--network {}",
-                    crate::naming::bridge_network_name("demo")
-                )));
-                assert!(command.contains(&format!(
-                    "--ip {}",
-                    endpoint.backend_addresses[slot.index()]
-                )));
-                assert!(command.contains(&format!("--dns {}", server.dns_address)));
-                assert!(command.contains("--dns-search jiji --dns-option ndots:1"));
-            }
-        }
-    }
-
-    #[test]
-    fn restart_and_reboot_reuse_the_active_backend_address() {
-        let plan = plan();
-        let endpoint = &plan.endpoints["demo:web:app"];
-        let mut state = ActiveSlotState::default();
-        state.activate(&endpoint.identity, BackendSlot::B);
-        let persisted = state.render();
-        let restored = ActiveSlotState::parse(&persisted).unwrap();
-        let active = restored.active_slot(&endpoint.identity).unwrap();
-
-        let run = NetworkedContainerRun::for_endpoint(
+        let run = NetworkedContainerRun::dynamic(
             ContainerEngine::Docker,
-            "demo-web",
-            "example/web:v1",
-            endpoint,
-            &plan.servers["app"],
-            active,
+            "demo-web-abc",
+            "nginx:latest",
+            "198.18.1.20".parse().unwrap(),
+            server,
         );
-        assert_eq!(run.address, endpoint.backend_addresses[1]);
+        let command = run.shell_command();
+        assert!(command.contains("--name demo-web-abc"));
+        assert!(command.contains("--ip 198.18.1.20"));
+        assert!(command.contains(&format!("--dns {}", server.dns_address)));
+        assert!(command.contains(&format!("--network {}", server.bridge_name)));
     }
 
     #[test]
-    fn nat_artifacts_map_stable_vip_to_active_backend() {
-        let plan = plan();
-        let endpoint = &plan.endpoints["demo:web:app"];
-        let mut state = ActiveSlotState::default();
-        state.activate(&endpoint.identity, BackendSlot::B);
-
-        let artifacts = ServiceNatArtifacts::render(&plan, &state).unwrap();
-        assert!(artifacts.nftables.contains(&format!(
-            "{} : {}",
-            endpoint.address, endpoint.backend_addresses[1]
-        )));
-        assert!(artifacts
-            .nftables
-            .contains("dnat ip to ip daddr map @backends"));
-        assert!(artifacts.nftables.starts_with(&format!(
-            "delete table ip {}\n",
-            crate::naming::service_nat_table_name("demo")
-        )));
-        assert!(!artifacts.nftables.contains("flush table"));
-        assert_eq!(artifacts.state, "demo:web:app=b\n");
-    }
-
-    #[test]
-    fn malformed_or_stale_state_is_rejected() {
-        assert!(matches!(
-            ActiveSlotState::parse("demo:web:app=c\n"),
-            Err(ServiceRuntimeError::MalformedState { .. })
-        ));
-        let plan = plan();
-        let state = ActiveSlotState::parse("missing:endpoint:host=a\n").unwrap();
-        assert!(matches!(
-            ServiceNatArtifacts::render(&plan, &state),
-            Err(ServiceRuntimeError::UnknownEndpoint { .. })
-        ));
+    fn shared_run_joins_the_target_container_and_omits_its_own_addressing() {
+        let config: jiji_config::Config = serde_yaml::from_str(
+            "project: demo\nbuilder: { engine: docker }\nservers:\n  app: { host: 203.0.113.10 }\nservices:\n  web: { image: nginx, servers: [app] }\n",
+        )
+        .unwrap();
+        let plan = NetworkPlanner::new().plan(&config).unwrap();
+        let server = &plan.servers["app"];
+        let run = NetworkedContainerRun::shared(
+            ContainerEngine::Docker,
+            "demo-qbittorrent-abc",
+            "qbittorrent:latest",
+            "demo-gluetun-def",
+            "198.18.1.20".parse().unwrap(),
+            server,
+        );
+        let command = run.shell_command();
+        assert!(command.contains("--name demo-qbittorrent-abc"));
+        assert!(command.contains("--network container:demo-gluetun-def"));
+        assert!(!command.contains("--ip"));
+        assert!(!command.contains("--dns"));
+        assert!(!command.contains(&server.bridge_name));
     }
 }

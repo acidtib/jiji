@@ -60,20 +60,39 @@ pub async fn inspect_status(
     Ok(Some(result.stdout.trim().to_string()))
 }
 
-/// Same `None`-covers-every-inspect-failure caveat as `inspect_status` (see its doc comment).
-/// Used by `service restart` to discover the image a build-only service (no static `image:` in
-/// config) is currently running, since that reference exists nowhere else.
-pub async fn inspect_image_ref(
+/// Best-effort current address of a container on whichever engine network it's attached to.
+/// `None` covers "no address" the same way `inspect_status` treats absence -- container gone,
+/// detached from its network (common for a stopped/exited container), or unreachable -- callers
+/// must not read `None` as proof of anything beyond "could not determine an address right now."
+pub async fn inspect_ip_address(
+    session: &SshSession,
+    engine: ContainerEngine,
+    name: &str,
+) -> anyhow::Result<Option<std::net::Ipv4Addr>> {
+    let command = format!(
+        "{engine} inspect {name} --format '{{{{range .NetworkSettings.Networks}}}}{{{{.IPAddress}}}}{{{{end}}}}' 2>/dev/null || true"
+    );
+    let result = session.execute(&command).await?;
+    let trimmed = result.stdout.trim();
+    Ok(trimmed.parse().ok())
+}
+
+/// Best-effort current image reference of a container, `None` on the same terms as
+/// `inspect_ip_address`.
+pub async fn inspect_image(
     session: &SshSession,
     engine: ContainerEngine,
     name: &str,
 ) -> anyhow::Result<Option<String>> {
-    let command = format!("{engine} inspect {name} --format '{{{{.Config.Image}}}}'");
+    let command =
+        format!("{engine} inspect {name} --format '{{{{.Config.Image}}}}' 2>/dev/null || true");
     let result = session.execute(&command).await?;
-    if !result.success {
-        return Ok(None);
+    let trimmed = result.stdout.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
     }
-    Ok(Some(result.stdout.trim().to_string()))
 }
 
 pub async fn create_and_start(
@@ -83,6 +102,12 @@ pub async fn create_and_start(
     let command = run.shell_command();
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
+    // A `network_mode: service:<other>` dependent has no bridge attachment of its own to
+    // reconcile -- it inherits the upstream's, already handled by the upstream's own
+    // create_and_start call.
+    if run.shared_with_container.is_some() {
+        return Ok(());
+    }
     crate::commands::network::bridge::reconcile_podman_dns_address(
         session,
         run.engine,
@@ -382,6 +407,23 @@ pub async fn remove_network_if_present(
     }
     let command = format!("{engine} network rm {name}");
     let result = session.execute(&command).await?;
+    if !result.success
+        && engine == ContainerEngine::Podman
+        && result.stderr.contains("associated containers")
+    {
+        // Confirmed live: Podman's own network backend can still report a bridge as having
+        // "associated containers" immediately after that container was force-removed earlier in
+        // this same teardown run -- its cleanup lags the container removal by a beat. The
+        // caller's own `network_attachment_count` precondition (checked before this function is
+        // ever reached) has already confirmed nothing real is left attached, so retrying with
+        // `--force` (Podman-only: forcibly disconnects any still-attached containers/pods before
+        // removing the network) recovers from Podman's stale bookkeeping instead of surfacing a
+        // spurious failure to the operator.
+        let command = format!("{engine} network rm --force {name}");
+        let result = session.execute(&command).await?;
+        ensure_success(session, &command, &result)?;
+        return Ok(true);
+    }
     ensure_success(session, &command, &result)?;
     Ok(true)
 }

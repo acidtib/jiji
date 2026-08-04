@@ -128,13 +128,12 @@ impl server::Handler for TestServer {
             .filter(|received| *received == &command)
             .count();
 
-        // `capture_installed_generation`'s combined `if test -L ...` command needs exactly two
-        // lines of output (see `network::setup::parse_installed_generation`); reporting "-\n-\n"
-        // (no previous generation on either symlink) is what puts this test in the first-install
+        // `capture_installed_generation` needs exactly one line of output; reporting "-\n"
+        // (no previous mesh generation) is what puts this test in the first-install
         // scenario the fix targets (mirrors `server_setup_test.rs`/`multi_project_network_test.rs`'s
         // identical special case).
         let response = if command.contains("if test -L ") && command.contains("/current") {
-            success("-\n-\n")
+            success("-\n")
         } else if command.contains("sysctl --system") && command.contains("rollback-demo") {
             // Marks the activate_host command specifically (present nowhere else in the setup
             // command set, including the rollback command it triggers) so it can be failed without
