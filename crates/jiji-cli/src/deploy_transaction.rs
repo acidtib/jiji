@@ -33,18 +33,8 @@ pub struct EndpointDeploymentContext<'a> {
 
 #[derive(Debug)]
 pub enum EndpointOutcome {
-    Deployed {
-        deployment_id: String,
-        /// The address this endpoint's replica was just leased and deployed to. Authoritative for
-        /// this same CLI invocation -- unlike a catalog read on another host, it needs no P2P
-        /// replication round trip to be correct, so callers building a cross-host route (see
-        /// `proxy_routes::reconcile_catalog_routes`) should prefer it over a catalog-derived
-        /// address for this same replica.
-        address: std::net::Ipv4Addr,
-    },
-    Failed {
-        error: String,
-    },
+    Deployed { deployment_id: String },
+    Failed { error: String },
     SkippedAfterSiblingFailure,
 }
 
@@ -54,10 +44,7 @@ pub async fn deploy_endpoint(ctx: &EndpointDeploymentContext<'_>) -> EndpointOut
         None => deploy_dynamic_endpoint(ctx).await,
     };
     match result {
-        Ok((deployment_id, address)) => EndpointOutcome::Deployed {
-            deployment_id,
-            address,
-        },
+        Ok((deployment_id, _address)) => EndpointOutcome::Deployed { deployment_id },
         Err(error) => EndpointOutcome::Failed {
             error: error.to_string(),
         },
@@ -354,7 +341,8 @@ async fn deploy_dynamic_endpoint(
         ctx.service.proxy.as_ref(),
         address,
     );
-    let other_addresses = other_healthy_addresses(&catalog, ctx.service_name, &replica_id);
+    let other_addresses =
+        other_healthy_addresses(&catalog, ctx.service_name, &replica_id, &ctx.server.name);
     for target in &mut targets {
         target.additional_addresses = other_addresses.clone();
     }
@@ -411,8 +399,12 @@ async fn deploy_dynamic_endpoint(
         // host", well before this endpoint's transaction ever reaches the CLI's later
         // `reconcile_catalog_routes` cross-host reconciliation pass that would have corrected it.
         if let Ok(refreshed_catalog) = crate::agent_client::catalog(ctx.session, project).await {
-            let refreshed_addresses =
-                other_healthy_addresses(&refreshed_catalog, ctx.service_name, &replica_id);
+            let refreshed_addresses = other_healthy_addresses(
+                &refreshed_catalog,
+                ctx.service_name,
+                &replica_id,
+                &ctx.server.name,
+            );
             for target in &mut targets {
                 target.additional_addresses = refreshed_addresses.clone();
             }
@@ -429,8 +421,12 @@ async fn deploy_dynamic_endpoint(
             // recovers cleanly instead of failing the whole deploy over a now-stale target.
             if let Ok(refreshed_catalog) = crate::agent_client::catalog(ctx.session, project).await
             {
-                let refreshed_addresses =
-                    other_healthy_addresses(&refreshed_catalog, ctx.service_name, &replica_id);
+                let refreshed_addresses = other_healthy_addresses(
+                    &refreshed_catalog,
+                    ctx.service_name,
+                    &replica_id,
+                    &ctx.server.name,
+                );
                 for target in &mut targets {
                     target.additional_addresses = refreshed_addresses.clone();
                 }
@@ -705,16 +701,22 @@ fn health_check_progress_detail(timeout: std::time::Duration) -> String {
 
 /// Addresses of every other currently Active/Healthy replica of `service_name`, for admitting
 /// cross-host replicas into this endpoint's own kamal-proxy route alongside its own address.
+/// Other healthy replicas of this service *on this same host*. kamal-proxy is one instance per
+/// server with no cross-host load balancing (see `proxy_routes::reconcile_catalog_routes`'s own
+/// per-host filtering) -- a route only ever names targets this host's kamal-proxy can actually
+/// reach and, when `healthcheck.cmd` is configured, exec into.
 fn other_healthy_addresses(
     catalog: &[CatalogRecord],
     service_name: &str,
     replica_id: &str,
+    owner_node_id: &str,
 ) -> Vec<std::net::Ipv4Addr> {
     catalog
         .iter()
         .filter(|record| {
             record.service == service_name
                 && record.replica_id != replica_id
+                && record.owner_node_id == owner_node_id
                 && record.state == DeploymentState::Active
                 && record.health == HealthState::Healthy
         })

@@ -651,37 +651,11 @@ pub async fn run(
                     .map(|proxy| (endpoint.service.clone(), proxy))
             })
             .collect::<BTreeMap<_, _>>();
-        // Addresses this same invocation just leased and deployed, keyed by service then
-        // replica_id. A sibling ingress host's own catalog replica can lag behind this host's
-        // just-committed write by up to one P2P replication interval (confirmed live: a
-        // concurrent multi-replica deploy intermittently built a route to a several-generations-
-        // stale, already-torn-down address, surfacing as "no route to host" from kamal-proxy).
-        // Since the CLI already knows the true address for anything it just deployed itself, that
-        // never needs to wait on replication to be correct.
-        let identity_to_service: BTreeMap<String, String> = selected
-            .iter()
-            .map(|endpoint| (endpoint.identity.clone(), endpoint.service.clone()))
-            .collect();
-        let mut fresh_addresses: BTreeMap<String, BTreeMap<String, std::net::Ipv4Addr>> =
-            BTreeMap::new();
-        for (identity, outcome) in results.iter().flatten() {
-            if let EndpointOutcome::Deployed { address, .. } = outcome {
-                if let (Some(service), Some(replica_id)) =
-                    (identity_to_service.get(identity), replica_ids.get(identity))
-                {
-                    fresh_addresses
-                        .entry(service.clone())
-                        .or_default()
-                        .insert(replica_id.clone(), *address);
-                }
-            }
-        }
         proxy_routes::reconcile_catalog_routes(
             &sessions,
             &plan.project,
             config.builder.engine,
             &proxy_services,
-            &fresh_addresses,
         )
         .await
         .err()

@@ -206,7 +206,9 @@ async fn reconcile_proxy_routes(
     for route in &config.local_runtime.proxy_routes {
         let mut desired = crate::catalog::active_healthy_winners(&catalog)
             .into_iter()
-            .filter(|record| record.service == route.service)
+            .filter(|record| {
+                record.service == route.service && record.owner_node_id == config.node_id
+            })
             .map(|record| record.address)
             .collect::<Vec<_>>();
         desired.sort();
@@ -392,7 +394,9 @@ async fn recover_startup_candidates(
     }) {
         let active_others = crate::catalog::active_healthy_winners(&catalog)
             .into_iter()
-            .filter(|record| record.replica_id != candidate.replica_id)
+            .filter(|record| {
+                record.replica_id != candidate.replica_id && record.owner_node_id == config.node_id
+            })
             .map(|record| record.address)
             .collect::<Vec<_>>();
         for route in config

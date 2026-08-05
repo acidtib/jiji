@@ -260,68 +260,54 @@ pub async fn verify_route(
     Ok(())
 }
 
-/// Rebuild every selected service route from the union of catalog views available on the
-/// connected ingress agents. This makes route reconciliation independent of which replica was
-/// deployed and admits remote healthy replicas in one idempotent command per route/ingress.
+/// Rebuild every selected service route on each host from that host's own local replicas only.
+/// kamal-proxy is one instance per server with no cross-host load balancing: a host with no local
+/// replica of a service gets its route withdrawn rather than pointed at another host's container,
+/// since `docker`/`podman exec`-based health checks (`healthcheck.cmd`) can only ever reach a
+/// container running on that same host, and routing traffic to a container this host doesn't run
+/// would defeat the point of deploying it there in the first place. A dedicated load-balancer
+/// service is the intended way to spread traffic across hosts; kamal-proxy itself doesn't do it.
 ///
-/// `fresh_addresses` (service -> replica_id -> address) overrides the catalog-derived address for
-/// any replica it names. Confirmed live: a sibling ingress host's own catalog replica can lag the
-/// owning host's just-committed write by up to one P2P replication interval, which briefly made a
-/// concurrent multi-replica deploy build a route to a several-generations-stale, already-torn-down
-/// address (kamal-proxy then failed its own health check against it with "no route to host").
-/// Since a caller that just deployed a replica in this same invocation already has its true,
-/// durably-committed address with no replication round trip needed, that value is always
-/// authoritative over whatever the catalog read happens to currently show for the same replica.
+/// Each host's own catalog read is authoritative for its own records with no replication round
+/// trip needed (same durable store the write went through), so there is no cross-host staleness
+/// window to correct for here the way there would be if one host's route depended on another
+/// host's replicated view of a third host's write.
 pub async fn reconcile_catalog_routes(
     sessions: &BTreeMap<String, Arc<SshSession>>,
     project: &str,
     engine: ContainerEngine,
     services: &BTreeMap<String, ProxyConfig>,
-    fresh_addresses: &BTreeMap<String, BTreeMap<String, Ipv4Addr>>,
 ) -> anyhow::Result<()> {
     if services.is_empty() || sessions.is_empty() {
         return Ok(());
     }
-    let mut records = Vec::new();
-    for session in sessions.values() {
-        records.extend(crate::agent_client::catalog(session, project).await?);
-    }
-    for (service, proxy) in services {
-        // Keep every observed signed revision. During convergence one ingress may still report an
-        // older Active record while the owner already reports its newer tombstone. Collapsing the
-        // union by deployment id makes iteration order decide which revision survives and can
-        // re-admit a removed, unhealthy target. Winner selection must see both revisions.
-        let mut by_replica: BTreeMap<String, Ipv4Addr> =
-            jiji_agent::catalog::active_healthy_winners(&records)
-                .into_iter()
-                .filter(|record| record.service == *service)
-                .map(|record| (record.replica_id.clone(), record.address))
-                .collect();
-        if let Some(fresh) = fresh_addresses.get(service) {
-            for (replica_id, address) in fresh {
-                by_replica.insert(replica_id.clone(), *address);
-            }
-        }
-        let addresses = by_replica.into_values().collect::<BTreeSet<_>>();
-        let Some(primary) = addresses.first().copied() else {
-            // Scale-to-zero and final removal must withdraw stale ingress even
-            // though there is no remaining backend address from which to
-            // construct a deploy target. Route names depend only on project,
-            // service, and configured port, so a placeholder is safe here.
-            let placeholder = Ipv4Addr::UNSPECIFIED;
-            for session in sessions.values() {
+    for (host, session) in sessions {
+        let records = crate::agent_client::catalog(session, project).await?;
+        for (service, proxy) in services {
+            // Keep every observed signed revision. Collapsing the union by deployment id makes
+            // iteration order decide which revision survives and can re-admit a removed, unhealthy
+            // target. Winner selection must see both revisions.
+            let addresses: BTreeSet<Ipv4Addr> =
+                jiji_agent::catalog::active_healthy_winners(&records)
+                    .into_iter()
+                    .filter(|record| record.service == *service && record.owner_node_id == *host)
+                    .map(|record| record.address)
+                    .collect();
+            let Some(primary) = addresses.first().copied() else {
+                // Scale-to-zero and final removal must withdraw stale ingress even though there is
+                // no remaining local address to construct a deploy target from. Route names depend
+                // only on project, service, and configured port, so a placeholder is safe here.
+                let placeholder = Ipv4Addr::UNSPECIFIED;
                 for target in targets_for_address(project, service, Some(proxy), placeholder) {
                     remove_route(session, engine, &target.route_name).await?;
                 }
+                continue;
+            };
+            let additional = addresses.iter().copied().skip(1).collect::<Vec<_>>();
+            let mut targets = targets_for_address(project, service, Some(proxy), primary);
+            for target in &mut targets {
+                target.additional_addresses = additional.clone();
             }
-            continue;
-        };
-        let additional = addresses.iter().copied().skip(1).collect::<Vec<_>>();
-        let mut targets = targets_for_address(project, service, Some(proxy), primary);
-        for target in &mut targets {
-            target.additional_addresses = additional.clone();
-        }
-        for session in sessions.values() {
             for target in &targets {
                 deploy_route(session, engine, target).await?;
                 verify_route(session, engine, &target.route_name).await?;

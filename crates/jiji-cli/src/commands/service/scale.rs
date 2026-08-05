@@ -459,7 +459,6 @@ pub async fn run(
                     &config.project,
                     config.builder.engine,
                     &BTreeMap::from([(service_name.clone(), proxy.clone())]),
-                    &BTreeMap::new(),
                 )
                 .await?;
             }

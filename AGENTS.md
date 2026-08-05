@@ -260,7 +260,18 @@ projects share default CIDR ranges):
   every project's bridge that has active routes on that host
   (`network connect --ip <ServerPlan::proxy_address> <bridge_name>
   kamal-proxy`, idempotent/additive — see `ensure_attached`), routes
-  namespaced per project already. Given no `--dns` at all (unlike service
+  namespaced per project already. Each host's kamal-proxy only ever routes to
+  replicas actually running on that same host: `proxy_routes::
+  reconcile_catalog_routes` (CLI) and `jiji-agent`'s own
+  `local_reconcile::reconcile_proxy_routes`/`recover_startup_candidates`
+  filter catalog records by `owner_node_id` before building a route, never
+  unioning another host's addresses in. A host with no local replica of a
+  service simply has its route withdrawn rather than pointed at a sibling
+  host — kamal-proxy does no cross-host load balancing today; a dedicated
+  load-balancer service is the planned way to spread traffic across hosts,
+  not yet built. This also keeps `--health-check-cmd` meaningful: it execs
+  into a container, which only ever works for one running on the same host
+  kamal-proxy itself runs on. Given no `--dns` at all (unlike service
   containers): its routing targets are raw backend IPs
   (`proxy_routes::RouteTarget::address`), never a `.jiji` hostname, and a
   single resolver can't reliably answer for every attached project's `.jiji`
@@ -796,15 +807,6 @@ command.
   either value, so a service configured with them still gets normal bridge
   networking, silently. Only `"bridge"` (default) and `"service:<name>"`
   (see "Container Namespace Sharing" above) actually change behavior today.
-- kamal-proxy's own `--health-check-cmd` execs using the raw `--target`
-  address as a container reference (confirmed live: `podman exec
-  <address> ...` fails with "no such container", since jiji always gives
-  kamal-proxy raw IP targets, never a container name). This is a bug in the
-  separate `ghcr.io/acidtib/kamal-proxy:jiji` Go binary/fork, not fixable in
-  this Rust repo — a `cmd`-based `healthcheck:` works for jiji's own
-  pre-activation gate (which execs by the candidate's real container name)
-  but never for kamal-proxy's own ongoing route health check. See
-  `plans/followup.md`.
 
 ## Testing
 
