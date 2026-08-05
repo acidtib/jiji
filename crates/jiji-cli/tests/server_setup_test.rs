@@ -431,7 +431,7 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn missing_agent_binary_fails_authoritative_server_setup() {
+async fn missing_agent_binary_falls_back_to_remote_release_download() {
     let client_key =
         PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
     let mut responses = HashMap::new();
@@ -456,11 +456,90 @@ async fn missing_agent_binary_fails_authoritative_server_setup() {
     .expect("write key file");
     let config_path = write_config(dir.path(), addr, &key_path);
 
-    // Points `JIJI_AGENT_BINARY` at a path that doesn't exist rather than unsetting it: this
-    // process's own working tree already has a real `jiji-agent` built next to `jiji` in
-    // `target/debug/`, which is the intended production discovery path
-    // (`find_local_agent_binary`'s current-exe fallback) and would otherwise make this "no
-    // binary available" scenario unreachable in-repo.
+    // Run a copy of the compiled `jiji` binary from an isolated directory with no sibling
+    // `jiji-agent`, so `find_local_agent_binary`'s current-exe fallback naturally reports "not
+    // configured" instead of finding this process's own working tree's real `jiji-agent` next
+    // to `jiji` in `target/debug/` (the intended production discovery path). `JIJI_AGENT_BINARY`
+    // must stay unset here: pointing it at a nonexistent path is an explicit-override failure
+    // (see `invalid_explicit_agent_binary_override_fails_setup`), not this "no binary
+    // configured" fallback scenario. Without a local binary, setup falls back to the
+    // release-download path and runs the host-side install script; the in-process test server
+    // merely records the script and answers success, so nothing touches the real network.
+    let isolated_bin_dir = dir.path().join("isolated-bin");
+    std::fs::create_dir(&isolated_bin_dir).expect("create isolated bin dir");
+    let isolated_jiji = isolated_bin_dir.join("jiji");
+    std::fs::copy(env!("CARGO_BIN_EXE_jiji"), &isolated_jiji).expect("copy jiji binary");
+
+    let output = Command::new(&isolated_jiji)
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env_remove("JIJI_AGENT_BINARY")
+        .output()
+        .expect("run jiji server setup");
+    assert!(
+        output.status.success(),
+        "stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let commands = received.lock().unwrap().clone();
+    let paths = AgentPaths::default_for_project("testproject");
+    assert!(
+        commands.iter().any(|c| {
+            c.contains("jiji-agent-linux-")
+                && c.contains("sha256sum")
+                && c.contains("releases/download/v")
+                && c.contains(&paths.binary_path.display().to_string())
+        }),
+        "expected the host-side release install script to be sent: {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.starts_with("install -m 0755 /dev/stdin")),
+        "remote mode must install the binary from the release, not upload it: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains(&format!("systemctl enable --now {}", paths.unit_name))),
+        "expected the agent unit to be enabled and started after the release install: \
+         {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_explicit_agent_binary_override_fails_setup() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    // An explicit but invalid `JIJI_AGENT_BINARY` must be a hard failure, not a silent fallback
+    // to the release download: the operator asked for a specific binary (a custom build, a
+    // pinned version) and it isn't where they said it would be.
     let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("server")
         .arg("setup")
@@ -469,19 +548,18 @@ async fn missing_agent_binary_fails_authoritative_server_setup() {
         .env("JIJI_AGENT_BINARY", dir.path().join("does-not-exist"))
         .output()
         .expect("run jiji server setup");
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
             .contains("Phase 3 requires the authoritative jiji agent"),
-        "stdout: {stdout}, stderr: {}",
+        "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let commands = received.lock().unwrap().clone();
     assert!(
         !commands.iter().any(|c| c.contains("/etc/jiji/agent/")),
-        "no agent commands should be sent without the required binary: {commands:?}"
+        "no agent commands should be sent when an explicit override is invalid: {commands:?}"
     );
 }
 

@@ -13,6 +13,7 @@ use jiji_network::{NetworkPlan, NetworkPlanner};
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::agent_distribution::{self, AgentBinarySource};
 use crate::agent_install;
 use crate::audit::{self, AuditStatus};
 use crate::commands::network;
@@ -270,9 +271,46 @@ async fn setup_agents(
     servers: &[(String, NamedServer)],
     ssh: &Ssh,
 ) -> anyhow::Result<()> {
-    let binary_path = agent_install::find_local_agent_binary().map_err(|message| {
-        anyhow::anyhow!("Phase 3 requires the authoritative jiji agent: {message}")
-    })?;
+    // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
+    // sibling binary) still wins; otherwise fall back to a host-side install script that
+    // downloads the matching-version agent from the GitHub release, verified by sha256, on
+    // each remote host being set up.
+    let binary_source = match agent_install::find_local_agent_binary() {
+        agent_install::LocalAgentBinary::Found(path) => AgentBinarySource::Local(path),
+        agent_install::LocalAgentBinary::ExplicitOverrideInvalid(message) => {
+            anyhow::bail!("Phase 3 requires the authoritative jiji agent: {message}");
+        }
+        agent_install::LocalAgentBinary::NotConfigured => {
+            let download = agent_distribution::managed_download_config();
+            Ui::say(
+                &format!(
+                    "No local jiji-agent binary found; installing jiji-agent v{} from the \
+                     release on each server.",
+                    download.version
+                ),
+                1,
+            );
+            AgentBinarySource::Managed(download)
+        }
+    };
+    let remote_install_script = match &binary_source {
+        AgentBinarySource::Managed(download) => {
+            let paths = jiji_agent::AgentPaths::default_for_project(&config.project);
+            let bin_dir = paths
+                .binary_path
+                .parent()
+                .expect("binary path always has a parent directory");
+            Some(agent_distribution::remote_install_script(
+                &download.base_url,
+                &download.version,
+                &paths.project_dir,
+                bin_dir,
+                &paths.state_dir,
+                &paths.binary_path,
+            ))
+        }
+        AgentBinarySource::Local(_) => None,
+    };
     let authority = crate::membership_authority::ProjectAuthority::load_or_create(config_path)?;
 
     Ui::section("Installing Jiji Agent:");
@@ -407,11 +445,32 @@ async fn setup_agents(
                 .map(|network| network.dns_forwarders.clone())
                 .unwrap_or_else(jiji_config::default_dns_forwarders),
         };
+        let binary_path = match &binary_source {
+            AgentBinarySource::Local(path) => Some(path.clone()),
+            AgentBinarySource::Managed(_) => {
+                let script = remote_install_script
+                    .as_ref()
+                    .expect("remote script is rendered whenever managed mode is used");
+                let result = session.execute(script).await?;
+                if !result.success {
+                    failures.push((
+                        name.clone(),
+                        format!(
+                            "could not download the jiji agent from the release: {}",
+                            result.stderr.trim()
+                        ),
+                    ));
+                    session.close().await;
+                    continue;
+                }
+                None
+            }
+        };
         match agent_install::ensure_agent(
             &session,
             config.builder.engine,
             &config.project,
-            &binary_path,
+            binary_path.as_deref(),
             &mesh_config,
             &[operation],
         )

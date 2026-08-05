@@ -29,34 +29,39 @@ fn to_agent_engine(engine: ContainerEngine) -> jiji_agent::Engine {
     }
 }
 
+/// Outcome of resolving a locally built `jiji-agent` binary. `ExplicitOverrideInvalid` is
+/// always a hard failure (the caller asked for a specific binary and it isn't there);
+/// `NotConfigured` means no override was set and no sibling binary was found next to the
+/// running `jiji`, which the caller treats as a fallback signal, not a failure.
+pub enum LocalAgentBinary {
+    Found(PathBuf),
+    ExplicitOverrideInvalid(String),
+    NotConfigured,
+}
+
 /// Resolves the locally built `jiji-agent` binary to upload. `JIJI_AGENT_BINARY` overrides for
-/// tests and custom installs; otherwise looks next to the currently running executable,
-/// mirroring how `cargo build` places `jiji`/`jiji_dev`/`jiji-agent` in the same target
-/// directory. Returns a plain message (not `anyhow::Error`) because the caller treats "not
-/// found" as a warning, not a failure.
-pub fn find_local_agent_binary() -> Result<PathBuf, String> {
+/// tests and custom installs, and an invalid override is always reported as
+/// `ExplicitOverrideInvalid`, never silently treated as "not configured"; otherwise looks next
+/// to the currently running executable, mirroring how `cargo build` places
+/// `jiji`/`jiji_dev`/`jiji-agent` in the same target directory.
+pub fn find_local_agent_binary() -> LocalAgentBinary {
     if let Ok(path) = std::env::var("JIJI_AGENT_BINARY") {
         let path = PathBuf::from(path);
         return if path.is_file() {
-            Ok(path)
+            LocalAgentBinary::Found(path)
         } else {
-            Err(format!(
+            LocalAgentBinary::ExplicitOverrideInvalid(format!(
                 "JIJI_AGENT_BINARY={} does not exist",
                 path.display()
             ))
         };
     }
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("could not resolve the running executable's path: {error}"))?;
-    let candidate = current_exe.parent().map(|dir| dir.join("jiji-agent"));
+    let candidate = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("jiji-agent")));
     match candidate {
-        Some(candidate) if candidate.is_file() => Ok(candidate),
-        _ => Err(
-            "no jiji-agent binary found next to the running jiji binary and JIJI_AGENT_BINARY \
-             is not set. Build it with `cargo build --release --bin jiji-agent` or set \
-             JIJI_AGENT_BINARY to an explicit path."
-                .to_string(),
-        ),
+        Some(candidate) if candidate.is_file() => LocalAgentBinary::Found(candidate),
+        _ => LocalAgentBinary::NotConfigured,
     }
 }
 
@@ -64,19 +69,19 @@ pub fn find_local_agent_binary() -> Result<PathBuf, String> {
 /// fingerprint-and-skip shape as `engine::ensure_engine`'s version check), but always
 /// re-renders and re-installs the unit file and re-runs `enable --now` so a config-only change
 /// (e.g. switching container engines) still takes effect.
+///
+/// `binary_path: None` means the binary was already installed on the host (spike: the
+/// release-download install script did it), so the upload/hash step is skipped entirely and
+/// only the config/start tail runs.
 pub async fn ensure_agent(
     session: &SshSession,
     engine: ContainerEngine,
     project: &str,
-    binary_path: &Path,
+    binary_path: Option<&Path>,
     mesh_config: &jiji_agent::runtime::MeshConfig,
     membership: &[jiji_agent::membership::SignedMembership],
 ) -> anyhow::Result<AgentStatus> {
     let paths = AgentPaths::default_for_project(project);
-    let binary = tokio::fs::read(binary_path)
-        .await
-        .map_err(|error| anyhow::anyhow!("could not read {}: {error}", binary_path.display()))?;
-    let local_hash = hex_sha256(&binary);
 
     let bin_dir = paths
         .binary_path
@@ -91,11 +96,21 @@ pub async fn ensure_agent(
     run_required(session, &setup, "create the jiji agent's directories").await?;
 
     let was_active = is_unit_active(session, &paths.unit_name).await?;
-    let remote_hash = remote_sha256(session, &paths.binary_path).await?;
-    let uploaded = remote_hash.as_deref() != Some(local_hash.as_str());
-    if uploaded {
-        write_remote_bytes(session, "0755", &paths.binary_path, &binary).await?;
-    }
+    let uploaded = match binary_path {
+        Some(binary_path) => {
+            let binary = tokio::fs::read(binary_path).await.map_err(|error| {
+                anyhow::anyhow!("could not read {}: {error}", binary_path.display())
+            })?;
+            let local_hash = hex_sha256(&binary);
+            let remote_hash = remote_sha256(session, &paths.binary_path).await?;
+            let uploaded = remote_hash.as_deref() != Some(local_hash.as_str());
+            if uploaded {
+                write_remote_bytes(session, "0755", &paths.binary_path, &binary).await?;
+            }
+            uploaded
+        }
+        None => false,
+    };
 
     let unit = systemd::render_unit(&paths, project, to_agent_engine(engine));
     write_remote_text(
@@ -179,7 +194,7 @@ async fn remote_sha256(session: &SshSession, path: &Path) -> anyhow::Result<Opti
     Ok((result.success && !hash.is_empty()).then(|| hash.to_string()))
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

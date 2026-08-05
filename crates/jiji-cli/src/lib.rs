@@ -1,4 +1,5 @@
 mod agent_client;
+mod agent_distribution;
 mod agent_install;
 mod audit;
 mod backup_crypto;
