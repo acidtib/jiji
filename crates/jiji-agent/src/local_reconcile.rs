@@ -4,8 +4,7 @@
 //! or unreachable resources never produce tombstones. Every action is idempotent and retries with
 //! bounded exponential backoff.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -58,16 +57,8 @@ pub async fn run_loop(
     startup_candidates: BTreeSet<String>,
 ) {
     let mut backoff = Backoff::new();
-    let mut pending_route_targets = BTreeMap::new();
     loop {
-        let outcomes = reconcile_once(
-            &store,
-            engine,
-            &config,
-            &startup_candidates,
-            &mut pending_route_targets,
-        )
-        .await;
+        let outcomes = reconcile_once(&store, engine, &config, &startup_candidates).await;
         let failed = outcomes.iter().any(|outcome| outcome.result.is_err());
         let delay = if failed {
             backoff.failure()
@@ -126,7 +117,6 @@ pub async fn reconcile_once(
     engine: Engine,
     config: &MeshConfig,
     startup_candidates: &BTreeSet<String>,
-    pending_route_targets: &mut BTreeMap<String, Vec<Ipv4Addr>>,
 ) -> Vec<RepairOutcome> {
     let mut outcomes = Vec::new();
     outcomes.push(RepairOutcome {
@@ -166,177 +156,82 @@ pub async fn reconcile_once(
     });
     outcomes.push(RepairOutcome {
         component: "proxy_routes",
-        result: reconcile_proxy_routes(
-            store,
-            engine,
-            config,
-            startup_candidates,
-            pending_route_targets,
-        )
-        .await,
+        result: reconcile_proxy_routes(engine, config).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "tcp_proxy_routes",
+        result: reconcile_tcp_routes(engine, config).await,
     });
     outcomes
 }
 
-async fn reconcile_proxy_routes(
-    store: &Arc<Mutex<AgentStore>>,
-    engine: Engine,
-    config: &MeshConfig,
-    startup_candidates: &BTreeSet<String>,
-    pending_route_targets: &mut BTreeMap<String, Vec<Ipv4Addr>>,
-) -> Result<(), String> {
-    if config.local_runtime.proxy_routes.is_empty() {
-        return Ok(());
-    }
-    let catalog = store
-        .lock()
-        .map_err(|_| "local store lock poisoned".to_string())?
-        .latest_catalog()
-        .map_err(|error| error.to_string())?;
-    if catalog.iter().any(|record| {
-        record.state == DeploymentState::Candidate
-            && !startup_candidates.contains(&record.deployment_id)
-    }) {
-        // A live CLI transaction owns this candidate. Re-applying the old catalog-derived route
-        // between its proxy gate and Active commit would undo the cutover. Startup candidates are
-        // different: the CLI vanished with the reboot and `deployment_recovery` runs first.
-        return Ok(());
-    }
-    let listed = proxy_exec(engine, &["kamal-proxy", "list"], Duration::from_secs(10)).await?;
+/// Ensures every route jiji-cli computed for this host at `server setup`
+/// time (`config.local_runtime.proxy_routes`) is applied to this host's own
+/// jiji-proxy. Unlike kamal-proxy's route model, this never reads the
+/// catalog at all: jiji-proxy resolves and load-balances `route.name`'s
+/// backends itself, continuously, against this agent's own `.jiji`
+/// resolver (`config.dns_bind_address:53`), so re-applying the same static
+/// route definition on every tick is a cheap, harmless no-op upsert, not a
+/// per-deployment address push racing catalog replication the way
+/// kamal-proxy's route model did (see "Core design decision" in
+/// plans/jiji-proxy-design.md).
+async fn reconcile_proxy_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
     for route in &config.local_runtime.proxy_routes {
-        let mut desired = crate::catalog::active_healthy_winners(&catalog)
-            .into_iter()
-            .filter(|record| {
-                record.service == route.service && record.owner_node_id == config.node_id
-            })
-            .map(|record| record.address)
-            .collect::<Vec<_>>();
-        desired.sort();
-        desired.dedup();
-        let current = current_route_targets(&listed, &route.route_name).unwrap_or_default();
-        if !should_apply_route_change(&desired, &current, pending_route_targets, &route.route_name)
-        {
-            continue;
-        }
-
-        if desired.is_empty() {
-            if listed.contains(&route.route_name) {
-                proxy_exec(
-                    engine,
-                    &["kamal-proxy", "remove", &route.route_name],
-                    Duration::from_secs(10),
-                )
-                .await?;
-            }
-            continue;
-        }
-        deploy_proxy_route(engine, route, desired).await?;
+        deploy_proxy_route(engine, config, route).await?;
     }
     Ok(())
 }
 
-/// Decides whether `desired` should actually be applied to a route this tick, given kamal-proxy's
-/// own currently-live `current` target set and the candidate (if any) pending from the previous
-/// tick. Returns `false` (no action) both when nothing has changed and when a genuine-looking
-/// mismatch hasn't yet been confirmed by a second, identical observation.
-///
-/// A route kamal-proxy already serves with exactly this target set (or is already absent, for a
-/// scaled-to-zero service) needs no action -- this matters because this reconciliation runs on a
-/// fixed timer independent of any live `jiji deploy`. Confirmed live: a background tick here can
-/// read this host's own locally replicated catalog a moment before a sibling host's just-committed
-/// cutover has finished propagating, computing a stale target set and clobbering a route a
-/// concurrent deploy had just correctly set, reintroducing "no route to host" against an address
-/// the current catalog view (wrongly) still called active. Comparing against kamal-proxy's own
-/// live, already-applied state (not the local catalog snapshot) catches most of this, but the same
-/// replication lag that produces a stale `current` can equally produce a stale `desired` -- also
-/// confirmed live, a single tick computed a several-generations-stale address for a remote replica
-/// even after `desired` stopped matching `current`. Requiring the identical candidate on two
-/// consecutive ticks (roughly `reconcile_interval_secs` apart) rides out a one-tick replication
-/// blip, since a genuinely converged value naturally repeats while a transient stale read rarely
-/// recurs identically; a real drift (e.g. after a restart) still gets corrected, just one tick
-/// later.
-fn should_apply_route_change(
-    desired: &[Ipv4Addr],
-    current: &[Ipv4Addr],
-    pending: &mut BTreeMap<String, Vec<Ipv4Addr>>,
-    route_name: &str,
-) -> bool {
-    if desired == current {
-        pending.remove(route_name);
-        return false;
-    }
-    if pending.get(route_name).map(Vec::as_slice) != Some(desired) {
-        pending.insert(route_name.to_string(), desired.to_vec());
-        return false;
-    }
-    pending.remove(route_name);
-    true
-}
-
-/// Parses `kamal-proxy list`'s table output for one route's currently configured target
-/// addresses, sorted. Strips ANSI color codes (`ghcr.io/acidtib/kamal-proxy:jiji`'s `list` always
-/// colorizes output, even over a non-interactive exec) and returns `None` if the route isn't
-/// listed at all, so an absent route is never confused with an empty-but-listed one.
-fn current_route_targets(listed: &str, route_name: &str) -> Option<Vec<std::net::Ipv4Addr>> {
-    let cleaned = strip_ansi_codes(listed);
-    let line = cleaned
-        .lines()
-        .find(|line| line.split_whitespace().next() == Some(route_name))?;
-    let targets_column = line.split_whitespace().nth(3)?;
-    let mut addresses = targets_column
-        .split(',')
-        .filter_map(|target| target.rsplit_once(':').map(|(host, _port)| host))
-        .filter_map(|host| host.parse::<std::net::Ipv4Addr>().ok())
-        .collect::<Vec<_>>();
-    addresses.sort();
-    Some(addresses)
-}
-
-/// Strips ANSI SGR escape sequences (`\x1b[<params>m`) such as the color codes
-/// `ghcr.io/acidtib/kamal-proxy:jiji`'s `list` command always emits.
-fn strip_ansi_codes(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for next in chars.by_ref() {
-                if next == 'm' {
-                    break;
-                }
-            }
-            continue;
-        }
-        output.push(ch);
-    }
-    output
-}
-
 async fn deploy_proxy_route(
     engine: Engine,
+    config: &MeshConfig,
     route: &crate::runtime::ProxyRouteSpec,
-    mut addresses: Vec<std::net::Ipv4Addr>,
 ) -> Result<(), String> {
-    addresses.sort();
-    addresses.dedup();
     let mut args = vec![
-        "kamal-proxy".to_string(),
-        "deploy".to_string(),
-        route.route_name.clone(),
+        "route".to_string(),
+        "apply".to_string(),
+        format!("--host={}", route.host),
+        format!("--dns-server={}:53", config.dns_bind_address),
+        format!("--name={}", route.name),
+        format!("--port={}", route.port),
     ];
-    args.extend(
-        addresses
-            .into_iter()
-            .map(|address| format!("--target={address}:{}", route.port)),
-    );
-    args.extend(route.deploy_args.iter().cloned());
+    if let Some(prefix) = &route.path_prefix {
+        args.push(format!("--path-prefix={prefix}"));
+    }
+    args.extend(route.apply_args.iter().cloned());
     let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
-    proxy_exec(
-        engine,
-        &borrowed,
-        Duration::from_secs(route.deploy_timeout_secs.max(1)),
-    )
-    .await?;
+    proxy_exec(engine, &borrowed, Duration::from_secs(30)).await?;
+    Ok(())
+}
+
+/// Mirrors `reconcile_proxy_routes` for raw TCP routes -- see
+/// `crate::runtime::TcpRouteSpec`. Same idempotent-reapply-every-tick
+/// reasoning applies: jiji-proxy resolves and load-balances `route.name`'s
+/// backends itself, continuously, so re-applying the same static route
+/// definition is a cheap no-op upsert, not a per-deployment push.
+async fn reconcile_tcp_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
+    for route in &config.local_runtime.tcp_routes {
+        deploy_tcp_route(engine, config, route).await?;
+    }
+    Ok(())
+}
+
+async fn deploy_tcp_route(
+    engine: Engine,
+    config: &MeshConfig,
+    route: &crate::runtime::TcpRouteSpec,
+) -> Result<(), String> {
+    let mut args = vec![
+        "tcp-route".to_string(),
+        "apply".to_string(),
+        format!("--listen-port={}", route.listen_port),
+        format!("--dns-server={}:53", config.dns_bind_address),
+        format!("--name={}", route.name),
+        format!("--port={}", route.port),
+    ];
+    args.extend(route.apply_args.iter().cloned());
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    proxy_exec(engine, &borrowed, Duration::from_secs(30)).await?;
     Ok(())
 }
 
@@ -392,24 +287,12 @@ async fn recover_startup_candidates(
             && record.state == DeploymentState::Candidate
             && running.contains_key(&record.deployment_id)
     }) {
-        let active_others = crate::catalog::active_healthy_winners(&catalog)
-            .into_iter()
-            .filter(|record| {
-                record.replica_id != candidate.replica_id && record.owner_node_id == config.node_id
-            })
-            .map(|record| record.address)
-            .collect::<Vec<_>>();
-        for route in config
-            .local_runtime
-            .proxy_routes
-            .iter()
-            .filter(|route| route.service == candidate.service)
-        {
-            let mut addresses = active_others.clone();
-            addresses.push(candidate.address);
-            deploy_proxy_route(engine, route, addresses).await?;
-        }
-
+        // No explicit proxy push needed here: `reconcile_proxy_routes` (run every tick,
+        // immediately after this function) keeps jiji-proxy's static route definitions applied
+        // regardless, and jiji-proxy's own continuous DNS re-resolution against this project's
+        // `.jiji` zone picks up this candidate's address on its own within one refresh interval
+        // once it's marked Active/Healthy below -- unlike kamal-proxy's route model, there is no
+        // separate "push this specific address" step for recovery to do.
         apply_local_catalog_state(
             store,
             config,
@@ -474,22 +357,15 @@ fn apply_local_catalog_state(
     state: DeploymentState,
     health: crate::catalog::HealthState,
 ) -> Result<(), String> {
-    let authority = config.keyring().map_err(|error| error.to_string())?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(
-        config
-            .node_signing_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| "local node signing key is invalid".to_string())?,
-    );
+    let scope = config.scope();
     let store = store
         .lock()
         .map_err(|_| "local store lock poisoned".to_string())?;
-    let membership = crate::membership::MembershipView::from_operations(
+    let membership = crate::membership::MembershipView::from_records(
         store
             .membership_operations()
             .map_err(|error| error.to_string())?,
-        &authority,
+        &scope,
     )
     .map_err(|error| error.to_string())?;
     let next_revision = store
@@ -505,11 +381,10 @@ fn apply_local_catalog_state(
     record.revision = next_revision;
     record.state = state;
     record.health = health;
-    let operation = crate::catalog::SignedCatalogOperation::sign(record, &signing_key)
-        .map_err(|error| error.to_string())?;
     store
         .apply_catalog(
-            &operation,
+            record,
+            crate::membership::RecordProvenance::Local,
             &config.project_id,
             config.recovery_epoch,
             &membership,
@@ -652,7 +527,7 @@ async fn repair_runtime_attachments(engine: Engine, config: &MeshConfig) -> Resu
             "disconnect",
             "--force",
             &config.local_runtime.bridge_network,
-            "kamal-proxy",
+            jiji_network::CONTAINER_NAME,
         ])
         .output()
         .await;
@@ -664,7 +539,7 @@ async fn repair_runtime_attachments(engine: Engine, config: &MeshConfig) -> Resu
             "--ip",
             &config.local_runtime.proxy_address.to_string(),
             &config.local_runtime.bridge_network,
-            "kamal-proxy",
+            jiji_network::CONTAINER_NAME,
         ],
     )
     .await?;
@@ -774,10 +649,13 @@ async fn proxy_exec(engine: Engine, args: &[&str], timeout: Duration) -> Result<
     if engine == Engine::Podman {
         command.arg("--no-session");
     }
-    command.arg("kamal-proxy").args(args);
+    command
+        .arg(jiji_network::CONTAINER_NAME)
+        .arg("jiji-proxy")
+        .args(args);
     let output = tokio::time::timeout(timeout, command.output())
         .await
-        .map_err(|_| format!("kamal-proxy command exceeded {}s", timeout.as_secs()))?
+        .map_err(|_| format!("jiji-proxy command exceeded {}s", timeout.as_secs()))?
         .map_err(|error| error.to_string())?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -797,111 +675,6 @@ fn unix_timestamp() -> u64 {
 mod tests {
     use super::*;
     use crate::catalog::{HealthState, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION};
-
-    #[test]
-    fn current_route_targets_parses_a_real_ansi_colored_capture() {
-        let listed = "\u{1b}[3;94mService\u{1b}[0m            \u{1b}[3;94mHost\u{1b}[0m              \u{1b}[3;94mPath\u{1b}[0m  \u{1b}[3;94mTarget\u{1b}[0m                            \u{1b}[3;94mState\u{1b}[0m    \u{1b}[3;94mTLS\u{1b}[0m  \n\u{1b}[1;34mphase9live-web-80\u{1b}[0m  \u{1b}[mphase9live.local\u{1b}[0m  \u{1b}[m/\u{1b}[0m     \u{1b}[m100.68.128.6:80,100.123.192.5:80\u{1b}[0m  \u{1b}[mrunning\u{1b}[0m  \u{1b}[mno\u{1b}[0m  \n";
-        let targets: Vec<std::net::Ipv4Addr> =
-            current_route_targets(listed, "phase9live-web-80").unwrap();
-        assert_eq!(
-            targets,
-            vec![
-                "100.68.128.6".parse::<std::net::Ipv4Addr>().unwrap(),
-                "100.123.192.5".parse::<std::net::Ipv4Addr>().unwrap(),
-            ]
-        );
-    }
-
-    #[test]
-    fn current_route_targets_is_none_for_an_unlisted_route() {
-        let listed = "Service  Host  Path  Target  State  TLS\n";
-        assert!(current_route_targets(listed, "phase9live-web-80").is_none());
-    }
-
-    #[test]
-    fn matching_desired_and_current_never_touches_the_route() {
-        let mut pending = BTreeMap::new();
-        let addrs = vec!["10.0.0.5".parse().unwrap()];
-        assert!(!should_apply_route_change(
-            &addrs,
-            &addrs,
-            &mut pending,
-            "r"
-        ));
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn a_first_time_mismatch_is_held_back_pending_confirmation() {
-        let mut pending = BTreeMap::new();
-        let desired = vec!["10.0.0.6".parse().unwrap()];
-        let current = vec!["10.0.0.5".parse().unwrap()];
-        assert!(!should_apply_route_change(
-            &desired,
-            &current,
-            &mut pending,
-            "r"
-        ));
-        assert_eq!(pending.get("r"), Some(&desired));
-    }
-
-    #[test]
-    fn the_same_mismatch_confirmed_on_a_second_tick_is_applied() {
-        let mut pending = BTreeMap::new();
-        let desired = vec!["10.0.0.6".parse().unwrap()];
-        let current = vec!["10.0.0.5".parse().unwrap()];
-        assert!(!should_apply_route_change(
-            &desired,
-            &current,
-            &mut pending,
-            "r"
-        ));
-        assert!(should_apply_route_change(
-            &desired,
-            &current,
-            &mut pending,
-            "r"
-        ));
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn a_different_second_tick_value_resets_the_debounce_instead_of_confirming() {
-        // Regression guard for the exact live failure: a stale replicated read (10.0.0.5) held back
-        // for one tick, then superseded by a DIFFERENT stale read (10.0.0.6) on the next tick,
-        // must never be treated as "confirmed" just because something changed twice in a row.
-        let mut pending = BTreeMap::new();
-        let current = vec!["10.0.0.4".parse().unwrap()];
-        let first_guess = vec!["10.0.0.5".parse().unwrap()];
-        let second_guess = vec!["10.0.0.6".parse().unwrap()];
-        assert!(!should_apply_route_change(
-            &first_guess,
-            &current,
-            &mut pending,
-            "r"
-        ));
-        assert!(!should_apply_route_change(
-            &second_guess,
-            &current,
-            &mut pending,
-            "r"
-        ));
-        assert_eq!(pending.get("r"), Some(&second_guess));
-    }
-
-    #[test]
-    fn current_route_targets_sorts_regardless_of_listed_order() {
-        let listed = "phase9live-web-80  host  /  100.123.192.5:80,100.68.128.6:80  running  no\n";
-        let targets: Vec<std::net::Ipv4Addr> =
-            current_route_targets(listed, "phase9live-web-80").unwrap();
-        assert_eq!(
-            targets,
-            vec![
-                "100.68.128.6".parse::<std::net::Ipv4Addr>().unwrap(),
-                "100.123.192.5".parse::<std::net::Ipv4Addr>().unwrap(),
-            ]
-        );
-    }
 
     fn observation(state: &str, lifecycle: &str) -> Observation {
         Observation {

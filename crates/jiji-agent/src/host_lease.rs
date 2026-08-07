@@ -1,5 +1,5 @@
 //! Same-host, non-blocking advisory lock for host-global (not project-scoped) resources shared by
-//! every co-resident project's agent -- currently just kamal-proxy/ingress (Phase 9, see
+//! every co-resident project's agent -- currently just jiji-proxy/ingress (Phase 9, see
 //! `proxy_bringup.rs`). Every agent sharing this lease is on the same physical host, so a plain
 //! local `flock` suffices; there is no network-partition concern the way there would be for the
 //! CLI's SSH-driven `HostGlobalProxy` lock scope (`jiji-cli/src/lock.rs`, Phase 7), which

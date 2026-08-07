@@ -1,25 +1,34 @@
-//! Bounded peer-to-peer catalog anti-entropy, mirroring `replication.rs`'s membership exchange
-//! but over its own port (`jiji_network::catalog_replication_port`) and its own signed-operation
-//! type. Kept as a separate module/wire type rather than folded into `replication.rs`, matching
-//! this codebase's existing per-concern separation (`wireguard.rs`: "service/catalog changes never
-//! enter this module").
+//! Direct, mesh-only catalog/desired-state anti-entropy over its own port
+//! (`jiji_network::catalog_replication_port`).
 //!
-//! Verifying a received catalog operation requires the current membership view (a node's signature
-//! is only valid while it holds an active membership record, see `catalog.rs`), so every exchange
-//! rebuilds a `MembershipView` from the store's already-persisted, already-authenticated membership
-//! operations -- catalog replication never re-authenticates membership itself, only reads it.
+//! Unlike the pre-Phase-N design, a node's outbound exchange contains only
+//! records it owns (`owner_node_id`/`author_node_id` equal to this node's own
+//! `node_id`) -- there is no relay of a third node's records. That, combined
+//! with every project being a full WireGuard mesh (every node reaches every
+//! other node directly), is what makes a signature unnecessary: a receiving
+//! node authenticates an inbound record by resolving the TCP connection's
+//! actual source address against its local membership view
+//! (`MembershipView::find_by_management_address`) and checking it matches
+//! the record's claimed owner. WireGuard's own peer authentication makes that
+//! source address unspoofable within the mesh, and because nothing is ever
+//! relayed, that one hop of transport authentication is sufficient -- see
+//! `catalog.rs`'s and `membership.rs`'s module doc comments for the full
+//! model. The outbound side binds its socket to its own management address
+//! explicitly (rather than trusting default route selection) so the peer
+//! always observes exactly the address its own membership record claims.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
-use crate::catalog::{SignedCatalogOperation, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION};
-use crate::desired::SignedDesiredState;
-use crate::membership::{AuthorityKeyring, MembershipError, MembershipView};
+use crate::catalog::{CatalogRecord, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION};
+use crate::desired::DesiredStateRecord;
+use crate::membership::{MembershipError, MembershipView, NodeIdentity, RecordProvenance};
 use crate::store::{AgentStore, StoreError};
 
 pub const MAX_CATALOG_FRAME_BYTES: u32 = 1024 * 1024;
@@ -35,33 +44,43 @@ struct Exchange {
     recovery_epoch: u64,
     protocol_version: u16,
     schema_version: u16,
-    operations: Vec<SignedCatalogOperation>,
+    operations: Vec<CatalogRecord>,
     #[serde(default)]
-    desired_operations: Vec<SignedDesiredState>,
+    desired_operations: Vec<DesiredStateRecord>,
 }
 
 impl Exchange {
     fn from_store(
         store: &AgentStore,
-        authority: &AuthorityKeyring,
+        identity: &NodeIdentity,
     ) -> Result<Self, CatalogReplicationError> {
+        let operations = store
+            .latest_catalog()?
+            .into_iter()
+            .filter(|record| record.owner_node_id == identity.node_id)
+            .collect();
+        let desired_operations = store
+            .desired_snapshot_operations()?
+            .into_iter()
+            .filter(|record| record.author_node_id == identity.node_id)
+            .collect();
         let exchange = Self {
-            project_id: authority.project_id().to_string(),
-            recovery_epoch: authority.recovery_epoch(),
+            project_id: identity.project_id.clone(),
+            recovery_epoch: identity.recovery_epoch,
             protocol_version: CATALOG_PROTOCOL_VERSION,
             schema_version: CATALOG_SCHEMA_VERSION,
-            operations: store.catalog_snapshot_operations()?,
-            desired_operations: store.desired_snapshot_operations()?,
+            operations,
+            desired_operations,
         };
-        exchange.validate(authority)?;
+        exchange.validate(identity)?;
         Ok(exchange)
     }
 
-    fn validate(&self, authority: &AuthorityKeyring) -> Result<(), CatalogReplicationError> {
-        if self.project_id != authority.project_id() {
+    fn validate(&self, identity: &NodeIdentity) -> Result<(), CatalogReplicationError> {
+        if self.project_id != identity.project_id {
             return Err(CatalogReplicationError::WrongProject);
         }
-        if self.recovery_epoch != authority.recovery_epoch() {
+        if self.recovery_epoch != identity.recovery_epoch {
             return Err(CatalogReplicationError::RecoveryEpoch);
         }
         if self.protocol_version != CATALOG_PROTOCOL_VERSION
@@ -118,30 +137,34 @@ pub enum CatalogReplicationError {
 }
 
 pub async fn sync_once(
-    address: std::net::SocketAddr,
+    address: SocketAddr,
+    local_address: Ipv4Addr,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
+    identity: Arc<NodeIdentity>,
 ) -> Result<(), CatalogReplicationError> {
-    sync_once_with_timeout(address, store, authority, EXCHANGE_TIMEOUT).await
+    sync_once_with_timeout(address, local_address, store, identity, EXCHANGE_TIMEOUT).await
 }
 
 async fn sync_once_with_timeout(
-    address: std::net::SocketAddr,
+    address: SocketAddr,
+    local_address: Ipv4Addr,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
+    identity: Arc<NodeIdentity>,
     timeout: Duration,
 ) -> Result<(), CatalogReplicationError> {
     let outbound = {
         let store = store
             .lock()
             .map_err(|_| CatalogReplicationError::LockPoisoned)?;
-        Exchange::from_store(&store, &authority)?
+        Exchange::from_store(&store, &identity)?
     };
     tokio::time::timeout(timeout, async {
-        let mut stream = TcpStream::connect(address).await?;
+        let socket = TcpSocket::new_v4()?;
+        socket.bind(SocketAddr::new(IpAddr::V4(local_address), 0))?;
+        let mut stream = socket.connect(address).await?;
         write_exchange(&mut stream, &outbound).await?;
         let inbound = read_exchange(&mut stream).await?;
-        apply_exchange(inbound, &store, &authority)
+        apply_exchange(inbound, &store, &identity, address)
     })
     .await
     .map_err(|_| CatalogReplicationError::Timeout)?
@@ -150,21 +173,21 @@ async fn sync_once_with_timeout(
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
+    identity: Arc<NodeIdentity>,
 ) -> Result<(), CatalogReplicationError> {
     loop {
-        let (mut stream, _) = listener.accept().await?;
+        let (mut stream, peer) = listener.accept().await?;
         let store = Arc::clone(&store);
-        let authority = Arc::clone(&authority);
+        let identity = Arc::clone(&identity);
         tokio::spawn(async move {
             let result = tokio::time::timeout(EXCHANGE_TIMEOUT, async {
                 let inbound = read_exchange(&mut stream).await?;
-                apply_exchange(inbound, &store, &authority)?;
+                apply_exchange(inbound, &store, &identity, peer)?;
                 let outbound = {
                     let store = store
                         .lock()
                         .map_err(|_| CatalogReplicationError::LockPoisoned)?;
-                    Exchange::from_store(&store, &authority)?
+                    Exchange::from_store(&store, &identity)?
                 };
                 write_exchange(&mut stream, &outbound).await
             })
@@ -181,27 +204,31 @@ pub async fn serve(
 fn apply_exchange(
     exchange: Exchange,
     store: &Arc<Mutex<AgentStore>>,
-    authority: &AuthorityKeyring,
+    identity: &NodeIdentity,
+    peer: SocketAddr,
 ) -> Result<(), CatalogReplicationError> {
-    exchange.validate(authority)?;
+    exchange.validate(identity)?;
     let store = store
         .lock()
         .map_err(|_| CatalogReplicationError::LockPoisoned)?;
-    let membership_ops = store.membership_operations()?;
-    let membership = MembershipView::from_operations(membership_ops, authority)?;
-    for operation in exchange.operations {
+    let scope = identity.scope();
+    let membership = MembershipView::from_records(store.membership_operations()?, &scope)?;
+    let provenance = RecordProvenance::Peer(peer);
+    for record in exchange.operations {
         store.apply_catalog(
-            &operation,
-            authority.project_id(),
-            authority.recovery_epoch(),
+            record,
+            provenance,
+            &identity.project_id,
+            identity.recovery_epoch,
             &membership,
         )?;
     }
-    for operation in exchange.desired_operations {
+    for record in exchange.desired_operations {
         store.apply_desired(
-            &operation,
-            authority.project_id(),
-            authority.recovery_epoch(),
+            record,
+            provenance,
+            &identity.project_id,
+            identity.recovery_epoch,
             &membership,
         )?;
     }
@@ -239,25 +266,61 @@ async fn read_exchange(stream: &mut TcpStream) -> Result<Exchange, CatalogReplic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{CatalogRecord, DeploymentState, HealthState};
+    use crate::catalog::{DeploymentState, HealthState};
     use crate::membership::{
-        MembershipRecord, MembershipState, SignedMembership, MEMBERSHIP_PROTOCOL_VERSION,
+        MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
         MEMBERSHIP_SCHEMA_VERSION,
     };
-    use ed25519_dalek::SigningKey;
     use tempfile::tempdir;
 
-    fn fixture() -> (Arc<AuthorityKeyring>, SigningKey, SigningKey) {
-        let authority_key = SigningKey::from_bytes(&[4; 32]);
-        let node_key = SigningKey::from_bytes(&[6; 32]);
-        let mut authority = AuthorityKeyring::new("project", 1);
-        authority.add_authority("root", authority_key.verifying_key());
-        (Arc::new(authority), authority_key, node_key)
+    fn identity(node_id: &str) -> Arc<NodeIdentity> {
+        Arc::new(NodeIdentity {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            node_id: node_id.into(),
+        })
+    }
+
+    fn membership_record(node_id: &str, address: Ipv4Addr, subnet_octet: u8) -> MembershipRecord {
+        MembershipRecord {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
+            schema_version: MEMBERSHIP_SCHEMA_VERSION,
+            node_id: node_id.into(),
+            server_name: node_id.into(),
+            wireguard_public_key: format!("wg-{node_id}"),
+            management_address: address,
+            container_subnet: format!("198.18.{subnet_octet}.0/24"),
+            endpoints: vec!["192.0.2.1:51820".parse().unwrap()],
+            owner_epoch: 1,
+            revision: 1,
+            state: MembershipState::Active,
+        }
+    }
+
+    fn catalog_record(owner_node_id: &str) -> CatalogRecord {
+        CatalogRecord {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: CATALOG_PROTOCOL_VERSION,
+            schema_version: CATALOG_SCHEMA_VERSION,
+            service: "web".into(),
+            replica_id: "r1".into(),
+            owner_node_id: owner_node_id.into(),
+            owner_epoch: 1,
+            revision: 1,
+            deployment_id: "deploy-1".into(),
+            address: "198.18.1.10".parse().unwrap(),
+            ports: vec![80],
+            image: "nginx:alpine".into(),
+            state: DeploymentState::Active,
+            health: HealthState::Healthy,
+        }
     }
 
     #[tokio::test]
     async fn peer_that_accepts_without_reply_is_bounded_by_exchange_timeout() {
-        let (authority, _, _) = fixture();
         let dir = tempdir().unwrap();
         let store = Arc::new(Mutex::new(
             AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
@@ -269,103 +332,92 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(60)).await;
         });
 
-        let result =
-            sync_once_with_timeout(address, store, authority, Duration::from_millis(50)).await;
+        let result = sync_once_with_timeout(
+            address,
+            Ipv4Addr::LOCALHOST,
+            store,
+            identity("node-a"),
+            Duration::from_millis(50),
+        )
+        .await;
 
         assert!(matches!(result, Err(CatalogReplicationError::Timeout)));
         stalled_peer.abort();
     }
 
-    fn membership_operation(authority_key: &SigningKey, node_key: &SigningKey) -> SignedMembership {
-        SignedMembership::sign(
-            MembershipRecord {
-                project_id: "project".into(),
-                recovery_epoch: 1,
-                protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
-                schema_version: MEMBERSHIP_SCHEMA_VERSION,
-                node_id: "node-a".into(),
-                server_name: "node-a".into(),
-                node_signing_public_key: node_key.verifying_key().to_bytes().to_vec(),
-                wireguard_public_key: "wg-a".into(),
-                management_address: "100.98.64.1".parse().unwrap(),
-                container_subnet: "198.18.1.0/24".into(),
-                endpoints: vec!["192.0.2.1:51820".parse().unwrap()],
-                owner_epoch: 1,
-                revision: 1,
-                state: MembershipState::Active,
-            },
-            "root",
-            authority_key,
-        )
-        .unwrap()
-    }
-
-    fn catalog_operation(node_key: &SigningKey) -> SignedCatalogOperation {
-        SignedCatalogOperation::sign(
-            CatalogRecord {
-                project_id: "project".into(),
-                recovery_epoch: 1,
-                protocol_version: CATALOG_PROTOCOL_VERSION,
-                schema_version: CATALOG_SCHEMA_VERSION,
-                service: "web".into(),
-                replica_id: "r1".into(),
-                owner_node_id: "node-a".into(),
-                owner_epoch: 1,
-                revision: 1,
-                deployment_id: "deploy-1".into(),
-                address: "198.18.1.10".parse().unwrap(),
-                ports: vec![80],
-                image: "nginx:alpine".into(),
-                state: DeploymentState::Active,
-                health: HealthState::Healthy,
-            },
-            node_key,
-        )
-        .unwrap()
-    }
-
     #[tokio::test]
-    async fn one_peer_write_reaches_another_without_cli_fanout() {
-        let (authority, authority_key, node_key) = fixture();
+    async fn one_peer_write_reaches_another_directly_without_cli_fanout() {
+        // node-a's management address is 127.0.0.2 -- distinct from node-b's 127.0.0.1 -- so the
+        // outbound socket's explicit bind lets node-b's server observe exactly that source address
+        // and attribute the record to node-a.
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
-        let left = Arc::new(Mutex::new(
+        let left_store = Arc::new(Mutex::new(
             AgentStore::open(&left_dir.path().join("agent.sqlite3")).unwrap(),
         ));
-        let right = Arc::new(Mutex::new(
+        let right_store = Arc::new(Mutex::new(
             AgentStore::open(&right_dir.path().join("agent.sqlite3")).unwrap(),
         ));
-        // Both sides must already know about node-a's membership to verify its catalog signature.
-        for store in [&left, &right] {
+        let scope = MembershipScope::new("project", 1);
+        for store in [&left_store, &right_store] {
+            let store = store.lock().unwrap();
             store
-                .lock()
-                .unwrap()
-                .apply_membership(&membership_operation(&authority_key, &node_key), &authority)
+                .apply_membership(
+                    membership_record("node-a", Ipv4Addr::new(127, 0, 0, 2), 1),
+                    &scope,
+                )
+                .unwrap();
+            store
+                .apply_membership(
+                    membership_record("node-b", Ipv4Addr::new(127, 0, 0, 1), 2),
+                    &scope,
+                )
                 .unwrap();
         }
-        left.lock()
-            .unwrap()
-            .apply_catalog(&catalog_operation(&node_key), "project", 1, &{
-                let mut view = MembershipView::default();
-                view.apply(membership_operation(&authority_key, &node_key), &authority)
-                    .unwrap();
-                view
-            })
-            .unwrap();
+        {
+            let store = left_store.lock().unwrap();
+            let mut membership = MembershipView::default();
+            membership
+                .apply(
+                    membership_record("node-a", Ipv4Addr::new(127, 0, 0, 2), 1),
+                    &scope,
+                )
+                .unwrap();
+            store
+                .apply_catalog(
+                    catalog_record("node-a"),
+                    RecordProvenance::Local,
+                    "project",
+                    1,
+                    &membership,
+                )
+                .unwrap();
+        }
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(serve(listener, Arc::clone(&right), Arc::clone(&authority)));
-        sync_once(address, Arc::clone(&left), Arc::clone(&authority))
-            .await
-            .unwrap();
-        assert_eq!(right.lock().unwrap().latest_catalog().unwrap().len(), 1);
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::clone(&right_store),
+            identity("node-b"),
+        ));
+        sync_once(
+            address,
+            Ipv4Addr::new(127, 0, 0, 2),
+            Arc::clone(&left_store),
+            identity("node-a"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            right_store.lock().unwrap().latest_catalog().unwrap().len(),
+            1
+        );
         server.abort();
     }
 
     #[tokio::test]
     async fn wrong_project_exchange_is_rejected_before_applying_operations() {
-        let (authority, _, _) = fixture();
         let dir = tempdir().unwrap();
         let store = Arc::new(Mutex::new(
             AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
@@ -379,7 +431,12 @@ mod tests {
             desired_operations: vec![],
         };
         assert!(matches!(
-            apply_exchange(exchange, &store, &authority),
+            apply_exchange(
+                exchange,
+                &store,
+                &identity("node-b"),
+                "127.0.0.1:0".parse().unwrap()
+            ),
             Err(CatalogReplicationError::WrongProject)
         ));
     }
@@ -389,7 +446,6 @@ mod tests {
     /// every other version before exchanging state -- there is no mixed-version cluster.
     #[tokio::test]
     async fn mismatched_protocol_version_is_rejected_before_applying_operations() {
-        let (authority, _, node_key) = fixture();
         let dir = tempdir().unwrap();
         let store = Arc::new(Mutex::new(
             AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
@@ -399,11 +455,16 @@ mod tests {
             recovery_epoch: 1,
             protocol_version: CATALOG_PROTOCOL_VERSION + 1,
             schema_version: CATALOG_SCHEMA_VERSION,
-            operations: vec![catalog_operation(&node_key)],
+            operations: vec![catalog_record("node-a")],
             desired_operations: vec![],
         };
         assert!(matches!(
-            apply_exchange(exchange, &store, &authority),
+            apply_exchange(
+                exchange,
+                &store,
+                &identity("node-b"),
+                "127.0.0.1:0".parse().unwrap()
+            ),
             Err(CatalogReplicationError::IncompatibleVersion)
         ));
         assert!(store.lock().unwrap().latest_catalog().unwrap().is_empty());
@@ -411,7 +472,6 @@ mod tests {
 
     #[tokio::test]
     async fn mismatched_schema_version_is_rejected_before_applying_operations() {
-        let (authority, _, node_key) = fixture();
         let dir = tempdir().unwrap();
         let store = Arc::new(Mutex::new(
             AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
@@ -421,22 +481,26 @@ mod tests {
             recovery_epoch: 1,
             protocol_version: CATALOG_PROTOCOL_VERSION,
             schema_version: CATALOG_SCHEMA_VERSION + 1,
-            operations: vec![catalog_operation(&node_key)],
+            operations: vec![catalog_record("node-a")],
             desired_operations: vec![],
         };
         assert!(matches!(
-            apply_exchange(exchange, &store, &authority),
+            apply_exchange(
+                exchange,
+                &store,
+                &identity("node-b"),
+                "127.0.0.1:0".parse().unwrap()
+            ),
             Err(CatalogReplicationError::IncompatibleVersion)
         ));
         assert!(store.lock().unwrap().latest_catalog().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn a_catalog_write_from_a_node_the_peer_has_no_membership_record_for_is_rejected() {
-        let (authority, _authority_key, node_key) = fixture();
+    async fn a_catalog_write_from_an_address_with_no_membership_record_is_rejected() {
         let dir = tempdir().unwrap();
-        // The receiving side never learned node-a's membership, so it cannot verify node-a's
-        // catalog signature -- the write must not silently apply.
+        // The receiving side never learned any membership for the connection's source address, so
+        // it cannot attribute the record to anyone -- the write must not silently apply.
         let store = Arc::new(Mutex::new(
             AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
         ));
@@ -445,10 +509,58 @@ mod tests {
             recovery_epoch: 1,
             protocol_version: CATALOG_PROTOCOL_VERSION,
             schema_version: CATALOG_SCHEMA_VERSION,
-            operations: vec![catalog_operation(&node_key)],
+            operations: vec![catalog_record("node-a")],
             desired_operations: vec![],
         };
-        assert!(apply_exchange(exchange, &store, &authority).is_err());
+        assert!(apply_exchange(
+            exchange,
+            &store,
+            &identity("node-b"),
+            "127.0.0.9:0".parse().unwrap()
+        )
+        .is_err());
+        assert!(store.lock().unwrap().latest_catalog().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_catalog_write_claiming_a_different_owner_than_the_sending_address_is_rejected() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap(),
+        ));
+        let scope = MembershipScope::new("project", 1);
+        {
+            let store = store.lock().unwrap();
+            store
+                .apply_membership(
+                    membership_record("node-a", Ipv4Addr::new(127, 0, 0, 2), 1),
+                    &scope,
+                )
+                .unwrap();
+            store
+                .apply_membership(
+                    membership_record("node-c", Ipv4Addr::new(127, 0, 0, 3), 3),
+                    &scope,
+                )
+                .unwrap();
+        }
+        // The connection's source address (127.0.0.2, node-a's own) tries to vouch for a record
+        // claiming ownership by node-c instead.
+        let exchange = Exchange {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: CATALOG_PROTOCOL_VERSION,
+            schema_version: CATALOG_SCHEMA_VERSION,
+            operations: vec![catalog_record("node-c")],
+            desired_operations: vec![],
+        };
+        assert!(apply_exchange(
+            exchange,
+            &store,
+            &identity("node-b"),
+            "127.0.0.2:0".parse().unwrap()
+        )
+        .is_err());
         assert!(store.lock().unwrap().latest_catalog().unwrap().is_empty());
     }
 }

@@ -44,28 +44,31 @@ pub async fn bring_up_bridge_and_dns(
     run_script(&script).await
 }
 
-async fn run_script(script: &str) -> Result<(), String> {
+/// Shared with `proxy_bringup.rs`'s own `FORWARD`-chain authorization script -- same "pipe a
+/// multi-line `sh` script over stdin" mechanics, no reason to duplicate the spawn/pipe/collect
+/// boilerplate for a second unrelated script.
+pub(crate) async fn run_script(script: &str) -> Result<(), String> {
     let mut child = Command::new("sh")
         .arg("-s")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("could not spawn sh to run bridge bring-up script: {error}"))?;
+        .map_err(|error| format!("could not spawn sh to run script: {error}"))?;
     {
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or_else(|| "bridge bring-up script's stdin was not piped".to_string())?;
+            .ok_or_else(|| "script's stdin was not piped".to_string())?;
         stdin
             .write_all(script.as_bytes())
             .await
-            .map_err(|error| format!("could not write bridge bring-up script: {error}"))?;
+            .map_err(|error| format!("could not write script: {error}"))?;
     }
     let output = child
         .wait_with_output()
         .await
-        .map_err(|error| format!("bridge bring-up script failed: {error}"))?;
+        .map_err(|error| format!("script failed: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {

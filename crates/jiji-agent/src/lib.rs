@@ -1,7 +1,8 @@
 //! Project-scoped host agent. It owns durable local state and observe-only
 //! container discovery; once enrolled with a mesh configuration it also
-//! replicates signed membership, incrementally repairs WireGuard, replicates
-//! a node-signed service catalog authoritatively updated by dynamic
+//! ingests CLI-pushed membership directly (no peer-to-peer relay, see
+//! `membership.rs`), incrementally repairs WireGuard, replicates a
+//! node-owned service catalog authoritatively updated by dynamic
 //! deployments (`jiji-cli`'s deploy/restart/rollback/remove/scale, via this
 //! agent's `CatalogCommit` API), and serves project DNS from that catalog.
 
@@ -20,7 +21,6 @@ pub mod local_reconcile;
 pub mod membership;
 pub mod paths;
 pub mod proxy_bringup;
-pub mod replication;
 pub mod runtime;
 pub mod store;
 pub mod systemd;

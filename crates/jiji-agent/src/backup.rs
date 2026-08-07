@@ -1,17 +1,20 @@
 //! Secret-free, consistent control-plane export from one agent store.
 //!
 //! Encryption is an operator/CLI responsibility. This payload intentionally excludes the local
-//! node signing seed, deployed environment, SSH material, and WireGuard private key.
+//! node signing seed, deployed environment, SSH material, and WireGuard private key. Membership
+//! itself is never part of this snapshot: it's trivially re-derived from `jiji.yml` and pushed
+//! fresh by `jiji-cli` (the same computation `server setup` already does), not backed up per host
+//! -- see `crate::membership`'s module doc comment. `import` therefore assumes the target store's
+//! membership is already current before it runs.
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::SignedCatalogOperation;
-use crate::desired::SignedDesiredState;
-use crate::membership::SignedMembership;
-use crate::membership::{AuthorityKeyring, MembershipView};
+use crate::catalog::CatalogRecord;
+use crate::desired::DesiredStateRecord;
+use crate::membership::{MembershipScope, MembershipView, RecordProvenance};
 use crate::store::{AddressLease, AgentStore, StoreError};
 
-pub const BACKUP_FORMAT_VERSION: u16 = 1;
+pub const BACKUP_FORMAT_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBackupSnapshot {
@@ -19,9 +22,8 @@ pub struct AgentBackupSnapshot {
     pub project_id: String,
     pub recovery_epoch: u64,
     pub node_id: String,
-    pub membership: Vec<SignedMembership>,
-    pub catalog: Vec<SignedCatalogOperation>,
-    pub desired: Vec<SignedDesiredState>,
+    pub catalog: Vec<CatalogRecord>,
+    pub desired: Vec<DesiredStateRecord>,
     pub address_leases: Vec<AddressLease>,
 }
 
@@ -37,8 +39,7 @@ impl AgentBackupSnapshot {
             project_id: project_id.to_string(),
             recovery_epoch,
             node_id: node_id.to_string(),
-            membership: store.membership_snapshot_operations()?,
-            catalog: store.catalog_snapshot_operations()?,
+            catalog: store.latest_catalog()?,
             desired: store.desired_snapshot_operations()?,
             address_leases: store.address_leases()?,
         })
@@ -57,29 +58,36 @@ impl AgentBackupSnapshot {
         Ok(())
     }
 
-    /// Merges an authenticated same-epoch snapshot into a surviving/rebuilt local store. All
-    /// signed records are re-verified; local leases are recovered conflict-refusing. The caller
-    /// must use the separate recovery-epoch workflow after total cluster loss.
-    pub fn import(&self, store: &AgentStore, authority: &AuthorityKeyring) -> anyhow::Result<()> {
-        self.validate_identity(authority.project_id(), authority.recovery_epoch())?;
-        for operation in &self.membership {
-            store.apply_membership(operation, authority)?;
-        }
-        let membership =
-            MembershipView::from_operations(store.membership_operations()?, authority)?;
-        for operation in &self.catalog {
+    /// Merges a same-epoch snapshot into a surviving/rebuilt local store. Each record already
+    /// passed verification once, on the host it was exported from (`RecordProvenance::Verified`),
+    /// so restoring it here is a replay, not a new local write. Local leases are recovered
+    /// conflict-refusing. Assumes the target's membership is already current -- the caller must
+    /// push fresh membership first (see the module doc comment) -- since a record's
+    /// `author_epoch`/ownership is still checked against it.
+    pub fn import(
+        &self,
+        store: &AgentStore,
+        project_id: &str,
+        recovery_epoch: u64,
+    ) -> anyhow::Result<()> {
+        self.validate_identity(project_id, recovery_epoch)?;
+        let scope = MembershipScope::new(project_id, recovery_epoch);
+        let membership = MembershipView::from_records(store.membership_operations()?, &scope)?;
+        for record in &self.catalog {
             store.apply_catalog(
-                operation,
-                authority.project_id(),
-                authority.recovery_epoch(),
+                record.clone(),
+                RecordProvenance::Verified,
+                project_id,
+                recovery_epoch,
                 &membership,
             )?;
         }
-        for operation in &self.desired {
+        for record in &self.desired {
             store.apply_desired(
-                operation,
-                authority.project_id(),
-                authority.recovery_epoch(),
+                record.clone(),
+                RecordProvenance::Verified,
+                project_id,
+                recovery_epoch,
                 &membership,
             )?;
         }
@@ -128,10 +136,7 @@ mod tests {
 
         let restored_dir = tempdir().unwrap();
         let restored = AgentStore::open(&restored_dir.path().join("agent.sqlite3")).unwrap();
-        let authority_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut authority = AuthorityKeyring::new("demo", 2);
-        authority.add_authority("root", authority_key.verifying_key());
-        snapshot.import(&restored, &authority).unwrap();
+        snapshot.import(&restored, "demo", 2).unwrap();
         assert_eq!(restored.address_leases().unwrap(), snapshot.address_leases);
     }
 }

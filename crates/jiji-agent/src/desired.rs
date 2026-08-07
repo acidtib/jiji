@@ -1,13 +1,12 @@
-//! Replicated, node-signed desired service placement.
+//! Replicated desired service placement. See `catalog.rs`'s module doc
+//! comment for the `RecordProvenance` authentication model this mirrors.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::membership::MembershipView;
+use crate::membership::{MembershipView, ProvenanceError, RecordProvenance};
 
 pub const DESIRED_PROTOCOL_VERSION: u16 = 1;
 pub const DESIRED_SCHEMA_VERSION: u16 = 1;
@@ -63,63 +62,37 @@ impl DesiredStateRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignedDesiredState {
-    pub operation_id: String,
-    pub signer_id: String,
-    pub record: DesiredStateRecord,
-    pub signature: Vec<u8>,
+impl From<ProvenanceError> for DesiredError {
+    fn from(error: ProvenanceError) -> Self {
+        match error {
+            ProvenanceError::UnknownPeer => DesiredError::UnknownAuthor,
+            ProvenanceError::NotOwner => DesiredError::NotAuthor,
+        }
+    }
 }
 
-impl SignedDesiredState {
-    pub fn sign(record: DesiredStateRecord, key: &SigningKey) -> Result<Self, DesiredError> {
-        record.validate()?;
-        let operation_id = operation_id(&record)?;
-        Ok(Self {
-            signature: key.sign(operation_id.as_bytes()).to_bytes().to_vec(),
-            signer_id: record.author_node_id.clone(),
-            operation_id,
-            record,
-        })
+fn verify(
+    record: &DesiredStateRecord,
+    provenance: RecordProvenance,
+    project_id: &str,
+    recovery_epoch: u64,
+    membership: &MembershipView,
+) -> Result<(), DesiredError> {
+    record.validate()?;
+    if record.project_id != project_id {
+        return Err(DesiredError::WrongProject);
     }
-
-    pub fn verify(
-        &self,
-        project_id: &str,
-        recovery_epoch: u64,
-        membership: &MembershipView,
-    ) -> Result<(), DesiredError> {
-        self.record.validate()?;
-        if self.record.project_id != project_id {
-            return Err(DesiredError::WrongProject);
-        }
-        if self.record.recovery_epoch != recovery_epoch {
-            return Err(DesiredError::RecoveryEpoch);
-        }
-        if self.signer_id != self.record.author_node_id
-            || operation_id(&self.record)? != self.operation_id
-        {
-            return Err(DesiredError::InvalidSignature);
-        }
-        let member = membership
-            .get(&self.signer_id)
-            .ok_or(DesiredError::UnknownSigner)?;
-        if member.record.owner_epoch != self.record.author_epoch {
-            return Err(DesiredError::StaleAuthor);
-        }
-        let bytes: [u8; 32] = member
-            .record
-            .node_signing_public_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| DesiredError::InvalidSignature)?;
-        let key = ed25519_dalek::VerifyingKey::from_bytes(&bytes)
-            .map_err(|_| DesiredError::InvalidSignature)?;
-        let signature =
-            Signature::from_slice(&self.signature).map_err(|_| DesiredError::InvalidSignature)?;
-        key.verify(self.operation_id.as_bytes(), &signature)
-            .map_err(|_| DesiredError::InvalidSignature)
+    if record.recovery_epoch != recovery_epoch {
+        return Err(DesiredError::RecoveryEpoch);
     }
+    membership.authenticate(provenance, &record.author_node_id)?;
+    let author = membership
+        .get(&record.author_node_id)
+        .ok_or(DesiredError::UnknownAuthor)?;
+    if author.owner_epoch != record.author_epoch {
+        return Err(DesiredError::StaleAuthor);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,57 +104,58 @@ pub enum DesiredApply {
 
 #[derive(Default)]
 pub struct DesiredStateView {
-    records: BTreeMap<String, SignedDesiredState>,
-    operation_ids: BTreeSet<String>,
+    records: BTreeMap<String, DesiredStateRecord>,
+    record_ids: BTreeSet<String>,
 }
 
 impl DesiredStateView {
-    pub fn from_operations(
-        operations: impl IntoIterator<Item = SignedDesiredState>,
+    pub fn from_records(
+        records: impl IntoIterator<Item = (DesiredStateRecord, RecordProvenance)>,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<Self, DesiredError> {
         let mut view = Self::default();
-        for operation in operations {
-            view.apply(operation, project_id, recovery_epoch, membership)?;
+        for (record, provenance) in records {
+            view.apply(record, provenance, project_id, recovery_epoch, membership)?;
         }
         Ok(view)
     }
 
     pub fn apply(
         &mut self,
-        operation: SignedDesiredState,
+        record: DesiredStateRecord,
+        provenance: RecordProvenance,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<DesiredApply, DesiredError> {
-        operation.verify(project_id, recovery_epoch, membership)?;
-        if !self.operation_ids.insert(operation.operation_id.clone()) {
+        verify(&record, provenance, project_id, recovery_epoch, membership)?;
+        let id = record_id(&record)?;
+        if !self.record_ids.insert(id.clone()) {
             return Ok(DesiredApply::Duplicate);
         }
-        if let Some(current) = self.records.get(&operation.record.service) {
-            if order(&operation) <= order(current) {
+        if let Some(current) = self.records.get(&record.service) {
+            let current_id = record_id(current)?;
+            if order(&record, &id) <= order(current, &current_id) {
                 return Ok(DesiredApply::Superseded);
             }
         }
-        self.records
-            .insert(operation.record.service.clone(), operation);
+        self.records.insert(record.service.clone(), record);
         Ok(DesiredApply::Applied)
     }
 
     pub fn get(&self, service: &str) -> Option<&DesiredStateRecord> {
-        self.records.get(service).map(|operation| &operation.record)
+        self.records.get(service)
     }
 }
 
-fn order(operation: &SignedDesiredState) -> (u64, &str) {
-    (operation.record.revision, &operation.operation_id)
+fn order(record: &DesiredStateRecord, id: &str) -> (u64, String) {
+    (record.revision, id.to_string())
 }
 
-fn operation_id(record: &DesiredStateRecord) -> Result<String, DesiredError> {
-    let digest = Sha256::digest(serde_json::to_vec(record)?);
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+pub(crate) fn record_id(record: &DesiredStateRecord) -> Result<String, DesiredError> {
+    Ok(crate::membership::content_hash(record)?)
 }
 
 #[derive(Debug, Error)]
@@ -196,11 +170,11 @@ pub enum DesiredError {
     WrongProject,
     #[error("desired state belongs to another recovery epoch")]
     RecoveryEpoch,
-    #[error("desired state signature is invalid")]
-    InvalidSignature,
-    #[error("desired state signer is not an active member")]
-    UnknownSigner,
-    #[error("desired state signer epoch is stale")]
+    #[error("desired state was not sent by a known member's own management address")]
+    UnknownAuthor,
+    #[error("desired state claims authorship by a node other than the one that sent it")]
+    NotAuthor,
+    #[error("desired state author epoch is stale")]
     StaleAuthor,
 }
 
@@ -208,16 +182,14 @@ pub enum DesiredError {
 mod tests {
     use super::*;
     use crate::membership::{
-        AuthorityKeyring, MembershipRecord, MembershipState, MembershipView, SignedMembership,
-        MEMBERSHIP_PROTOCOL_VERSION, MEMBERSHIP_SCHEMA_VERSION,
+        MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
+        MEMBERSHIP_SCHEMA_VERSION,
     };
 
-    fn fixture() -> (MembershipView, SigningKey) {
-        let authority_key = SigningKey::from_bytes(&[3; 32]);
-        let node_key = SigningKey::from_bytes(&[7; 32]);
-        let mut authority = AuthorityKeyring::new("demo", 1);
-        authority.add_authority("root", authority_key.verifying_key());
-        let membership = SignedMembership::sign(
+    fn fixture() -> MembershipView {
+        let scope = MembershipScope::new("demo", 1);
+        let mut view = MembershipView::default();
+        view.apply(
             MembershipRecord {
                 project_id: "demo".into(),
                 recovery_epoch: 1,
@@ -225,7 +197,6 @@ mod tests {
                 schema_version: MEMBERSHIP_SCHEMA_VERSION,
                 node_id: "a".into(),
                 server_name: "a".into(),
-                node_signing_public_key: node_key.verifying_key().to_bytes().to_vec(),
                 wireguard_public_key: "wg-a".into(),
                 management_address: "100.98.0.1".parse().unwrap(),
                 container_subnet: "198.18.0.0/24".into(),
@@ -234,65 +205,82 @@ mod tests {
                 revision: 1,
                 state: MembershipState::Active,
             },
-            "root",
-            &authority_key,
+            &scope,
         )
         .unwrap();
-        let mut view = MembershipView::default();
-        view.apply(membership, &authority).unwrap();
-        (view, node_key)
+        view
     }
 
-    fn operation(key: &SigningKey, revision: u64, replicas: u32) -> SignedDesiredState {
-        SignedDesiredState::sign(
-            DesiredStateRecord {
-                project_id: "demo".into(),
-                recovery_epoch: 1,
-                protocol_version: DESIRED_PROTOCOL_VERSION,
-                schema_version: DESIRED_SCHEMA_VERSION,
-                service: "web".into(),
-                replica_override: Some(replicas),
-                assignments: (0..replicas)
-                    .map(|ordinal| ReplicaAssignment {
-                        replica_id: format!("web-{ordinal}"),
-                        ordinal,
-                        owner_node_id: "a".into(),
-                    })
-                    .collect(),
-                revision,
-                author_node_id: "a".into(),
-                author_epoch: 1,
-            },
-            key,
-        )
-        .unwrap()
+    fn record(revision: u64, replicas: u32) -> DesiredStateRecord {
+        DesiredStateRecord {
+            project_id: "demo".into(),
+            recovery_epoch: 1,
+            protocol_version: DESIRED_PROTOCOL_VERSION,
+            schema_version: DESIRED_SCHEMA_VERSION,
+            service: "web".into(),
+            replica_override: Some(replicas),
+            assignments: (0..replicas)
+                .map(|ordinal| ReplicaAssignment {
+                    replica_id: format!("web-{ordinal}"),
+                    ordinal,
+                    owner_node_id: "a".into(),
+                })
+                .collect(),
+            revision,
+            author_node_id: "a".into(),
+            author_epoch: 1,
+        }
     }
 
     #[test]
-    fn newer_signed_desired_state_wins_and_duplicates_are_idempotent() {
-        let (membership, key) = fixture();
-        let first = operation(&key, 1, 1);
-        let second = operation(&key, 2, 2);
+    fn newer_desired_state_wins_and_duplicates_are_idempotent() {
+        let membership = fixture();
+        let first = record(1, 1);
+        let second = record(2, 2);
         let mut view = DesiredStateView::default();
         assert_eq!(
-            view.apply(first.clone(), "demo", 1, &membership).unwrap(),
+            view.apply(
+                first.clone(),
+                RecordProvenance::Local,
+                "demo",
+                1,
+                &membership
+            )
+            .unwrap(),
             DesiredApply::Applied
         );
         assert_eq!(
-            view.apply(first, "demo", 1, &membership).unwrap(),
+            view.apply(first, RecordProvenance::Local, "demo", 1, &membership)
+                .unwrap(),
             DesiredApply::Duplicate
         );
         assert_eq!(
-            view.apply(second, "demo", 1, &membership).unwrap(),
+            view.apply(second, RecordProvenance::Local, "demo", 1, &membership)
+                .unwrap(),
             DesiredApply::Applied
         );
         assert_eq!(view.get("web").unwrap().assignments.len(), 2);
     }
 
     #[test]
-    fn forged_desired_state_is_rejected() {
-        let (membership, _) = fixture();
-        let forged = operation(&SigningKey::from_bytes(&[9; 32]), 1, 1);
-        assert!(forged.verify("demo", 1, &membership).is_err());
+    fn a_stale_author_epoch_is_rejected() {
+        let membership = fixture();
+        let mut stale = record(1, 1);
+        stale.author_epoch = 2;
+        assert!(matches!(
+            verify(&stale, RecordProvenance::Local, "demo", 1, &membership),
+            Err(DesiredError::StaleAuthor)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_author_is_rejected() {
+        let membership = fixture();
+        let mut unknown = record(1, 1);
+        unknown.author_node_id = "ghost".into();
+        assert!(matches!(
+            verify(&unknown, RecordProvenance::Local, "demo", 1, &membership),
+            Err(DesiredError::UnknownAuthor)
+        ));
     }
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use jiji_agent::api::{self, AgentApi, CatalogAuthority, Identity, Request, RequestBody};
+use jiji_agent::api::{self, AgentApi, Identity, Request, RequestBody};
 use jiji_agent::engine::Engine;
 use jiji_agent::store::AgentStore;
 use tokio::net::{UnixListener, UnixStream};
@@ -29,7 +29,7 @@ enum Command {
         state_dir: PathBuf,
         #[arg(long)]
         socket: PathBuf,
-        /// Enables authoritative membership replication and incremental
+        /// Enables catalog/desired-state replication and incremental
         /// WireGuard repair once enrollment has written this file.
         #[arg(long)]
         mesh_config: PathBuf,
@@ -49,8 +49,10 @@ enum Command {
         #[arg(long)]
         socket: PathBuf,
     },
-    /// Verifies and imports signed membership into the durable store. Intended
-    /// for enrollment/bootstrap before the systemd service starts.
+    /// Imports membership pushed directly by `jiji-cli` over SSH into the durable store -- the
+    /// only way membership ever changes (no peer-to-peer relay, see `jiji_agent::membership`).
+    /// Used for enrollment/bootstrap and for every later membership change
+    /// (decommission/update-endpoint/rotate-key/replace).
     MembershipImport {
         #[arg(long)]
         project: String,
@@ -61,7 +63,7 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
-    /// Prints the durable signed membership operation log.
+    /// Prints the durable membership operation log.
     MembershipExport {
         #[arg(long)]
         state_dir: PathBuf,
@@ -73,7 +75,8 @@ enum Command {
         #[arg(long)]
         state_dir: PathBuf,
     },
-    /// Exports a secret-free, signed winning snapshot plus this host's address claims.
+    /// Exports a secret-free catalog/desired-state winning snapshot plus this host's address
+    /// claims.
     BackupExport {
         #[arg(long)]
         project: String,
@@ -152,12 +155,11 @@ fn backup_import(
     input: &std::path::Path,
 ) -> anyhow::Result<()> {
     let config = jiji_agent::runtime::MeshConfig::load(mesh_config, project)?;
-    let authority = config.keyring()?;
     let store = AgentStore::open(&state_dir.join("agent.sqlite3"))?;
     let snapshot: jiji_agent::backup::AgentBackupSnapshot =
         serde_json::from_slice(&std::fs::read(input)?)?;
-    snapshot.import(&store, &authority)?;
-    println!("Imported authenticated control-plane snapshot.");
+    snapshot.import(&store, &config.project_id, config.recovery_epoch)?;
+    println!("Imported control-plane snapshot.");
     Ok(())
 }
 
@@ -195,18 +197,18 @@ fn membership_import(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(state_dir)?;
     let config = jiji_agent::runtime::MeshConfig::load(mesh_config_path, project)?;
-    let authority = config.keyring()?;
-    let operations: Vec<jiji_agent::membership::SignedMembership> =
+    let scope = jiji_agent::membership::MembershipScope::new(
+        config.project_id.clone(),
+        config.recovery_epoch,
+    );
+    let records: Vec<jiji_agent::membership::MembershipRecord> =
         serde_json::from_slice(&std::fs::read(input)?)?;
     let db_path = state_dir.join("agent.sqlite3");
     let store = open_for_membership_import(&db_path, config.recovery_epoch)?;
-    for operation in &operations {
-        store.apply_membership(operation, &authority)?;
+    for record in &records {
+        store.apply_membership(record.clone(), &scope)?;
     }
-    println!(
-        "Imported {} signed membership operation(s).",
-        operations.len()
-    );
+    println!("Imported {} membership record(s).", records.len());
     Ok(())
 }
 
@@ -218,7 +220,7 @@ fn open_for_membership_import(
     let epochs = existing
         .membership_operations()?
         .into_iter()
-        .map(|operation| operation.record.recovery_epoch)
+        .map(|record| record.recovery_epoch)
         .collect::<std::collections::BTreeSet<_>>();
     if epochs.is_empty() || epochs == std::collections::BTreeSet::from([recovery_epoch]) {
         return Ok(existing);
@@ -322,14 +324,6 @@ async fn run(
         bind = %config.replication_bind,
         "authoritative mesh runtime enabled"
     );
-    let authority = Arc::new(config.keyring()?);
-    let node_key = ed25519_dalek::SigningKey::from_bytes(
-        config
-            .node_signing_key
-            .as_slice()
-            .try_into()
-            .expect("MeshConfig::validate already checked this is 32 bytes"),
-    );
     let api = AgentApi::new(
         Arc::clone(&store),
         Identity {
@@ -339,13 +333,7 @@ async fn run(
         socket_path.display().to_string(),
     )
     .with_peer_reachability_timeout(config.peer_reachability_timeout_secs())
-    .with_catalog_authority(CatalogAuthority {
-        project_id: config.project_id.clone(),
-        recovery_epoch: config.recovery_epoch,
-        node_id: config.node_id.clone(),
-        node_key: node_key.clone(),
-        membership_authority: (*authority).clone(),
-    });
+    .with_catalog_identity(config.identity());
     let startup_candidates = store
         .lock()
         .map_err(|_| anyhow::anyhow!("local store lock poisoned"))?

@@ -1,5 +1,17 @@
 //! Incremental WireGuard reconciliation derived only from authenticated
 //! membership records. Service/catalog changes never enter this module.
+//!
+//! `wg set ... allowed-ips` alone never touches the OS routing table -- unlike `wg-quick`, native
+//! `wg set` has no automatic route programming (confirmed live: after a plain reboot, the interface
+//! and every peer came back with correct handshakes, but the main routing table still sent
+//! peer-management and container-subnet traffic out the physical LAN interface instead of the
+//! WireGuard one, since nothing had ever re-issued `ip route` for this boot). `render_commands`
+//! and `runtime::apply_action` therefore pair every `Set`/`Remove` action with an explicit
+//! `ip route replace`/`ip route del` for that peer's `allowed_ips`, so a peer's routes self-heal on
+//! every reconcile tick -- including the very first one after a cold boot, since
+//! `local_reconcile.rs::ensure_link` clears the peer cache whenever it has to (re)configure the
+//! link, forcing every active peer through a fresh `Set` action rather than the cheaper
+//! `UpdateEndpoint` path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -43,6 +55,7 @@ pub enum PeerAction {
     Remove {
         node_id: String,
         public_key: String,
+        allowed_ips: Vec<String>,
     },
 }
 
@@ -78,6 +91,10 @@ pub fn plan_reconciliation(
                 if let Some(previous) = plan.next_cache.remove(&record.node_id) {
                     plan.actions.push(PeerAction::Remove {
                         node_id: record.node_id.clone(),
+                        allowed_ips: vec![
+                            format!("{}/32", previous.management_address),
+                            previous.container_subnet.clone(),
+                        ],
                         public_key: previous.wireguard_public_key,
                     });
                 }
@@ -88,6 +105,10 @@ pub fn plan_reconciliation(
                     if previous.wireguard_public_key != record.wireguard_public_key {
                         plan.actions.push(PeerAction::Remove {
                             node_id: record.node_id.clone(),
+                            allowed_ips: vec![
+                                format!("{}/32", previous.management_address),
+                                previous.container_subnet.clone(),
+                            ],
                             public_key: previous.wireguard_public_key.clone(),
                         });
                     }
@@ -151,23 +172,43 @@ pub fn plan_reconciliation(
 pub fn render_commands(interface: &str, plan: &ReconcilePlan) -> Vec<String> {
     plan.actions
         .iter()
-        .map(|action| match action {
+        .flat_map(|action| match action {
             PeerAction::Set {
                 public_key,
                 endpoint,
                 allowed_ips,
                 ..
-            } => format!(
-                "wg set {interface} peer {public_key} endpoint {endpoint} allowed-ips {} persistent-keepalive 25",
-                allowed_ips.join(",")
-            ),
+            } => {
+                let mut commands = vec![format!(
+                    "wg set {interface} peer {public_key} endpoint {endpoint} allowed-ips {} persistent-keepalive 25",
+                    allowed_ips.join(",")
+                )];
+                commands.extend(
+                    allowed_ips
+                        .iter()
+                        .map(|ip| format!("ip route replace {ip} dev {interface}")),
+                );
+                commands
+            }
             PeerAction::UpdateEndpoint {
                 public_key,
                 endpoint,
                 ..
-            } => format!("wg set {interface} peer {public_key} endpoint {endpoint}"),
-            PeerAction::Remove { public_key, .. } => {
-                format!("wg set {interface} peer {public_key} remove")
+            } => vec![format!(
+                "wg set {interface} peer {public_key} endpoint {endpoint}"
+            )],
+            PeerAction::Remove {
+                public_key,
+                allowed_ips,
+                ..
+            } => {
+                let mut commands = vec![format!("wg set {interface} peer {public_key} remove")];
+                commands.extend(
+                    allowed_ips
+                        .iter()
+                        .map(|ip| format!("ip route del {ip} dev {interface}")),
+                );
+                commands
             }
         })
         .collect()
@@ -189,7 +230,6 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: node.into(),
             server_name: node.into(),
-            node_signing_public_key: vec![1; 32],
             wireguard_public_key: format!("key-{node}"),
             management_address: Ipv4Addr::new(100, 98, 64, 2),
             container_subnet: "198.18.2.0/24".into(),
@@ -209,9 +249,29 @@ mod tests {
             &BTreeMap::new(),
         );
         let commands = render_commands("jiji0", &plan);
-        assert_eq!(commands.len(), 1);
+        assert_eq!(commands.len(), 3);
         assert!(commands[0].contains("wg set jiji0 peer key-remote"));
         assert!(commands[0].contains("allowed-ips 100.98.64.2/32,198.18.2.0/24"));
+        assert_eq!(commands[1], "ip route replace 100.98.64.2/32 dev jiji0");
+        assert_eq!(commands[2], "ip route replace 198.18.2.0/24 dev jiji0");
+    }
+
+    #[test]
+    fn tombstone_removal_also_deletes_the_peer_s_routes() {
+        let active = record("remote", MembershipState::Active);
+        let first = plan_reconciliation("local", &[active], &BTreeMap::new(), &BTreeMap::new());
+        let tombstone = record("remote", MembershipState::Tombstoned);
+        let second =
+            plan_reconciliation("local", &[tombstone], &first.next_cache, &BTreeMap::new());
+        let commands = render_commands("jiji0", &second);
+        assert_eq!(
+            commands,
+            vec![
+                "wg set jiji0 peer key-remote remove".to_string(),
+                "ip route del 100.98.64.2/32 dev jiji0".to_string(),
+                "ip route del 198.18.2.0/24 dev jiji0".to_string(),
+            ]
+        );
     }
 
     #[test]

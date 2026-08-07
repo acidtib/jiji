@@ -4,7 +4,7 @@
 //! closed rather than open). Supports health, identity, diagnostics, reconciliation status,
 //! catalog reads/listing, and a local-transaction primitive. `CatalogRead`/`LocalTransaction`
 //! remain the generic Phase 2 key/value primitive (see `store.rs`'s `commit_local_transaction`);
-//! `CatalogList` (Phase 4) is the real, node-signed, replicated service catalog from `catalog.rs`.
+//! `CatalogList` (Phase 4) is the real, node-owned, replicated service catalog from `catalog.rs`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -16,15 +16,13 @@ use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::catalog::{
-    CatalogRecord, DeploymentState, HealthState, SignedCatalogOperation, CATALOG_PROTOCOL_VERSION,
-    CATALOG_SCHEMA_VERSION,
+    CatalogRecord, DeploymentState, HealthState, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION,
 };
 use crate::desired::{
-    DesiredStateRecord, ReplicaAssignment, SignedDesiredState, DESIRED_PROTOCOL_VERSION,
-    DESIRED_SCHEMA_VERSION,
+    DesiredStateRecord, ReplicaAssignment, DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION,
 };
 use crate::leases::{AddressAllocator, DEFAULT_QUARANTINE_SECONDS};
-use crate::membership::{AuthorityKeyring, MembershipView};
+use crate::membership::{MembershipView, NodeIdentity, RecordProvenance};
 use crate::store::{AgentStore, ComponentStatus, OperationCounts, PeerSyncStatus};
 
 /// A declared frame length above this is rejected before the body is read, so an oversized
@@ -98,6 +96,7 @@ pub enum ResponseBody {
     Health {
         schema_version: i64,
         observation_count: i64,
+        version: String,
     },
     Identity {
         project: String,
@@ -198,16 +197,7 @@ pub struct AgentApi {
     socket_path: String,
     started_at: Instant,
     peer_reachability_timeout_secs: u64,
-    catalog_authority: Option<CatalogAuthority>,
-}
-
-#[derive(Clone)]
-pub struct CatalogAuthority {
-    pub project_id: String,
-    pub recovery_epoch: u64,
-    pub node_id: String,
-    pub node_key: ed25519_dalek::SigningKey,
-    pub membership_authority: AuthorityKeyring,
+    catalog_identity: Option<NodeIdentity>,
 }
 
 impl AgentApi {
@@ -218,12 +208,15 @@ impl AgentApi {
             socket_path,
             started_at: Instant::now(),
             peer_reachability_timeout_secs: 30,
-            catalog_authority: None,
+            catalog_identity: None,
         }
     }
 
-    pub fn with_catalog_authority(mut self, authority: CatalogAuthority) -> Self {
-        self.catalog_authority = Some(authority);
+    /// This node's own identity for catalog/desired-state writes it originates locally, via
+    /// `CatalogCommit`/`DesiredCommit`. Trusted unconditionally (`RecordProvenance::Local`) -- see
+    /// `catalog.rs`'s module doc comment.
+    pub fn with_catalog_identity(mut self, identity: NodeIdentity) -> Self {
+        self.catalog_identity = Some(identity);
         self
     }
 
@@ -243,6 +236,7 @@ impl AgentApi {
                 observation_count: store
                     .observation_count()
                     .map_err(|error| internal(&error))?,
+                version: env!("CARGO_PKG_VERSION").to_string(),
             }),
             RequestBody::Identity => Ok(ResponseBody::Identity {
                 project: self.identity.project.clone(),
@@ -363,20 +357,21 @@ impl AgentApi {
                 replica_override,
                 assignments,
             } => {
-                let authority = self.catalog_authority.as_ref().ok_or_else(|| {
+                let identity = self.catalog_identity.as_ref().ok_or_else(|| {
                     ApiError::new(
                         ErrorCode::Invalid,
-                        "desired-state authority is not configured",
+                        "desired-state identity is not configured",
                     )
                 })?;
-                let membership = MembershipView::from_operations(
+                let scope = identity.scope();
+                let membership = MembershipView::from_records(
                     store
                         .membership_operations()
                         .map_err(|error| internal(&error))?,
-                    &authority.membership_authority,
+                    &scope,
                 )
                 .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
-                let author = membership.get(&authority.node_id).ok_or_else(|| {
+                let author = membership.get(&identity.node_id).ok_or_else(|| {
                     ApiError::new(
                         ErrorCode::Invalid,
                         "local node has no active membership record",
@@ -387,24 +382,23 @@ impl AgentApi {
                     .map_err(|error| internal(&error))?
                     .map_or(1, |current| current.revision + 1);
                 let record = DesiredStateRecord {
-                    project_id: authority.project_id.clone(),
-                    recovery_epoch: authority.recovery_epoch,
+                    project_id: identity.project_id.clone(),
+                    recovery_epoch: identity.recovery_epoch,
                     protocol_version: DESIRED_PROTOCOL_VERSION,
                     schema_version: DESIRED_SCHEMA_VERSION,
                     service,
                     replica_override,
                     assignments,
                     revision,
-                    author_node_id: authority.node_id.clone(),
-                    author_epoch: author.record.owner_epoch,
+                    author_node_id: identity.node_id.clone(),
+                    author_epoch: author.owner_epoch,
                 };
-                let operation = SignedDesiredState::sign(record.clone(), &authority.node_key)
-                    .map_err(|error| ApiError::new(ErrorCode::Invalid, error.to_string()))?;
                 store
                     .apply_desired(
-                        &operation,
-                        &authority.project_id,
-                        authority.recovery_epoch,
+                        record.clone(),
+                        RecordProvenance::Local,
+                        &identity.project_id,
+                        identity.recovery_epoch,
                         &membership,
                     )
                     .map_err(|error| internal(&error))?;
@@ -422,20 +416,21 @@ impl AgentApi {
                 state,
                 health,
             } => {
-                let authority = self.catalog_authority.as_ref().ok_or_else(|| {
-                    ApiError::new(ErrorCode::Invalid, "catalog authority is not configured")
+                let identity = self.catalog_identity.as_ref().ok_or_else(|| {
+                    ApiError::new(ErrorCode::Invalid, "catalog identity is not configured")
                 })?;
                 let address = address.parse().map_err(|error: std::net::AddrParseError| {
                     ApiError::new(ErrorCode::Invalid, error.to_string())
                 })?;
-                let membership = MembershipView::from_operations(
+                let scope = identity.scope();
+                let membership = MembershipView::from_records(
                     store
                         .membership_operations()
                         .map_err(|error| internal(&error))?,
-                    &authority.membership_authority,
+                    &scope,
                 )
                 .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
-                let owner = membership.get(&authority.node_id).ok_or_else(|| {
+                let owner = membership.get(&identity.node_id).ok_or_else(|| {
                     ApiError::new(
                         ErrorCode::Invalid,
                         "local node has no active membership record",
@@ -451,8 +446,8 @@ impl AgentApi {
                     .saturating_add(1);
                 if catalog.iter().any(|record| {
                     record.replica_id == replica_id
-                        && record.owner_node_id != authority.node_id
-                        && record.owner_epoch >= owner.record.owner_epoch
+                        && record.owner_node_id != identity.node_id
+                        && record.owner_epoch >= owner.owner_epoch
                 }) {
                     return Err(ApiError::new(
                         ErrorCode::Invalid,
@@ -460,14 +455,14 @@ impl AgentApi {
                     ));
                 }
                 let record = CatalogRecord {
-                    project_id: authority.project_id.clone(),
-                    recovery_epoch: authority.recovery_epoch,
+                    project_id: identity.project_id.clone(),
+                    recovery_epoch: identity.recovery_epoch,
                     protocol_version: CATALOG_PROTOCOL_VERSION,
                     schema_version: CATALOG_SCHEMA_VERSION,
                     service,
                     replica_id,
-                    owner_node_id: authority.node_id.clone(),
-                    owner_epoch: owner.record.owner_epoch,
+                    owner_node_id: identity.node_id.clone(),
+                    owner_epoch: owner.owner_epoch,
                     revision: next_revision,
                     deployment_id,
                     address,
@@ -476,14 +471,12 @@ impl AgentApi {
                     state,
                     health,
                 };
-                let operation =
-                    SignedCatalogOperation::sign(record.clone(), &authority.node_key)
-                        .map_err(|error| ApiError::new(ErrorCode::Invalid, error.to_string()))?;
                 store
                     .apply_catalog(
-                        &operation,
-                        &authority.project_id,
-                        authority.recovery_epoch,
+                        record.clone(),
+                        RecordProvenance::Local,
+                        &identity.project_id,
+                        identity.recovery_epoch,
                         &membership,
                     )
                     .map_err(|error| internal(&error))?;

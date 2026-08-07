@@ -1,12 +1,23 @@
-//! Signed, node-owned service catalog records.
+//! Plain, node-owned service catalog records.
 //!
-//! Unlike membership (authority-signed, see `membership.rs`), a catalog record is signed by the
-//! node that currently owns the replica it describes -- a node writes its own heartbeat and owns
-//! the logical service replicas scheduled to it. There is no separate catalog signing authority:
-//! verification checks the signature against the signer's own `node_signing_public_key`, sourced
-//! from the live membership view, and rejects any operation whose `signer_id` is not also its
-//! `owner_node_id` -- a node can publish catalog state for itself, never on behalf of another
-//! node.
+//! Unlike membership (CLI-pushed, see `membership.rs`), a catalog record is
+//! *authored* by the node that currently owns the replica it describes -- a
+//! node writes its own heartbeat and owns the logical service replicas
+//! scheduled to it. There is no signing authority: authenticity comes from
+//! `RecordProvenance` instead of a signature. A `Local` record was
+//! constructed by this node itself (via the agent socket API or its own
+//! crash-restart reconciliation) and is trusted unconditionally. A
+//! `Verified` record is already durably persisted and was authenticated once
+//! already, at ingestion time -- it's only being replayed to reconstruct a
+//! view (rebuilding history before applying a new record, or serving DNS/
+//! diagnostics reads), never itself the record being newly applied. A `Peer`
+//! record arrived over `catalog_replication`'s direct, WireGuard-mesh-only
+//! TCP connection; its claimed `owner_node_id` must match the node whose
+//! membership record's `management_address` equals the connection's actual
+//! source address -- since replication only ever sends a node's own records
+//! (never relayed third-party state, see `catalog_replication.rs`), that
+//! source address is exactly the node vouching for the claim, and WireGuard's
+//! own peer authentication makes that address unspoofable within the mesh.
 //!
 //! Catalog records are written by `jiji-cli`'s deploy/restart/rollback/remove/scale commands (via
 //! the agent's `CatalogCommit` API) and by this node's own crash-restart reconciliation
@@ -16,12 +27,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::membership::MembershipView;
+use crate::membership::{MembershipView, ProvenanceError, RecordProvenance};
 
 pub const CATALOG_PROTOCOL_VERSION: u16 = 1;
 pub const CATALOG_SCHEMA_VERSION: u16 = 2;
@@ -89,72 +98,34 @@ impl CatalogRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignedCatalogOperation {
-    pub operation_id: String,
-    pub signer_id: String,
-    pub record: CatalogRecord,
-    pub signature: Vec<u8>,
+impl From<ProvenanceError> for CatalogError {
+    fn from(error: ProvenanceError) -> Self {
+        match error {
+            ProvenanceError::UnknownPeer => CatalogError::UnknownPeer,
+            ProvenanceError::NotOwner => CatalogError::NotOwner,
+        }
+    }
 }
 
-impl SignedCatalogOperation {
-    pub fn sign(record: CatalogRecord, signing_key: &SigningKey) -> Result<Self, CatalogError> {
-        record.validate()?;
-        let operation_id = operation_id(&record)?;
-        Ok(Self {
-            signature: signing_key
-                .sign(operation_id.as_bytes())
-                .to_bytes()
-                .to_vec(),
-            operation_id,
-            signer_id: record.owner_node_id.clone(),
-            record,
-        })
+fn verify(
+    record: &CatalogRecord,
+    provenance: RecordProvenance,
+    project_id: &str,
+    recovery_epoch: u64,
+    membership: &MembershipView,
+) -> Result<(), CatalogError> {
+    record.validate()?;
+    if record.project_id != project_id {
+        return Err(CatalogError::WrongProject);
     }
-
-    /// Verifies structure, project/epoch scoping, and the signature against the signer's own
-    /// `node_signing_public_key` as published in `membership` -- a node with no active membership
-    /// record cannot publish catalog state, and a node cannot sign a record it does not own.
-    pub fn verify(
-        &self,
-        project_id: &str,
-        recovery_epoch: u64,
-        membership: &MembershipView,
-    ) -> Result<(), CatalogError> {
-        self.record.validate()?;
-        if self.record.project_id != project_id {
-            return Err(CatalogError::WrongProject);
-        }
-        if self.record.recovery_epoch != recovery_epoch {
-            return Err(CatalogError::RecoveryEpoch {
-                expected: recovery_epoch,
-                actual: self.record.recovery_epoch,
-            });
-        }
-        if self.signer_id != self.record.owner_node_id {
-            return Err(CatalogError::NotOwner);
-        }
-        if operation_id(&self.record)? != self.operation_id {
-            return Err(CatalogError::InvalidOperationId);
-        }
-        let signature =
-            Signature::from_slice(&self.signature).map_err(|_| CatalogError::InvalidSignature)?;
-        let Some(signer) = membership.get(&self.signer_id) else {
-            return Err(CatalogError::UnknownSigner);
-        };
-        let key_bytes: [u8; 32] = signer
-            .record
-            .node_signing_public_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| CatalogError::InvalidSignature)?;
-        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
-            .map_err(|_| CatalogError::InvalidSignature)?;
-        verifying_key
-            .verify(self.operation_id.as_bytes(), &signature)
-            .map_err(|_| CatalogError::InvalidSignature)?;
-        Ok(())
+    if record.recovery_epoch != recovery_epoch {
+        return Err(CatalogError::RecoveryEpoch {
+            expected: recovery_epoch,
+            actual: record.recovery_epoch,
+        });
     }
+    membership.authenticate(provenance, &record.owner_node_id)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,93 +137,93 @@ pub enum CatalogApply {
 
 #[derive(Debug, Clone, Default)]
 pub struct CatalogView {
-    records: BTreeMap<String, SignedCatalogOperation>,
-    operation_ids: BTreeSet<String>,
+    records: BTreeMap<String, CatalogRecord>,
+    record_ids: BTreeSet<String>,
 }
 
 impl CatalogView {
-    pub fn from_operations(
-        operations: impl IntoIterator<Item = SignedCatalogOperation>,
+    pub fn from_records(
+        records: impl IntoIterator<Item = (CatalogRecord, RecordProvenance)>,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<Self, CatalogError> {
         let mut view = Self::default();
-        for operation in operations {
-            view.apply(operation, project_id, recovery_epoch, membership)?;
+        for (record, provenance) in records {
+            view.apply(record, provenance, project_id, recovery_epoch, membership)?;
         }
         Ok(view)
     }
 
     pub fn apply(
         &mut self,
-        operation: SignedCatalogOperation,
+        record: CatalogRecord,
+        provenance: RecordProvenance,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<CatalogApply, CatalogError> {
-        operation.verify(project_id, recovery_epoch, membership)?;
-        if self.operation_ids.contains(&operation.operation_id) {
+        verify(&record, provenance, project_id, recovery_epoch, membership)?;
+        let id = record_id(&record)?;
+        if self.record_ids.contains(&id) {
             return Ok(CatalogApply::Duplicate);
         }
         let replica_owner_epoch = self
             .records
             .values()
-            .filter(|current| current.record.replica_id == operation.record.replica_id)
-            .map(|current| current.record.owner_epoch)
+            .filter(|current| current.replica_id == record.replica_id)
+            .map(|current| current.owner_epoch)
             .max();
-        if replica_owner_epoch.is_some_and(|epoch| operation.record.owner_epoch < epoch) {
+        if replica_owner_epoch.is_some_and(|epoch| record.owner_epoch < epoch) {
             return Err(CatalogError::StaleOwnerEpoch);
         }
-        if let Some(current) = self.records.get(&operation.record.deployment_id) {
-            if operation.record.owner_epoch < current.record.owner_epoch {
+        if let Some(current) = self.records.get(&record.deployment_id) {
+            if record.owner_epoch < current.owner_epoch {
                 return Err(CatalogError::StaleOwnerEpoch);
             }
-            if order(&operation) <= order(current) {
-                self.operation_ids.insert(operation.operation_id);
+            let current_id = record_id(current)?;
+            if order(&record, &id) <= order(current, &current_id) {
+                self.record_ids.insert(id);
                 return Ok(CatalogApply::Superseded);
             }
-            if current.record.state == DeploymentState::Tombstoned
-                && operation.record.state != DeploymentState::Tombstoned
-                && operation.record.owner_epoch == current.record.owner_epoch
+            if current.state == DeploymentState::Tombstoned
+                && record.state != DeploymentState::Tombstoned
+                && record.owner_epoch == current.owner_epoch
             {
                 return Err(CatalogError::TombstoneResurrection);
             }
         }
-        self.operation_ids.insert(operation.operation_id.clone());
-        self.records
-            .insert(operation.record.deployment_id.clone(), operation);
+        self.record_ids.insert(id);
+        self.records.insert(record.deployment_id.clone(), record);
         Ok(CatalogApply::Applied)
     }
 
     /// Active, healthy replicas -- the only records DNS may ever answer with. Candidate,
     /// draining, stopped, and tombstoned records are excluded.
     pub fn active_healthy(&self) -> impl Iterator<Item = &CatalogRecord> {
-        let mut winners = BTreeMap::<&str, &SignedCatalogOperation>::new();
-        for operation in self.records.values().filter(|operation| {
-            operation.record.state == DeploymentState::Active
-                && operation.record.health == HealthState::Healthy
+        let mut winners = BTreeMap::<&str, &CatalogRecord>::new();
+        for record in self.records.values().filter(|record| {
+            record.state == DeploymentState::Active && record.health == HealthState::Healthy
         }) {
             let replace = winners
-                .get(operation.record.replica_id.as_str())
-                .is_none_or(|current| order(operation) > order(current));
+                .get(record.replica_id.as_str())
+                .is_none_or(|current| record_order(record) > record_order(current));
             if replace {
-                winners.insert(operation.record.replica_id.as_str(), operation);
+                winners.insert(record.replica_id.as_str(), record);
             }
         }
-        winners.into_values().map(|operation| &operation.record)
+        winners.into_values()
     }
 
     pub fn get(&self, replica_id: &str) -> Option<&CatalogRecord> {
         self.records
             .values()
-            .filter(|operation| operation.record.replica_id == replica_id)
-            .max_by_key(|operation| order(operation))
-            .map(|operation| &operation.record)
+            .filter(|record| record.replica_id == replica_id)
+            .max_by_key(|record| record_order(record))
     }
 
     pub fn all(&self) -> impl Iterator<Item = &CatalogRecord> {
-        self.records.values().map(|op| &op.record)
+        self.records.values()
     }
 }
 
@@ -280,21 +251,20 @@ fn record_order(record: &CatalogRecord) -> (u64, u64, u8, &str) {
     )
 }
 
-fn order(operation: &SignedCatalogOperation) -> (u64, u64, u8, &str) {
+fn order(record: &CatalogRecord, id: &str) -> (u64, u64, u8, String) {
     (
-        operation.record.owner_epoch,
-        operation.record.revision,
-        match operation.record.state {
+        record.owner_epoch,
+        record.revision,
+        match record.state {
             DeploymentState::Tombstoned => 1,
             _ => 0,
         },
-        &operation.operation_id,
+        id.to_string(),
     )
 }
 
-fn operation_id(record: &CatalogRecord) -> Result<String, CatalogError> {
-    let digest = Sha256::digest(serde_json::to_vec(record)?);
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+pub(crate) fn record_id(record: &CatalogRecord) -> Result<String, CatalogError> {
+    Ok(crate::membership::content_hash(record)?)
 }
 
 #[derive(Debug, Error)]
@@ -311,12 +281,8 @@ pub enum CatalogError {
     WrongProject,
     #[error("catalog recovery epoch {actual} does not match {expected}")]
     RecoveryEpoch { expected: u64, actual: u64 },
-    #[error("catalog operation ID does not match its body")]
-    InvalidOperationId,
-    #[error("catalog operation has an invalid signature")]
-    InvalidSignature,
-    #[error("catalog operation was not signed by an active member node")]
-    UnknownSigner,
+    #[error("catalog operation was not sent by a known member's own management address")]
+    UnknownPeer,
     #[error("a node may only publish catalog state it owns")]
     NotOwner,
     #[error("catalog owner epoch moved backwards")]
@@ -329,19 +295,13 @@ pub enum CatalogError {
 mod tests {
     use super::*;
     use crate::membership::{
-        MembershipRecord, MembershipState, SignedMembership, MEMBERSHIP_PROTOCOL_VERSION,
+        MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
         MEMBERSHIP_SCHEMA_VERSION,
     };
-    use std::net::SocketAddr;
+    use std::net::{IpAddr, SocketAddr};
 
-    fn node_key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
-    }
-
-    fn membership_with(node_id: &str, key: &SigningKey) -> MembershipView {
-        let signer_key = SigningKey::from_bytes(&[99; 32]);
-        let mut authority = crate::membership::AuthorityKeyring::new("project", 1);
-        authority.add_authority("root", signer_key.verifying_key());
+    fn membership_with(node_id: &str, management_address: Ipv4Addr) -> MembershipView {
+        let scope = MembershipScope::new("project", 1);
         let record = MembershipRecord {
             project_id: "project".into(),
             recovery_epoch: 1,
@@ -349,19 +309,21 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: node_id.into(),
             server_name: node_id.into(),
-            node_signing_public_key: key.verifying_key().to_bytes().to_vec(),
             wireguard_public_key: format!("wg-{node_id}"),
-            management_address: "100.98.64.1".parse().unwrap(),
+            management_address,
             container_subnet: "198.18.1.0/24".into(),
             endpoints: vec!["192.0.2.1:51820".parse::<SocketAddr>().unwrap()],
             owner_epoch: 1,
             revision: 1,
             state: MembershipState::Active,
         };
-        let signed = SignedMembership::sign(record, "root", &signer_key).unwrap();
         let mut view = MembershipView::default();
-        view.apply(signed, &authority).unwrap();
+        view.apply(record, &scope).unwrap();
         view
+    }
+
+    fn peer_addr(management_address: Ipv4Addr) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(management_address), 58000)
     }
 
     fn record(replica: &str, node: &str, revision: u64, state: DeploymentState) -> CatalogRecord {
@@ -385,77 +347,118 @@ mod tests {
     }
 
     #[test]
-    fn a_node_can_sign_and_verify_its_own_replica() {
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
-        let signed =
-            SignedCatalogOperation::sign(record("r1", "node-a", 1, DeploymentState::Active), &key)
-                .unwrap();
-        signed.verify("project", 1, &membership).unwrap();
+    fn a_node_can_publish_its_own_replica_locally() {
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
+        let mut view = CatalogView::default();
+        view.apply(
+            record("r1", "node-a", 1, DeploymentState::Active),
+            RecordProvenance::Local,
+            "project",
+            1,
+            &membership,
+        )
+        .unwrap();
     }
 
     #[test]
-    fn a_valid_member_cannot_claim_ownership_of_another_nodes_replica() {
-        // `SignedCatalogOperation::sign` always derives `signer_id` from `record.owner_node_id`,
-        // so this attacks the wire shape directly: a legitimate, active member (node-a) signs the
-        // record's operation_id with its own key, but hand-sets `signer_id` to itself while the
-        // record claims ownership by node-b. `signer_id` alone is authenticated (it's what gets
-        // looked up in membership); without the explicit ownership check this would otherwise
-        // verify cleanly.
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
-        let record = record("r1", "node-b", 1, DeploymentState::Active);
-        let operation_id = operation_id(&record).unwrap();
-        let signature = key.sign(operation_id.as_bytes()).to_bytes().to_vec();
-        let forged = SignedCatalogOperation {
-            operation_id,
-            signer_id: "node-a".into(),
-            record,
-            signature,
-        };
+    fn a_peer_record_is_accepted_when_the_source_address_matches_the_owner() {
+        let address = Ipv4Addr::new(100, 98, 64, 1);
+        let membership = membership_with("node-a", address);
+        let mut view = CatalogView::default();
+        view.apply(
+            record("r1", "node-a", 1, DeploymentState::Active),
+            RecordProvenance::Peer(peer_addr(address)),
+            "project",
+            1,
+            &membership,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_peer_cannot_claim_ownership_of_another_nodes_replica() {
+        // node-a's own connection (source address matches node-a's membership record) relays a
+        // record that claims ownership by node-b -- without the address-vs-owner check this
+        // would otherwise be accepted as long as node-b is a known member.
+        let node_a_address = Ipv4Addr::new(100, 98, 64, 1);
+        let mut membership = membership_with("node-a", node_a_address);
+        let scope = MembershipScope::new("project", 1);
+        membership
+            .apply(
+                MembershipRecord {
+                    project_id: "project".into(),
+                    recovery_epoch: 1,
+                    protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
+                    schema_version: MEMBERSHIP_SCHEMA_VERSION,
+                    node_id: "node-b".into(),
+                    server_name: "node-b".into(),
+                    wireguard_public_key: "wg-node-b".into(),
+                    management_address: Ipv4Addr::new(100, 98, 64, 2),
+                    container_subnet: "198.18.2.0/24".into(),
+                    endpoints: vec!["192.0.2.2:51820".parse::<SocketAddr>().unwrap()],
+                    owner_epoch: 1,
+                    revision: 1,
+                    state: MembershipState::Active,
+                },
+                &scope,
+            )
+            .unwrap();
+        let forged = record("r1", "node-b", 1, DeploymentState::Active);
+        let mut view = CatalogView::default();
         assert!(matches!(
-            forged.verify("project", 1, &membership),
+            view.apply(
+                forged,
+                RecordProvenance::Peer(peer_addr(node_a_address)),
+                "project",
+                1,
+                &membership
+            ),
             Err(CatalogError::NotOwner)
         ));
     }
 
     #[test]
-    fn unsigned_by_any_known_member_is_rejected() {
-        let key = node_key(1);
-        let membership = MembershipView::default();
-        let signed =
-            SignedCatalogOperation::sign(record("r1", "node-a", 1, DeploymentState::Active), &key)
-                .unwrap();
+    fn a_peer_record_from_an_unrecognized_address_is_rejected() {
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
+        let signed = record("r1", "node-a", 1, DeploymentState::Active);
+        let mut view = CatalogView::default();
         assert!(matches!(
-            signed.verify("project", 1, &membership),
-            Err(CatalogError::UnknownSigner)
+            view.apply(
+                signed,
+                RecordProvenance::Peer(peer_addr(Ipv4Addr::new(100, 98, 64, 9))),
+                "project",
+                1,
+                &membership
+            ),
+            Err(CatalogError::UnknownPeer)
         ));
     }
 
     #[test]
     fn duplicate_and_out_of_order_delivery_converge() {
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
-        let older = SignedCatalogOperation::sign(
-            record("r1", "node-a", 1, DeploymentState::Candidate),
-            &key,
-        )
-        .unwrap();
-        let newer =
-            SignedCatalogOperation::sign(record("r1", "node-a", 2, DeploymentState::Active), &key)
-                .unwrap();
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
+        let older = record("r1", "node-a", 1, DeploymentState::Candidate);
+        let newer = record("r1", "node-a", 2, DeploymentState::Active);
         let mut view = CatalogView::default();
         assert_eq!(
-            view.apply(newer.clone(), "project", 1, &membership)
-                .unwrap(),
+            view.apply(
+                newer.clone(),
+                RecordProvenance::Local,
+                "project",
+                1,
+                &membership
+            )
+            .unwrap(),
             CatalogApply::Applied
         );
         assert_eq!(
-            view.apply(older, "project", 1, &membership).unwrap(),
+            view.apply(older, RecordProvenance::Local, "project", 1, &membership)
+                .unwrap(),
             CatalogApply::Superseded
         );
         assert_eq!(
-            view.apply(newer, "project", 1, &membership).unwrap(),
+            view.apply(newer, RecordProvenance::Local, "project", 1, &membership)
+                .unwrap(),
             CatalogApply::Duplicate
         );
         assert_eq!(view.get("r1").unwrap().state, DeploymentState::Active);
@@ -463,8 +466,7 @@ mod tests {
 
     #[test]
     fn candidate_and_draining_records_are_excluded_from_active_healthy() {
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
         let mut view = CatalogView::default();
         for (id, state) in [
             ("r-candidate", DeploymentState::Candidate),
@@ -472,9 +474,14 @@ mod tests {
             ("r-draining", DeploymentState::Draining),
             ("r-stopped", DeploymentState::Stopped),
         ] {
-            let signed =
-                SignedCatalogOperation::sign(record(id, "node-a", 1, state), &key).unwrap();
-            view.apply(signed, "project", 1, &membership).unwrap();
+            view.apply(
+                record(id, "node-a", 1, state),
+                RecordProvenance::Local,
+                "project",
+                1,
+                &membership,
+            )
+            .unwrap();
         }
         let active: Vec<&str> = view
             .active_healthy()
@@ -503,13 +510,13 @@ mod tests {
 
     #[test]
     fn tombstone_requires_a_new_owner_epoch_to_replace() {
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
         let mut view = CatalogView::default();
         let mut tombstone = record("r1", "node-a", 2, DeploymentState::Tombstoned);
         tombstone.owner_epoch = 1;
         view.apply(
-            SignedCatalogOperation::sign(tombstone, &key).unwrap(),
+            tombstone,
+            RecordProvenance::Local,
             "project",
             1,
             &membership,
@@ -517,18 +524,14 @@ mod tests {
         .unwrap();
         let replay = record("r1", "node-a", 3, DeploymentState::Active);
         assert!(matches!(
-            view.apply(
-                SignedCatalogOperation::sign(replay, &key).unwrap(),
-                "project",
-                1,
-                &membership
-            ),
+            view.apply(replay, RecordProvenance::Local, "project", 1, &membership),
             Err(CatalogError::TombstoneResurrection)
         ));
         let mut replacement = record("r1", "node-a", 1, DeploymentState::Active);
         replacement.owner_epoch = 2;
         view.apply(
-            SignedCatalogOperation::sign(replacement, &key).unwrap(),
+            replacement,
+            RecordProvenance::Local,
             "project",
             1,
             &membership,
@@ -539,17 +542,21 @@ mod tests {
 
     #[test]
     fn wrong_project_and_recovery_epoch_are_rejected() {
-        let key = node_key(1);
-        let membership = membership_with("node-a", &key);
-        let signed =
-            SignedCatalogOperation::sign(record("r1", "node-a", 1, DeploymentState::Active), &key)
-                .unwrap();
+        let membership = membership_with("node-a", Ipv4Addr::new(100, 98, 64, 1));
+        let signed = record("r1", "node-a", 1, DeploymentState::Active);
+        let mut view = CatalogView::default();
         assert!(matches!(
-            signed.verify("other-project", 1, &membership),
+            view.apply(
+                signed.clone(),
+                RecordProvenance::Local,
+                "other-project",
+                1,
+                &membership
+            ),
             Err(CatalogError::WrongProject)
         ));
         assert!(matches!(
-            signed.verify("project", 2, &membership),
+            view.apply(signed, RecordProvenance::Local, "project", 2, &membership),
             Err(CatalogError::RecoveryEpoch { .. })
         ));
     }

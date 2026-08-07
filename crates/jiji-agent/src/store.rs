@@ -11,11 +11,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::catalog::{CatalogApply, CatalogError, CatalogView, SignedCatalogOperation};
-use crate::desired::{DesiredApply, DesiredError, DesiredStateView, SignedDesiredState};
+use crate::catalog::{CatalogApply, CatalogError, CatalogRecord, CatalogView};
+use crate::desired::{DesiredApply, DesiredError, DesiredStateRecord, DesiredStateView};
 use crate::membership::{
-    AuthorityKeyring, MembershipApply, MembershipError, MembershipState, MembershipView,
-    SignedMembership,
+    MembershipApply, MembershipError, MembershipRecord, MembershipScope, MembershipState,
+    MembershipView, RecordProvenance,
 };
 use crate::wireguard::PeerCacheEntry;
 use std::net::Ipv4Addr;
@@ -94,8 +94,6 @@ const MIGRATIONS: &[Migration] = &[
         sql: "CREATE TABLE membership_operations (
                   operation_id TEXT PRIMARY KEY,
                   record_json TEXT NOT NULL,
-                  signer_id TEXT NOT NULL,
-                  signature BLOB NOT NULL,
                   applied_at TEXT NOT NULL
               );
               CREATE TABLE membership_records (
@@ -131,8 +129,6 @@ const MIGRATIONS: &[Migration] = &[
         sql: "CREATE TABLE catalog_operations (
                   operation_id TEXT PRIMARY KEY,
                   record_json TEXT NOT NULL,
-                  signer_id TEXT NOT NULL,
-                  signature BLOB NOT NULL,
                   applied_at TEXT NOT NULL
               );
               CREATE TABLE catalog_records (
@@ -187,8 +183,6 @@ const MIGRATIONS: &[Migration] = &[
               CREATE TABLE catalog_operations (
                   operation_id TEXT PRIMARY KEY,
                   record_json TEXT NOT NULL,
-                  signer_id TEXT NOT NULL,
-                  signature BLOB NOT NULL,
                   applied_at TEXT NOT NULL
               );
               CREATE TABLE catalog_records (
@@ -211,8 +205,6 @@ const MIGRATIONS: &[Migration] = &[
                   operation_id TEXT PRIMARY KEY,
                   service TEXT NOT NULL,
                   record_json TEXT NOT NULL,
-                  signer_id TEXT NOT NULL,
-                  signature BLOB NOT NULL,
                   applied_at TEXT NOT NULL
               );
               CREATE TABLE desired_records (
@@ -873,96 +865,43 @@ impl AgentStore {
         Ok(removed)
     }
 
-    pub fn membership_operations(&self) -> Result<Vec<SignedMembership>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT operation_id, record_json, signer_id, signature
-             FROM membership_operations ORDER BY rowid",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
+    pub fn membership_operations(&self) -> Result<Vec<MembershipRecord>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT record_json FROM membership_operations ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records = Vec::new();
         for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedMembership {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
+            records.push(serde_json::from_str(&row?)?);
         }
-        Ok(operations)
+        Ok(records)
     }
 
-    /// Returns the signed operation behind every materialized winning membership record.
-    ///
-    /// This is the bounded anti-entropy snapshot. It deliberately includes tombstones: removing
-    /// a winning tombstone would let a long-offline peer replay an older active record and
-    /// resurrect a decommissioned node.
-    pub fn membership_snapshot_operations(&self) -> Result<Vec<SignedMembership>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT o.operation_id, o.record_json, o.signer_id, o.signature
-             FROM membership_records r
-             JOIN membership_operations o ON o.operation_id = r.operation_id
-             ORDER BY r.node_id",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
-        for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedMembership {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
-        }
-        Ok(operations)
-    }
-
-    /// Verifies and durably materializes one replicated membership operation.
+    /// Verifies and durably materializes one CLI-pushed membership record.
     /// The operation and winning record commit atomically.
     pub fn apply_membership(
         &self,
-        operation: &SignedMembership,
-        authority: &AuthorityKeyring,
+        record: MembershipRecord,
+        scope: &MembershipScope,
     ) -> Result<MembershipApply, StoreError> {
+        let id = crate::membership::record_id(&record)?;
         if self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM membership_operations WHERE operation_id = ?1)",
-            [&operation.operation_id],
+            [&id],
             |row| row.get::<_, bool>(0),
         )? {
             return Ok(MembershipApply::Duplicate);
         }
         self.ensure_replication_capacity()?;
         let existing = self.membership_operations()?;
-        let mut view = MembershipView::from_operations(existing, authority)?;
-        let outcome = view.apply(operation.clone(), authority)?;
+        let mut view = MembershipView::from_records(existing, scope)?;
+        let outcome = view.apply(record.clone(), scope)?;
         let tx = self.conn.unchecked_transaction()?;
         let inserted = tx.execute(
-            "INSERT INTO membership_operations
-                 (operation_id, record_json, signer_id, signature, applied_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO membership_operations (operation_id, record_json, applied_at)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(operation_id) DO NOTHING",
-            params![
-                operation.operation_id,
-                serde_json::to_string(&operation.record)?,
-                operation.signer_id,
-                operation.signature,
-                now(),
-            ],
+            params![id, serde_json::to_string(&record)?, now()],
         )?;
         if inserted == 0 {
             tx.commit()?;
@@ -982,16 +921,16 @@ impl AgentStore {
                    operation_id=excluded.operation_id,
                    record_json=excluded.record_json",
                 params![
-                    operation.record.node_id,
-                    operation.record.server_name,
-                    operation.record.owner_epoch,
-                    operation.record.revision,
-                    match operation.record.state {
+                    record.node_id,
+                    record.server_name,
+                    record.owner_epoch,
+                    record.revision,
+                    match record.state {
                         crate::membership::MembershipState::Active => "active",
                         crate::membership::MembershipState::Tombstoned => "tombstoned",
                     },
-                    operation.operation_id,
-                    serde_json::to_string(&operation.record)?,
+                    id,
+                    serde_json::to_string(&record)?,
                 ],
             )?;
         }
@@ -1009,8 +948,9 @@ impl AgentStore {
             .collect())
     }
 
-    /// Returns the winning record for every known node, including authenticated
-    /// tombstones. Absence alone is deliberately never removal authority.
+    /// Returns the winning record for every known node, including tombstones. Absence alone is
+    /// deliberately never removal authority. This is also the set `jiji-cli` reconciles against
+    /// when deciding whether a host's membership is stale.
     pub fn latest_membership(
         &self,
     ) -> Result<Vec<crate::membership::MembershipRecord>, StoreError> {
@@ -1104,98 +1044,60 @@ impl AgentStore {
         Ok(cache)
     }
 
-    pub fn catalog_operations(&self) -> Result<Vec<SignedCatalogOperation>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT operation_id, record_json, signer_id, signature
-             FROM catalog_operations ORDER BY rowid",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
+    pub fn catalog_operations(&self) -> Result<Vec<CatalogRecord>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT record_json FROM catalog_operations ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records = Vec::new();
         for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedCatalogOperation {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
+            records.push(serde_json::from_str(&row?)?);
         }
-        Ok(operations)
+        Ok(records)
     }
 
-    /// Returns one signed winner per deployment, including stopped and tombstoned deployments.
-    /// Superseded history is not required for convergence because catalog ordering is monotonic
-    /// per owner/deployment and the signed winner contains the complete record.
-    pub fn catalog_snapshot_operations(&self) -> Result<Vec<SignedCatalogOperation>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT o.operation_id, o.record_json, o.signer_id, o.signature
-             FROM catalog_records r
-             JOIN catalog_operations o ON o.operation_id = r.operation_id
-             ORDER BY r.replica_id, r.deployment_id",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
-        for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedCatalogOperation {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
-        }
-        Ok(operations)
-    }
-
-    /// Verifies (against the caller-supplied, already-authenticated membership view) and durably
-    /// materializes one replicated catalog operation. Mirrors `apply_membership`: the operation and
-    /// winning record commit atomically, and only a successful verification touches the database.
+    /// Verifies (against the caller-supplied, already-materialized membership view) and durably
+    /// materializes one catalog record. Mirrors `apply_membership`: the operation and winning
+    /// record commit atomically, and only a successful verification touches the database.
     pub fn apply_catalog(
         &self,
-        operation: &SignedCatalogOperation,
+        record: CatalogRecord,
+        provenance: RecordProvenance,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<CatalogApply, StoreError> {
+        let id = crate::catalog::record_id(&record)?;
         if self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM catalog_operations WHERE operation_id = ?1)",
-            [&operation.operation_id],
+            [&id],
             |row| row.get::<_, bool>(0),
         )? {
             return Ok(CatalogApply::Duplicate);
         }
         self.ensure_replication_capacity()?;
         let existing = self.catalog_operations()?;
-        let mut view =
-            CatalogView::from_operations(existing, project_id, recovery_epoch, membership)?;
-        let outcome = view.apply(operation.clone(), project_id, recovery_epoch, membership)?;
+        let mut view = CatalogView::from_records(
+            existing
+                .into_iter()
+                .map(|record| (record, RecordProvenance::Verified)),
+            project_id,
+            recovery_epoch,
+            membership,
+        )?;
+        let outcome = view.apply(
+            record.clone(),
+            provenance,
+            project_id,
+            recovery_epoch,
+            membership,
+        )?;
         let tx = self.conn.unchecked_transaction()?;
         let inserted = tx.execute(
-            "INSERT INTO catalog_operations
-                 (operation_id, record_json, signer_id, signature, applied_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO catalog_operations (operation_id, record_json, applied_at)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(operation_id) DO NOTHING",
-            params![
-                operation.operation_id,
-                serde_json::to_string(&operation.record)?,
-                operation.signer_id,
-                operation.signature,
-                now(),
-            ],
+            params![id, serde_json::to_string(&record)?, now()],
         )?;
         if inserted == 0 {
             tx.commit()?;
@@ -1217,21 +1119,21 @@ impl AgentStore {
                    operation_id=excluded.operation_id,
                    record_json=excluded.record_json",
                 params![
-                    operation.record.deployment_id,
-                    operation.record.replica_id,
-                    operation.record.service,
-                    operation.record.owner_node_id,
-                    operation.record.owner_epoch,
-                    operation.record.revision,
-                    match operation.record.state {
+                    record.deployment_id,
+                    record.replica_id,
+                    record.service,
+                    record.owner_node_id,
+                    record.owner_epoch,
+                    record.revision,
+                    match record.state {
                         crate::catalog::DeploymentState::Candidate => "candidate",
                         crate::catalog::DeploymentState::Active => "active",
                         crate::catalog::DeploymentState::Draining => "draining",
                         crate::catalog::DeploymentState::Stopped => "stopped",
                         crate::catalog::DeploymentState::Tombstoned => "tombstoned",
                     },
-                    operation.operation_id,
-                    serde_json::to_string(&operation.record)?,
+                    id,
+                    serde_json::to_string(&record)?,
                 ],
             )?;
         }
@@ -1239,8 +1141,12 @@ impl AgentStore {
         Ok(outcome)
     }
 
-    /// Returns the winning record for every known replica, including tombstones -- absence alone
-    /// is never removal authority, matching `latest_membership`.
+    /// Returns one winner per deployment (including stopped and tombstoned ones), keyed by
+    /// deployment rather than replica -- absence alone is never removal authority, matching
+    /// `latest_membership`. Superseded history is not required for convergence because catalog
+    /// ordering is monotonic per owner/deployment and the winner contains the complete record;
+    /// this is also the snapshot `catalog_replication.rs`'s outbound exchange and
+    /// `backup.rs`'s export both read from directly.
     pub fn latest_catalog(&self) -> Result<Vec<crate::catalog::CatalogRecord>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT record_json FROM catalog_records ORDER BY replica_id, deployment_id",
@@ -1253,59 +1159,29 @@ impl AgentStore {
         Ok(records)
     }
 
-    pub fn desired_operations(&self) -> Result<Vec<SignedDesiredState>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT operation_id, record_json, signer_id, signature
-             FROM desired_operations ORDER BY rowid",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
+    pub fn desired_operations(&self) -> Result<Vec<DesiredStateRecord>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT record_json FROM desired_operations ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records = Vec::new();
         for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedDesiredState {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
+            records.push(serde_json::from_str(&row?)?);
         }
-        Ok(operations)
+        Ok(records)
     }
 
-    /// Returns the signed winning desired-state record for each service.
-    pub fn desired_snapshot_operations(&self) -> Result<Vec<SignedDesiredState>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT o.operation_id, o.record_json, o.signer_id, o.signature
-             FROM desired_records r
-             JOIN desired_operations o ON o.operation_id = r.operation_id
-             ORDER BY r.service",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut operations = Vec::new();
+    /// Returns the winning desired-state record for each service.
+    pub fn desired_snapshot_operations(&self) -> Result<Vec<DesiredStateRecord>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT record_json FROM desired_records ORDER BY service")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut records = Vec::new();
         for row in rows {
-            let (operation_id, record_json, signer_id, signature) = row?;
-            operations.push(SignedDesiredState {
-                operation_id,
-                signer_id,
-                record: serde_json::from_str(&record_json)?,
-                signature,
-            });
+            records.push(serde_json::from_str(&row?)?);
         }
-        Ok(operations)
+        Ok(records)
     }
 
     /// Deletes only superseded operation history. The winning operation IDs come from durable
@@ -1338,40 +1214,42 @@ impl AgentStore {
 
     pub fn apply_desired(
         &self,
-        operation: &SignedDesiredState,
+        record: DesiredStateRecord,
+        provenance: RecordProvenance,
         project_id: &str,
         recovery_epoch: u64,
         membership: &MembershipView,
     ) -> Result<DesiredApply, StoreError> {
+        let id = crate::desired::record_id(&record)?;
         if self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM desired_operations WHERE operation_id = ?1)",
-            [&operation.operation_id],
+            [&id],
             |row| row.get::<_, bool>(0),
         )? {
             return Ok(DesiredApply::Duplicate);
         }
         self.ensure_replication_capacity()?;
-        let mut view = DesiredStateView::from_operations(
-            self.desired_operations()?,
+        let mut view = DesiredStateView::from_records(
+            self.desired_operations()?
+                .into_iter()
+                .map(|record| (record, RecordProvenance::Verified)),
             project_id,
             recovery_epoch,
             membership,
         )?;
-        let outcome = view.apply(operation.clone(), project_id, recovery_epoch, membership)?;
+        let outcome = view.apply(
+            record.clone(),
+            provenance,
+            project_id,
+            recovery_epoch,
+            membership,
+        )?;
         let tx = self.conn.unchecked_transaction()?;
         let inserted = tx.execute(
-            "INSERT INTO desired_operations
-                 (operation_id, service, record_json, signer_id, signature, applied_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO desired_operations (operation_id, service, record_json, applied_at)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(operation_id) DO NOTHING",
-            params![
-                operation.operation_id,
-                operation.record.service,
-                serde_json::to_string(&operation.record)?,
-                operation.signer_id,
-                operation.signature,
-                now(),
-            ],
+            params![id, record.service, serde_json::to_string(&record)?, now()],
         )?;
         if inserted == 0 {
             tx.commit()?;
@@ -1386,10 +1264,10 @@ impl AgentStore {
                    operation_id=excluded.operation_id,
                    record_json=excluded.record_json",
                 params![
-                    operation.record.service,
-                    operation.record.revision,
-                    operation.operation_id,
-                    serde_json::to_string(&operation.record)?,
+                    record.service,
+                    record.revision,
+                    id,
+                    serde_json::to_string(&record)?,
                 ],
             )?;
         }
@@ -1512,10 +1390,9 @@ fn apply_migration(conn: &Connection, migration: &Migration) -> Result<(), Store
 mod tests {
     use super::*;
     use crate::membership::{
-        AuthorityKeyring, MembershipRecord, MembershipState, SignedMembership,
-        MEMBERSHIP_PROTOCOL_VERSION, MEMBERSHIP_SCHEMA_VERSION,
+        MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
+        MEMBERSHIP_SCHEMA_VERSION,
     };
-    use ed25519_dalek::SigningKey;
     use std::net::Ipv4Addr;
     use tempfile::tempdir;
 
@@ -1643,10 +1520,8 @@ mod tests {
         );
     }
 
-    fn signed_member(node: &str, revision: u64) -> (AuthorityKeyring, SignedMembership) {
-        let signing_key = SigningKey::from_bytes(&[7; 32]);
-        let mut authority = AuthorityKeyring::new("project", 1);
-        authority.add_authority("root", signing_key.verifying_key());
+    fn member_record(node: &str, revision: u64) -> (MembershipScope, MembershipRecord) {
+        let scope = MembershipScope::new("project", 1);
         let record = MembershipRecord {
             project_id: "project".into(),
             recovery_epoch: 1,
@@ -1654,7 +1529,6 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: node.into(),
             server_name: node.into(),
-            node_signing_public_key: vec![8; 32],
             wireguard_public_key: format!("wg-{node}"),
             management_address: Ipv4Addr::new(100, 98, 64, 2),
             container_subnet: "198.18.2.0/24".into(),
@@ -1663,47 +1537,43 @@ mod tests {
             revision,
             state: MembershipState::Active,
         };
-        let signed = SignedMembership::sign(record, "root", &signing_key).unwrap();
-        (authority, signed)
+        (scope, record)
     }
 
     #[test]
-    fn signed_membership_is_atomic_idempotent_and_survives_restart() {
+    fn membership_write_is_atomic_idempotent_and_survives_restart() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("agent.sqlite3");
-        let (authority, operation) = signed_member("node-a", 1);
+        let (scope, record) = member_record("node-a", 1);
         {
             let store = AgentStore::open(&db_path).unwrap();
             assert_eq!(
-                store.apply_membership(&operation, &authority).unwrap(),
+                store.apply_membership(record.clone(), &scope).unwrap(),
                 MembershipApply::Applied
             );
             assert_eq!(
-                store.apply_membership(&operation, &authority).unwrap(),
+                store.apply_membership(record.clone(), &scope).unwrap(),
                 MembershipApply::Duplicate
             );
         }
         let store = AgentStore::open(&db_path).unwrap();
         assert_eq!(store.active_membership().unwrap().len(), 1);
-        assert_eq!(store.membership_operations().unwrap(), vec![operation]);
+        assert_eq!(store.membership_operations().unwrap(), vec![record]);
     }
 
     #[test]
-    fn compaction_keeps_the_signed_winner_and_removes_only_superseded_history() {
+    fn compaction_keeps_the_winner_and_removes_only_superseded_history() {
         let dir = tempdir().unwrap();
         let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
-        let (authority, first) = signed_member("node-a", 1);
-        let (_, second) = signed_member("node-a", 2);
-        store.apply_membership(&first, &authority).unwrap();
-        store.apply_membership(&second, &authority).unwrap();
+        let (scope, first) = member_record("node-a", 1);
+        let (_, second) = member_record("node-a", 2);
+        store.apply_membership(first, &scope).unwrap();
+        store.apply_membership(second.clone(), &scope).unwrap();
         assert_eq!(store.membership_operations().unwrap().len(), 2);
 
         let result = store.compact_operations().unwrap();
         assert_eq!(result.membership_removed, 1);
-        assert_eq!(
-            store.membership_snapshot_operations().unwrap(),
-            vec![second.clone()]
-        );
+        assert_eq!(store.latest_membership().unwrap(), vec![second.clone()]);
         assert_eq!(store.membership_operations().unwrap(), vec![second]);
         assert_eq!(store.latest_membership().unwrap()[0].revision, 2);
     }
@@ -1712,20 +1582,15 @@ mod tests {
     fn compaction_never_collects_a_winning_tombstone_fence() {
         let dir = tempdir().unwrap();
         let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
-        let (authority, active) = signed_member("node-a", 1);
-        store.apply_membership(&active, &authority).unwrap();
-        let mut record = active.record.clone();
-        record.revision = 2;
-        record.state = MembershipState::Tombstoned;
-        let tombstone =
-            SignedMembership::sign(record, "root", &SigningKey::from_bytes(&[7; 32])).unwrap();
-        store.apply_membership(&tombstone, &authority).unwrap();
+        let (scope, active) = member_record("node-a", 1);
+        store.apply_membership(active.clone(), &scope).unwrap();
+        let mut tombstone = active;
+        tombstone.revision = 2;
+        tombstone.state = MembershipState::Tombstoned;
+        store.apply_membership(tombstone.clone(), &scope).unwrap();
         store.compact_operations().unwrap();
 
-        assert_eq!(
-            store.membership_snapshot_operations().unwrap(),
-            vec![tombstone]
-        );
+        assert_eq!(store.latest_membership().unwrap(), vec![tombstone.clone()]);
         assert!(store.active_membership().unwrap().is_empty());
         assert_eq!(
             store.latest_membership().unwrap()[0].state,
@@ -1737,17 +1602,17 @@ mod tests {
     fn soft_quota_refuses_new_operations_but_keeps_reads_and_duplicates_available() {
         let dir = tempdir().unwrap();
         let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
-        let (authority, first) = signed_member("node-a", 1);
-        store.apply_membership(&first, &authority).unwrap();
+        let (scope, first) = member_record("node-a", 1);
+        store.apply_membership(first.clone(), &scope).unwrap();
         store.set_soft_quota_bytes(Some(1));
 
         assert_eq!(
-            store.apply_membership(&first, &authority).unwrap(),
+            store.apply_membership(first, &scope).unwrap(),
             MembershipApply::Duplicate
         );
-        let (_, second) = signed_member("node-a", 2);
+        let (_, second) = member_record("node-a", 2);
         assert!(matches!(
-            store.apply_membership(&second, &authority),
+            store.apply_membership(second, &scope),
             Err(StoreError::QuotaExceeded { .. })
         ));
         assert_eq!(store.latest_membership().unwrap()[0].revision, 1);
@@ -1803,13 +1668,8 @@ mod tests {
         assert_eq!(store.peer_cache().unwrap(), cache);
     }
 
-    fn membership_view_for(
-        node_id: &str,
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> MembershipView {
-        let signer_key = SigningKey::from_bytes(&[42; 32]);
-        let mut authority = AuthorityKeyring::new("project", 1);
-        authority.add_authority("root", signer_key.verifying_key());
+    fn membership_view_for(node_id: &str) -> MembershipView {
+        let scope = MembershipScope::new("project", 1);
         let record = MembershipRecord {
             project_id: "project".into(),
             recovery_epoch: 1,
@@ -1817,7 +1677,6 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: node_id.into(),
             server_name: node_id.into(),
-            node_signing_public_key: signing_key.verifying_key().to_bytes().to_vec(),
             wireguard_public_key: format!("wg-{node_id}"),
             management_address: Ipv4Addr::new(100, 98, 64, 3),
             container_subnet: "198.18.3.0/24".into(),
@@ -1826,67 +1685,68 @@ mod tests {
             revision: 1,
             state: MembershipState::Active,
         };
-        let signed = SignedMembership::sign(record, "root", &signer_key).unwrap();
         let mut view = MembershipView::default();
-        view.apply(signed, &authority).unwrap();
+        view.apply(record, &scope).unwrap();
         view
     }
 
-    fn signed_catalog_operation(
-        replica: &str,
-        node_id: &str,
-        revision: u64,
-        node_key: &ed25519_dalek::SigningKey,
-    ) -> SignedCatalogOperation {
-        use crate::catalog::{CatalogRecord, DeploymentState, HealthState};
-        SignedCatalogOperation::sign(
-            CatalogRecord {
-                project_id: "project".into(),
-                recovery_epoch: 1,
-                protocol_version: crate::catalog::CATALOG_PROTOCOL_VERSION,
-                schema_version: crate::catalog::CATALOG_SCHEMA_VERSION,
-                service: "web".into(),
-                replica_id: replica.into(),
-                owner_node_id: node_id.into(),
-                owner_epoch: 1,
-                revision,
-                deployment_id: "deploy-r1".into(),
-                address: "198.18.3.10".parse().unwrap(),
-                ports: vec![80],
-                image: "nginx:alpine".into(),
-                state: DeploymentState::Active,
-                health: HealthState::Healthy,
-            },
-            node_key,
-        )
-        .unwrap()
+    fn catalog_record(replica: &str, node_id: &str, revision: u64) -> CatalogRecord {
+        use crate::catalog::{DeploymentState, HealthState};
+        CatalogRecord {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: crate::catalog::CATALOG_PROTOCOL_VERSION,
+            schema_version: crate::catalog::CATALOG_SCHEMA_VERSION,
+            service: "web".into(),
+            replica_id: replica.into(),
+            owner_node_id: node_id.into(),
+            owner_epoch: 1,
+            revision,
+            deployment_id: "deploy-r1".into(),
+            address: "198.18.3.10".parse().unwrap(),
+            ports: vec![80],
+            image: "nginx:alpine".into(),
+            state: DeploymentState::Active,
+            health: HealthState::Healthy,
+        }
     }
 
     #[test]
-    fn signed_catalog_is_atomic_idempotent_and_survives_restart() {
+    fn catalog_write_is_atomic_idempotent_and_survives_restart() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("agent.sqlite3");
-        let node_key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-        let membership = membership_view_for("node-a", &node_key);
-        let operation = signed_catalog_operation("r1", "node-a", 1, &node_key);
+        let membership = membership_view_for("node-a");
+        let record = catalog_record("r1", "node-a", 1);
         {
             let store = AgentStore::open(&db_path).unwrap();
             assert_eq!(
                 store
-                    .apply_catalog(&operation, "project", 1, &membership)
+                    .apply_catalog(
+                        record.clone(),
+                        RecordProvenance::Local,
+                        "project",
+                        1,
+                        &membership
+                    )
                     .unwrap(),
                 CatalogApply::Applied
             );
             assert_eq!(
                 store
-                    .apply_catalog(&operation, "project", 1, &membership)
+                    .apply_catalog(
+                        record.clone(),
+                        RecordProvenance::Local,
+                        "project",
+                        1,
+                        &membership
+                    )
                     .unwrap(),
                 CatalogApply::Duplicate
             );
         }
         let store = AgentStore::open(&db_path).unwrap();
         assert_eq!(store.latest_catalog().unwrap().len(), 1);
-        assert_eq!(store.catalog_operations().unwrap(), vec![operation]);
+        assert_eq!(store.catalog_operations().unwrap(), vec![record]);
     }
 
     #[test]

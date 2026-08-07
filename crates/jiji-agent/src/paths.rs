@@ -9,7 +9,7 @@ use jiji_network::systemd_unit_slug;
 
 /// Default root jiji owns on a host for agent binaries and state, mirroring the existing
 /// `/etc/jiji/...` convention used by the network layer (`commands/network/setup.rs`) and
-/// kamal-proxy ingress rules (`proxy_ingress.rs`) rather than splitting state across `/var/lib`.
+/// jiji-proxy ingress rules (`proxy_ingress.rs`) rather than splitting state across `/var/lib`.
 pub const DEFAULT_ROOT: &str = "/etc/jiji/agent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

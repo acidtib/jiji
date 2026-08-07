@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use crate::catalog::{CatalogError, CatalogRecord, CatalogView};
-use crate::membership::{AuthorityKeyring, MembershipError, MembershipView};
+use crate::membership::{MembershipError, MembershipScope, MembershipView, RecordProvenance};
 use crate::store::{AgentStore, StoreError};
 
 const QTYPE_A: u16 = 1;
@@ -75,6 +75,12 @@ pub struct DnsConfig {
     /// service container's `resolv.conf` ever gets, so without this, it could never resolve a
     /// normal internet hostname at all.
     pub forwarders: Vec<SocketAddr>,
+}
+
+impl DnsConfig {
+    fn scope(&self) -> MembershipScope {
+        MembershipScope::new(self.project_id.clone(), self.recovery_epoch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,12 +289,18 @@ fn unix_now() -> u64 {
 
 fn build_zone(
     store: &AgentStore,
-    authority: &AuthorityKeyring,
     config: &DnsConfig,
 ) -> Result<BTreeMap<String, Vec<Ipv4Addr>>, DnsError> {
-    let membership = MembershipView::from_operations(store.membership_operations()?, authority)?;
-    let catalog = CatalogView::from_operations(
-        store.catalog_operations()?,
+    let scope = config.scope();
+    let membership = MembershipView::from_records(store.membership_operations()?, &scope)?;
+    // Already durably persisted, already checked at ingestion time -- rebuilding this view never
+    // needs to re-authenticate anything, only reconstruct the CRDT (see `catalog.rs`'s module doc
+    // comment on `RecordProvenance`).
+    let catalog = CatalogView::from_records(
+        store
+            .catalog_operations()?
+            .into_iter()
+            .map(|record| (record, RecordProvenance::Verified)),
         &config.project_id,
         config.recovery_epoch,
         &membership,
@@ -311,17 +323,15 @@ fn build_zone(
 
 fn locked_build_zone(
     store: &Arc<Mutex<AgentStore>>,
-    authority: &AuthorityKeyring,
     config: &DnsConfig,
 ) -> Result<BTreeMap<String, Vec<Ipv4Addr>>, DnsError> {
     let store = store.lock().map_err(|_| DnsError::LockPoisoned)?;
-    build_zone(&store, authority, config)
+    build_zone(&store, config)
 }
 
 async fn serve_udp(
     socket: UdpSocket,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
     config: DnsConfig,
 ) -> Result<(), DnsError> {
     // Spawned per packet (mirroring `serve_tcp`'s per-connection spawn) rather than handled
@@ -335,10 +345,9 @@ async fn serve_udp(
         let query_bytes = buf[..len].to_vec();
         let socket = Arc::clone(&socket);
         let store = Arc::clone(&store);
-        let authority = Arc::clone(&authority);
         let config = config.clone();
         tokio::spawn(async move {
-            let zone = match locked_build_zone(&store, &authority, &config) {
+            let zone = match locked_build_zone(&store, &config) {
                 Ok(zone) => zone,
                 Err(error) => {
                     tracing::warn!(%error, "could not build dns zone for this query; skipping");
@@ -357,16 +366,14 @@ async fn serve_udp(
 async fn serve_tcp(
     listener: TcpListener,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
     config: DnsConfig,
 ) -> Result<(), DnsError> {
     loop {
         let (stream, _peer) = listener.accept().await?;
         let store = Arc::clone(&store);
-        let authority = Arc::clone(&authority);
         let config = config.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_tcp_connection(stream, store, authority, config).await {
+            if let Err(error) = serve_tcp_connection(stream, store, config).await {
                 tracing::debug!(%error, "dns tcp connection ended");
             }
         });
@@ -376,7 +383,6 @@ async fn serve_tcp(
 async fn serve_tcp_connection(
     mut stream: TcpStream,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
     config: DnsConfig,
 ) -> Result<(), DnsError> {
     loop {
@@ -387,7 +393,7 @@ async fn serve_tcp_connection(
         let length = u16::from_be_bytes(length_bytes) as usize;
         let mut message = vec![0u8; length];
         stream.read_exact(&mut message).await?;
-        let zone = locked_build_zone(&store, &authority, &config)?;
+        let zone = locked_build_zone(&store, &config)?;
         let Some(response) = handle_query(&message, &zone, &config.forwarders, false).await else {
             return Ok(());
         };
@@ -402,19 +408,13 @@ async fn serve_tcp_connection(
 pub async fn serve(
     bind: SocketAddr,
     store: Arc<Mutex<AgentStore>>,
-    authority: Arc<AuthorityKeyring>,
     config: DnsConfig,
 ) -> Result<(), DnsError> {
     let udp_socket = UdpSocket::bind(bind).await?;
     let tcp_listener = TcpListener::bind(bind).await?;
     tokio::try_join!(
-        serve_udp(
-            udp_socket,
-            Arc::clone(&store),
-            Arc::clone(&authority),
-            config.clone()
-        ),
-        serve_tcp(tcp_listener, store, authority, config),
+        serve_udp(udp_socket, Arc::clone(&store), config.clone()),
+        serve_tcp(tcp_listener, store, config),
     )?;
     Ok(())
 }
@@ -422,7 +422,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{DeploymentState, HealthState, SignedCatalogOperation};
+    use crate::catalog::{DeploymentState, HealthState};
 
     fn build_query_bytes(id: u16, name: &str, qtype: u16) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -563,17 +563,12 @@ mod tests {
     #[tokio::test]
     async fn serve_answers_real_udp_and_tcp_queries_end_to_end() {
         use crate::membership::{
-            MembershipRecord, MembershipState, SignedMembership, MEMBERSHIP_PROTOCOL_VERSION,
+            MembershipRecord, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
             MEMBERSHIP_SCHEMA_VERSION,
         };
-        use ed25519_dalek::SigningKey;
         use tempfile::tempdir;
 
-        let node_key = SigningKey::from_bytes(&[21; 32]);
-        let authority_key = SigningKey::from_bytes(&[22; 32]);
-        let mut authority = AuthorityKeyring::new("demo", 1);
-        authority.add_authority("root", authority_key.verifying_key());
-        let authority = Arc::new(authority);
+        let scope = MembershipScope::new("demo", 1);
 
         let dir = tempdir().unwrap();
         let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
@@ -584,7 +579,6 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: "node-a".into(),
             server_name: "node-a".into(),
-            node_signing_public_key: node_key.verifying_key().to_bytes().to_vec(),
             wireguard_public_key: "wg-a".into(),
             management_address: "100.98.64.1".parse().unwrap(),
             container_subnet: "198.18.1.0/24".into(),
@@ -593,19 +587,20 @@ mod tests {
             revision: 1,
             state: MembershipState::Active,
         };
-        let membership_op =
-            SignedMembership::sign(membership_record, "root", &authority_key).unwrap();
-        store.apply_membership(&membership_op, &authority).unwrap();
-        let mut membership_view = MembershipView::default();
-        membership_view.apply(membership_op, &authority).unwrap();
-
-        let catalog_op = SignedCatalogOperation::sign(
-            record("web", "node-a", "198.18.1.10".parse().unwrap()),
-            &node_key,
-        )
-        .unwrap();
         store
-            .apply_catalog(&catalog_op, "demo", 1, &membership_view)
+            .apply_membership(membership_record.clone(), &scope)
+            .unwrap();
+        let mut membership_view = MembershipView::default();
+        membership_view.apply(membership_record, &scope).unwrap();
+
+        store
+            .apply_catalog(
+                record("web", "node-a", "198.18.1.10".parse().unwrap()),
+                RecordProvenance::Local,
+                "demo",
+                1,
+                &membership_view,
+            )
             .unwrap();
 
         let store = Arc::new(Mutex::new(store));
@@ -622,13 +617,8 @@ mod tests {
         let udp_address = udp_socket.local_addr().unwrap();
         let tcp_listener = TcpListener::bind(bind).await.unwrap();
         let tcp_address = tcp_listener.local_addr().unwrap();
-        let udp_task = tokio::spawn(serve_udp(
-            udp_socket,
-            Arc::clone(&store),
-            Arc::clone(&authority),
-            config.clone(),
-        ));
-        let tcp_task = tokio::spawn(serve_tcp(tcp_listener, store, authority, config));
+        let udp_task = tokio::spawn(serve_udp(udp_socket, Arc::clone(&store), config.clone()));
+        let tcp_task = tokio::spawn(serve_tcp(tcp_listener, store, config));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         client.connect(udp_address).await.unwrap();
