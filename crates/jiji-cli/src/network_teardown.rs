@@ -108,11 +108,18 @@ pub async fn stop_and_disable_units(
 }
 
 /// `rm -f` is already idempotent on a missing file, so no `|| true` needed here.
+/// Removes both the config/key files and the live kernel interface. Before Phase 9 the interface
+/// was owned by a `wg-quick@{iface}.service` unit, and stopping that unit tore the interface down
+/// as a side effect; Phase 9 replaced it with the agent bringing the interface up directly
+/// (`local_reconcile.rs::ensure_link`, no systemd unit), which dropped that implicit cleanup path
+/// without anything replacing it -- confirmed live, `jiji server teardown` removed the config files
+/// but left the interface itself running, indefinitely, on every host it ever tore down since. The
+/// explicit `ip link delete` here is what fills that gap.
 pub async fn remove_wireguard(session: &SshSession, project: &str) -> anyhow::Result<()> {
     let slug = jiji_network::systemd_unit_slug(project);
     let wireguard_interface = jiji_network::wireguard_interface_name(project);
     let command = format!(
-        "rm -f {} {} {}",
+        "ip link delete {wireguard_interface} 2>/dev/null || true; rm -f {} {} {}",
         wireguard_config_path(&wireguard_interface),
         private_key_path(&slug),
         public_key_path(&slug)
@@ -136,12 +143,12 @@ pub enum NetworkRemovalOutcome {
 
 /// Removes this project's bridge/engine network itself, but only when nothing remains attached.
 ///
-/// Deliberately takes no "is kamal-proxy still running" flag: under multi-homing, kamal-proxy
+/// Deliberately takes no "is jiji-proxy still running" flag: under multi-homing, jiji-proxy
 /// being alive for *other* projects is irrelevant to whether *this* bridge can go away, only
-/// whether kamal-proxy is still attached to *this specific* bridge is (an earlier version of this
+/// whether jiji-proxy is still attached to *this specific* bridge is (an earlier version of this
 /// function took such a flag, computed from whether other projects still had proxy routes --
 /// that was wrong even before multi-homing existed as a concept, since it would retain the bridge
-/// forever on any host serving more than one project). Callers must disconnect kamal-proxy from
+/// forever on any host serving more than one project). Callers must disconnect jiji-proxy from
 /// this bridge first (`crate::proxy::disconnect_bridge_if_attached`) if it might be attached;
 /// what's left in `attached` here is purely "how many containers are still on this bridge."
 pub async fn remove_bridge_and_engine_network(

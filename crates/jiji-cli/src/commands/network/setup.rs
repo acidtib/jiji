@@ -648,6 +648,8 @@ async fn apply_connected(
                             &host.session,
                             server_plan.proxy_address,
                             public_host,
+                            true,
+                            &[],
                         )
                         .await
                     }
@@ -1361,6 +1363,8 @@ async fn rollback_transaction(
                                     &host.session,
                                     address,
                                     public_host,
+                                    true,
+                                    &[],
                                 )
                                 .await
                             }

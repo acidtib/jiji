@@ -4,10 +4,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use jiji_agent::membership::{
-    MembershipRecord, MembershipState, SignedMembership, MEMBERSHIP_PROTOCOL_VERSION,
-    MEMBERSHIP_SCHEMA_VERSION,
+    MembershipRecord, MembershipScope, MembershipState, MembershipView,
+    MEMBERSHIP_PROTOCOL_VERSION, MEMBERSHIP_SCHEMA_VERSION,
 };
-use jiji_agent::runtime::{AuthorityConfig, MeshConfig};
+use jiji_agent::runtime::MeshConfig;
 use jiji_config::{validate_config, Config, NamedServer, Ssh};
 use jiji_network::{NetworkPlan, NetworkPlanner};
 use jiji_ssh::{SshPool, SshSession};
@@ -233,9 +233,9 @@ pub async fn run(
             )
                     })?;
 
-                setup_proxies(&config, &servers, &ssh, started_at).await?;
-
                 setup_agents(&config, &path, &network_plan, &servers, &ssh).await?;
+
+                setup_proxies(&config, &servers, &ssh, started_at).await?;
                 let replayed = crate::commands::network::backup::replay_recovery_desired_state(
                     &path, &config, &servers, &ssh,
                 )
@@ -311,8 +311,6 @@ async fn setup_agents(
         }
         AgentBinarySource::Local(_) => None,
     };
-    let authority = crate::membership_authority::ProjectAuthority::load_or_create(config_path)?;
-
     Ui::section("Installing Jiji Agent:");
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let mut connect_operations = Vec::with_capacity(servers.len());
@@ -325,7 +323,23 @@ async fn setup_agents(
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 
+    let recovery_epoch = crate::recovery_epoch::read(config_path)?;
+    let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
+    let mut view = MembershipView::default();
+    for record in crate::commands::network::membership::gather_membership(config, ssh).await {
+        // A stale/superseded record from a lagging peer is expected and harmless; only a
+        // structural problem (wrong project, collision) is worth surfacing here.
+        if let Err(error) = view.apply(record, &scope) {
+            Ui::warn(&format!(
+                "Ignoring an inconsistent gathered membership record: {error}"
+            ));
+        }
+    }
+
     let mut failures = Vec::new();
+    // Pass 1: connect, learn each target's WireGuard key, and fold every target's own record into
+    // the shared view -- the sessions stay open so pass 2 can install without reconnecting.
+    let mut prepared = Vec::new();
     for ((name, _), connection) in servers.iter().zip(connections) {
         let session = match connection {
             Ok(session) => session,
@@ -347,29 +361,23 @@ async fn setup_agents(
             session.close().await;
             continue;
         }
-        let node_signing_key =
-            crate::membership_authority::ProjectAuthority::load_or_create_node_key(
-                config_path,
-                name,
-            )?;
         let endpoint: SocketAddr =
             format!("{}:{}", server_plan.public_host, server_plan.wireguard_port)
                 .parse()
                 .map_err(|_| {
                     anyhow::anyhow!(
-                "Server '{}' host '{}' must be a public IP address for signed mesh enrollment",
-                name,
-                server_plan.public_host
-            )
+                        "Server '{}' host '{}' must be a public IP address for mesh enrollment",
+                        name,
+                        server_plan.public_host
+                    )
                 })?;
         let record = MembershipRecord {
             project_id: config.project.clone(),
-            recovery_epoch: crate::membership_authority::recovery_epoch(config_path)?,
+            recovery_epoch,
             protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: name.clone(),
             server_name: name.clone(),
-            node_signing_public_key: node_signing_key.verifying_key().to_bytes().to_vec(),
             wireguard_public_key: key_result.stdout.trim().to_string(),
             management_address: server_plan.management_address,
             container_subnet: server_plan.container_subnet.to_string(),
@@ -378,52 +386,57 @@ async fn setup_agents(
             revision: 1,
             state: MembershipState::Active,
         };
-        let operation = SignedMembership::sign(record, &authority.id, &authority.signing_key)?;
+        if let Err(error) = view.apply(record, &scope) {
+            failures.push((
+                name.clone(),
+                format!("could not enroll membership: {error}"),
+            ));
+            session.close().await;
+            continue;
+        }
         let peer_public_ips = network::bridge::BridgeProvisioner::new(
             config.builder.engine,
             network_plan,
             server_plan,
         )
         .peer_public_ips()?;
-        let membership_port = jiji_network::membership_replication_port(&config.project);
-        let replication_peers = network_plan
-            .servers
-            .iter()
-            .filter(|(peer_name, _)| *peer_name != name)
-            .map(|(_, peer)| SocketAddr::new(peer.management_address.into(), membership_port))
-            .collect();
+        let mut proxy_routes = Vec::new();
+        let mut tcp_routes = Vec::new();
+        for (service_name, service) in &config.services {
+            if !service.servers.contains(name) {
+                continue;
+            }
+            let Some(proxy) = service.proxy.as_ref() else {
+                continue;
+            };
+            proxy_routes.extend(crate::proxy_routes::runtime_specs_for_service(
+                &config.project,
+                service_name,
+                Some(proxy),
+            )?);
+            tcp_routes.extend(crate::proxy_routes::runtime_tcp_specs_for_service(
+                &config.project,
+                service_name,
+                Some(proxy),
+            )?);
+        }
         let mesh_config = MeshConfig {
             project_id: config.project.clone(),
-            recovery_epoch: crate::membership_authority::recovery_epoch(config_path)?,
+            recovery_epoch,
             node_id: name.clone(),
-            node_signing_key: node_signing_key.to_bytes().to_vec(),
             wireguard_interface: server_plan.wireguard_interface.clone(),
             wireguard_private_key_path: network::setup::private_key_path(&slug).into(),
             replication_bind: SocketAddr::new(
                 server_plan.management_address.into(),
-                membership_port,
+                jiji_network::catalog_replication_port(&config.project),
             ),
             dns_bind_address: server_plan.dns_address,
             local_runtime: jiji_agent::runtime::LocalRuntimeConfig {
                 bridge_network: server_plan.bridge_name.clone(),
                 bridge_interface: server_plan.bridge_interface.clone(),
                 proxy_address: server_plan.proxy_address,
-                proxy_routes: config
-                    .services
-                    .iter()
-                    .filter(|(_, service)| service.servers.contains(name))
-                    .filter_map(|(service_name, service)| {
-                        service.proxy.as_ref().map(|proxy| (service_name, proxy))
-                    })
-                    .flat_map(|(service_name, proxy)| {
-                        crate::proxy_routes::runtime_specs_for_service(
-                            config.builder.engine,
-                            &config.project,
-                            service_name,
-                            proxy,
-                        )
-                    })
-                    .collect(),
+                proxy_routes,
+                tcp_routes,
                 container_subnet: server_plan.container_subnet,
                 bridge_gateway: server_plan.bridge_gateway,
                 container_cidr: network_plan.container_cidr,
@@ -431,11 +444,6 @@ async fn setup_agents(
                 peer_public_ips,
                 public_host: server_plan.public_host.clone(),
             },
-            replication_peers,
-            authorities: vec![AuthorityConfig {
-                id: authority.id.clone(),
-                public_key: authority.signing_key.verifying_key().to_bytes().to_vec(),
-            }],
             reconcile_interval_secs: 10,
             store_soft_quota_bytes: jiji_agent::runtime::DEFAULT_STORE_SOFT_QUOTA_BYTES,
             compaction_interval_secs: jiji_agent::runtime::DEFAULT_COMPACTION_INTERVAL_SECS,
@@ -445,6 +453,16 @@ async fn setup_agents(
                 .map(|network| network.dns_forwarders.clone())
                 .unwrap_or_else(jiji_config::default_dns_forwarders),
         };
+        prepared.push((name.clone(), session, mesh_config));
+    }
+
+    // The complete set (every target's own record plus everything gathered from already-enrolled
+    // peers) is what each host bootstraps with, so a freshly enrolled host and every existing peer
+    // agree from the start -- there is no gossip left to converge them afterward.
+    let records: Vec<MembershipRecord> = view.all().cloned().collect();
+
+    // Pass 2: install, now that every target's record is folded into `records`.
+    for (name, session, mesh_config) in prepared {
         let binary_path = match &binary_source {
             AgentBinarySource::Local(path) => Some(path.clone()),
             AgentBinarySource::Managed(_) => {
@@ -472,7 +490,7 @@ async fn setup_agents(
             &config.project,
             binary_path.as_deref(),
             &mesh_config,
-            &[operation],
+            &records,
         )
         .await
         {
@@ -502,6 +520,19 @@ async fn setup_agents(
             failures.len()
         );
     }
+
+    // Newly enrolled/updated membership must also reach any already-set-up server outside this
+    // run's target set, or its own WireGuard reconciliation would never learn about the change --
+    // there is no peer-to-peer membership relay to paper over the gap (see
+    // `jiji_agent::membership`). Best-effort: an unreachable host just catches up next time any
+    // command reaches it.
+    let push_outcome =
+        crate::commands::network::membership::push_membership_everywhere(config, ssh, &records)
+            .await?;
+    for (name, error) in &push_outcome.unreachable {
+        Ui::say(&format!("{name}: membership not yet current ({error})"), 1);
+    }
+
     Ok(())
 }
 
@@ -516,7 +547,7 @@ async fn setup_proxies(
         .map_err(|error| anyhow::anyhow!("Could not build the proxy network plan: {error}"))?;
     let dns_enabled = plan.enabled;
 
-    Ui::section("Configuring Kamal Proxy:");
+    Ui::section("Configuring Jiji Proxy:");
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let mut connect_operations = Vec::with_capacity(servers.len());
     for (name, server) in servers {
@@ -549,14 +580,20 @@ async fn setup_proxies(
         } else {
             None
         };
-        // Written here, not earlier: engine install and network setup each already bailed the
-        // whole command on any per-host failure before reaching this final phase, so a host that
-        // gets this far already succeeded at every earlier step -- this proxy result is the last
-        // thing standing between "setup succeeded" and "setup failed" for this host.
+        // Written here, not earlier: engine install, network setup, and agent install each
+        // already bailed the whole command on any per-host failure before reaching this final
+        // phase, so a host that gets this far already succeeded at every earlier step -- this
+        // proxy result is the last thing standing between "setup succeeded" and "setup failed"
+        // for this host. Kept last deliberately: `ensure_proxy`'s own minimum-version check
+        // (`version_requirements::MIN_PROXY_VERSION`) fails on a stale-but-already-running proxy
+        // container without recreating it (recreating a host-global, multi-tenant container is
+        // `jiji proxy restart`'s job, never an implicit side effect here) -- if this ran before
+        // agent install, that failure would block the agent from ever being updated in the same
+        // run.
         match proxy::ensure_proxy(&session, config.builder.engine, network, false).await {
             Ok(ProxyStatus::AlreadyRunning) => {
                 Ui::say(
-                    &format!("{name}: kamal-proxy already configured and running"),
+                    &format!("{name}: jiji-proxy already configured and running"),
                     1,
                 );
                 audit::record(
@@ -564,7 +601,7 @@ async fn setup_proxies(
                     &config.project,
                     "server_setup",
                     AuditStatus::Success,
-                    "engine, network, and kamal-proxy configured",
+                    "engine, network, agent, and jiji-proxy configured",
                     Some(&LockScope::HostRuntime.to_string()),
                     None,
                     Some(started_at.elapsed()),
@@ -572,13 +609,13 @@ async fn setup_proxies(
                 .await;
             }
             Ok(ProxyStatus::Started) => {
-                Ui::say(&format!("{name}: kamal-proxy configured and running"), 1);
+                Ui::say(&format!("{name}: jiji-proxy configured and running"), 1);
                 audit::record(
                     &session,
                     &config.project,
                     "server_setup",
                     AuditStatus::Success,
-                    "engine, network, and kamal-proxy configured",
+                    "engine, network, agent, and jiji-proxy configured",
                     Some(&LockScope::HostRuntime.to_string()),
                     None,
                     Some(started_at.elapsed()),
@@ -592,7 +629,7 @@ async fn setup_proxies(
                     &config.project,
                     "server_setup",
                     AuditStatus::Failed,
-                    format!("kamal-proxy setup failed: {error}"),
+                    format!("jiji-proxy setup failed: {error}"),
                     Some(&LockScope::HostRuntime.to_string()),
                     None,
                     Some(started_at.elapsed()),
@@ -609,7 +646,7 @@ async fn setup_proxies(
             Ui::say(&format!("{name}: {error}"), 1);
         }
         anyhow::bail!(
-            "Kamal proxy setup failed for {} server(s). Fix the reported hosts and retry `jiji server setup`.",
+            "Jiji proxy setup failed for {} server(s). Fix the reported hosts and retry `jiji server setup`.",
             failures.len()
         );
     }

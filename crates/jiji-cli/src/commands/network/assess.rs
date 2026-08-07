@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use jiji_agent::catalog::{CatalogRecord, DeploymentState};
-use jiji_agent::membership::{MembershipState, SignedMembership};
+use jiji_agent::membership::{MembershipRecord, MembershipState};
 use jiji_agent::AgentPaths;
 use jiji_config::{validate_config, ContainerEngine};
 use jiji_network::{NetworkPlanner, ServerPlan};
@@ -99,9 +99,8 @@ async fn assess_host(
 ) -> anyhow::Result<HostReport> {
     let legacy_runtime_present = probe_legacy_runtime(session, &config.project).await?;
     let membership = fetch_membership(session, paths).await?;
-    let new_control_plane_enrolled = membership.iter().any(|operation| {
-        operation.record.server_name == server_plan.name
-            && operation.record.state == MembershipState::Active
+    let new_control_plane_enrolled = membership.iter().any(|record| {
+        record.server_name == server_plan.name && record.state == MembershipState::Active
     });
     let catalog = fetch_catalog(session, paths).await?;
     let containers = container_ops::list_managed_containers(session, engine, &config.project)
@@ -219,7 +218,7 @@ async fn probe_legacy_runtime(session: &SshSession, project: &str) -> anyhow::Re
 async fn fetch_membership(
     session: &SshSession,
     paths: &AgentPaths,
-) -> anyhow::Result<Vec<SignedMembership>> {
+) -> anyhow::Result<Vec<MembershipRecord>> {
     let command = format!(
         "{} membership-export --state-dir {} 2>/dev/null || true",
         paths.binary_path.display(),

@@ -88,7 +88,7 @@ pub enum Commands {
             help = "Build without using the cache (only relevant with --build)"
         )]
         no_cache: bool,
-        #[arg(long, help = "Skip kamal-proxy route activation")]
+        #[arg(long, help = "Skip jiji-proxy route activation")]
         skip_proxy: bool,
         #[arg(
             short = 'y',
@@ -135,7 +135,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegistryCommands,
     },
-    #[command(about = "Kamal-proxy management")]
+    #[command(about = "Jiji-proxy management")]
     Proxy {
         #[command(subcommand)]
         command: ProxyCommands,
@@ -256,9 +256,9 @@ pub enum LockCommands {
 
 #[derive(Subcommand)]
 pub enum ProxyCommands {
-    #[command(about = "Pull and recreate kamal-proxy on selected servers")]
+    #[command(about = "Pull and recreate jiji-proxy on selected servers")]
     Restart,
-    #[command(about = "View kamal-proxy logs on selected servers")]
+    #[command(about = "View jiji-proxy logs on selected servers")]
     Logs {
         #[arg(short = 'n', long, value_name = "N", help = "Number of lines to show")]
         lines: Option<u32>,
@@ -473,7 +473,7 @@ pub enum NetworkCommands {
         #[arg(long, value_name = "PATH")]
         passphrase_file: String,
     },
-    #[command(about = "Restore authenticated state into surviving hosts in the same epoch")]
+    #[command(about = "Restore state into surviving hosts in the same recovery epoch")]
     Restore {
         #[arg(long, value_name = "PATH")]
         input: String,
@@ -489,23 +489,21 @@ pub enum NetworkCommands {
         #[arg(short = 'y', long, help = "Confirm destructive epoch advancement")]
         yes: bool,
     },
-    #[command(about = "Publish an authenticated node tombstone through one reachable seed")]
+    #[command(about = "Publish a node tombstone, fanned out to every reachable server")]
     Decommission {
         #[arg(value_name = "SERVER")]
         server: String,
-        #[arg(long, value_name = "SEED")]
-        seed: String,
     },
-    #[command(about = "Publish a changed public endpoint through one reachable seed")]
+    #[command(about = "Publish a changed public endpoint, fanned out to every reachable server")]
     UpdateEndpoint {
         #[arg(value_name = "SERVER")]
         server: String,
         #[arg(long, value_name = "IP:PORT")]
         endpoint: String,
-        #[arg(long, value_name = "SEED")]
-        seed: String,
     },
-    #[command(about = "Rotate a node's WireGuard transport key through one reachable seed")]
+    #[command(
+        about = "Rotate a node's WireGuard transport key, fanned out to every reachable server"
+    )]
     RotateKey {
         #[arg(value_name = "SERVER")]
         server: String,
@@ -513,10 +511,8 @@ pub enum NetworkCommands {
         public_key: String,
         #[arg(long, value_name = "IP:PORT")]
         endpoint: String,
-        #[arg(long, value_name = "SEED")]
-        seed: String,
     },
-    #[command(about = "Fence and replace a node identity through one reachable seed")]
+    #[command(about = "Fence and replace a node identity, fanned out to every reachable server")]
     Replace {
         #[arg(value_name = "SERVER")]
         server: String,
@@ -524,15 +520,5 @@ pub enum NetworkCommands {
         public_key: String,
         #[arg(long, value_name = "IP:PORT")]
         endpoint: String,
-        #[arg(long, value_name = "SEED")]
-        seed: String,
-    },
-    #[command(about = "Rotate the project membership authority across all enrolled hosts")]
-    RotateAuthority {
-        #[arg(
-            long,
-            help = "Retire the previous private signer after every host has accepted the new authority"
-        )]
-        finalize: bool,
     },
 }

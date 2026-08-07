@@ -15,7 +15,6 @@ use jiji_tui::Ui;
 use serde::{Deserialize, Serialize};
 
 use crate::lock::{LockRequest, LockScope};
-use crate::membership_authority::{self, ProjectAuthority};
 use crate::ssh_adapter;
 
 /// A dedicated connection purely to hold the project-maintenance lock around `operation`: backup
@@ -98,15 +97,17 @@ where
     result
 }
 
-const OPERATOR_BACKUP_FORMAT_VERSION: u16 = 1;
+const OPERATOR_BACKUP_FORMAT_VERSION: u16 = 2;
 
+/// Deployment/catalog history only -- membership is never part of this backup. It's trivially
+/// re-derived from `jiji.yml` and pushed fresh by `jiji server setup` (the same computation it
+/// always runs), so there's no key or membership state to protect or restore here; see
+/// `jiji_agent::backup`'s module doc comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OperatorBackup {
     format_version: u16,
     project_id: String,
     recovery_epoch: u64,
-    authority_id: String,
-    authority_signing_key: Vec<u8>,
     agents: Vec<AgentBackupSnapshot>,
 }
 
@@ -140,8 +141,7 @@ pub async fn run(
         );
     }
     let passphrase = read_private_passphrase(passphrase_file)?;
-    let authority = ProjectAuthority::load_or_create(&path)?;
-    let recovery_epoch = membership_authority::recovery_epoch(&path)?;
+    let recovery_epoch = crate::recovery_epoch::read(&path)?;
     let ssh = config
         .ssh
         .as_ref()
@@ -177,7 +177,7 @@ pub async fn run(
                 match fetch_snapshot(&options, &paths, &config.project).await {
                     Ok(snapshot) => {
                         snapshot.validate_identity(&config.project, recovery_epoch)?;
-                        Ui::result_ok(&name, "signed state and local claims exported");
+                        Ui::result_ok(&name, "catalog/desired state and local claims exported");
                         snapshots.push(snapshot);
                     }
                     Err(error) => {
@@ -193,8 +193,6 @@ pub async fn run(
                 format_version: OPERATOR_BACKUP_FORMAT_VERSION,
                 project_id: config.project.clone(),
                 recovery_epoch,
-                authority_id: authority.id,
-                authority_signing_key: authority.signing_key.to_bytes().to_vec(),
                 agents: snapshots,
             };
             validate_backup(&backup, &config.project)?;
@@ -243,7 +241,7 @@ pub async fn recover(
             config.project
         );
     }
-    let current_epoch = membership_authority::recovery_epoch(&path)?;
+    let current_epoch = crate::recovery_epoch::read(&path)?;
     if current_epoch > backup.recovery_epoch {
         anyhow::bail!(
             "configured recovery epoch {current_epoch} is newer than backup epoch {}; refusing stale recovery",
@@ -262,20 +260,11 @@ pub async fn recover(
     {
         anyhow::bail!("Control-plane recovery cancelled.");
     }
-    let key: [u8; 32] = backup
-        .authority_signing_key
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("backup authority key is invalid"))?;
-    membership_authority::install_recovered_authority(&path, &key, current_epoch, next_epoch)?;
-    let recovery_state = path
-        .parent()
-        .expect("configuration path has a parent")
-        .join("control-plane")
-        .join(format!(
-            "recovery-source-epoch-{}.json",
-            backup.recovery_epoch
-        ));
+    crate::recovery_epoch::write(&path, next_epoch)?;
+    let recovery_state = crate::recovery_epoch::directory(&path)?.join(format!(
+        "recovery-source-epoch-{}.json",
+        backup.recovery_epoch
+    ));
     let public_recovery = RecoverySource {
         format_version: backup.format_version,
         project_id: backup.project_id,
@@ -289,13 +278,14 @@ pub async fn recover(
     )?;
     Ui::success(&format!(
         "Recovery epoch {next_epoch} prepared. Old nodes are fenced; run `jiji server setup` on \
-         replacement hosts, then redeploy desired services. Historical signed state is at {}.",
+         replacement hosts (this re-derives and pushes fresh membership for the new epoch), then \
+         redeploy desired services. Historical state is at {}.",
         recovery_state.display()
     ));
     Ok(())
 }
 
-/// After replacement agents have joined the advanced epoch, re-sign the latest desired placement
+/// After replacement agents have joined the advanced epoch, re-commit the latest desired placement
 /// from the recovery archive through one fresh agent. Old catalog deployments remain historical
 /// and fenced; this restores scale intent without pretending old containers are active.
 pub async fn replay_recovery_desired_state(
@@ -304,14 +294,11 @@ pub async fn replay_recovery_desired_state(
     servers: &[(String, jiji_config::NamedServer)],
     ssh: &jiji_config::Ssh,
 ) -> anyhow::Result<usize> {
-    let current_epoch = membership_authority::recovery_epoch(config_path)?;
+    let current_epoch = crate::recovery_epoch::read(config_path)?;
     if current_epoch <= 1 {
         return Ok(0);
     }
-    let source_path = config_path
-        .parent()
-        .expect("configuration path has a parent")
-        .join("control-plane")
+    let source_path = crate::recovery_epoch::directory(config_path)?
         .join(format!("recovery-source-epoch-{}.json", current_epoch - 1));
     if !source_path.exists() {
         return Ok(0);
@@ -324,14 +311,14 @@ pub async fn replay_recovery_desired_state(
         );
     }
     let mut desired =
-        std::collections::BTreeMap::<String, jiji_agent::desired::SignedDesiredState>::new();
+        std::collections::BTreeMap::<String, jiji_agent::desired::DesiredStateRecord>::new();
     for snapshot in &source.agents {
-        for operation in &snapshot.desired {
+        for record in &snapshot.desired {
             let replace = desired
-                .get(&operation.record.service)
-                .is_none_or(|current| operation.record.revision > current.record.revision);
+                .get(&record.service)
+                .is_none_or(|current| record.revision > current.revision);
             if replace {
-                desired.insert(operation.record.service.clone(), operation.clone());
+                desired.insert(record.service.clone(), record.clone());
             }
         }
     }
@@ -342,18 +329,18 @@ pub async fn replay_recovery_desired_state(
     let options = ssh_adapter::connect_options(seed_name, seed_server, ssh)?;
     let session = SshSession::connect(&options).await?;
     let result = async {
-        for operation in desired.values() {
+        for record in desired.values() {
             crate::agent_client::call(
                 &session,
                 &config.project,
                 Some(format!(
                     "recovery-desired:{}:{current_epoch}",
-                    operation.record.service
+                    record.service
                 )),
                 jiji_agent::api::RequestBody::DesiredCommit {
-                    service: operation.record.service.clone(),
-                    replica_override: operation.record.replica_override,
-                    assignments: operation.record.assignments.clone(),
+                    service: record.service.clone(),
+                    replica_override: record.replica_override,
+                    assignments: record.assignments.clone(),
                 },
             )
             .await?;
@@ -386,7 +373,7 @@ pub async fn restore(
     let plaintext = crate::backup_crypto::decrypt(&fs::read(input)?, &passphrase)?;
     let backup: OperatorBackup = serde_json::from_slice(&plaintext)?;
     validate_backup(&backup, &config.project)?;
-    let current_epoch = membership_authority::recovery_epoch(&path)?;
+    let current_epoch = crate::recovery_epoch::read(&path)?;
     if backup.recovery_epoch != current_epoch {
         anyhow::bail!(
             "backup epoch {} does not match configured epoch {current_epoch}; use `jiji network \
@@ -423,15 +410,15 @@ pub async fn restore(
                 let exact_snapshot = backup
                     .agents
                     .iter()
-                    .find(|snapshot| snapshot_server_name(snapshot, name));
+                    .find(|snapshot| snapshot.node_id == *name);
                 let mut snapshot = exact_snapshot
                     .or_else(|| backup.agents.first())
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("backup contains no agent snapshots"))?;
                 if exact_snapshot.is_none() {
-                    // Replicated signed winners are safe to seed anywhere. Host-local claims are not:
-                    // never transplant another node's leases just because that node supplied the only
-                    // reachable backup snapshot.
+                    // Catalog/desired winners are safe to seed anywhere. Host-local claims are
+                    // not: never transplant another node's leases just because that node
+                    // supplied the only reachable backup snapshot.
                     snapshot.address_leases.clear();
                 }
                 let options = ssh_adapter::connect_options(name, &config.servers[name], ssh)?;
@@ -459,7 +446,7 @@ pub async fn restore(
                 session.close().await;
                 match result {
                     Ok(result) if result.success => {
-                        Ui::result_ok(name, "authenticated same-epoch state restored")
+                        Ui::result_ok(name, "same-epoch state restored")
                     }
                     Ok(result) => failures.push(format!("{name}: {}", result.stderr.trim())),
                     Err(error) => failures.push(format!("{name}: {error}")),
@@ -476,14 +463,6 @@ pub async fn restore(
         },
     )
     .await
-}
-
-fn snapshot_server_name(snapshot: &AgentBackupSnapshot, expected: &str) -> bool {
-    snapshot.membership.iter().any(|operation| {
-        operation.record.node_id == snapshot.node_id
-            && operation.record.server_name == expected
-            && operation.record.state == jiji_agent::membership::MembershipState::Active
-    })
 }
 
 async fn fetch_snapshot(
@@ -516,24 +495,8 @@ fn validate_backup(backup: &OperatorBackup, expected_project: &str) -> anyhow::R
     if backup.project_id != expected_project || backup.recovery_epoch == 0 {
         anyhow::bail!("control-plane backup identity is invalid");
     }
-    let key: [u8; 32] = backup
-        .authority_signing_key
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("backup authority key is invalid"))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&key);
     for snapshot in &backup.agents {
         snapshot.validate_identity(&backup.project_id, backup.recovery_epoch)?;
-        for operation in &snapshot.membership {
-            operation.verify(&{
-                let mut keyring = jiji_agent::membership::AuthorityKeyring::new(
-                    &backup.project_id,
-                    backup.recovery_epoch,
-                );
-                keyring.add_authority(&backup.authority_id, signing_key.verifying_key());
-                keyring
-            })?;
-        }
     }
     Ok(())
 }

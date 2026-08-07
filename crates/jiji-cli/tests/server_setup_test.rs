@@ -98,7 +98,7 @@ impl server::Handler for TestServer {
         // doesn't care about individually) succeed with empty output by default.
         let response = if command.contains("if test -L ") && command.contains("/current") {
             success("-\n")
-        } else if command.contains("inspect kamal-proxy --format '{{.State.Status}}'") {
+        } else if command.contains("inspect jiji-proxy --format '{{.State.Status}}'") {
             success("running\n")
         } else {
             self.responses
@@ -345,7 +345,7 @@ async fn reports_an_already_installed_engine() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("kamal-proxy configured and running"),
+        stdout.contains("jiji-proxy configured and running"),
         "stdout: {stdout}"
     );
     assert!(
@@ -679,13 +679,13 @@ async fn filtered_setup_bootstraps_from_one_seed_without_reconciling_that_seed()
     assert!(
         !existing_commands
             .iter()
-            .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"),
+            .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"),
         "the host filter must still limit proxy setup: {existing_commands:?}"
     );
     assert!(
         new_commands
             .iter()
-            .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"),
+            .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"),
         "the selected host must receive proxy setup: {new_commands:?}"
     );
 }
@@ -801,7 +801,7 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
         PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
     let mut responses = HashMap::new();
     responses.insert(
-        "docker inspect kamal-proxy --format '{{.State.Status}}'".to_string(),
+        "docker inspect jiji-proxy --format '{{.State.Status}}'".to_string(),
         success("running\n"),
     );
     let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
@@ -832,14 +832,20 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     let commands = received.lock().expect("received mutex poisoned");
     assert!(commands
         .iter()
-        .any(|command| command == "docker pull ghcr.io/acidtib/kamal-proxy:jiji"));
-    assert!(commands
-        .iter()
-        .any(|command| command == "docker container rm -f kamal-proxy"));
-    assert!(commands.iter().any(|command| command.starts_with(&format!(
-        "docker run --name kamal-proxy --network {} --ip {} ",
-        server_plan.bridge_name, server_plan.proxy_address
-    ))));
+        .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"));
+    // Remove-then-run is one combined, flock-wrapped remote command (not two separate SSH
+    // round-trips) so it can never race jiji-agent's own reconcile loop creating the same
+    // container concurrently -- see `proxy.rs::recreate`'s own doc comment.
+    assert!(
+        commands.iter().any(|command| command.contains("flock")
+            && command.contains(jiji_agent::host_lease::DEFAULT_PATH)
+            && command.contains("docker container rm -f jiji-proxy")
+            && command.contains(&format!(
+                "docker run --name jiji-proxy --network {} --ip {} ",
+                server_plan.bridge_name, server_plan.proxy_address
+            ))),
+        "expected one flock-wrapped rm+run command: {commands:?}"
+    );
     assert!(
         !commands
             .iter()
@@ -849,10 +855,10 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     assert!(
         commands.iter().any(|command| command
             == &format!(
-                "docker network connect --ip {} {} kamal-proxy",
+                "docker network connect --ip {} {} jiji-proxy",
                 server_plan.proxy_address, server_plan.bridge_name
             )),
-        "kamal-proxy should be attached to this project's bridge after recreation: {commands:?}"
+        "jiji-proxy should be attached to this project's bridge after recreation: {commands:?}"
     );
 }
 
@@ -861,7 +867,7 @@ async fn proxy_logs_sends_quoted_filters_and_prints_host_output() {
     let client_key =
         PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
     let command =
-        "docker logs --timestamps --since='1 hour ago' kamal-proxy | grep -- 'can'\\''t; echo bad'";
+        "docker logs --timestamps --since='1 hour ago' jiji-proxy | grep -- 'can'\\''t; echo bad'";
     let mut responses = HashMap::new();
     responses.insert(command.to_string(), success("matched proxy line\n"));
     let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use jiji_agent::api::{ApiResult, Request, RequestBody, ResponseBody};
 use jiji_agent::AgentPaths;
 use jiji_ssh::SshSession;
@@ -59,5 +60,31 @@ pub async fn catalog(
     match call(session, project, None, RequestBody::CatalogList).await? {
         ResponseBody::CatalogList { records } => Ok(records),
         response => anyhow::bail!("Agent returned unexpected catalog response: {response:?}"),
+    }
+}
+
+/// Rejects a `jiji-agent` running below `crate::version_requirements::
+/// MIN_AGENT_VERSION`, actionable ("Run `jiji server setup` to update
+/// it."): a stale agent left behind after the local `jiji` CLI itself was
+/// upgraded is otherwise a silent compatibility risk with no signal to the
+/// operator. A host with no agent installed at all (never ran `jiji server
+/// setup`, or a pre-agent installation) fails the underlying request
+/// itself rather than returning a parseable version -- wrapped with the
+/// same actionable hint instead of surfacing the raw remote-command error.
+pub async fn check_version(session: &SshSession, project: &str, host: &str) -> anyhow::Result<()> {
+    let response = call(session, project, None, RequestBody::Health)
+        .await
+        .with_context(|| {
+            format!("Could not reach jiji-agent on '{host}'. Run `jiji server setup` to install or repair it.")
+        })?;
+    match response {
+        ResponseBody::Health { version, .. } => crate::version_requirements::check_min_version(
+            "jiji-agent",
+            host,
+            &version,
+            crate::version_requirements::MIN_AGENT_VERSION,
+            "Run `jiji server setup` to update it.",
+        ),
+        response => anyhow::bail!("Agent returned unexpected health response: {response:?}"),
     }
 }

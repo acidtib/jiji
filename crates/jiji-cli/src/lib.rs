@@ -20,7 +20,6 @@ mod health_check;
 mod image_teardown;
 mod local_exec;
 mod lock;
-mod membership_authority;
 mod mounts;
 mod network_guard;
 mod network_teardown;
@@ -29,10 +28,12 @@ mod proxy;
 mod proxy_ingress;
 mod proxy_routes;
 mod proxy_teardown;
+mod recovery_epoch;
 mod registry;
 mod remote_build;
 mod ssh_adapter;
 mod teardown_plan;
+mod version_requirements;
 mod version_tag;
 mod volume_teardown;
 
@@ -360,12 +361,11 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            NetworkCommands::Decommission { server, seed } => {
+            NetworkCommands::Decommission { server } => {
                 if let Err(err) = commands::network::membership::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     server,
-                    seed,
                     commands::network::membership::Change::Decommission,
                 )
                 .await
@@ -374,16 +374,11 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            NetworkCommands::UpdateEndpoint {
-                server,
-                endpoint,
-                seed,
-            } => {
+            NetworkCommands::UpdateEndpoint { server, endpoint } => {
                 if let Err(err) = commands::network::membership::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     server,
-                    seed,
                     commands::network::membership::Change::Endpoint(endpoint.clone()),
                 )
                 .await
@@ -396,13 +391,11 @@ pub async fn run() {
                 server,
                 public_key,
                 endpoint,
-                seed,
             } => {
                 if let Err(err) = commands::network::membership::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     server,
-                    seed,
                     commands::network::membership::Change::RotateKey {
                         public_key: public_key.clone(),
                         endpoint: endpoint.clone(),
@@ -418,13 +411,11 @@ pub async fn run() {
                 server,
                 public_key,
                 endpoint,
-                seed,
             } => {
                 if let Err(err) = commands::network::membership::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     server,
-                    seed,
                     commands::network::membership::Change::Replace {
                         public_key: public_key.clone(),
                         endpoint: endpoint.clone(),
@@ -433,18 +424,6 @@ pub async fn run() {
                 .await
                 {
                     jiji_tui::Ui::error(&format!("Network replacement failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::RotateAuthority { finalize } => {
-                if let Err(err) = commands::network::membership::rotate_authority(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    *finalize,
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Membership authority rotation failed: {err}"));
                     std::process::exit(1);
                 }
             }

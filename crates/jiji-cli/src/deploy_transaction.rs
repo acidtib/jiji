@@ -9,7 +9,7 @@ use jiji_network::{NetworkPlan, ServerPlan, ServiceEndpointPlan};
 use jiji_ssh::SshSession;
 
 use crate::env_resolution::ResolvedEnvironment;
-use crate::proxy_routes::RouteTarget;
+use crate::proxy_routes::{RouteTarget, TcpRouteTarget};
 use crate::{container_ops, container_runtime, health_check, mounts, proxy_routes};
 
 pub type EndpointProgress = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -335,23 +335,30 @@ async fn deploy_dynamic_endpoint(
         &env_file_path,
     );
 
-    let mut targets = proxy_routes::targets_for_address(
+    let dns_server = std::net::SocketAddr::new(ctx.server.dns_address.into(), 53);
+    let targets = proxy_routes::targets_for_service(
         project,
         ctx.service_name,
         ctx.service.proxy.as_ref(),
-        address,
-    );
-    let other_addresses =
-        other_healthy_addresses(&catalog, ctx.service_name, &replica_id, &ctx.server.name);
-    for target in &mut targets {
-        target.additional_addresses = other_addresses.clone();
-    }
+        dns_server,
+    )?;
+    let tcp_targets = proxy_routes::tcp_targets_for_service(
+        project,
+        ctx.service_name,
+        ctx.service.proxy.as_ref(),
+        dns_server,
+    )?;
+    let committed_ports: Vec<u16> = targets
+        .iter()
+        .map(|target| target.port)
+        .chain(tcp_targets.iter().map(|target| target.port))
+        .collect();
     commit_catalog(
         ctx,
         &replica_id,
         &deployment_id,
         address,
-        targets.iter().map(|target| target.port as u16).collect(),
+        committed_ports.clone(),
         DeploymentState::Candidate,
         HealthState::Unknown,
     )
@@ -367,12 +374,17 @@ async fn deploy_dynamic_endpoint(
     let (health_port, health_config) = targets
         .first()
         .map(|target| (target.port, target.healthcheck.as_ref()))
+        .or_else(|| {
+            tcp_targets
+                .first()
+                .map(|target| (target.port, target.healthcheck.as_ref()))
+        })
         .unwrap_or((0, None));
     let health_plan = health_check::plan_for_candidate(
         ctx.engine,
         &candidate_name,
         address,
-        health_port,
+        health_port.into(),
         health_config,
     );
     report_progress(
@@ -388,78 +400,47 @@ async fn deploy_dynamic_endpoint(
         return Err(error.into());
     }
 
-    if !ctx.skip_proxy {
-        // Re-read the catalog now, immediately before activation, instead of reusing the snapshot
-        // taken at the very start of this function (before the candidate was even created). This
-        // matters because a sibling replica's own deploy runs concurrently on another host:
-        // confirmed live, the snapshot taken here could be seconds to a minute stale by the time
-        // proxy activation actually runs (after image pull, container start, and health-check), so
-        // it could still name a sibling's already-superseded, already-torn-down address -- kamal-
-        // proxy would then dial a dead target and fail its own health check with "no route to
-        // host", well before this endpoint's transaction ever reaches the CLI's later
-        // `reconcile_catalog_routes` cross-host reconciliation pass that would have corrected it.
-        if let Ok(refreshed_catalog) = crate::agent_client::catalog(ctx.session, project).await {
-            let refreshed_addresses = other_healthy_addresses(
-                &refreshed_catalog,
-                ctx.service_name,
-                &replica_id,
-                &ctx.server.name,
-            );
-            for target in &mut targets {
-                target.additional_addresses = refreshed_addresses.clone();
-            }
-        }
-        report_progress(ctx, &proxy_activation_progress_detail(&targets));
-        let mut activation_result = activate_proxy_routes(ctx, &targets).await;
-        if activation_result.is_err() {
-            // The pre-activation re-read above narrows the race but doesn't close it: the sibling
-            // replica's own concurrent deploy can still commit its new address in the moment
-            // between that re-read and kamal-proxy's actual dial. By the time a first activation
-            // attempt has exhausted its own health-check timeout (up to `deploy_timeout`), the
-            // sibling's concurrent deploy -- going through the same create/health-check sequence --
-            // has almost certainly finished by then, so one retry with a freshly re-read catalog
-            // recovers cleanly instead of failing the whole deploy over a now-stale target.
-            if let Ok(refreshed_catalog) = crate::agent_client::catalog(ctx.session, project).await
-            {
-                let refreshed_addresses = other_healthy_addresses(
-                    &refreshed_catalog,
-                    ctx.service_name,
-                    &replica_id,
-                    &ctx.server.name,
-                );
-                for target in &mut targets {
-                    target.additional_addresses = refreshed_addresses.clone();
-                }
-                activation_result = activate_proxy_routes(ctx, &targets).await;
-            }
-        }
-        if let Err(error) = activation_result {
-            if let Some(previous) = &previous {
-                for target in proxy_routes::targets_for_address(
-                    project,
-                    ctx.service_name,
-                    ctx.service.proxy.as_ref(),
-                    previous.address,
-                ) {
-                    let _ = proxy_routes::deploy_route(ctx.session, ctx.engine, &target).await;
-                }
-            }
-            release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
-            restore_stop_first(ctx, previous.as_ref()).await;
-            return Err(error);
-        }
-    }
-
+    // Commit Active/Healthy before touching jiji-proxy at all: jiji-agent's DNS resolver answers
+    // directly from this catalog, so the write itself is what makes the candidate's address
+    // resolvable -- there is no address to push to jiji-proxy the way kamal-proxy needed one.
     commit_catalog(
         ctx,
         &replica_id,
         &deployment_id,
         address,
-        targets.iter().map(|target| target.port as u16).collect(),
+        committed_ports.clone(),
         DeploymentState::Active,
         HealthState::Healthy,
     )
     .await?;
+
+    if !ctx.skip_proxy {
+        // "Activation" here means confirming jiji-proxy has actually discovered and health-checked
+        // this candidate's address, not pushing an address to it (see `RouteTarget`'s doc comment
+        // and `proxy_routes::verify_route_address`): each route's static definition is re-applied
+        // (a cheap, idempotent upsert that always runs a synchronous DNS re-resolution -- see
+        // `RouteManager::apply`), forcing jiji-proxy to see the catalog write above right away
+        // instead of waiting out its own `refresh_interval_secs`; verification then polls until
+        // the specific new address shows up healthy or the same timeout this candidate's own
+        // pre-activation health check used elapses.
+        report_progress(ctx, &proxy_activation_progress_detail(&targets));
+        let activation = async {
+            activate_proxy_routes(ctx, &targets, address, health_plan.deploy_timeout).await?;
+            activate_tcp_proxy_routes(ctx, &tcp_targets, address, health_plan.deploy_timeout).await
+        }
+        .await;
+        if let Err(error) = activation {
+            // The candidate is already Active/Healthy in the catalog and jiji-proxy's own DNS
+            // re-resolution is mesh-wide, so leaving it there risks other hosts' proxies converging
+            // on an address this host's own jiji-proxy couldn't confirm -- roll it back rather than
+            // leave an unverified record live. `previous` was never touched (still Active, still
+            // serving), so there is no route to "restore": unlike kamal-proxy's single-target
+            // routes, this host's route definition never named an address in the first place.
+            release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
+            restore_stop_first(ctx, previous.as_ref()).await;
+            return Err(error);
+        }
+    }
 
     if let Some(previous) = previous {
         commit_catalog(
@@ -699,31 +680,6 @@ fn health_check_progress_detail(timeout: std::time::Duration) -> String {
     format!("waiting for health check (up to {}s)", timeout.as_secs())
 }
 
-/// Addresses of every other currently Active/Healthy replica of `service_name`, for admitting
-/// cross-host replicas into this endpoint's own kamal-proxy route alongside its own address.
-/// Other healthy replicas of this service *on this same host*. kamal-proxy is one instance per
-/// server with no cross-host load balancing (see `proxy_routes::reconcile_catalog_routes`'s own
-/// per-host filtering) -- a route only ever names targets this host's kamal-proxy can actually
-/// reach and, when `healthcheck.cmd` is configured, exec into.
-fn other_healthy_addresses(
-    catalog: &[CatalogRecord],
-    service_name: &str,
-    replica_id: &str,
-    owner_node_id: &str,
-) -> Vec<std::net::Ipv4Addr> {
-    catalog
-        .iter()
-        .filter(|record| {
-            record.service == service_name
-                && record.replica_id != replica_id
-                && record.owner_node_id == owner_node_id
-                && record.state == DeploymentState::Active
-                && record.health == HealthState::Healthy
-        })
-        .map(|record| record.address)
-        .collect()
-}
-
 fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {
     let timeout = targets
         .iter()
@@ -743,10 +699,43 @@ fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {
 async fn activate_proxy_routes(
     ctx: &EndpointDeploymentContext<'_>,
     candidate_targets: &[RouteTarget],
+    address: std::net::Ipv4Addr,
+    timeout: std::time::Duration,
 ) -> anyhow::Result<()> {
     for target in candidate_targets {
         proxy_routes::deploy_route(ctx.session, ctx.engine, target).await?;
-        proxy_routes::verify_route(ctx.session, ctx.engine, &target.route_name).await?;
+        let expected = std::net::SocketAddr::new(address.into(), target.port);
+        proxy_routes::verify_route_address(
+            ctx.session,
+            ctx.engine,
+            &target.host,
+            target.path_prefix.as_deref(),
+            expected,
+            timeout,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Mirrors `activate_proxy_routes` for raw TCP targets.
+async fn activate_tcp_proxy_routes(
+    ctx: &EndpointDeploymentContext<'_>,
+    candidate_targets: &[TcpRouteTarget],
+    address: std::net::Ipv4Addr,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    for target in candidate_targets {
+        proxy_routes::deploy_tcp_route(ctx.session, ctx.engine, target).await?;
+        let expected = std::net::SocketAddr::new(address.into(), target.port);
+        proxy_routes::verify_tcp_route_address(
+            ctx.session,
+            ctx.engine,
+            target.listen_port,
+            expected,
+            timeout,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -758,7 +747,6 @@ mod tests {
         proxy_activation_progress_detail, RouteTarget,
     };
     use jiji_config::HealthcheckConfig;
-    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     #[test]
@@ -788,13 +776,12 @@ mod tests {
     #[test]
     fn proxy_progress_distinguishes_its_second_health_gate() {
         let targets = vec![RouteTarget {
-            route_name: "demo-web-3000".to_string(),
-            address: Ipv4Addr::LOCALHOST,
-            additional_addresses: Vec::new(),
-            port: 3000,
-            hosts: vec![],
-            tls: false,
+            host: "example.com".to_string(),
             path_prefix: None,
+            dns_server: "127.0.0.1:53".parse().unwrap(),
+            name: "demo-web.jiji".to_string(),
+            port: 3000,
+            ssl: None,
             healthcheck: Some(
                 serde_yaml::from_str::<HealthcheckConfig>("deploy_timeout: 60s\n").unwrap(),
             ),

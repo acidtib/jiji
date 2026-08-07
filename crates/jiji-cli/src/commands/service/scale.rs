@@ -454,8 +454,18 @@ pub async fn run(
                 );
             }
             if let Some(proxy) = &service.proxy {
+                let dns_servers: BTreeMap<String, std::net::SocketAddr> = sessions
+                    .keys()
+                    .map(|server| {
+                        (
+                            server.clone(),
+                            std::net::SocketAddr::new(plan.servers[server].dns_address.into(), 53),
+                        )
+                    })
+                    .collect();
                 crate::proxy_routes::reconcile_catalog_routes(
                     &sessions,
+                    &dns_servers,
                     &config.project,
                     config.builder.engine,
                     &BTreeMap::from([(service_name.clone(), proxy.clone())]),

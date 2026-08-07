@@ -9,8 +9,11 @@ use crate::{
 pub struct ServerTeardownPlan {
     pub server_name: String,
     pub containers: Vec<container_ops::ContainerSummary>,
-    /// Proxy route candidates that are actually present on this host's kamal-proxy.
-    pub proxy_routes: Vec<String>,
+    /// `(host, path_prefix)` proxy route candidates that are actually present on this host's
+    /// jiji-proxy.
+    pub proxy_routes: Vec<(String, Option<String>)>,
+    /// Raw TCP proxy route (`listen_port`) candidates actually present on this host's jiji-proxy.
+    pub tcp_proxy_routes: Vec<u16>,
     pub volumes: Vec<volume_teardown::DiscoveredVolume>,
     /// Image candidates that actually exist on this host.
     pub images: Vec<String>,
@@ -33,11 +36,26 @@ pub async fn discover(
 ) -> anyhow::Result<ServerTeardownPlan> {
     let containers = container_ops::list_managed_containers(session, engine, project).await?;
 
-    let route_candidates = proxy_teardown::compute_route_candidates(config, project);
+    let route_candidates = proxy_teardown::compute_route_candidates(config);
     let existing_routes = proxy_teardown::list_routes(session, engine).await?;
-    let proxy_routes: Vec<String> = route_candidates
+    let proxy_routes: Vec<(String, Option<String>)> = route_candidates
         .into_iter()
-        .filter(|route| existing_routes.contains(route))
+        .filter(|(host, path_prefix)| {
+            existing_routes
+                .iter()
+                .any(|route| &route.host == host && &route.path_prefix == path_prefix)
+        })
+        .collect();
+
+    let tcp_route_candidates = proxy_teardown::compute_tcp_route_candidates(config);
+    let existing_tcp_routes = proxy_teardown::list_tcp_routes(session, engine).await?;
+    let tcp_proxy_routes: Vec<u16> = tcp_route_candidates
+        .into_iter()
+        .filter(|listen_port| {
+            existing_tcp_routes
+                .iter()
+                .any(|route| &route.listen_port == listen_port)
+        })
         .collect();
 
     let volumes = if include_volumes {
@@ -62,6 +80,7 @@ pub async fn discover(
         server_name: server_name.to_string(),
         containers,
         proxy_routes,
+        tcp_proxy_routes,
         volumes,
         images,
         network,
@@ -144,13 +163,13 @@ mod tests {
 
     #[test]
     fn render_other_project_notices_trusts_its_input_and_never_panics_on_an_unlabeled_container() {
-        // Does no filtering of its own -- excluding kamal-proxy (jiji.managed=true but no
+        // Does no filtering of its own -- excluding jiji-proxy (jiji.managed=true but no
         // jiji.project label) from ever reaching here is
         // container_ops::list_other_project_containers's job (see its own test:
         // list_other_project_containers_excludes_the_named_project_and_unlabeled_containers,
         // confirmed live). This only guards that an unlabeled entry, if it ever did arrive, would
         // render descriptively rather than panicking.
-        let notices = render_other_project_notices(&[container("kamal-proxy", None)]);
+        let notices = render_other_project_notices(&[container("jiji-proxy", None)]);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("unlabeled"));
     }
@@ -165,6 +184,7 @@ mod tests {
             server_name: server_name.to_string(),
             containers: Vec::new(),
             proxy_routes: Vec::new(),
+            tcp_proxy_routes: Vec::new(),
             volumes: Vec::new(),
             images: Vec::new(),
             network: network_teardown::NetworkTeardownStatus {

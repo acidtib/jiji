@@ -317,6 +317,30 @@ async fn execute_host_teardown(
 ) -> Vec<(String, TeardownStepResult)> {
     let mut steps = Vec::new();
 
+    // Stopped first, unconditionally, before any other step: the agent's own continuous
+    // reconcile loop (local_reconcile.rs, driven by the proxy_routes/bridge/WireGuard state baked
+    // into its mesh config at `server setup` time) reapplies exactly what this teardown is about
+    // to remove -- proxy routes, jiji-proxy itself, the bridge, WireGuard -- on its own
+    // `reconcile_interval_secs` tick, independent of and unaware of this SSH-driven teardown.
+    // Confirmed live: with the agent removed later (originally last, then experimentally just
+    // before jiji-proxy's own container step), it won available time to reapply a route this same
+    // teardown had already reported removed moments earlier, and separately to recreate jiji-proxy
+    // itself after its own container-removal step reported success. Stopping the agent before
+    // touching anything it reconciles closes every variant of that race at once. Deliberately not
+    // gated behind the later `application_layer_failed` check (its original placement's
+    // rationale): the agent provides no interactive help investigating a stuck container removal,
+    // it only fights every other step's changes, so there's no reason to keep it alive through a
+    // failure either.
+    match agent_install::remove_agent(session, project).await {
+        Ok(was_present) => steps.push(("jiji agent".to_string(), present_or_absent(was_present))),
+        Err(error) => steps.push((
+            "jiji agent".to_string(),
+            TeardownStepResult::Failed {
+                error: error.to_string(),
+            },
+        )),
+    }
+
     match proxy_teardown::remove_project_routes(
         session,
         engine,
@@ -326,12 +350,42 @@ async fn execute_host_teardown(
     .await
     {
         Ok(results) => {
-            for (route, removed) in results {
-                steps.push((format!("proxy route '{route}'"), present_or_absent(removed)));
+            for ((host, path_prefix), removed) in results {
+                steps.push((
+                    format!(
+                        "proxy route '{}'",
+                        format_route(&host, path_prefix.as_deref())
+                    ),
+                    present_or_absent(removed),
+                ));
             }
         }
         Err(error) => steps.push((
             "proxy routes".to_string(),
+            TeardownStepResult::Failed {
+                error: error.to_string(),
+            },
+        )),
+    }
+
+    match proxy_teardown::remove_project_tcp_routes(
+        session,
+        engine,
+        &plan.tcp_proxy_routes,
+        &plan.tcp_proxy_routes,
+    )
+    .await
+    {
+        Ok(results) => {
+            for (listen_port, removed) in results {
+                steps.push((
+                    format!("tcp proxy route 'tcp:{listen_port}'"),
+                    present_or_absent(removed),
+                ));
+            }
+        }
+        Err(error) => steps.push((
+            "tcp proxy routes".to_string(),
             TeardownStepResult::Failed {
                 error: error.to_string(),
             },
@@ -457,27 +511,36 @@ async fn execute_host_teardown(
     match proxy_teardown::teardown_proxy_container_if_unused(session, engine).await {
         Ok(proxy_teardown::ProxyContainerOutcome::Removed) => {
             steps.push((
-                "kamal-proxy container".to_string(),
+                "jiji-proxy container".to_string(),
                 TeardownStepResult::Removed,
             ));
         }
         Ok(proxy_teardown::ProxyContainerOutcome::AlreadyAbsent) => {
             steps.push((
-                "kamal-proxy container".to_string(),
+                "jiji-proxy container".to_string(),
                 TeardownStepResult::AlreadyAbsent,
             ));
         }
-        Ok(proxy_teardown::ProxyContainerOutcome::RetainedInUseBy(routes)) => {
+        Ok(proxy_teardown::ProxyContainerOutcome::RetainedInUseBy(routes, tcp_routes)) => {
+            let mut rendered: Vec<String> = routes
+                .iter()
+                .map(|route| format_route(&route.host, route.path_prefix.as_deref()))
+                .collect();
+            rendered.extend(
+                tcp_routes
+                    .iter()
+                    .map(|route| format!("tcp:{}", route.listen_port)),
+            );
             steps.push((
-                "kamal-proxy container".to_string(),
+                "jiji-proxy container".to_string(),
                 TeardownStepResult::Retained {
-                    reason: format!("still serving route(s): {}", routes.join(", ")),
+                    reason: format!("still serving route(s): {}", rendered.join(", ")),
                 },
             ));
         }
         Err(error) => {
             steps.push((
-                "kamal-proxy container".to_string(),
+                "jiji-proxy container".to_string(),
                 TeardownStepResult::Failed {
                     error: error.to_string(),
                 },
@@ -485,15 +548,15 @@ async fn execute_host_teardown(
         }
     }
 
-    // kamal-proxy may still be running for other projects (it's shared/multi-homed, see
+    // jiji-proxy may still be running for other projects (it's shared/multi-homed, see
     // `crate::proxy`'s notes), in which case the step above retained it rather than removing it
     // -- either way, it must be disconnected from *this* project's bridge specifically before the
-    // bridge itself can be removed. Tolerant of kamal-proxy being absent or already disconnected.
+    // bridge itself can be removed. Tolerant of jiji-proxy being absent or already disconnected.
     let bridge_name = jiji_network::bridge_network_name(project);
     match crate::proxy::disconnect_bridge_if_attached(session, engine, &bridge_name).await {
         Ok(was_attached) => {
             steps.push((
-                "kamal-proxy network attachment".to_string(),
+                "jiji-proxy network attachment".to_string(),
                 present_or_absent(was_attached),
             ));
             let ingress_result =
@@ -511,7 +574,7 @@ async fn execute_host_teardown(
             match ingress_result {
                 Ok(_) => {}
                 Err(error) => steps.push((
-                    "kamal-proxy ingress rule".to_string(),
+                    "jiji-proxy ingress rule".to_string(),
                     TeardownStepResult::Failed {
                         error: error.to_string(),
                     },
@@ -519,7 +582,7 @@ async fn execute_host_teardown(
             }
         }
         Err(error) => steps.push((
-            "kamal-proxy network attachment".to_string(),
+            "jiji-proxy network attachment".to_string(),
             TeardownStepResult::Failed {
                 error: error.to_string(),
             },
@@ -618,20 +681,6 @@ async fn execute_host_teardown(
         ));
     }
 
-    // The agent is removed last, alongside the rest of the network layer above it -- gated behind
-    // the same `application_layer_failed` early return, since a failed container removal is
-    // reason enough to leave every other host-level resource, including the agent, in place for
-    // the operator to investigate.
-    match agent_install::remove_agent(session, project).await {
-        Ok(was_present) => steps.push(("jiji agent".to_string(), present_or_absent(was_present))),
-        Err(error) => steps.push((
-            "jiji agent".to_string(),
-            TeardownStepResult::Failed {
-                error: error.to_string(),
-            },
-        )),
-    }
-
     steps
 }
 
@@ -670,9 +719,17 @@ fn present_or_absent(was_present: bool) -> TeardownStepResult {
     }
 }
 
+/// A route's identity for display: its host, plus the path prefix if it's not the catch-all.
+fn format_route(host: &str, path_prefix: Option<&str>) -> String {
+    match path_prefix {
+        Some(prefix) => format!("{host}{prefix}"),
+        None => host.to_string(),
+    }
+}
+
 /// Prints the final per-host bucket and returns a non-zero exit (via `Err`) if any host wasn't
 /// fully torn down. A `Retained` step is a safe, sometimes-expected outcome (e.g. a shared
-/// kamal-proxy still serving another project) and never counts as a failure by itself; only
+/// jiji-proxy still serving another project) and never counts as a failure by itself; only
 /// `Failed` steps and unreachable hosts do.
 fn print_summary_and_exit(outcomes: &BTreeMap<String, HostTeardownOutcome>) -> anyhow::Result<()> {
     Ui::section("Teardown Summary:");

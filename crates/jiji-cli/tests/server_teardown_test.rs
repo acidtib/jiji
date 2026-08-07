@@ -340,14 +340,8 @@ async fn full_successful_teardown_reports_fully_torn_down() {
     assert!(
         received
             .iter()
-            .any(|c| c.contains("volume rm kamal-proxy-config")),
-        "kamal-proxy's now-orphaned config volume should have been removed: {received:?}"
-    );
-    assert!(
-        received
-            .iter()
             .any(|c| c.contains("rm -rf /etc/jiji/certs")),
-        "kamal-proxy's now-orphaned certs directory should have been removed: {received:?}"
+        "jiji-proxy's now-orphaned certs directory should have been removed: {received:?}"
     );
     assert!(
         received.iter().any(|c| c.contains("rm -rf .jiji/demo")),
@@ -462,7 +456,7 @@ async fn container_removal_failure_prevents_network_removal() {
         "network layer must not be torn down after an application-layer failure: {received:?}"
     );
     // Scoped to this project's own network-layer restore units (`jiji-network-restore-`,
-    // `jiji-service-nat-`, `jiji-dns-`), not kamal-proxy's own shared teardown (which legitimately
+    // `jiji-service-nat-`, `jiji-dns-`), not jiji-proxy's own shared teardown (which legitimately
     // still runs after an application-layer failure, per the ordering above, and disables its own
     // unrelated `jiji-proxy-ingress-restore.service` unit as part of removing the container it
     // belongs to).
@@ -493,7 +487,7 @@ async fn another_projects_container_is_left_untouched_not_blocking() {
     );
     responses.insert(
         format!(
-            "docker network disconnect {} kamal-proxy",
+            "docker network disconnect {} jiji-proxy",
             jiji_network::bridge_network_name("demo")
         ),
         CannedResponse {
@@ -533,7 +527,7 @@ async fn another_projects_container_is_left_untouched_not_blocking() {
         received
             .iter()
             .any(|command| command.starts_with("docker inspect --format")
-                && command.contains("kamal-proxy")),
+                && command.contains("jiji-proxy")),
         "ingress must be refreshed even when this project's bridge was already detached: {received:?}"
     );
 }
@@ -600,11 +594,11 @@ async fn network_removal_retries_with_force_when_podman_reports_a_stale_attachme
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stopped_kamal_proxy_is_treated_as_having_no_routes_instead_of_failing_discovery() {
-    // Confirmed live: a kamal-proxy container that exists but isn't running (state "exited",
+async fn a_stopped_jiji_proxy_is_treated_as_having_no_routes_instead_of_failing_discovery() {
+    // Confirmed live: a jiji-proxy container that exists but isn't running (state "exited",
     // "created", etc.) can't be exec'ed into -- `podman exec`/`docker exec` refuse with "can only
     // create exec sessions on running containers". Before this fix, `list_routes` only checked
-    // whether the container existed at all, so it still tried to exec `kamal-proxy list` against a
+    // whether the container existed at all, so it still tried to exec `jiji-proxy list` against a
     // present-but-stopped container and surfaced that engine error as a hard discovery failure,
     // making teardown treat the whole host as unreachable. A stopped proxy is by definition
     // serving nothing, so this must be treated the same as "no routes" and teardown must still
@@ -616,11 +610,11 @@ async fn a_stopped_kamal_proxy_is_treated_as_having_no_routes_instead_of_failing
         success(""),
     );
     responses.insert(
-        inspect_status_command("podman", "kamal-proxy"),
+        inspect_status_command("podman", "jiji-proxy"),
         success("exited\n"),
     );
     responses.insert(
-        "podman exec --no-session kamal-proxy kamal-proxy list".to_string(),
+        "podman exec --no-session jiji-proxy jiji-proxy list".to_string(),
         CannedResponse {
             success: false,
             stdout: String::new(),
@@ -639,21 +633,21 @@ async fn a_stopped_kamal_proxy_is_treated_as_having_no_routes_instead_of_failing
     );
     assert!(
         !stdout.contains("could not discover"),
-        "a stopped kamal-proxy must not fail discovery: stdout: {stdout}"
+        "a stopped jiji-proxy must not fail discovery: stdout: {stdout}"
     );
     assert!(
-        stdout.contains("kamal-proxy container: removed"),
-        "the stopped kamal-proxy container should still be force-removed: stdout: {stdout}"
+        stdout.contains("jiji-proxy container: removed"),
+        "the stopped jiji-proxy container should still be force-removed: stdout: {stdout}"
     );
 
     let received = harness.received.lock().unwrap().clone();
     assert!(
-        !received.contains(&"podman exec --no-session kamal-proxy kamal-proxy list".to_string()),
-        "a stopped kamal-proxy must never be exec'ed into: {received:?}"
+        !received.contains(&"podman exec --no-session jiji-proxy jiji-proxy list".to_string()),
+        "a stopped jiji-proxy must never be exec'ed into: {received:?}"
     );
     assert!(
-        received.contains(&remove_container_command("podman", "kamal-proxy")),
-        "the stopped kamal-proxy container should still be removed via force-remove: {received:?}"
+        received.contains(&remove_container_command("podman", "jiji-proxy")),
+        "the stopped jiji-proxy container should still be removed via force-remove: {received:?}"
     );
 }
 

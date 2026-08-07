@@ -262,7 +262,7 @@ pub async fn run(
                     proxy::ensure_proxy(session, config.builder.engine, network, false).await
                 {
                     return Err(
-                        error.context(format!("kamal-proxy is not ready on '{server_name}'"))
+                        error.context(format!("jiji-proxy is not ready on '{server_name}'"))
                     );
                 }
             }

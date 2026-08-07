@@ -61,8 +61,9 @@ pub async fn ensure_engine(
 
 async fn reconcile_managed_podman_static_configuration(session: &SshSession) -> anyhow::Result<()> {
     let command = format!(
-        "if test -f /etc/containers/containers.conf.d/99-jiji-static.conf; then {}; systemctl daemon-reload; fi",
-        podman_static_configuration_command()
+        "if test -f /etc/containers/containers.conf.d/99-jiji-static.conf; then {}; {}; systemctl daemon-reload; fi",
+        podman_static_configuration_command(),
+        podman_static_storage_configuration_command()
     );
     let result = session.execute(&command).await?;
     if !result.success {
@@ -127,7 +128,7 @@ fn version_is_supported(version_output: &str, min: (u64, u64, u64)) -> bool {
     parse_version(version_output).is_none_or(|found| found >= min)
 }
 
-fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
     let digits_and_dots: String = output
         .chars()
         .skip_while(|c| !c.is_ascii_digit())
@@ -286,21 +287,38 @@ echo \"$checksum  $tmp/$asset\" | sha256sum -c -; \
 tar -xzf \"$tmp/$asset\" -C \"$tmp\"; \
 cp -a --remove-destination \"$tmp/podman-linux-$arch/usr/local/.\" /usr/local/; \
 mkdir -p /etc/containers/containers.conf.d; \
-for config in storage.conf seccomp.json; do \
-test -e \"/etc/containers/$config\" || install -m 0644 \"$tmp/podman-linux-$arch/etc/containers/$config\" \"/etc/containers/$config\"; \
-done; \
+test -e /etc/containers/seccomp.json || install -m 0644 \"$tmp/podman-linux-$arch/etc/containers/seccomp.json\" /etc/containers/seccomp.json; \
+{}; \
 {}; \
 if test -f /etc/apparmor.d/podman; then \
 sed -Ei 's!^profile podman /usr/bin/podman !profile podman /usr/{{bin,local/bin}}/podman !' /etc/apparmor.d/podman; \
 command -v apparmor_parser >/dev/null 2>&1 && apparmor_parser -r /etc/apparmor.d/podman || true; \
 fi; \
 systemctl daemon-reload",
-        podman_static_configuration_command()
+        podman_static_configuration_command(),
+        podman_static_storage_configuration_command()
     )
 }
 
 fn podman_static_configuration_command() -> &'static str {
     "mkdir -p /etc/containers/containers.conf.d; printf '%s\\n' '[containers]' 'log_driver = \"k8s-file\"' '' '[engine]' 'runtime = \"/usr/local/bin/crun\"' 'cgroup_manager = \"cgroupfs\"' 'events_logger = \"file\"' > /etc/containers/containers.conf.d/99-jiji-static.conf"
+}
+
+/// Overrides the `mgoltzsche/podman-static` bundle's own `storage.conf`, which pins
+/// `mount_program = fuse-overlayfs` unconditionally -- a reasonable default for a
+/// distro-independent static binary that can't assume the host kernel supports native overlay, but
+/// wrong for jiji's own hosts: every server jiji provisions runs rootful Podman as root on a modern
+/// kernel, where native in-kernel overlayfs is both supported and correct. Confirmed live: with
+/// fuse-overlayfs forced, `podman rm -f` on an otherwise healthy container repeatedly failed with
+/// "removing storage for container ...: replacing mount point ...: directory not empty" -- a
+/// FUSE-layer unmount race that native overlay doesn't have. Omitting `mount_program` here (rather
+/// than setting it explicitly) is what selects native overlay; Podman only falls back to
+/// fuse-overlayfs when either this is set or native overlay genuinely isn't usable. Re-applied by
+/// `reconcile_managed_podman_static_configuration` on every `ensure_engine` call, exactly like the
+/// `99-jiji-static.conf` containers.conf.d drop-in, so an already-provisioned host self-heals onto
+/// native overlay the next time `jiji server setup` runs rather than needing a manual fix.
+fn podman_static_storage_configuration_command() -> &'static str {
+    "mkdir -p /etc/containers; printf '%s\\n' '[storage]' 'driver = \"overlay\"' 'runroot = \"/var/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' '' '[storage.options.overlay]' 'ignore_chown_errors = \"true\"' 'mountopt = \"nodev,fsync=0\"' > /etc/containers/storage.conf"
 }
 
 #[cfg(test)]
@@ -361,9 +379,11 @@ mod tests {
         assert!(install.contains(PODMAN_STATIC_ARM64_SHA256));
         assert!(install.contains("sha256sum -c -"));
         assert!(install.contains("cp -a --remove-destination"));
-        assert!(install.contains("test -e \"/etc/containers/$config\" || install"));
+        assert!(install.contains("test -e /etc/containers/seccomp.json || install"));
         assert!(install.contains("99-jiji-static.conf"));
         assert!(install.contains("runtime = \"/usr/local/bin/crun\""));
+        assert!(install.contains("/etc/containers/storage.conf"));
+        assert!(!install.contains("mount_program"));
         assert!(!install.contains("apt-get install -y -qq podman"));
     }
 
@@ -374,5 +394,15 @@ mod tests {
         assert!(command.contains("runtime = \"/usr/local/bin/crun\""));
         assert!(command.contains("cgroup_manager = \"cgroupfs\""));
         assert!(command.contains("log_driver = \"k8s-file\""));
+    }
+
+    #[test]
+    fn managed_storage_configuration_selects_native_overlay_by_omitting_mount_program() {
+        let command = super::podman_static_storage_configuration_command();
+
+        assert!(command.contains("driver = \"overlay\""));
+        assert!(command.contains("/etc/containers/storage.conf"));
+        assert!(!command.contains("mount_program"));
+        assert!(!command.contains("fuse-overlayfs"));
     }
 }

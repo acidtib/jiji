@@ -202,7 +202,7 @@ pub async fn list_managed_containers(
 
 /// Every `jiji.managed=true` container that carries a *different* project's label -- used only to
 /// detect a shared-host blocker (another jiji project still has resources on this host). A
-/// container with no `jiji.project` label at all (kamal-proxy is the only one today) belongs to no
+/// container with no `jiji.project` label at all (jiji-proxy is the only one today) belongs to no
 /// single project and is never a blocker, so it's excluded rather than treated as "some other
 /// project."
 pub async fn list_other_project_containers(
@@ -372,7 +372,7 @@ pub async fn remove_volume_if_present(
     Ok(true)
 }
 
-/// Number of containers attached to `network`, excluding any listed names, such as kamal-proxy
+/// Number of containers attached to `network`, excluding any listed names, such as jiji-proxy
 /// when it is still legitimately serving other projects.
 pub async fn network_attachment_count(
     session: &SshSession,
@@ -465,9 +465,9 @@ mod tests {
 
     #[test]
     fn empty_label_fields_never_collapse_or_shift_columns() {
-        // kamal-proxy carries jiji.managed=true but no project/service/server labels.
-        let summary = parse_container_summary_line("kamal-proxy||||running");
-        assert_eq!(summary.name, "kamal-proxy");
+        // jiji-proxy carries jiji.managed=true but no project/service/server labels.
+        let summary = parse_container_summary_line("jiji-proxy||||running");
+        assert_eq!(summary.name, "jiji-proxy");
         assert_eq!(summary.project, None);
         assert_eq!(summary.service, None);
         assert_eq!(summary.server, None);
@@ -477,12 +477,12 @@ mod tests {
     #[test]
     fn list_other_project_containers_excludes_the_named_project_and_unlabeled_containers() {
         // Exercised indirectly: the filter predicate used inside list_other_project_containers.
-        // Confirmed live: kamal-proxy carries jiji.managed=true but no jiji.project label, and
+        // Confirmed live: jiji-proxy carries jiji.managed=true but no jiji.project label, and
         // must never be treated as belonging to "some other project."
         let containers = vec![
             parse_container_summary_line("demo-web-a|demo|web|app|running"),
             parse_container_summary_line("other-web-a|other|web|app|running"),
-            parse_container_summary_line("kamal-proxy||||running"),
+            parse_container_summary_line("jiji-proxy||||running"),
         ];
         let filtered: Vec<_> = containers
             .into_iter()
@@ -492,7 +492,7 @@ mod tests {
             .collect();
         assert_eq!(filtered.len(), 1);
         assert!(filtered.iter().any(|c| c.name == "other-web-a"));
-        assert!(!filtered.iter().any(|c| c.name == "kamal-proxy"));
+        assert!(!filtered.iter().any(|c| c.name == "jiji-proxy"));
     }
 
     #[test]
@@ -520,15 +520,15 @@ mod tests {
 
     #[test]
     fn parse_container_summary_lines_skips_blank_lines() {
-        let stdout = "demo-web-a|demo|web|app|running\n\nkamal-proxy|||running\n";
+        let stdout = "demo-web-a|demo|web|app|running\n\njiji-proxy|||running\n";
         let parsed = parse_container_summary_lines(stdout);
         assert_eq!(parsed.len(), 2);
     }
 
     #[test]
     fn network_attachment_count_excludes_listed_names() {
-        let stdout = "kamal-proxy\ndemo-web-a\n";
-        let exclude = ["kamal-proxy"];
+        let stdout = "jiji-proxy\ndemo-web-a\n";
+        let exclude = ["jiji-proxy"];
         assert_eq!(count_attachments(stdout, &exclude), 1);
     }
 

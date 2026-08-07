@@ -11,9 +11,9 @@ use crate::env_resolution::project_staging_dir;
 
 static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Root-owned, host-global path for the shared kamal-proxy/ingress lock. Co-located with the
+/// Root-owned, host-global path for the shared jiji-proxy/ingress lock. Co-located with the
 /// existing `/etc/jiji/proxy-ingress/` state it guards (see `proxy_ingress::RULES_DIR`) rather
-/// than a project-scoped, SSH-user-home-relative path: kamal-proxy and its ingress table are the
+/// than a project-scoped, SSH-user-home-relative path: jiji-proxy and its ingress table are the
 /// one resource multiple projects share on a host, so this lock carries no `{project}` segment.
 pub const HOST_GLOBAL_PROXY_LOCK_PATH: &str = "/etc/jiji/proxy-ingress/lock";
 

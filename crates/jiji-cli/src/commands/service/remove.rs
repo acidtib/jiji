@@ -77,13 +77,27 @@ pub async fn run(
             &format!("{}: all catalog-managed deployments", endpoint.identity),
             1,
         );
-        for route in proxy_routes::targets_for_address(
+        let dns_server =
+            std::net::SocketAddr::new(plan.servers[&endpoint.server].dns_address.into(), 53);
+        for route in proxy_routes::targets_for_service(
             &plan.project,
             &endpoint.service,
             service.proxy.as_ref(),
-            plan.servers[&endpoint.server].proxy_address,
-        ) {
-            Ui::say(&format!("proxy route '{}'", route.route_name), 2);
+            dns_server,
+        )? {
+            let label = match &route.path_prefix {
+                Some(prefix) => format!("{}{prefix}", route.host),
+                None => route.host.clone(),
+            };
+            Ui::say(&format!("proxy route '{label}'"), 2);
+        }
+        for route in proxy_routes::tcp_targets_for_service(
+            &plan.project,
+            &endpoint.service,
+            service.proxy.as_ref(),
+            dns_server,
+        )? {
+            Ui::say(&format!("proxy route 'tcp:{}'", route.listen_port), 2);
         }
     }
     if remove_volumes {
@@ -256,7 +270,10 @@ pub async fn run(
                     .expect("connected above")
                     .clone();
                 let project = plan.project.clone();
-                let proxy_address = plan.servers[&endpoint.server].proxy_address;
+                let dns_server = std::net::SocketAddr::new(
+                    plan.servers[&endpoint.server].dns_address.into(),
+                    53,
+                );
                 let service = config
                     .services
                     .get(&endpoint.service)
@@ -323,22 +340,80 @@ pub async fn run(
                         }
                     }
 
-                    for route in proxy_routes::targets_for_address(
+                    let route_targets = proxy_routes::targets_for_service(
                         &project,
                         &endpoint.service,
                         service.proxy.as_ref(),
-                        proxy_address,
-                    ) {
-                        let result =
-                            match proxy_routes::remove_route(&session, engine, &route.route_name)
+                        dns_server,
+                    );
+                    match route_targets {
+                        Ok(route_targets) => {
+                            for route in route_targets {
+                                let label = match &route.path_prefix {
+                                    Some(prefix) => format!("{}{prefix}", route.host),
+                                    None => route.host.clone(),
+                                };
+                                let result = match proxy_routes::remove_route(
+                                    &session,
+                                    engine,
+                                    &route.host,
+                                    route.path_prefix.as_deref(),
+                                )
                                 .await
-                            {
-                                Ok(()) => RemoveStepResult::Removed,
-                                Err(error) => RemoveStepResult::Failed {
+                                {
+                                    Ok(()) => RemoveStepResult::Removed,
+                                    Err(error) => RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                };
+                                steps.push((format!("proxy route '{label}'"), result));
+                            }
+                        }
+                        Err(error) => {
+                            steps.push((
+                                "proxy routes".to_string(),
+                                RemoveStepResult::Failed {
                                     error: error.to_string(),
                                 },
-                            };
-                        steps.push((format!("proxy route '{}'", route.route_name), result));
+                            ));
+                        }
+                    }
+
+                    let tcp_route_targets = proxy_routes::tcp_targets_for_service(
+                        &project,
+                        &endpoint.service,
+                        service.proxy.as_ref(),
+                        dns_server,
+                    );
+                    match tcp_route_targets {
+                        Ok(tcp_route_targets) => {
+                            for route in tcp_route_targets {
+                                let result = match proxy_routes::remove_tcp_route(
+                                    &session,
+                                    engine,
+                                    route.listen_port,
+                                )
+                                .await
+                                {
+                                    Ok(()) => RemoveStepResult::Removed,
+                                    Err(error) => RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                };
+                                steps.push((
+                                    format!("proxy route 'tcp:{}'", route.listen_port),
+                                    result,
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            steps.push((
+                                "tcp proxy routes".to_string(),
+                                RemoveStepResult::Failed {
+                                    error: error.to_string(),
+                                },
+                            ));
+                        }
                     }
 
                     if !volume_candidates.is_empty() {

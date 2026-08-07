@@ -273,7 +273,7 @@ async fn remove_retires_catalog_deployment_and_removes_the_route() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("proxy route 'demo-web-3000': removed"),
+        stdout.contains("proxy route 'example.com': removed"),
         "stdout: {stdout}"
     );
     assert!(!stdout.contains("VIP mapping"), "stdout: {stdout}");
@@ -287,9 +287,9 @@ async fn remove_retires_catalog_deployment_and_removes_the_route() {
     assert!(received
         .iter()
         .any(|command| command.contains("# jiji-request:release-address")));
-    assert!(
-        received.contains(&"docker exec kamal-proxy kamal-proxy remove demo-web-3000".to_string())
-    );
+    assert!(received.contains(
+        &"docker exec jiji-proxy jiji-proxy route remove --host=example.com".to_string()
+    ));
     assert!(
         !received.iter().any(|c| c.contains("volume rm")),
         "volumes must not be touched without --volumes: {received:?}"

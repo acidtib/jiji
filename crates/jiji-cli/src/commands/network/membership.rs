@@ -1,13 +1,19 @@
+//! Membership changes: computed locally by the CLI and fanned out directly over SSH to every
+//! configured server (`jiji-agent membership-import`), best-effort. There is no peer-to-peer
+//! membership relay (see `jiji_agent::membership`'s module doc comment) -- a server that's
+//! unreachable right now simply keeps its last-known membership until the next time any command
+//! reaches it (`jiji server setup`, or a re-run of one of these commands).
+
 use std::net::SocketAddr;
 use std::path::Path;
 
-use jiji_agent::membership::{MembershipRecord, MembershipState, SignedMembership};
+use jiji_agent::membership::{MembershipRecord, MembershipScope, MembershipState, MembershipView};
 use jiji_agent::AgentPaths;
-use jiji_config::{validate_config, Config};
-use jiji_ssh::SshSession;
+use jiji_config::{validate_config, Config, Ssh};
+use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
-use crate::{membership_authority::ProjectAuthority, ssh_adapter};
+use crate::ssh_adapter;
 
 pub enum Change {
     Decommission,
@@ -26,7 +32,6 @@ pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
     server: &str,
-    seed: &str,
     change: Change,
 ) -> anyhow::Result<()> {
     let start = std::env::current_dir()?;
@@ -40,138 +45,183 @@ pub async fn run(
     if !config.servers.contains_key(server) {
         anyhow::bail!("Unknown membership server '{server}'");
     }
-    let seed_config = config
-        .servers
-        .get(seed)
-        .ok_or_else(|| anyhow::anyhow!("Unknown seed server '{seed}'"))?;
     let ssh = config
         .ssh
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
-    let options = ssh_adapter::connect_options(seed, seed_config, ssh)?;
+    let recovery_epoch = crate::recovery_epoch::read(&path)?;
+    let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
 
     Ui::section("Publishing Mesh Membership:");
-    Ui::say(
-        &format!("Connecting only to seed {seed} ({})", seed_config.host),
-        1,
-    );
-    let session = SshSession::connect(&options).await?;
-    let result = publish(&session, &config, &path, server, change).await;
-    session.close().await;
-    result?;
-    Ui::success("Signed membership published; connected peers will converge asynchronously.");
-    Ok(())
-}
-
-pub async fn rotate_authority(
-    environment: Option<&str>,
-    config_file: Option<&str>,
-    finalize: bool,
-) -> anyhow::Result<()> {
-    let start = std::env::current_dir()?;
-    let (config, path) =
-        crate::config_loading::load_config_for_ssh(environment, config_file.map(Path::new), &start)
-            .await?;
-    let ssh = config
-        .ssh
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
-
-    if finalize {
-        if ProjectAuthority::previous(&path)?.is_none() {
-            anyhow::bail!("no previous membership authority is awaiting retirement");
+    let gathered = gather_membership(&config, ssh).await;
+    let mut view = MembershipView::default();
+    for record in gathered {
+        // A stale/superseded record from a lagging peer is expected and harmless; only a
+        // structural problem (wrong project, collision) is worth surfacing.
+        if let Err(error) = view.apply(record, &scope) {
+            Ui::warn(&format!(
+                "Ignoring an inconsistent gathered record: {error}"
+            ));
         }
-        crate::membership_authority::finalize_rotation(&path)?;
-        Ui::success(
-            "Previous private signing key retired; its public verifier remains for historical operations.",
+    }
+    let current = view.get(server).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No reachable server has a membership record for '{server}'; run `jiji server setup` first"
+        )
+    })?;
+    for record in changed_records(current, change)? {
+        view.apply(record, &scope)?;
+    }
+    let records: Vec<MembershipRecord> = view.all().cloned().collect();
+
+    let outcome = push_membership_everywhere(&config, ssh, &records).await?;
+    for name in &outcome.reached {
+        Ui::result_ok(name, "membership updated");
+    }
+    for (name, error) in &outcome.unreachable {
+        Ui::result_warn(
+            name,
+            &format!("unreachable now, will catch up later: {error}"),
         );
-        return Ok(());
     }
-
-    let rotation = ProjectAuthority::stage_rotation(&path)?;
-    let authorities = vec![
-        jiji_agent::runtime::AuthorityConfig {
-            id: rotation.current.id.clone(),
-            public_key: rotation
-                .current
-                .signing_key
-                .verifying_key()
-                .to_bytes()
-                .to_vec(),
-        },
-        jiji_agent::runtime::AuthorityConfig {
-            id: rotation.next.id.clone(),
-            public_key: rotation
-                .next
-                .signing_key
-                .verifying_key()
-                .to_bytes()
-                .to_vec(),
-        },
-    ];
-
-    Ui::section("Rotating Membership Authority:");
-    let mut names = config.servers.keys().cloned().collect::<Vec<_>>();
-    names.sort();
-    for name in names {
-        let options = ssh_adapter::connect_options(&name, &config.servers[&name], ssh)?;
-        let session = SshSession::connect(&options).await.map_err(|error| {
-            anyhow::anyhow!(
-                "Host '{name}' is unavailable; authority rotation was not committed: {error}"
-            )
-        })?;
-        update_host_authorities(&session, &config.project, authorities.clone()).await?;
-        session.close().await;
-        Ui::say(&format!("{name}: verifier set updated"), 1);
+    if outcome.reached.is_empty() {
+        anyhow::bail!("Could not reach any server to publish the membership change");
     }
-    rotation.commit()?;
-    Ui::success("New authority activated; run again with --finalize after convergence.");
+    Ui::success("Membership updated on every reachable server.");
     Ok(())
 }
 
-async fn update_host_authorities(
+pub(crate) struct MembershipPushOutcome {
+    pub reached: Vec<String>,
+    pub unreachable: Vec<(String, String)>,
+}
+
+/// Pushes the complete given membership set to every configured server concurrently
+/// (bounded by `ssh.max_concurrent_starts`, same as every other multi-host fan-out in this
+/// codebase), best-effort. Used both by this module's own commands and by `jiji server setup`
+/// (which additionally needs newly enrolled servers to learn about every existing peer, and vice
+/// versa).
+pub(crate) async fn push_membership_everywhere(
+    config: &Config,
+    ssh: &Ssh,
+    records: &[MembershipRecord],
+) -> anyhow::Result<MembershipPushOutcome> {
+    let mut names: Vec<String> = config.servers.keys().cloned().collect();
+    names.sort();
+    let mut connect_options = Vec::with_capacity(names.len());
+    for name in &names {
+        connect_options.push(ssh_adapter::connect_options(
+            name,
+            &config.servers[name],
+            ssh,
+        )?);
+    }
+    let project = config.project.clone();
+    let records = records.to_vec();
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let operations: Vec<_> = connect_options
+        .into_iter()
+        .map(|options| {
+            let project = project.clone();
+            let records = records.clone();
+            move || async move {
+                let session = SshSession::connect(&options).await?;
+                let result = push_membership(&session, &project, &records).await;
+                session.close().await;
+                result
+            }
+        })
+        .collect();
+    let results: Vec<anyhow::Result<()>> = pool.execute_concurrent(operations).await;
+
+    let mut reached = Vec::new();
+    let mut unreachable = Vec::new();
+    for (name, result) in names.into_iter().zip(results) {
+        match result {
+            Ok(()) => reached.push(name),
+            Err(error) => unreachable.push((name, error.to_string())),
+        }
+    }
+    Ok(MembershipPushOutcome {
+        reached,
+        unreachable,
+    })
+}
+
+pub(crate) async fn push_membership(
     session: &SshSession,
     project: &str,
-    authorities: Vec<jiji_agent::runtime::AuthorityConfig>,
+    records: &[MembershipRecord],
 ) -> anyhow::Result<()> {
     let paths = AgentPaths::default_for_project(project);
-    let result = session
-        .execute(&format!("cat {}", paths.mesh_config_path.display()))
-        .await?;
-    if !result.success {
-        anyhow::bail!("could not read mesh configuration from {}", session.host());
-    }
-    let mut config: jiji_agent::runtime::MeshConfig = serde_json::from_str(&result.stdout)?;
-    config.authorities = authorities;
+    let update_path = paths.project_dir.join("membership-update.json");
     let write = session
         .execute_with_input(
-            &format!(
-                "install -m 0600 /dev/stdin {}",
-                paths.mesh_config_path.display()
-            ),
-            &serde_json::to_vec_pretty(&config)?,
+            &format!("install -m 0600 /dev/stdin {}", update_path.display()),
+            &serde_json::to_vec(records)?,
         )
         .await?;
     if !write.success {
-        anyhow::bail!("could not update verifier set on {}", session.host());
+        anyhow::bail!("could not stage membership update on {}", session.host());
     }
-    let restart = session
-        .execute(&format!("systemctl restart {}", paths.unit_name))
+    let apply = session
+        .execute(&format!(
+            "{binary} membership-import --project {project} --state-dir {state} \
+             --mesh-config {mesh} --input {update}",
+            binary = paths.binary_path.display(),
+            state = paths.state_dir.display(),
+            mesh = paths.mesh_config_path.display(),
+            update = update_path.display(),
+        ))
         .await?;
-    if !restart.success {
-        anyhow::bail!("agent restart failed on {}", session.host());
+    if !apply.success {
+        anyhow::bail!(
+            "{} rejected the membership update: {}",
+            session.host(),
+            apply.stderr.trim()
+        );
     }
     Ok(())
 }
 
-async fn publish(
+/// Best-effort, concurrent collection of whatever membership every configured server currently
+/// knows. A server that's unreachable, or that has never been enrolled yet, is silently skipped
+/// -- the caller resolves conflicts (freshest revision wins) by replaying everything through a
+/// `MembershipView`.
+pub(crate) async fn gather_membership(config: &Config, ssh: &Ssh) -> Vec<MembershipRecord> {
+    let connect_options: Vec<_> = config
+        .servers
+        .iter()
+        .filter_map(|(name, server)| ssh_adapter::connect_options(name, server, ssh).ok())
+        .collect();
+    let project = config.project.clone();
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let operations: Vec<_> = connect_options
+        .into_iter()
+        .map(|options| {
+            let project = project.clone();
+            move || async move {
+                let Ok(session) = SshSession::connect(&options).await else {
+                    return Vec::new();
+                };
+                let result = pull_membership(&session, &project).await;
+                session.close().await;
+                result.unwrap_or_default()
+            }
+        })
+        .collect();
+    pool.execute_concurrent(operations)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+pub(crate) async fn pull_membership(
     session: &SshSession,
-    config: &Config,
-    config_path: &Path,
-    server: &str,
-    change: Change,
-) -> anyhow::Result<()> {
-    let paths = AgentPaths::default_for_project(&config.project);
+    project: &str,
+) -> anyhow::Result<Vec<MembershipRecord>> {
+    let paths = AgentPaths::default_for_project(project);
     let export = session
         .execute(&format!(
             "{} membership-export --state-dir {}",
@@ -181,65 +231,12 @@ async fn publish(
         .await?;
     if !export.success {
         anyhow::bail!(
-            "Could not read signed membership from seed {}: {}",
+            "could not read membership from {}: {}",
             session.host(),
             export.stderr.trim()
         );
     }
-    let operations: Vec<SignedMembership> = serde_json::from_str(&export.stdout)?;
-    let current = latest_record(&operations, server)
-        .ok_or_else(|| anyhow::anyhow!("Seed has no membership record for '{server}'"))?;
-    let authority = ProjectAuthority::load_or_create(config_path)?;
-    let records = changed_records(current, change)?;
-    let signed = records
-        .into_iter()
-        .map(|record| SignedMembership::sign(record, &authority.id, &authority.signing_key))
-        .collect::<Result<Vec<_>, _>>()?;
-    let update_path = paths.project_dir.join("membership-update.json");
-    let write = session
-        .execute_with_input(
-            &format!("install -m 0600 /dev/stdin {}", update_path.display()),
-            &serde_json::to_vec(&signed)?,
-        )
-        .await?;
-    if !write.success {
-        anyhow::bail!("Could not stage membership update on seed");
-    }
-    let apply = session
-        .execute(&format!(
-            "systemctl stop {unit}; \
-             if {binary} membership-import --project {project} --state-dir {state} \
-             --mesh-config {mesh} --input {update}; then systemctl start {unit}; \
-             else systemctl start {unit}; exit 1; fi",
-            unit = paths.unit_name,
-            binary = paths.binary_path.display(),
-            project = config.project,
-            state = paths.state_dir.display(),
-            mesh = paths.mesh_config_path.display(),
-            update = update_path.display(),
-        ))
-        .await?;
-    if !apply.success {
-        anyhow::bail!(
-            "Seed rejected the signed membership update: {}",
-            apply.stderr.trim()
-        );
-    }
-    Ok(())
-}
-
-fn latest_record(operations: &[SignedMembership], node_id: &str) -> Option<MembershipRecord> {
-    operations
-        .iter()
-        .filter(|operation| operation.record.node_id == node_id)
-        .max_by_key(|operation| {
-            (
-                operation.record.owner_epoch,
-                operation.record.revision,
-                operation.record.state == MembershipState::Tombstoned,
-            )
-        })
-        .map(|operation| operation.record.clone())
+    Ok(serde_json::from_str(&export.stdout)?)
 }
 
 fn changed_records(
@@ -310,7 +307,6 @@ mod tests {
             schema_version: MEMBERSHIP_SCHEMA_VERSION,
             node_id: "node-a".into(),
             server_name: "node-a".into(),
-            node_signing_public_key: vec![1; 32],
             wireguard_public_key: "old".into(),
             management_address: Ipv4Addr::new(100, 98, 64, 1),
             container_subnet: "198.18.1.0/24".into(),

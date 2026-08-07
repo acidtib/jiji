@@ -1,117 +1,128 @@
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::SshSession;
 
+use crate::proxy_routes::{RouteSummary, TcpRouteSummary};
 use crate::{container_ops, proxy_ingress, proxy_routes};
 
-/// Every `{project}-{service}-{port}` route name a proxy-enabled service in this project
-/// would register, computed purely from config. No `NetworkPlan`/session needed: kamal-proxy
-/// route names have no server component (each server's kamal-proxy keeps its own local route
-/// table, keyed only by project/service/port, see `proxy_routes::targets_for_service`).
-/// Exact-name, not a prefix match: project/service names may themselves contain hyphens, so a
-/// `"{project}-"` prefix match could false-positive against an unrelated project name that
-/// happens to start the same way.
-pub fn compute_route_candidates(config: &Config, project: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for (service_name, service) in &config.services {
+/// Every `(host, path_prefix)` route a proxy-enabled service in this project would register,
+/// computed purely from config. Unlike kamal-proxy's `{project}-{service}-{port}` route names
+/// (which had no server component, since each server's kamal-proxy kept its own local route
+/// table), a jiji-proxy route's identity is the host/path pair itself -- see
+/// `proxy_routes::targets_for_service`.
+pub fn compute_route_candidates(config: &Config) -> Vec<(String, Option<String>)> {
+    let mut candidates = Vec::new();
+    for service in config.services.values() {
         let Some(proxy) = &service.proxy else {
             continue;
         };
         if let Some(targets) = &proxy.targets {
             for target in targets {
-                names.push(format!("{project}-{service_name}-{}", target.port));
+                if target.listen_port.is_some() {
+                    continue;
+                }
+                for host in target.hosts.clone().unwrap_or_default() {
+                    candidates.push((host, target.path_prefix.clone()));
+                }
             }
-        } else if let Some(port) = proxy.port {
-            names.push(format!("{project}-{service_name}-{port}"));
+        } else if proxy.listen_port.is_none() {
+            for host in proxy.hosts.clone().unwrap_or_default() {
+                candidates.push((host, proxy.path_prefix.clone()));
+            }
         }
     }
-    names
+    candidates
 }
 
-/// No routes if the kamal-proxy container itself doesn't exist (already-idempotent: a prior
+/// Mirrors `compute_route_candidates` for raw TCP targets (`listen_port` set).
+pub fn compute_tcp_route_candidates(config: &Config) -> Vec<u16> {
+    let mut candidates = Vec::new();
+    for service in config.services.values() {
+        let Some(proxy) = &service.proxy else {
+            continue;
+        };
+        if let Some(targets) = &proxy.targets {
+            for target in targets {
+                if let Some(listen_port) = target.listen_port {
+                    candidates.push(listen_port);
+                }
+            }
+        } else if let Some(listen_port) = proxy.listen_port {
+            candidates.push(listen_port);
+        }
+    }
+    candidates
+}
+
+/// No routes if the jiji-proxy container itself doesn't exist (already-idempotent: a prior
 /// teardown may already have removed it) or isn't currently running (confirmed live: a stopped
 /// container can't serve any route, and `podman exec`/`docker exec` refuse outright with "can
 /// only create exec sessions on running containers" -- a hard error here would otherwise make an
-/// unrelated stopped kamal-proxy block this entire host's teardown). Checked via an existence/
+/// unrelated stopped jiji-proxy block this entire host's teardown). Checked via an existence/
 /// state precheck rather than matching on exec's stderr wording.
 pub async fn list_routes(
     session: &SshSession,
     engine: ContainerEngine,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<RouteSummary>> {
     match container_ops::inspect_status(session, engine, jiji_network::CONTAINER_NAME).await? {
         Some(status) if status == "running" => {}
         _ => return Ok(Vec::new()),
     }
-    let command = proxy_routes::render_list_command(engine);
-    let result = session.execute(&command).await?;
-    if !result.success {
-        anyhow::bail!(
-            "Could not list kamal-proxy routes on {}: {}",
-            session.host(),
-            result.stderr.trim()
-        );
-    }
-    Ok(parse_route_names(&result.stdout))
+    proxy_routes::list_routes(session, engine).await
 }
 
-/// Parses `kamal-proxy list`'s table output: strips ANSI color codes (confirmed live --
-/// `ghcr.io/acidtib/kamal-proxy:jiji` always colorizes `list`, even over a non-interactive SSH
-/// exec channel), skips a leading header row (if the first line looks like one), and takes the
-/// first whitespace-separated column of every remaining line as the route name.
-fn parse_route_names(stdout: &str) -> Vec<String> {
-    let cleaned = strip_ansi_codes(stdout);
-    let mut lines = cleaned.lines().peekable();
-    if let Some(first) = lines.peek() {
-        if first
-            .trim_start()
-            .to_ascii_lowercase()
-            .starts_with("service")
-        {
-            lines.next();
-        }
+/// Mirrors `list_routes` for raw TCP routes.
+pub async fn list_tcp_routes(
+    session: &SshSession,
+    engine: ContainerEngine,
+) -> anyhow::Result<Vec<TcpRouteSummary>> {
+    match container_ops::inspect_status(session, engine, jiji_network::CONTAINER_NAME).await? {
+        Some(status) if status == "running" => {}
+        _ => return Ok(Vec::new()),
     }
-    lines
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Strips ANSI SGR escape sequences (`\x1b[<params>m`) such as the color codes
-/// `ghcr.io/acidtib/kamal-proxy:jiji`'s `list` command always emits.
-fn strip_ansi_codes(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for next in chars.by_ref() {
-                if next == 'm' {
-                    break;
-                }
-            }
-            continue;
-        }
-        output.push(ch);
-    }
-    output
+    proxy_routes::list_tcp_routes(session, engine).await
 }
 
 /// Removes every `candidates` entry that's actually present in `existing_routes`. Returns
-/// `(route_name, was_present)` for every candidate, so callers can report already-absent routes
-/// without treating them as an error.
+/// `((host, path_prefix), was_present)` for every candidate, so callers can report already-absent
+/// routes without treating them as an error. `existing_routes` shares `candidates`' own
+/// `(host, path_prefix)` shape rather than the richer `RouteSummary` -- `teardown_plan.rs`'s own
+/// discovery already pre-filters candidates down to ones confirmed present, so its typical caller
+/// passes the same pre-filtered slice for both parameters.
 pub async fn remove_project_routes(
     session: &SshSession,
     engine: ContainerEngine,
-    candidates: &[String],
-    existing_routes: &[String],
-) -> anyhow::Result<Vec<(String, bool)>> {
+    candidates: &[(String, Option<String>)],
+    existing_routes: &[(String, Option<String>)],
+) -> anyhow::Result<Vec<((String, Option<String>), bool)>> {
     let mut results = Vec::with_capacity(candidates.len());
-    for route in candidates {
-        if !existing_routes.contains(route) {
-            results.push((route.clone(), false));
+    for (host, path_prefix) in candidates {
+        let present = existing_routes.contains(&(host.clone(), path_prefix.clone()));
+        if !present {
+            results.push(((host.clone(), path_prefix.clone()), false));
             continue;
         }
-        proxy_routes::remove_route(session, engine, route).await?;
-        results.push((route.clone(), true));
+        proxy_routes::remove_route(session, engine, host, path_prefix.as_deref()).await?;
+        results.push(((host.clone(), path_prefix.clone()), true));
+    }
+    Ok(results)
+}
+
+/// Mirrors `remove_project_routes` for raw TCP routes.
+pub async fn remove_project_tcp_routes(
+    session: &SshSession,
+    engine: ContainerEngine,
+    candidates: &[u16],
+    existing_routes: &[u16],
+) -> anyhow::Result<Vec<(u16, bool)>> {
+    let mut results = Vec::with_capacity(candidates.len());
+    for &listen_port in candidates {
+        let present = existing_routes.contains(&listen_port);
+        if !present {
+            results.push((listen_port, false));
+            continue;
+        }
+        proxy_routes::remove_tcp_route(session, engine, listen_port).await?;
+        results.push((listen_port, true));
     }
     Ok(results)
 }
@@ -119,27 +130,31 @@ pub async fn remove_project_routes(
 pub enum ProxyContainerOutcome {
     Removed,
     AlreadyAbsent,
-    RetainedInUseBy(Vec<String>),
+    RetainedInUseBy(Vec<RouteSummary>, Vec<TcpRouteSummary>),
 }
 
-/// Removes the kamal-proxy container itself only if no route remains for ANY project after this
-/// project's own routes are gone -- kamal-proxy is shared across every project on a host, so its
+/// Removes the jiji-proxy container itself only if no route remains for ANY project after this
+/// project's own routes are gone -- jiji-proxy is shared across every project on a host, so its
 /// container is never tied to a single project's ownership labels the way service containers are.
 pub async fn teardown_proxy_container_if_unused(
     session: &SshSession,
     engine: ContainerEngine,
 ) -> anyhow::Result<ProxyContainerOutcome> {
     let remaining = list_routes(session, engine).await?;
-    if !remaining.is_empty() {
-        return Ok(ProxyContainerOutcome::RetainedInUseBy(remaining));
+    let remaining_tcp = list_tcp_routes(session, engine).await?;
+    if !remaining.is_empty() || !remaining_tcp.is_empty() {
+        return Ok(ProxyContainerOutcome::RetainedInUseBy(
+            remaining,
+            remaining_tcp,
+        ));
     }
     if !container_ops::remove_if_present(session, engine, jiji_network::CONTAINER_NAME).await? {
         return Ok(ProxyContainerOutcome::AlreadyAbsent);
     }
-    // Nothing needs kamal-proxy anymore, so its exclusive resources (not shared with any
-    // service) are orphaned too. Both are recreated from scratch by the next `server setup`, so
-    // there's no data-loss concern in removing them now.
-    container_ops::remove_volume_if_present(session, engine, jiji_network::CONFIG_VOLUME).await?;
+    // Nothing needs jiji-proxy anymore, so its exclusive resources (not shared with any service,
+    // and unlike kamal-proxy there's no separate config volume -- jiji-proxy has no state beyond
+    // what CERTS_DIR already holds) are orphaned too. Recreated from scratch by the next
+    // `server setup`, so there's no data-loss concern in removing them now.
     remove_certs_dir(session).await?;
     // Only Docker's `ensure_proxy` ever installs this (see `proxy_ingress`); harmlessly a no-op
     // on Podman, where it was never created.
@@ -172,16 +187,16 @@ mod tests {
     }
 
     #[test]
-    fn single_target_route_name_matches_deploy_naming() {
+    fn single_target_produces_one_candidate_per_host() {
         let config = config(
             "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  web:\n    image: example/web\n    proxy: { port: 3000, hosts: [example.com] }\n",
         );
-        let candidates = compute_route_candidates(&config, "demo");
-        assert_eq!(candidates, vec!["demo-web-3000".to_string()]);
+        let candidates = compute_route_candidates(&config);
+        assert_eq!(candidates, vec![("example.com".to_string(), None)]);
     }
 
     #[test]
-    fn multi_target_produces_one_candidate_per_target() {
+    fn multi_target_produces_one_candidate_per_target_host() {
         let config = config(
             r#"
 project: demo
@@ -193,14 +208,17 @@ services:
     proxy:
       targets:
         - { port: 3900, hosts: [s3.example.com] }
-        - { port: 3903, hosts: [admin.example.com] }
+        - { port: 3903, hosts: [admin.example.com], path_prefix: /admin }
 "#,
         );
-        let mut candidates = compute_route_candidates(&config, "demo");
+        let mut candidates = compute_route_candidates(&config);
         candidates.sort();
         assert_eq!(
             candidates,
-            vec!["demo-web-3900".to_string(), "demo-web-3903".to_string()]
+            vec![
+                ("admin.example.com".to_string(), Some("/admin".to_string())),
+                ("s3.example.com".to_string(), None),
+            ]
         );
     }
 
@@ -209,41 +227,51 @@ services:
         let config = config(
             "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  worker:\n    image: example/worker\n",
         );
-        assert!(compute_route_candidates(&config, "demo").is_empty());
+        assert!(compute_route_candidates(&config).is_empty());
     }
 
     #[test]
-    fn parse_route_names_skips_a_header_row() {
-        let stdout = "Service          Host             Target\ndemo-web-3000    example.com      10.0.0.2:3000\n";
-        assert_eq!(parse_route_names(stdout), vec!["demo-web-3000".to_string()]);
-    }
-
-    #[test]
-    fn parse_route_names_handles_headerless_output() {
-        let stdout = "demo-web-3000  example.com  10.0.0.2:3000\nother-api-8080 api.example.com 10.0.0.3:8080\n";
-        assert_eq!(
-            parse_route_names(stdout),
-            vec!["demo-web-3000".to_string(), "other-api-8080".to_string()]
+    fn tcp_target_produces_one_listen_port_candidate() {
+        let config = config(
+            "project: demo\nbuilder: { engine: docker }\nservers: {}\nservices:\n  db:\n    image: postgres:18\n    proxy: { port: 5432, listen_port: 5432 }\n",
         );
+        assert_eq!(compute_tcp_route_candidates(&config), vec![5432]);
+        // A TCP-mode target never also produces an HTTP route candidate.
+        assert!(compute_route_candidates(&config).is_empty());
     }
 
     #[test]
-    fn parse_route_names_strips_ansi_color_codes_from_a_real_capture() {
-        // Captured live from `docker exec kamal-proxy kamal-proxy list` against
-        // ghcr.io/acidtib/kamal-proxy:jiji over a non-interactive SSH exec channel.
-        let stdout = "\u{1b}[3;94mService\u{1b}[0m         \u{1b}[3;94mHost\u{1b}[0m                 \u{1b}[3;94mPath\u{1b}[0m  \u{1b}[3;94mTarget\u{1b}[0m             \u{1b}[3;94mState\u{1b}[0m    \u{1b}[3;94mTLS\u{1b}[0m  \n\u{1b}[1;34mtdsmoke-web-80\u{1b}[0m  \u{1b}[mtdsmoke.example.com\u{1b}[0m  \u{1b}[m/\u{1b}[0m     \u{1b}[m100.82.198.240:80\u{1b}[0m  \u{1b}[mrunning\u{1b}[0m  \u{1b}[mno\u{1b}[0m   \n";
-        assert_eq!(
-            parse_route_names(stdout),
-            vec!["tdsmoke-web-80".to_string()]
+    fn multi_target_separates_http_and_tcp_candidates() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: docker }
+servers: {}
+services:
+  app:
+    image: example/app
+    proxy:
+      targets:
+        - { port: 80, hosts: [web.example.com] }
+        - { port: 5432, listen_port: 5432 }
+"#,
         );
+        assert_eq!(
+            compute_route_candidates(&config),
+            vec![("web.example.com".to_string(), None)]
+        );
+        assert_eq!(compute_tcp_route_candidates(&config), vec![5432]);
     }
 
     #[test]
     fn remove_project_routes_reports_already_absent_without_calling_remove() {
         // Pure existence-filtering logic exercised without a session: candidates not present in
         // existing_routes must be reported (not skipped) as already-absent.
-        let candidates = ["demo-web-3000".to_string(), "demo-api-8080".to_string()];
-        let existing = ["demo-web-3000".to_string()];
+        let candidates: [(String, Option<String>); 2] = [
+            ("example.com".to_string(), None),
+            ("api.example.com".to_string(), None),
+        ];
+        let existing: [(String, Option<String>); 1] = [("example.com".to_string(), None)];
         let present: Vec<bool> = candidates
             .iter()
             .map(|candidate| existing.contains(candidate))

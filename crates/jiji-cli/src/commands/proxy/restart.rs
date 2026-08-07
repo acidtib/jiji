@@ -14,7 +14,7 @@ pub async fn run(
     Ui::section("Proxy Restart:");
     if services.is_some() {
         anyhow::bail!(
-            "`jiji proxy restart` does not accept -S/--services: kamal-proxy is shared by every service on a host. Use -H/--hosts to select servers instead."
+            "`jiji proxy restart` does not accept -S/--services: jiji-proxy is shared by every service on a host. Use -H/--hosts to select servers instead."
         );
     }
 
@@ -48,8 +48,8 @@ pub async fn run(
     }
 
     Ui::warn(
-        "Restarting kamal-proxy briefly interrupts every proxy route on each selected host. \
-         kamal-proxy is shared across every jiji project on a host: recreating it also drops \
+        "Restarting jiji-proxy briefly interrupts every proxy route on each selected host. \
+         jiji-proxy is shared across every jiji project on a host: recreating it also drops \
          any other project's network attachment, which is restored the next time that project \
          runs `jiji deploy`/`jiji server setup`/`jiji proxy restart`, but its routes are \
          unreachable until then.",
@@ -90,7 +90,7 @@ pub async fn run(
     let mut failures = Vec::new();
     for (name, outcome) in outcomes {
         match outcome {
-            Ok(_) => Ui::say(&format!("{name}: kamal-proxy restarted"), 1),
+            Ok(_) => Ui::say(&format!("{name}: jiji-proxy restarted"), 1),
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
                 failures.push((name, error.to_string()));
@@ -99,7 +99,7 @@ pub async fn run(
     }
     if !failures.is_empty() {
         anyhow::bail!(
-            "Kamal-proxy restart failed for {} server(s). Fix the reported hosts and retry `jiji proxy restart`.",
+            "Jiji-proxy restart failed for {} server(s). Fix the reported hosts and retry `jiji proxy restart`.",
             failures.len()
         );
     }

@@ -489,7 +489,9 @@ mod tests {
                         }),
                         path_prefix: None,
                         healthcheck: None,
+                        listen_port: None,
                     }]),
+                    listen_port: None,
                 }),
                 ..default_service()
             },

@@ -318,13 +318,13 @@ async fn setup_migrates_an_existing_bridge_and_reattaches_the_proxy() {
     );
     let list = format!("docker ps -a --filter network={bridge_name} --format '{{{{.Names}}}}'");
     let inspect_proxy = format!(
-        "docker inspect kamal-proxy --format '{{{{(index .NetworkSettings.Networks \"{bridge_name}\").IPAddress}}}}'"
+        "docker inspect jiji-proxy --format '{{{{(index .NetworkSettings.Networks \"{bridge_name}\").IPAddress}}}}'"
     );
 
     let mut responses = HashMap::new();
     responses.insert("id -u".to_string(), success("0\n"));
     responses.insert(probe, success("192.0.2.0/24|192.0.2.1\n"));
-    responses.insert(list, success("kamal-proxy\n"));
+    responses.insert(list, success("jiji-proxy\n"));
     responses.insert(inspect_proxy, success("192.0.2.4\n"));
     let public_key_path = format!("/etc/jiji/network/{slug}/public.key");
     responses.insert(
@@ -356,7 +356,7 @@ async fn setup_migrates_an_existing_bridge_and_reattaches_the_proxy() {
     assert!(
         received.iter().any(|command| {
             command.contains(&format!(
-                "docker network disconnect -f {bridge_name} kamal-proxy"
+                "docker network disconnect -f {bridge_name} jiji-proxy"
             )) && command.contains(&format!("docker network rm {bridge_name}"))
         }),
         "migration should detach the proxy and remove the old bridge: {received:?}"
@@ -365,7 +365,7 @@ async fn setup_migrates_an_existing_bridge_and_reattaches_the_proxy() {
         received.iter().any(|command| {
             command
                 == &format!(
-                    "docker network connect --ip {} {bridge_name} kamal-proxy",
+                    "docker network connect --ip {} {bridge_name} jiji-proxy",
                     server.proxy_address
                 )
         }),

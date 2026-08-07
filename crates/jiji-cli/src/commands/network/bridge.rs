@@ -48,13 +48,13 @@ impl BridgeMigration {
     pub fn includes_proxy(&self) -> bool {
         self.attachments
             .iter()
-            .any(|(name, _)| name == "kamal-proxy")
+            .any(|(name, _)| name == jiji_network::CONTAINER_NAME)
     }
 
     pub fn previous_proxy_address(&self) -> Option<Ipv4Addr> {
         self.attachments
             .iter()
-            .find_map(|(name, address)| (name == "kamal-proxy").then_some(*address))
+            .find_map(|(name, address)| (name == jiji_network::CONTAINER_NAME).then_some(*address))
     }
 }
 
@@ -184,7 +184,7 @@ impl<'a> BridgeProvisioner<'a> {
             .map(str::trim)
             .filter(|name| !name.is_empty())
         {
-            if name != "kamal-proxy" {
+            if name != jiji_network::CONTAINER_NAME {
                 anyhow::bail!(
                     "Cannot change bridge CIDR while service container '{name}' is attached on {}. Dynamic deployment addresses are durable catalog leases; remove the affected service deployment, rerun `jiji network setup`, then deploy it again.",
                     session.host()
@@ -249,7 +249,7 @@ impl<'a> BridgeProvisioner<'a> {
             );
             let result = session.execute(&command).await?;
             require_success(session, &command, &result)?;
-            proxy_reattached |= name == "kamal-proxy";
+            proxy_reattached |= name == jiji_network::CONTAINER_NAME;
         }
         reconcile_podman_dns_address(
             session,
@@ -301,7 +301,10 @@ impl<'a> BridgeProvisioner<'a> {
 
     fn planned_attachment_addresses(&self) -> std::collections::BTreeMap<String, Ipv4Addr> {
         let mut addresses = std::collections::BTreeMap::new();
-        addresses.insert("kamal-proxy".to_string(), self.server.proxy_address);
+        addresses.insert(
+            jiji_network::CONTAINER_NAME.to_string(),
+            self.server.proxy_address,
+        );
         addresses
     }
 
@@ -470,7 +473,10 @@ services:
         let addresses = bridge.planned_attachment_addresses();
 
         assert_eq!(addresses.len(), 1);
-        assert_eq!(addresses["kamal-proxy"], server.proxy_address);
+        assert_eq!(
+            addresses[jiji_network::CONTAINER_NAME],
+            server.proxy_address
+        );
     }
 
     #[test]

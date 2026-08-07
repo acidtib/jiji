@@ -507,6 +507,17 @@ pub async fn run(
         }
     }
 
+    Ui::section("Verifying Agent:");
+    for (server_name, session) in &sessions {
+        if let Err(error) =
+            crate::agent_client::check_version(session, &config.project, server_name).await
+        {
+            cancel_forwards(&sessions, &registry_forwards).await;
+            return Err(error);
+        }
+        Ui::say(&format!("{server_name}: ready"), 1);
+    }
+
     if !skip_proxy {
         Ui::section("Verifying Proxy:");
         for (server_name, session) in &sessions {
@@ -526,7 +537,7 @@ pub async fn run(
                 proxy::ensure_proxy(session, config.builder.engine, network, false).await
             {
                 cancel_forwards(&sessions, &registry_forwards).await;
-                return Err(error.context(format!("kamal-proxy is not ready on '{server_name}'")));
+                return Err(error.context(format!("jiji-proxy is not ready on '{server_name}'")));
             }
             Ui::say(&format!("{server_name}: ready"), 1);
         }
@@ -651,8 +662,18 @@ pub async fn run(
                     .map(|proxy| (endpoint.service.clone(), proxy))
             })
             .collect::<BTreeMap<_, _>>();
+        let dns_servers: BTreeMap<String, std::net::SocketAddr> = sessions
+            .keys()
+            .map(|server| {
+                (
+                    server.clone(),
+                    std::net::SocketAddr::new(plan.servers[server].dns_address.into(), 53),
+                )
+            })
+            .collect();
         proxy_routes::reconcile_catalog_routes(
             &sessions,
+            &dns_servers,
             &plan.project,
             config.builder.engine,
             &proxy_services,

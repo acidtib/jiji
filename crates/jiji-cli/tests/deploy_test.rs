@@ -55,6 +55,11 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"node-test","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}}"#
     } else if command.contains("# jiji-request:release-address") {
         r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else if command.contains("# jiji-request:health") {
+        return success(&format!(
+            r#"{{"Ok":{{"type":"health","schema_version":1,"observation_count":0,"version":"{}"}}}}"#,
+            env!("CARGO_PKG_VERSION")
+        ));
     } else {
         ""
     };
@@ -1107,4 +1112,174 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 
 fn atomic_lock_command() -> String {
     "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-c1fe97ed0787.lock.".to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_gives_an_actionable_hint_when_no_agent_is_installed() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    // Simulates a host that has never run `jiji server setup` (or predates jiji-agent
+    // entirely): the remote `jiji-agent` binary/socket doesn't exist, so the request itself
+    // fails at the SSH-command level rather than returning a parseable health response.
+    let mut responses = HashMap::new();
+    responses.insert(agent_request_command("health"), failure());
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("Could not reach jiji-agent") && stderr.contains("jiji server setup"),
+        "stderr should give an actionable hint instead of the raw remote-command error: {stderr}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.contains("run --name")),
+        "no container should be touched when the agent can't be reached: {received:?}"
+    );
+}
+
+/// Identical to `config_yaml` except the "web" service declares a raw TCP proxy target
+/// (`listen_port`) instead of no `proxy:` block at all.
+fn config_yaml_with_tcp_route(
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: {engine} }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    servers: [app]
+    proxy:
+      port: 5432
+      listen_port: 5432
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        engine = engine,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn write_config_with_tcp_route(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        config_yaml_with_tcp_route(addr, key_path, engine),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// The "app" server's own `.jiji` resolver address, exactly as `deploy_transaction.rs` computes
+/// it (`SocketAddr::new(ctx.server.dns_address.into(), 53)`) -- needed to build the exact
+/// `jiji-proxy tcp-route apply --dns-server=...` command string this test asserts on.
+fn dns_server_for_app(addr: SocketAddr, engine: &str) -> SocketAddr {
+    let yaml = config_yaml_with_tcp_route(addr, std::path::Path::new("/dev/null"), engine);
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    let plan = NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan");
+    SocketAddr::new(plan.servers["app"].dns_address.into(), 53)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn first_deployment_with_a_tcp_route_applies_and_verifies_it() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+    let dns_server = dns_server_for_app(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("tcp123"));
+    // Adding a proxy: block makes "app" an ingress host, so `jiji deploy`'s "Verifying Proxy:"
+    // phase now runs `ensure_proxy` -- report jiji-proxy as already running with a matching
+    // fingerprint so it skips the (slow, 30-retry) recreate/wait_until_running path entirely.
+    responses.insert(
+        "docker inspect jiji-proxy --format '{{.State.Status}} {{index .Config.Labels \"jiji.proxy-config\"}} {{.Config.Image}}'".to_string(),
+        success("running v1-docker ghcr.io/acidtib/jiji-proxy:jiji\n"),
+    );
+    responses.insert(
+        format!(
+            "docker exec jiji-proxy jiji-proxy tcp-route apply --listen-port=5432 --dns-server={dns_server} --name=demo-web.jiji --port=5432"
+        ),
+        success(""),
+    );
+    responses.insert(
+        "docker exec jiji-proxy jiji-proxy tcp-route status --listen-port=5432".to_string(),
+        success(
+            r#"{"route_exists":true,"backends":[{"address":"100.64.0.10:5432","healthy":true}]}"#,
+        ),
+    );
+    // `reconcile_catalog_routes` (runs once after every selected endpoint finishes) re-applies
+    // and then verifies every proxy-enabled service's routes via `tcp-route list`.
+    responses.insert(
+        "docker exec jiji-proxy jiji-proxy tcp-route list".to_string(),
+        success(r#"[{"listen_port":5432}]"#),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_tcp_route(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("demo:web:web-") && stdout.contains(": deployed"),
+        "stdout: {stdout}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("jiji-proxy tcp-route apply --listen-port=5432")),
+        "the tcp route should have been applied: {received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("jiji-proxy tcp-route status --listen-port=5432")),
+        "the tcp route should have been verified: {received:?}"
+    );
+    // No HTTP route command should ever be rendered for a listen_port-only target.
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("jiji-proxy route apply")),
+        "a TCP-only target must not also produce an HTTP route apply: {received:?}"
+    );
 }

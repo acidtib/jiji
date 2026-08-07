@@ -79,7 +79,7 @@ pub async fn ensure_agent(
     project: &str,
     binary_path: Option<&Path>,
     mesh_config: &jiji_agent::runtime::MeshConfig,
-    membership: &[jiji_agent::membership::SignedMembership],
+    membership: &[jiji_agent::membership::MembershipRecord],
 ) -> anyhow::Result<AgentStatus> {
     let paths = AgentPaths::default_for_project(project);
 

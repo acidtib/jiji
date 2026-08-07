@@ -33,7 +33,7 @@ pub async fn run(
     Ui::section("Proxy Logs:");
     if services.is_some() {
         anyhow::bail!(
-            "`jiji proxy logs` does not accept -S/--services: kamal-proxy logs belong to a host. Use -H/--hosts to select servers instead."
+            "`jiji proxy logs` does not accept -S/--services: jiji-proxy logs belong to a host. Use -H/--hosts to select servers instead."
         );
     }
     let start = std::env::current_dir()?;
@@ -78,7 +78,7 @@ pub async fn run(
     let effective_lines = effective_lines(lines, since, grep);
     let command = render_logs_command(
         config.builder.engine,
-        "kamal-proxy",
+        "jiji-proxy",
         effective_lines,
         since,
         grep,
@@ -152,7 +152,7 @@ pub async fn run(
     }
     if !failures.is_empty() {
         anyhow::bail!(
-            "Could not read kamal-proxy logs from {} server(s). Fix the reported hosts and retry `jiji proxy logs`.",
+            "Could not read jiji-proxy logs from {} server(s). Fix the reported hosts and retry `jiji proxy logs`.",
             failures.len()
         );
     }
@@ -250,14 +250,14 @@ mod tests {
         assert_eq!(
             render_logs_command(
                 ContainerEngine::Docker,
-                "kamal-proxy",
+                "jiji-proxy",
                 Some(25),
                 Some("1 hour ago"),
                 Some("can't; echo bad"),
                 None,
                 true,
             ),
-            "docker logs --timestamps --follow --since='1 hour ago' --tail=25 kamal-proxy | grep -- 'can'\\''t; echo bad'"
+            "docker logs --timestamps --follow --since='1 hour ago' --tail=25 jiji-proxy | grep -- 'can'\\''t; echo bad'"
         );
     }
 
@@ -266,14 +266,14 @@ mod tests {
         assert_eq!(
             render_logs_command(
                 ContainerEngine::Podman,
-                "kamal-proxy",
+                "jiji-proxy",
                 None,
                 None,
                 None,
                 None,
                 false
             ),
-            "podman logs --timestamps kamal-proxy"
+            "podman logs --timestamps jiji-proxy"
         );
     }
 

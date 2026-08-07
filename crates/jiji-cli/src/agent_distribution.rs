@@ -10,7 +10,13 @@
 //!
 //! Env overrides (all optional, for tests / self-hosted mirrors / unreleased builds):
 //! - `JIJI_AGENT_BINARY`: local binary path, highest priority (pre-existing)
-//! - `JIJI_AGENT_VERSION`: version tag to fetch (default: compiled `CARGO_PKG_VERSION`)
+//! - `JIJI_AGENT_VERSION`: version tag to fetch (default:
+//!   `version_requirements::CURRENT_VERSION`, the exact release this CLI
+//!   shipped with -- distinct from `version_requirements::MIN_AGENT_VERSION`,
+//!   the lower, hand-maintained floor `agent_client::check_version` enforces
+//!   against an already-running agent; see that module's docs for why a
+//!   fresh install always targets the current release even though the
+//!   compatibility floor moves independently)
 //! - `JIJI_RELEASE_BASE_URL`: release base URL (default: `https://github.com/acidtib/jiji`)
 
 use std::path::{Path, PathBuf};
@@ -32,7 +38,7 @@ pub struct ManagedAgentDownload {
 pub fn managed_download_config() -> ManagedAgentDownload {
     ManagedAgentDownload {
         version: env_nonempty("JIJI_AGENT_VERSION")
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            .unwrap_or_else(|| crate::version_requirements::CURRENT_VERSION.to_string()),
         base_url: env_nonempty("JIJI_RELEASE_BASE_URL")
             .unwrap_or_else(|| DEFAULT_RELEASE_BASE_URL.to_string()),
     }
