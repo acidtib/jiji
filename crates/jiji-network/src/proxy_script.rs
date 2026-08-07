@@ -15,7 +15,20 @@ use std::net::Ipv4Addr;
 use crate::BridgeEngineKind;
 
 pub const CONTAINER_NAME: &str = "jiji-proxy";
-pub const IMAGE: &str = "ghcr.io/acidtib/jiji-proxy:jiji";
+/// The `jiji-proxy` version this build was compiled against (read from
+/// `crates/jiji-proxy/Cargo.toml` at compile time by `build.rs`) --
+/// `jiji-proxy` is versioned and released independently of both `jiji-cli`
+/// and `jiji-agent`, so `image()` always pulls this exact build-paired
+/// version rather than a floating tag.
+pub const PROXY_VERSION: &str = env!("JIJI_PROXY_BUILD_VERSION");
+
+/// The exact, versioned `jiji-proxy` image this build pulls/runs. A
+/// function rather than a `const` since it's assembled from
+/// `PROXY_VERSION` at runtime.
+pub fn image() -> String {
+    format!("ghcr.io/acidtib/jiji-proxy:v{PROXY_VERSION}")
+}
+
 pub const CERTS_DIR: &str = "/etc/jiji/certs";
 /// Holds the rendered daemon config.yml (see `render_daemon_config`), mounted read-only into the
 /// container. Distinct from `CERTS_DIR`: this directory has no per-host state, so it's safe to
@@ -93,7 +106,8 @@ pub fn render_run_command(
          --volume {CERTS_DIR}:{CERTS_DIR} \
          --volume {CONFIG_DIR}:{CONFIG_DIR}:ro \
          --publish 80:{INTERNAL_HTTP_PORT} --publish 443:{INTERNAL_HTTPS_PORT} \
-         {IMAGE}"
+         {}",
+        image()
     )
 }
 
@@ -345,7 +359,7 @@ mod tests {
     #[test]
     fn docker_run_omits_network_when_none_given_and_needs_no_exec_privileges() {
         let command = render_run_command(BridgeEngineKind::Docker, None, "v1-docker");
-        assert!(command.contains("ghcr.io/acidtib/jiji-proxy:jiji"));
+        assert!(command.contains(&image()));
         assert!(command.contains("--network none --detach"));
         assert!(!command.contains("--ip"));
         assert!(command.contains("--publish 80:8080 --publish 443:8443"));

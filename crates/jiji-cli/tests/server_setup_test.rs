@@ -491,7 +491,7 @@ async fn missing_agent_binary_falls_back_to_remote_release_download() {
         commands.iter().any(|c| {
             c.contains("jiji-agent-linux-")
                 && c.contains("sha256sum")
-                && c.contains("releases/download/v")
+                && c.contains("releases/download/jiji-agent-v")
                 && c.contains(&paths.binary_path.display().to_string())
         }),
         "expected the host-side release install script to be sent: {commands:?}"
@@ -679,13 +679,13 @@ async fn filtered_setup_bootstraps_from_one_seed_without_reconciling_that_seed()
     assert!(
         !existing_commands
             .iter()
-            .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"),
+            .any(|command| command == &format!("docker pull {}", jiji_network::image())),
         "the host filter must still limit proxy setup: {existing_commands:?}"
     );
     assert!(
         new_commands
             .iter()
-            .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"),
+            .any(|command| command == &format!("docker pull {}", jiji_network::image())),
         "the selected host must receive proxy setup: {new_commands:?}"
     );
 }
@@ -832,7 +832,7 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     let commands = received.lock().expect("received mutex poisoned");
     assert!(commands
         .iter()
-        .any(|command| command == "docker pull ghcr.io/acidtib/jiji-proxy:jiji"));
+        .any(|command| command == &format!("docker pull {}", jiji_network::image())));
     // Remove-then-run is one combined, flock-wrapped remote command (not two separate SSH
     // round-trips) so it can never race jiji-agent's own reconcile loop creating the same
     // container concurrently -- see `proxy.rs::recreate`'s own doc comment.

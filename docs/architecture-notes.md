@@ -195,7 +195,10 @@ projects share default CIDR ranges):
   (`{project}-{service}-{server}.jiji`) names.
 - **jiji-proxy** (`crates/jiji-proxy/`, driven from the CLI side by
   `crates/jiji-cli/src/proxy.rs`/`proxy_routes.rs`): a Pingora-based (Rust)
-  reverse proxy container (`ghcr.io/acidtib/jiji-proxy:jiji`), provisioned
+  reverse proxy container (`ghcr.io/acidtib/jiji-proxy:v{version}`, pinned to
+  the exact `jiji-proxy` version this build was compiled against --
+  `jiji_network::image()` -- since `jiji-proxy` is versioned and released
+  independently of `jiji`/`jiji-agent`), provisioned
   per-server by `jiji server setup`, that fully replaced the earlier
   kamal-proxy Go fork. Deliberately the **one genuinely shared, multi-tenant**
   component: one container per host, **multi-homed** across every project's

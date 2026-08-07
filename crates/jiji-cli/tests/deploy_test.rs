@@ -1226,7 +1226,7 @@ async fn first_deployment_with_a_tcp_route_applies_and_verifies_it() {
     // fingerprint so it skips the (slow, 30-retry) recreate/wait_until_running path entirely.
     responses.insert(
         "docker inspect jiji-proxy --format '{{.State.Status}} {{index .Config.Labels \"jiji.proxy-config\"}} {{.Config.Image}}'".to_string(),
-        success("running v1-docker ghcr.io/acidtib/jiji-proxy:jiji\n"),
+        success(&format!("running v1-docker {}\n", jiji_network::image())),
     );
     responses.insert(
         format!(

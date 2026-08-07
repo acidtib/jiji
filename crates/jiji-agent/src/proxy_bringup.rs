@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use jiji_network::{BridgeEngineKind, ProxyRunNetwork, CONTAINER_NAME, IMAGE};
+use jiji_network::{image, BridgeEngineKind, ProxyRunNetwork, CONTAINER_NAME};
 
 use crate::engine::Engine;
 use crate::host_lease;
@@ -153,12 +153,12 @@ async fn is_current_and_running(engine: Engine, fingerprint: &str) -> Result<boo
         .map_err(|error| error.to_string())?;
     Ok(output.status.success()
         && String::from_utf8_lossy(&output.stdout).trim()
-            == format!("running {fingerprint} {IMAGE}"))
+            == format!("running {fingerprint} {}", image()))
 }
 
 async fn recreate(engine: Engine, fingerprint: &str, config: &MeshConfig) -> Result<(), String> {
     std::fs::create_dir_all(jiji_network::CERTS_DIR).map_err(|error| error.to_string())?;
-    run(engine.as_str(), &["pull", IMAGE]).await?;
+    run(engine.as_str(), &["pull", &image()]).await?;
 
     let remove = Command::new(engine.as_str())
         .args(["container", "rm", "-f", CONTAINER_NAME])

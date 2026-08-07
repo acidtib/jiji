@@ -44,11 +44,6 @@ mise lint               # cargo clippy --all-targets --all-features && cargo fmt
 mise check              # cargo check
 mise scan               # osv-scanner -r . (vulnerability scan, see fix-osv-finding skill)
 
-# Version management
-mise run version                    # Show current version
-mise run version -- --bump          # Auto-increment patch version
-mise run version -- --bump 1.0.0    # Set specific version (updates workspace.package.version)
-
 # Install locally
 mise install             # cargo build --release --bin jiji -> ~/.local/bin/jiji
 mise install-dev         # cargo build --bin jiji_dev -> ~/.local/bin/jiji_dev
@@ -263,6 +258,59 @@ Quick-recognition patterns (full derivation/rationale in
   `58000..60000` (membership has no port of its own — it's CLI-pushed, not
   replicated).
 
+### Version Management & Releases (release-please)
+
+All 8 crates have an explicit `[package].version` (never
+`version.workspace = true` — the `cargo-workspace` release-please plugin
+hard-fails on any workspace member using it, since it scans every
+`Cargo.toml` under `[workspace].members` regardless of release-please's
+own `packages` config). Tracked by
+[release-please](https://github.com/googleapis/release-please)
+(`release-please-config.json`, `.release-please-manifest.json`,
+`.github/workflows/release-please.yml`) — no single repo-wide version, no
+manual bump command; never hand-edit a crate's `version` or the manifest
+outside a release-please PR.
+
+`jiji`, `jiji-agent`, `jiji-proxy` are the only *publicly* released
+crates: independent tags (`vX.Y.Z` / `jiji-agent-vX.Y.Z` /
+`jiji-proxy-vX.Y.Z`), GitHub Release, and build/publish workflow
+(`jiji-release.yml`, `jiji-agent-release.yml`, `jiji-proxy-release.yml`)
+per crate. The 5 internal-only crates are release-please packages too but
+`"skip-github-release": true` — real version bump + `CHANGELOG.md` entry,
+no tag/public release. That's what makes internal-crate changes count:
+`cargo-workspace` patch-bumps every crate that depends on whatever just
+bumped, so a `fix:` to `jiji-core` cascades through `jiji-network` into
+`jiji-cli`/`jiji-agent`, no `Release-As:` footer needed. `jiji-proxy` has
+no internal deps, so nothing cascades into it.
+
+**Gotcha (confirmed live, don't reintroduce):** internal
+`[workspace.dependencies]` entries must stay bare `{ path = "..." }`, no
+`version` field. Adding one makes `cargo build`/`check` semver-check it
+against the crate's real version — since crates bump independently
+(`bump-minor-pre-major: true` makes routine pre-1.0 minor bumps normal),
+the next minor bump on any internal crate breaks the whole workspace
+build. It also wouldn't help changelogs anyway: release-please's
+`CargoToml` updater skips any dep using `dep.workspace = true` (all of
+them here).
+
+Since release-please can't generate a useful changelog note for that
+reason, `.github/scripts/expand-dependency-changelog.sh <package-name>`
+does it independently: diffs `.release-please-manifest.json` against `git
+show HEAD~1:...` to find what bumped, filters to the releasing package's
+actual deps (`cargo metadata --no-deps`), and appends each bumped crate's
+own `CHANGELOG.md` section under "### Crate changes in this release" —
+the only place an internal crate's real change description becomes
+public. **Security:** always pipe a fetched release body into this script
+via `env:`, never interpolate `${{ }}` directly into a `run:` block — it's
+free-text commit/PR content.
+
+`jiji-cli`'s and `jiji-network`'s `build.rs` each read a sibling crate's
+version at compile time (`jiji-agent` → `AGENT_BUILD_VERSION`, `jiji-proxy`
+→ `PROXY_VERSION`/`image()`) via a shared `sibling_crate_version()` helper
+`include!`-ed from `build-support/sibling_crate_version.rs` — needed
+because a fresh `jiji server setup` can no longer assume the agent/proxy
+build to install/pull is "the same version as me".
+
 ## Key Files
 
 - `crates/jiji-config/src/jiji.yml` — authoritative configuration reference
@@ -311,6 +359,7 @@ poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-de
 
 ## Command Reference
 
+- `jiji version` — prints the running binary's version and git SHA.
 - `jiji init` — scaffolds `.jiji/deploy.yml`, including project-directory-derived
   `/24` management and `/16` container CIDRs.
 - `jiji server setup` — engine install, then `jiji-agent` install-and-start
@@ -488,6 +537,17 @@ touching nftables rendering, nested SSH sessions, or teardown ordering):
 
 - Never add a co-author trailer to commits (no "Co-Authored-By" line).
 - Keep commit messages short and factual.
+- PR titles must be valid Conventional Commits (`feat`, `fix`, `chore`,
+  `docs`, `refactor`, `test`, `ci`, `build`, `perf`, `revert`, optional
+  `(scope)` and `!` for breaking changes) — PRs are squash-merged, so the PR
+  title becomes the commit `release-please` reads on `main` to compute the
+  next version bump and changelog entry. Enforced by
+  `.github/workflows/pr-title-lint.yml`. Which crate(s) a commit directly
+  bumps is decided by its *changed paths* (`crates/<name>`), not by the PR
+  title's type/scope — a PR touching two crate directories bumps both
+  directly, and the `cargo-workspace` plugin cascades from there to every
+  crate that depends on what changed (see "Version Management & Releases"
+  above).
 - Run `/resume-work` at the start of a session to pick up context from
   previous sessions
 - Never use `git commit --no-verify` — if hooks fail, fix every issue before

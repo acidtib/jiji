@@ -157,7 +157,7 @@ async fn recreate(
     .await?;
     run_required(
         session,
-        &format!("{engine} pull {}", jiji_network::IMAGE),
+        &format!("{engine} pull {}", jiji_network::image()),
         "pull jiji-proxy image",
     )
     .await?;
@@ -260,7 +260,7 @@ async fn is_current_and_running(
         ))
         .await?;
     Ok(result.success
-        && result.stdout.trim() == format!("running {fingerprint} {}", jiji_network::IMAGE))
+        && result.stdout.trim() == format!("running {fingerprint} {}", jiji_network::image()))
 }
 
 async fn wait_until_running(session: &SshSession, engine: ContainerEngine) -> anyhow::Result<()> {

@@ -1,6 +1,6 @@
 [package]
 name = "jiji-cli"
-version.workspace = true
+version = "0.4.9"
 edition.workspace = true
 license.workspace = true
 default-run = "jiji"
@@ -42,6 +42,9 @@ scrypt.workspace = true
 getrandom.workspace = true
 nix = { version = "0.31", features = ["term"] }
 libc = "0.2"
+
+[build-dependencies]
+toml = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

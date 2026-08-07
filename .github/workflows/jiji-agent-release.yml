@@ -1,0 +1,114 @@
+name: jiji-agent release
+
+on:
+  push:
+    tags:
+      - "jiji-agent-v*"
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: jiji-agent-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: jiji-agent-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build agent binary
+        run: cargo build --release --bin jiji-agent --target ${{ matrix.target }}
+
+      - name: Package agent binary and checksum
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/jiji-agent dist/${{ matrix.artifact }}
+          sha256sum dist/${{ matrix.artifact }} | awk '{print $1}' > dist/${{ matrix.artifact }}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.artifact }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Get tag version
+        id: get_tag_version
+        run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/jiji-agent-v/}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Fetch changelog from release-please's release
+        id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+        run: |
+          delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            gh release view "jiji-agent-v$TAG_VERSION" \
+              --repo "${{ github.repository }}" --json body -q .body || true
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Expand bumped crates' actual changelog content
+        id: expanded
+        env:
+          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            printf '%s' "$CHANGELOG_BODY" | \
+              .github/scripts/expand-dependency-changelog.sh jiji-agent
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: jiji-agent-v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          name: jiji-agent-v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          allowUpdates: true
+          generateReleaseNotes: false
+          artifacts: "dist/jiji-agent-linux-x86_64,dist/jiji-agent-linux-x86_64.sha256,dist/jiji-agent-linux-arm64,dist/jiji-agent-linux-arm64.sha256"
+          body: |
+            ${{ steps.expanded.outputs.body }}

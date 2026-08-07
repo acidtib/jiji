@@ -1,27 +1,40 @@
-//! Minimum-version floors for the two other jiji binaries this CLI talks to
-//! over the network: `jiji-agent` (installed by `jiji server setup`) and
-//! `jiji-proxy` (installed/restarted by `jiji server setup`/`jiji proxy
-//! restart`). Every jiji crate shares one workspace version and is released
-//! in lockstep (`workspace.package.version`), but that does NOT mean every
-//! `jiji-cli` release requires re-running `jiji server setup`/`jiji proxy
-//! restart` -- most releases touch neither the agent's wire protocol/API nor
-//! the proxy's admin protocol, so an operator upgrading `jiji` for an
-//! unrelated CLI-only change should not be forced to touch already-healthy
-//! infrastructure. `MIN_AGENT_VERSION`/`MIN_PROXY_VERSION` are therefore
-//! deliberately NOT tied to `env!("CARGO_PKG_VERSION")`: bump them by hand
-//! only when a change actually breaks compatibility with an older
-//! already-running agent/proxy. `CURRENT_VERSION` is the separate, always-
-//! moving constant for "what does a fresh install fetch" -- see
-//! `agent_distribution::managed_download_config`.
+//! Version floors and defaults for the two other jiji binaries this CLI
+//! talks to over the network: `jiji-agent` (installed by `jiji server
+//! setup`) and `jiji-proxy` (installed/restarted by `jiji server
+//! setup`/`jiji proxy restart`). `jiji`, `jiji-agent`, and `jiji-proxy` are
+//! versioned and released independently (each its own `[package].version`,
+//! its own release-please component and tag) -- a `jiji-cli` release does
+//! NOT imply a matching agent/proxy release, and most `jiji` releases touch
+//! neither the agent's wire protocol/API nor the proxy's admin protocol, so
+//! an operator upgrading `jiji` for an unrelated CLI-only change should not
+//! be forced to touch already-healthy infrastructure. Two distinct version
+//! references exist here for two distinct purposes (this CLI's own version
+//! is `env!("CARGO_PKG_VERSION")`, used directly by `commands::version`,
+//! and has no bearing on which agent/proxy build to install):
+//!
+//! - `AGENT_BUILD_VERSION`: the exact `jiji-agent` version this CLI was
+//!   built alongside (read from `crates/jiji-agent/Cargo.toml` at compile
+//!   time by `build.rs`, see there) -- the default a fresh `jiji server
+//!   setup` installs, since that's the one build guaranteed to exist as a
+//!   release and to have been tested against this CLI.
+//! - `MIN_AGENT_VERSION`/`MIN_PROXY_VERSION`: the oldest agent/proxy version
+//!   this CLI still works against. Deliberately hand-bumped, NOT
+//!   automatically tied to any build-time reference: update them only when
+//!   a change actually breaks compatibility with an older already-running
+//!   agent/proxy.
+//!
+//! `jiji-proxy` has no equivalent of `AGENT_BUILD_VERSION` here: it's
+//! distributed as a container image, not a CLI-downloaded binary, and its
+//! own build-time version reference (`jiji_network::proxy_script::
+//! PROXY_VERSION`) lives in `jiji-network` instead, since both this CLI and
+//! `jiji-agent`'s own native reconcile loop need it -- see that module.
 
 use crate::engine::parse_version;
 
-/// The exact jiji release this CLI binary was built as. This is what a
-/// fresh `jiji server setup` installs and what `jiji proxy restart` pulls --
-/// always the release this CLI actually shipped with, since that is the
-/// only build guaranteed to exist as a GitHub release and to have been
-/// tested against this CLI.
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The `jiji-agent` version this CLI was built alongside -- the default a
+/// fresh `jiji server setup` installs. See the module docs above and
+/// `agent_distribution::managed_download_config`.
+pub const AGENT_BUILD_VERSION: &str = env!("JIJI_AGENT_BUILD_VERSION");
 
 /// The oldest jiji-agent/jiji-proxy version this CLI still works against.
 /// Update by hand when (and only when) a real compatibility break demands

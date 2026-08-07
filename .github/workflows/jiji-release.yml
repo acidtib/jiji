@@ -1,4 +1,4 @@
-name: Release
+name: jiji release
 
 on:
   push:
@@ -18,19 +18,15 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: jiji-linux-x86_64
-            agent_artifact: jiji-agent-linux-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: jiji-linux-arm64
-            agent_artifact: jiji-agent-linux-arm64
           - os: macos-13
             target: x86_64-apple-darwin
             artifact: jiji-macos-x86_64
-            agent_artifact: ""
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: jiji-macos-arm64
-            agent_artifact: ""
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -49,20 +45,10 @@ jobs:
       - name: Build release binary
         run: cargo build --release --bin jiji --target ${{ matrix.target }}
 
-      - name: Build agent binary (remote hosts are Linux)
-        if: matrix.agent_artifact != ''
-        run: cargo build --release --bin jiji-agent --target ${{ matrix.target }}
-
       - name: Package binary
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/jiji dist/${{ matrix.artifact }}
-
-      - name: Package agent binary and checksum
-        if: matrix.agent_artifact != ''
-        run: |
-          cp target/${{ matrix.target }}/release/jiji-agent dist/${{ matrix.agent_artifact }}
-          sha256sum dist/${{ matrix.agent_artifact }} | awk '{print $1}' > dist/${{ matrix.agent_artifact }}.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -70,21 +56,17 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
-      - name: Upload agent artifact
-        if: matrix.agent_artifact != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.agent_artifact }}
-          path: |
-            dist/${{ matrix.agent_artifact }}
-            dist/${{ matrix.agent_artifact }}.sha256
-
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Get tag version
         id: get_tag_version
         run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> "$GITHUB_OUTPUT"
@@ -95,6 +77,33 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Fetch changelog from release-please's release
+        id: changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+        run: |
+          delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            gh release view "v$TAG_VERSION" \
+              --repo "${{ github.repository }}" --json body -q .body || true
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Expand bumped crates' actual changelog content
+        id: expanded
+        env:
+          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            printf '%s' "$CHANGELOG_BODY" | \
+              .github/scripts/expand-dependency-changelog.sh jiji-cli
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
@@ -102,21 +111,22 @@ jobs:
           tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
           allowUpdates: true
-          generateReleaseNotes: true
-          artifacts: "dist/jiji-linux-x86_64,dist/jiji-linux-arm64,dist/jiji-macos-x86_64,dist/jiji-macos-arm64,dist/jiji-agent-linux-x86_64,dist/jiji-agent-linux-x86_64.sha256,dist/jiji-agent-linux-arm64,dist/jiji-agent-linux-arm64.sha256"
+          generateReleaseNotes: false
+          artifacts: "dist/jiji-linux-x86_64,dist/jiji-linux-arm64,dist/jiji-macos-x86_64,dist/jiji-macos-arm64"
           body: |
+            ${{ steps.expanded.outputs.body }}
+
             ## Installation
 
             ```bash
             curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
             ```
 
-            ## Changes in v${{ steps.get_tag_version.outputs.TAG_VERSION }}
-
       - name: Notify jiji-website of the new release
         env:
           GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
+          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
         run: |
           gh api repos/acidtib/jiji-website/dispatches \
             -f event_type=jiji-release \
-            -f "client_payload[version]=v${{ steps.get_tag_version.outputs.TAG_VERSION }}"
+            -f "client_payload[version]=v$TAG_VERSION"
