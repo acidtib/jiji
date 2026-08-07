@@ -187,3 +187,63 @@ JSON output. Also needs unit tests for the three-tier precedence in
 `env_resolution.rs` (`.env` overriding adapter, adapter overriding host-env
 only when `--host-env` is passed, and the existing "missing secret" error
 still listing every unresolved name when even the adapter doesn't have it).
+
+## Move `service.retain` image pruning into jiji-agent
+
+**Status: not started, currently CLI-triggered only, no automatic equivalent.**
+`jiji service prune` (`crates/jiji-cli/src/commands/service/prune.rs`) is the
+only thing that ever enforces `service.retain`: for each selected endpoint's
+build-configured service, `prune_service_images` lists image tags per server
+over SSH (`{engine} images --format '{{.ID}}' --filter reference={repo}`,
+trusting the engine's own newest-first ordering), keeps the first `retain`
+(or `--retain` override), and removes the rest unless still referenced by a
+running container. This only ever runs when an operator remembers to
+manually invoke it -- there is no scheduled/automatic equivalent, so old
+build tags accumulate on disk indefinitely between manual prune runs.
+
+Consider moving this into `jiji-agent`'s own local reconciliation loop
+(`jiji-agent/src/local_reconcile.rs::run_loop`, an infinite loop already
+calling `reconcile_once` every pass with `engine`/`config: &MeshConfig` in
+scope, backing off 2s-60s between passes) so pruning happens continuously
+per host without operator action, the same way container/lease/proxy-route
+reconciliation already does.
+
+Gap to close first: `service.retain` (and enough registry/repo information
+to run the same `images --filter reference={repo}` listing) is not currently
+pushed to the agent at all -- `LocalRuntimeConfig`
+(`jiji-agent/src/runtime.rs`) carries bridge/proxy/route/subnet fields only,
+no per-service retain count. Would need: a new per-service field (or a small
+`Vec<ServiceRetainSpec { repo, retain }>`) added to `MeshConfig`/
+`LocalRuntimeConfig`, populated by `commands/server/setup.rs` the same way
+`proxy_routes`/`tcp_routes` already are, plus an agent-side prune step
+mirroring `prune_service_images`'s logic (list, keep first N, skip if
+referenced by a running container, remove the rest). Decide whether `jiji
+service prune` stays as a manual override/dry-run surface once the agent
+owns the continuous version, or is retired entirely in favor of `jiji
+network diagnostics`-style read-only reporting.
+
+## Surface health-check attempt output live during `jiji deploy`'s wait
+
+**Status: not started.** During the pre-activation health-check wait (the
+`"waiting for health check (up to Ns)"` line, e.g. `Deploying
+casa:postgres:postgres-0db5ed59724a: waiting for health check (up to 60s)`),
+`jiji deploy` shows a single static spinner message for the entire wait --
+confirmed zero interim output today. `health_check::wait_until_healthy`
+(`crates/jiji-cli/src/health_check.rs`) polls the check command (`cmd`-based
+exec, HTTP `curl`, or the engine-native readiness fallback, per
+`plan_for_candidate`) every `plan.interval` (default 2s) until success or
+`plan.deploy_timeout` elapses (default 30s, or `healthcheck.deploy_timeout`).
+Each attempt's `stderr` is already captured into `last_error`, but is
+silently discarded on every failed attempt and only ever surfaced once, at
+the very end, bundled into `HealthCheckError::Failed { logs, .. }` (which
+also calls `container_ops::logs_tail` once, only after every attempt is
+exhausted). `stdout` is never captured at all, on any attempt.
+
+Fix: update the same spinner handle already used for the static message
+(`Ui::spinner(...)`'s handle, `commands/deploy.rs`, already updated
+elsewhere via `report_progress`/`ctx.progress`) with the latest attempt's
+captured output on each failed poll, instead of only setting the message
+once at the start of the wait -- no new `Ui` primitive needed, this is an
+existing pattern. Also capture `stdout` per attempt (currently dropped
+entirely), since a `cmd`-based check's own diagnostic output commonly goes
+to stdout, not stderr.

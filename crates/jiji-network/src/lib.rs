@@ -12,17 +12,17 @@ pub use bridge_script::{
 pub use cidr::Ipv4Cidr;
 pub use error::NetworkPlanError;
 pub use naming::{
-    bridge_interface_name, bridge_network_name, catalog_replication_port,
-    membership_replication_port, service_nat_table_name, systemd_unit_slug,
-    wireguard_interface_name, wireguard_port,
+    bridge_interface_name, bridge_network_name, catalog_replication_port, service_nat_table_name,
+    systemd_unit_slug, wireguard_interface_name, wireguard_port,
 };
 pub use planner::{
     FirewallPlan, NetworkPlan, NetworkPlanner, RoutePlan, ServerPlan, ServiceEndpointPlan,
     WireGuardPeerPlan, CONTAINER_SERVER_PREFIX,
 };
 pub use proxy_script::{
-    attached_address, config_fingerprint, is_missing_container_error, render_nftables,
-    render_run_command, surviving_proxy_address, ProxyRunNetwork, CERTS_DIR, CONFIG_VOLUME,
-    CONTAINER_NAME, IMAGE, INGRESS_TABLE, INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT,
+    attached_address, config_fingerprint, is_missing_container_error, render_daemon_config,
+    render_forward_accept_script, render_nftables, render_relay_netns_apply_script,
+    render_run_command, surviving_proxy_address, ProxyRunNetwork, CERTS_DIR, CONFIG_DIR,
+    CONTAINER_NAME, IMAGE, INGRESS_TABLE, INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT, RELAY_NAT_TABLE,
 };
 pub use service_runtime::NetworkedContainerRun;

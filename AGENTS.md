@@ -2,7 +2,7 @@
 
 ## Workspace Structure
 
-This is a Cargo workspace with seven crates in `crates/`:
+This is a Cargo workspace with eight crates in `crates/`:
 
 ```
 crates/
@@ -17,6 +17,9 @@ crates/
 ├── jiji-agent/   # The project-scoped `jiji-agent` binary/library installed on every
 │                 # server: durable local store, replicated membership/catalog, incremental
 │                 # WireGuard repair, distributed DNS, container reconciliation.
+├── jiji-proxy/   # The `jiji-proxy` binary: Pingora-based ingress proxy, host-global and
+│                 # shared across projects (see "jiji-proxy" under "Private Networking"
+│                 # below). Replaced the kamal-proxy Go fork entirely.
 └── jiji-cli/     # The `jiji` binary: commands, orchestration, everything else
 ```
 
@@ -113,20 +116,32 @@ schema as plain `serde`-deserializable structs (`Config`, `NamedServer`, `Ssh`,
 
 Jiji replaced its original compiled, all-host `NetworkPlan` design with a
 **distributed, per-project control plane**: every server runs a project-scoped
-`jiji-agent` (`crates/jiji-agent/`) that owns a durable local store, replicates
-signed membership and a signed service catalog peer-to-peer over WireGuard (no
-CLI-driven SSH fan-out to every host), incrementally repairs its own WireGuard
-peers, serves project DNS from its local catalog, and reconciles its own
-containers/leases/proxy routes on restart. There is no legacy runtime or
-mixed-version cluster to support: protocol and schema versions are checked
-before any state exchange (`jiji-agent/src/membership.rs`, `replication.rs`,
-`catalog_replication.rs`), and a mismatch is rejected outright rather than
-partially applied.
+`jiji-agent` (`crates/jiji-agent/`) that owns a durable local store,
+incrementally repairs its own WireGuard peers, serves project DNS from its
+local catalog, and reconciles its own containers/leases/proxy routes on
+restart. Membership has no key material and no peer-to-peer relay: `jiji-cli`
+computes it locally from `jiji.yml` and pushes it directly over SSH to every
+reachable host (`jiji-agent membership-import`), so a host's own trust
+boundary is "this file was installed by root," the same as every other
+agent-managed file (see `jiji-agent/src/membership.rs`'s module doc comment).
+The service catalog and desired-state placement, being genuinely
+node-originated at runtime (crash-restart reconciliation, health flips), keep
+continuous peer-to-peer anti-entropy (`catalog_replication.rs`) -- but
+direct-only, one hop, never relayed through a third node: a node's outbound
+exchange contains only records it owns, and a receiver authenticates an
+inbound record by resolving the TCP connection's actual source address
+against its local membership view rather than a signature, since WireGuard's
+own peer authentication already makes that source address unspoofable within
+the mesh (see `catalog.rs`'s `RecordProvenance` doc comment). There is no
+legacy runtime or mixed-version cluster to support: protocol and schema
+versions are checked before any state exchange (`jiji-agent/src/
+membership.rs`, `catalog_replication.rs`), and a mismatch is rejected outright
+rather than partially applied.
 
 Non-negotiable invariants: a service deployment never rewrites WireGuard; a
 targeted deploy normally connects to and locks only its affected host and
 logical replica; temporary absence of a host or peer never means permanent
-deletion, only an authenticated tombstone does; DNS only ever publishes an
+deletion, only an explicit tombstone does; DNS only ever publishes an
 `active`+`healthy` catalog record.
 
 Supported capacity per project (`crates/jiji-config/src/validation.rs`):
@@ -165,16 +180,27 @@ into the target host's own agent socket):
    12 hex chars of deployment_id}`) — the previous deployment keeps serving
    traffic throughout.
 5. Health-check the candidate directly at its own address (`health_check.rs`),
-   never through the proxy or a VIP.
-6. Activate/verify kamal-proxy routes (`proxy_routes.rs`) at the candidate's
-   address; roll back (remove the candidate, restore the previous route) if
-   that fails. The rendered `kamal-proxy deploy` command always carries a
-   `--health-check-timeout` (defaulted if not configured) and is itself
-   wrapped in an outer `timeout --signal=TERM --kill-after=5s`, so a wedged
-   kamal-proxy deploy can never hang the whole `jiji deploy` run.
-7. Commit the candidate as `Active`/`Healthy`, then the previous deployment
-   (if any) as `Draining`, in separate catalog transactions.
-8. Stop and remove the previous deployment's container, release its address
+   never through the proxy.
+6. Commit the candidate as `Active`/`Healthy` in the catalog *before* touching
+   jiji-proxy at all: jiji-agent's DNS resolver answers directly from this
+   catalog, so the commit itself is what makes the candidate's address
+   resolvable -- unlike kamal-proxy, jiji-proxy's route was never pushed an
+   explicit target address to begin with (see "jiji-proxy" under "Private
+   Networking" below).
+7. "Activate" by re-applying the route's static definition
+   (`proxy_routes::deploy_route`, a cheap idempotent upsert that always runs a
+   synchronous DNS re-resolution) and then polling `jiji-proxy route status`
+   (`proxy_routes::verify_route_address`) until the candidate's specific
+   address shows up as a healthy backend, or the same timeout the
+   pre-activation health check used elapses. If verification fails, roll the
+   candidate back (tombstone it, release its lease) rather than leave an
+   unverified record live for jiji-proxy's mesh-wide DNS discovery to
+   potentially pick up on some other host; `previous` was never touched, so
+   there is nothing to "restore" the way kamal-proxy's single-target route
+   needed.
+8. Commit the previous deployment (if any) as `Draining`, in a separate
+   catalog transaction.
+9. Stop and remove the previous deployment's container, release its address
    lease (`RequestBody::ReleaseAddress`), then commit it `Tombstoned`.
 
 If any step through health-checking or proxy activation fails, the previous
@@ -236,14 +262,34 @@ projects share default CIDR ranges):
   entirely — the agent's own post-restart container reconciliation
   (`reconcile_containers`/`recover_startup_candidates`) was already
   authoritative, so the drop-in was a straight duplicate.
-- **Service catalog**: `jiji-agent` replicates a node-signed, append-only
+- **Membership**: plain (unsigned) records, computed locally by `jiji-cli`
+  from `jiji.yml` and pushed directly over SSH to every reachable host
+  (`jiji-agent membership-import`, see `jiji-agent/src/membership.rs`'s
+  module doc comment) — no peer-to-peer relay, so nothing beyond "installed
+  by root" authenticates a change. A host unreachable at push time keeps its
+  last-known membership until the next command reaches it (`jiji server
+  setup`, or a re-run of `jiji network decommission`/`update-endpoint`/
+  `rotate-key`/`replace`); `jiji server setup` additionally pushes the
+  complete merged set to every already-configured server, not just the ones
+  it's targeting, so an existing peer's own WireGuard reconciliation learns
+  about a newly enrolled host without waiting for that later contact.
+- **Service catalog**: `jiji-agent` replicates a node-owned, append-only
   operation log peer-to-peer over WireGuard (`jiji-agent/src/catalog.rs`,
   `catalog_replication.rs`), authoritative for each logical replica's current
   deployment, address, image, and `Candidate`/`Active`/`Draining`/`Stopped`/
-  `Tombstoned` state. There is no CLI-driven VIP/NAT cutover and no
-  `service-nat` nftables table for live traffic; `jiji-cli/src/
-  deploy_transaction.rs` is the only thing that ever commits new records
-  in the normal deploy path.
+  `Tombstoned` state. Unlike membership, this genuinely is node-originated at
+  runtime (crash-restart reconciliation, health flips), so it keeps
+  continuous anti-entropy sync — but direct-only: a node's outbound exchange
+  contains only records it owns, never a relayed third party's, and a
+  receiver authenticates an inbound record by resolving the TCP connection's
+  source address against its local membership view (`RecordProvenance`,
+  `MembershipView::find_by_management_address`) instead of a signature —
+  sufficient because WireGuard's own peer authentication already makes that
+  source address unspoofable within the mesh, and because nothing is ever
+  relayed there's only the one hop to authenticate. There is no CLI-driven
+  VIP/NAT cutover and no `service-nat` nftables table for live traffic;
+  `jiji-cli/src/deploy_transaction.rs` is the only thing that ever commits
+  new records in the normal deploy path.
 - **DNS**: each `jiji-agent` process serves the `.jiji` zone directly from its
   local replicated catalog (`jiji-agent/src/dns.rs`, a hand-rolled minimal
   authoritative resolver on the project's management address, UDP with TCP
@@ -253,34 +299,86 @@ projects share default CIDR ranges):
   unreachable is suppressed reversibly, never deleted, from both the
   aggregate (`{project}-{service}.jiji`) and per-server
   (`{project}-{service}-{server}.jiji`) names.
-- **kamal-proxy** (`crates/jiji-cli/src/proxy.rs`): a Go reverse proxy
-  container (fork `ghcr.io/acidtib/kamal-proxy:jiji`), provisioned per-server
-  by `jiji server setup`. Deliberately the **one genuinely shared,
-  multi-tenant** component: one container per host, **multi-homed** across
-  every project's bridge that has active routes on that host
-  (`network connect --ip <ServerPlan::proxy_address> <bridge_name>
-  kamal-proxy`, idempotent/additive — see `ensure_attached`), routes
-  namespaced per project already. Each host's kamal-proxy only ever routes to
-  replicas actually running on that same host: `proxy_routes::
-  reconcile_catalog_routes` (CLI) and `jiji-agent`'s own
-  `local_reconcile::reconcile_proxy_routes`/`recover_startup_candidates`
-  filter catalog records by `owner_node_id` before building a route, never
-  unioning another host's addresses in. A host with no local replica of a
-  service simply has its route withdrawn rather than pointed at a sibling
-  host — kamal-proxy does no cross-host load balancing today; a dedicated
-  load-balancer service is the planned way to spread traffic across hosts,
-  not yet built. This also keeps `--health-check-cmd` meaningful: it execs
-  into a container, which only ever works for one running on the same host
-  kamal-proxy itself runs on. Given no `--dns` at all (unlike service
-  containers): its routing targets are raw backend IPs
-  (`proxy_routes::RouteTarget::address`), never a `.jiji` hostname, and a
-  single resolver can't reliably answer for every attached project's `.jiji`
-  records at once. `commands/server/teardown.rs` disconnects kamal-proxy from
-  a project's bridge (`proxy::disconnect_bridge_if_attached`) before that
-  bridge can be removed, independent of whether kamal-proxy is still running
-  for other projects.
+- **jiji-proxy** (`crates/jiji-proxy/`, driven from the CLI side by
+  `crates/jiji-cli/src/proxy.rs`/`proxy_routes.rs`): a Pingora-based (Rust)
+  reverse proxy container (`ghcr.io/acidtib/jiji-proxy:jiji`), provisioned
+  per-server by `jiji server setup`, that fully replaced the earlier
+  kamal-proxy Go fork. Deliberately the **one genuinely shared, multi-tenant**
+  component: one container per host, **multi-homed** across every project's
+  bridge that has active routes on that host (`network connect --ip
+  <ServerPlan::proxy_address> <bridge_name> jiji-proxy`, idempotent/additive
+  — see `ensure_attached`), routes namespaced per project already.
 
-  Confirmed live on Docker: kamal-proxy's own `--publish 80:8080 --publish
+  jiji-proxy's routing model is fundamentally different from kamal-proxy's:
+  jiji-cli/jiji-agent push a **static route definition** once per
+  `(host, path_prefix)` (`jiji-proxy route apply --host --dns-server --name
+  --port [--path-prefix] [--tls] [--health-check ...]`, see
+  `proxy_routes::RouteTarget`/`targets_for_service`) instead of an explicit
+  target IP:PORT on every deploy. jiji-proxy itself then continuously
+  re-resolves the **aggregate** `{project}-{service}.jiji` DNS name (served
+  mesh-wide by every host's `jiji-agent` from its replicated catalog, not
+  filtered to local replicas) on its own `refresh_interval_secs`
+  (`crates/jiji-proxy/src/discovery.rs`, `route_manager.rs`) and
+  load-balances (`pingora::lb::LoadBalancer<RoundRobin>`) across whatever it
+  discovers — this is what gives jiji-proxy genuine **cross-host load
+  balancing** (confirmed live: each host's jiji-proxy independently
+  discovers and routes to every healthy replica of a service, not just the
+  ones running on that same host), something kamal-proxy could never do.
+  jiji-proxy also runs its own **active health-checking**
+  (`route_manager.rs::build_health_check`, HTTP or TCP, translated from
+  `service.proxy.healthcheck.{path,interval,timeout}` — `healthcheck.cmd` is
+  never translated, since execing into a container only makes sense when the
+  backend happens to be on the same host as jiji-proxy, an assumption
+  mesh-wide routing can no longer make; `cmd` remains meaningful only for
+  jiji's own separate pre-activation gate, `health_check.rs`), giving a
+  backend that starts failing mid-interval fast eviction from `select()`
+  rather than waiting out `refresh_interval_secs`.
+
+  A route's `hosts:` entry may be a single-label wildcard (`*.example.com`),
+  matched by `RouteManager::lookup` falling back to
+  `wildcard::parent_wildcard_key` (`crates/jiji-proxy/src/wildcard.rs`) when
+  no exact-host route exists: it strips exactly the left-most DNS label off
+  the incoming host and checks for a route registered under `*.` plus the
+  remainder. This is what gives the single-level semantics (`foo.example.com`
+  matches `*.example.com`; `deep.foo.example.com` does not, since stripping
+  its own left-most label yields `foo.example.com`, which only matches a
+  route configured for the more specific `*.foo.example.com`; the bare
+  `example.com` never matches its own wildcard sibling either) with no
+  special-casing beyond that one string operation. An exact-host route
+  always wins over a wildcard for the same request, since the exact lookup
+  is tried first. `CertStore::get` (`cert_store.rs`) uses the identical
+  fallback for TLS SNI resolution, since it's also an exact-match table.
+
+  A deploy's "proxy activation" step (see "Zero-Downtime Deployment
+  Strategy" above) therefore isn't pushing a new target address — the route
+  never carried one — it's re-applying the (unchanged) route definition to
+  force an immediate re-resolution, then polling `jiji-proxy route status`
+  (`AdminRequest::RouteStatus`, backed by `Backends::get_backend`/`ready`)
+  until the candidate's specific address shows up healthy, restoring the
+  same kind of synchronous "did the cutover actually happen" barrier
+  kamal-proxy's own blocking `deploy` command used to provide.
+  ACME/TLS automation (`crates/jiji-proxy/src/acme.rs`, `cert_store.rs`,
+  `instant-acme`, HTTP-01 only) and static PEM certs
+  (`proxy_routes::upload_static_certs_if_configured`, written straight into
+  `CERTS_DIR` so `CertStore` picks them up without ACME ever touching them)
+  are both handled by jiji-proxy itself now, not a separate cert-management
+  path. A wildcard host can never get an ACME certificate (HTTP-01 cannot
+  issue one; that needs DNS-01, not implemented) — `jiji-config` rejects
+  `ssl: true` on a wildcard host outright (`PROXY_WILDCARD_REQUIRES_STATIC_CERT`
+  in `validation.rs`), and `RouteManager::tls_hosts` independently excludes
+  any wildcard-pattern host from `AcmeManager`'s worklist regardless of how
+  it got a `tls` flag, since the admin socket itself has no validation of
+  its own. TLS for a wildcard host is only possible via a user-supplied
+  static certificate. `commands/server/teardown.rs` disconnects jiji-proxy from a
+  project's bridge (`proxy::disconnect_bridge_if_attached`) before that
+  bridge can be removed, independent of whether jiji-proxy is still running
+  for other projects — and, since jiji-agent's own continuous reconcile loop
+  would otherwise recreate/reapply anything this teardown removes out from
+  under it (confirmed live), `jiji-agent` itself is stopped as the very
+  first teardown step, before jiji-proxy or any other network-layer
+  resource is touched.
+
+  Confirmed live on Docker: jiji-proxy's own `--publish 80:8080 --publish
   443:8443` silently drops its IPv4 binding, because its primary network is
   always one of the bridges above and those are created with
   `enable_ip_masquerade=false` + `gateway_mode_ipv4=routed` (needed for
@@ -289,9 +387,9 @@ projects share default CIDR ranges):
   while IPv4 silently doesn't. `crates/jiji-cli/src/proxy_ingress.rs` works
   around this Docker-only (Podman's bridge creation doesn't set either
   option, so it's unaffected): a host-global (not per-project, since
-  kamal-proxy itself is host-global) nftables table
+  jiji-proxy itself is host-global) nftables table
   (`jiji_proxy_ingress`, `/etc/jiji/proxy-ingress/`) DNATs the public ports
-  straight to kamal-proxy's bridge address, bypassing Docker's own
+  straight to jiji-proxy's bridge address, bypassing Docker's own
   port-publish path entirely. As of Phase 9, ingress reconciliation is
   owned by whichever co-resident project's agent currently holds a
   same-host, non-blocking `flock` lease
@@ -302,7 +400,7 @@ projects share default CIDR ranges):
   reconcile tick (`proxy_bringup.rs`). `ensure_proxy` (CLI) still
   re-applies it idempotently on first install;
   `proxy_teardown::teardown_proxy_container_if_unused`
-  removes it only when kamal-proxy's own container is finally removed (no
+  removes it only when jiji-proxy's own container is finally removed (no
   project has routes left).
 
 Docker/Podman's own IPAM has no knowledge of jiji's reserved infrastructure
@@ -392,25 +490,42 @@ namespace during a bridge-swap-style cutover).
 `crates/jiji-cli/src/commands/server/teardown.rs` orchestrates the inverse of
 everything above, holding a `HostRuntime` lock per targeted host
 (`crate::lock::LockScope::HostRuntime`, see "Deployment Locking" below) for
-the duration: proxy routes -> application containers -> volumes (with
-`--volumes`) -> images -> the shared kamal-proxy container (only when no
-project still has routes) -> disconnecting kamal-proxy from this project's
-bridge (`proxy::disconnect_bridge_if_attached`, independent of whether
-kamal-proxy is still running for other projects) -> the per-project staging
-directory (`env_resolution::project_staging_dir`, holds staged `.env` files
-with resolved secrets and uploaded mount content) -> (only once every
-application-layer step above succeeded) this project's own network layer:
-WireGuard, any legacy pre-agent nftables table, bridge
-network, compiled `/etc/jiji/network/{slug}` subtree only (never a sibling
-project's subtree on a shared host) -> finally `jiji-agent` itself (as of
-Phase 9 the only jiji-authored systemd unit this project ever installs)
-(`agent_install::remove_agent`). Ownership discovery is by
-`jiji.managed`/`jiji.project` labels for containers, and config-computed exact
-names (never a glob) for volumes/images/proxy routes. `-S`/`--services` is
-explicitly rejected rather than silently ignored. Another project's
-containers being present on the same host is surfaced as an informational
-notice (`teardown_plan::render_other_project_notices`), not a blocker —
-teardown only ever acts on this project's own labeled resources.
+the duration: `jiji-agent` itself first and unconditionally
+(`agent_install::remove_agent`) -> proxy routes -> application containers ->
+volumes (with `--volumes`) -> images -> the shared jiji-proxy container (only
+when no project still has routes) -> disconnecting jiji-proxy from this
+project's bridge (`proxy::disconnect_bridge_if_attached`, independent of
+whether jiji-proxy is still running for other projects) -> the per-project
+staging directory (`env_resolution::project_staging_dir`, holds staged
+`.env` files with resolved secrets and uploaded mount content) -> (only once
+every application-layer step above succeeded) this project's own network
+layer: WireGuard (config/key files *and* the live kernel interface, `ip link
+delete` -- see below), any legacy pre-agent nftables table, bridge network,
+compiled `/etc/jiji/network/{slug}` subtree only (never a sibling project's
+subtree on a shared host). Ownership discovery is by `jiji.managed`/
+`jiji.project` labels for containers, and config-computed exact names (never
+a glob) for volumes/images/proxy routes. `-S`/`--services` is explicitly
+rejected rather than silently ignored. Another project's containers being
+present on the same host is surfaced as an informational notice
+(`teardown_plan::render_other_project_notices`), not a blocker — teardown
+only ever acts on this project's own labeled resources.
+
+`jiji-agent` is removed **first**, before anything it reconciles, rather
+than last: confirmed live, leaving it running through the later steps let
+its own continuous reconcile loop (`local_reconcile.rs`,
+`proxy_bringup.rs`) silently reapply a proxy route and recreate the
+jiji-proxy container moments after this same teardown had already reported
+both removed — the agent provides no interactive help investigating a
+stuck container removal, it only fights every other step's changes, so
+there's no reason to keep it alive even if a later step fails. Separately,
+`network_teardown::remove_wireguard` deletes the live interface
+(`ip link delete`) as well as its config/key files: before Phase 9 the
+interface was owned by a `wg-quick@{iface}.service` unit, and stopping that
+unit tore the interface down as a side effect; Phase 9 replaced it with the
+agent bringing the interface up directly (no systemd unit), which dropped
+that implicit cleanup path until this fix -- every `jiji server teardown`
+between Phase 9 and this fix leaked a WireGuard interface on every host it
+touched.
 
 ### SSH Connection Management
 
@@ -454,7 +569,7 @@ services scale independently; `LogicalReplica` (keyed by `replica_id`) is
 what `deploy`/`service restart`/`rollback`/`remove` actually lock, so an
 unrelated offline host or a different replica never blocks a targeted
 operation; `HostGlobalProxy` is the one host-global (no project segment)
-lock, since kamal-proxy itself is host-global and shared across projects.
+lock, since jiji-proxy itself is host-global and shared across projects.
 `commands/lock/mod.rs::with_locks` acquires/releases over a caller's
 already-connected session map instead of opening a dedicated connection
 episode per command, and `crate::agent_client`/deploy sessions are reused for
@@ -480,9 +595,12 @@ CLI surface this backs.
 - **Containers**: `{project}-{service}-{first 12 hex chars of deployment_id}`
   (`container_runtime::dynamic_container_name`) — a new name every deploy, no
   permanent A/B slot names, no rename step.
-- **Proxy targets**: `{project}-{service}-{port}` (per-server local route
-  name in that server's own kamal-proxy — routes are not shared/synced across
-  servers).
+- **Proxy routes**: identified by `(host, path_prefix)`, not a generated
+  name — jiji-proxy's route table is keyed by the config's own `hosts:`/
+  `path_prefix:` values (`proxy_routes::RouteTarget`), applied independently
+  to every selected server's own jiji-proxy (routes are not shared/synced
+  across servers, but jiji-proxy's DNS-driven discovery makes their
+  *backends* mesh-wide regardless).
 - **DNS records**: `{project}-{service}.jiji` (aggregate) and
   `{project}-{service}-{server}.jiji` (per-replica), served live by each
   host's own `jiji-agent` from its local catalog, not compiled ahead of time.
@@ -499,9 +617,10 @@ CLI surface this backs.
   (`bridge_network_name`), the sole per-project systemd unit
   `jiji-agent-{slug}.service` (`systemd_unit_slug`,
   `jiji-agent/src/paths.rs::unit_name`), WireGuard port `51820..=55819`
-  (`wireguard_port`), the agent's membership/catalog replication TCP ports
-  `56000..58000` / `58000..60000` (`membership_replication_port`,
-  `catalog_replication_port`). All remote state lives under
+  (`wireguard_port`), the agent's catalog/desired-state replication TCP port
+  `58000..60000` (`catalog_replication_port`) — membership has no listener or
+  port of its own, since it's pushed by the CLI, not replicated peer-to-peer.
+  All remote state lives under
   `/etc/jiji/network/{slug}/` (mesh bootstrap) and `/etc/jiji/agent/{slug}/`
   (agent binary, durable store, socket — `AgentPaths::default_for_project`)
   instead of one shared top-level path. `jiji-dns-{slug}.service` /
@@ -535,11 +654,13 @@ CLI surface this backs.
 - `crates/jiji-agent/src/store.rs` — the durable local `AgentStore` (SQLite),
   the single source of truth every replicated/local-only structure below is
   persisted through.
-- `crates/jiji-agent/src/membership.rs`, `catalog.rs` — the signed record
-  types (`MembershipRecord`, `CatalogRecord`) and their validation rules;
-  `replication.rs`/`catalog_replication.rs` are the peer-to-peer anti-entropy
-  exchanges that carry them between hosts.
-- `crates/jiji-agent/src/runtime.rs` — wires replication, DNS, and
+- `crates/jiji-agent/src/membership.rs`, `catalog.rs` — the record types
+  (`MembershipRecord`, `CatalogRecord`), their validation/CRDT-convergence
+  rules, and `RecordProvenance` (how a catalog/desired-state record's
+  ownership is authenticated without a signature); `catalog_replication.rs`
+  is the direct-only, peer-to-peer anti-entropy exchange that carries catalog
+  and desired-state between hosts (membership has no peer-to-peer exchange).
+- `crates/jiji-agent/src/runtime.rs` — wires catalog replication, DNS, and
   WireGuard repair together into the agent's continuous run loop.
 - `crates/jiji-agent/src/local_reconcile.rs` — autonomous repair of local
   runtime state (bridges, routes, DNS binding, proxy attachment, container
@@ -576,7 +697,7 @@ command.
   `/24` management and `/16` container CIDRs persisted in the generated config.
 - `jiji server setup` — container engine install (Docker/Podman version
   check, distro-aware install), then `jiji-agent` install-and-start (the
-  agent brings up WireGuard/bridge/DNS and kamal-proxy/ingress itself at
+  agent brings up WireGuard/bridge/DNS and jiji-proxy/ingress itself at
   startup, as of Phase 9 -- see "Private Networking" above), in that order,
   all under one `HostRuntime` lock per targeted host.
 - `jiji network plan` / `jiji network setup` — print or transactionally apply
@@ -591,23 +712,32 @@ command.
   same path. The network layer is per-project isolated (own WireGuard
   interface/port, bridge, agent, compiled bootstrap tree per project — see
   "Private Networking" above), so multiple independent projects can share
-  one server; kamal-proxy is the one intentionally shared, multi-homed
+  one server; jiji-proxy is the one intentionally shared, multi-homed
   component.
 - `jiji network catalog` / `diagnostics [--json]` — read-only inspection of a
   selected host's locally replicated service catalog, or of its agent's
   self-healing/replication/quota/component diagnostics.
 - `jiji network decommission` / `update-endpoint` / `rotate-key` / `replace`
-  / `rotate-authority` — publish signed membership changes (tombstone a
-  node, publish a changed public endpoint, rotate or replace a node's
-  WireGuard transport key, rotate the project membership authority) through
-  one reachable seed. Share their publish/signing logic through
-  `commands/network/membership.rs`, which is not itself a CLI verb.
+  — compute a membership change (tombstone a node, publish a changed public
+  endpoint, rotate or replace a node's WireGuard transport key) and fan it
+  out directly over SSH to every configured server, best-effort; a server
+  that's unreachable right now just keeps its last-known membership until
+  the next command reaches it. Share their gather/push logic (`gather_
+  membership`/`push_membership_everywhere`) through `commands/network/
+  membership.rs`, which is not itself a CLI verb, and which `jiji server
+  setup` also calls into.
 - `jiji network backup --output --passphrase-file` / `restore` / `recover` —
   export an encrypted operator-controlled control-plane backup (project
-  identity, membership, address claims, catalog operations; never host
-  WireGuard private keys or deployed secrets), restore it into surviving
-  hosts in the same recovery epoch, or recover a lost control plane into a
-  new fenced epoch (`recover` requires `--yes`, a destructive epoch advance).
+  identity, address claims, catalog/desired-state operations; never
+  membership, host WireGuard private keys, or deployed secrets — membership
+  is trivially re-derived from `jiji.yml` by `jiji server setup`, not backed
+  up per host), restore it into surviving hosts in the same recovery epoch,
+  or recover a lost control plane into a new fenced epoch (`recover` requires
+  `--yes`, a destructive epoch advance; the epoch is a plain fencing counter
+  unrelated to any key, stored under `.jiji/recovery/`, see
+  `crates/jiji-cli/src/recovery_epoch.rs`). After `recover`, run `jiji server
+  setup` on replacement hosts to re-derive and push fresh membership for the
+  new epoch, then redeploy desired services.
 - `jiji network compact` — compacts each selected host's superseded
   replicated operation history.
 - `jiji network assess` — read-only comparison of a host's current resources
@@ -625,7 +755,7 @@ command.
   holds a `ProjectMaintenance` lock while committing.
 - `jiji deploy` — full zero-downtime deploy (see "Zero-Downtime Deployment
   Strategy" above): mounts, env/secrets, dynamic address leasing, health
-  checks, kamal-proxy routing, `-H`/`-S` filtering, `stop_first`, optional
+  checks, jiji-proxy routing, `-H`/`-S` filtering, `stop_first`, optional
   image builds, and automatic mesh reconciliation only when a targeted host
   is actually stale. Locks only the selected logical replicas (plus a
   host-global proxy lock on ingress hosts, see "Deployment Locking" below).
@@ -698,10 +828,12 @@ command.
   `commands/secrets/print.rs` flags this gap explicitly in its own output
   rather than implying those fields resolve when they don't.
 - `jiji proxy restart` / `jiji proxy logs` — unconditionally re-pull and
-  recreate the shared per-host kamal-proxy container, or read its logs from
-  selected hosts (`--follow` requires exactly one). Restart preserves the
-  named configuration volume and bypasses the config-fingerprint no-op so a
-  changed moving image tag is picked up. Log filters are shell-quoted.
+  recreate the shared per-host jiji-proxy container, or read its logs from
+  selected hosts (`--follow` requires exactly one). Restart bypasses the
+  config-fingerprint no-op so a changed moving image tag is picked up
+  (jiji-proxy has no named configuration volume to preserve -- unlike
+  kamal-proxy, its only state is `CERTS_DIR` and the daemon config file,
+  both bind-mounted from the host). Log filters are shell-quoted.
 - `jiji service logs/restart/rollback/remove/prune/scale` — singular
   `service`, not `services`. `logs` tails the currently active deployment's
   container per selected endpoint (`--container-id` bypasses catalog
@@ -783,7 +915,7 @@ command.
   also carry the target `--version`), `jiji lock acquire`/`release`, `jiji
   network backup`/`restore`/`compact`/`import`, and `jiji
   server setup`/`teardown`. `server setup` writes its entry from the final
-  (kamal-proxy) phase, since engine install and network setup each already
+  (jiji-proxy) phase, since engine install and network setup each already
   bail the whole command on any per-host failure before reaching it -- a host
   that gets that far already succeeded at every earlier step. `server
   teardown` writes its entry *after* removing the project's staging
@@ -831,22 +963,28 @@ for assertions (see `registry_teardown_test.rs`, `registry_auth_test.rs`) —
 use this instead of the SSH-mock pattern when the command never leaves the
 local machine.
 
-`jiji-agent`'s own tests (`replication.rs`, `catalog_replication.rs`,
+`jiji-agent`'s own tests (`catalog_replication.rs`, `membership.rs`,
 `wireguard.rs`, `local_reconcile.rs`, etc.) don't go through SSH or the CLI at
-all: they spin up two or more real `AgentStore`s over a real loopback
-`TcpListener`/`TcpStream` pair and exercise `sync_once`/`serve` directly,
-asserting on the resulting durable state -- e.g. that a write on one store
-reaches the other without CLI fan-out, that a wrong-project or
-mismatched-protocol/schema exchange is rejected before anything is applied,
-or that an offline peer converges once it returns. Use this pattern (not the
-SSH-mock harness) for anything that tests replication, membership, or catalog
-behavior in isolation from the CLI.
+all: catalog/desired-state replication tests spin up two or more real
+`AgentStore`s over a real loopback `TcpListener`/`TcpStream` pair (binding the
+outbound side to a distinct loopback address, e.g. `127.0.0.2`, so
+`RecordProvenance::Peer`'s source-address check has something real to
+authenticate against) and exercise `sync_once`/`serve` directly, asserting on
+the resulting durable state -- e.g. that a write on one store reaches the
+other, that a record whose claimed owner doesn't match the connection's
+source address is rejected, that a wrong-project or mismatched-protocol/
+schema exchange is rejected before anything is applied, or that an offline
+peer converges once it returns. Membership tests don't need any of that --
+they exercise `MembershipView::apply` directly against plain records. Use
+this pattern (not the SSH-mock harness) for anything that tests replication,
+membership, or catalog behavior in isolation from the CLI.
 
 **Important:** this mock-SSH suite is necessary but not sufficient. Several
 real bugs only ever surfaced against real hosts: Docker's `ps --format`
 `.Labels` being a flat string rather than a map (and the Podman inverse:
 `.Label "key"` doesn't exist on Podman's `ps` reporter, it needs
-`index .Labels "key"`); kamal-proxy always emitting ANSI color codes even
+`index .Labels "key"`); the old kamal-proxy fork (retired, see "jiji-proxy"
+under "Private Networking" above) always emitting ANSI color codes even
 non-interactively; Podman refusing to push/pull the local loopback registry
 over plain HTTP unless `--tls-verify=false` is passed, where Docker trusts
 `localhost` registries by default; and `jiji server exec
@@ -862,7 +1000,7 @@ controlling terminal to hang on); fixed by reading stdin on a dedicated
 command-rendering work against a real Docker (and ideally Podman) host, and
 interactive/PTY work against a real terminal, before considering it done —
 `cargo test` passing is not sufficient evidence for anything that shells out
-to `docker`/`podman`/`kamal-proxy`/`systemctl`/`nft`, or that drives a local
+to `docker`/`podman`/`jiji-proxy`/`systemctl`/`nft`, or that drives a local
 TTY.
 
 Three more real-hosts-only bugs from Phase 9's live validation, none of which
@@ -873,13 +1011,37 @@ hijacked the host's own outbound HTTPS/apt traffic, found only after a real
 reboot broke package installs; the other (`prerouting`) hijacked genuine
 cross-host container-to-container mesh traffic on the same ports, found via
 `tcpdump` on a live cluster (fixed by scoping both to `ip daddr
-{public_host}` and removing `output` entirely). Separately, kamal-proxy's
-own network namespace keeps an ARP cache independent of the host's, so a
-dynamically-leased address reused by a fresh container can sit `STALE` in
-kamal-proxy's cache (old MAC) for tens of seconds before re-resolving,
+{public_host}` and removing `output` entirely). Separately, the old
+kamal-proxy fork's own network namespace kept an ARP cache independent of
+the host's, so a dynamically-leased address reused by a fresh container
+could sit `STALE` (old MAC) for tens of seconds before re-resolving,
 surfacing as "no route to host" on a concurrent deploy -- only reproducible
 against two real, concurrently-deploying hosts, never against the mock SSH
-harness.
+harness; resolved as a side effect of the jiji-proxy cutover, since
+jiji-proxy resolves backends by DNS on its own schedule rather than caching
+ARP entries for explicitly pushed target addresses.
+
+Three more real-hosts-only bugs, this time from the kamal-proxy -> jiji-proxy
+cutover's own live validation, again none catchable by the mock-SSH suite
+since they all depend on `jiji-agent`'s systemd unit and reconcile loop
+actually running: the jiji-proxy Dockerfile's `CMD` still referenced its
+pre-phase-3 flat-flags invocation (`["--config", "path"]`) after `main.rs`
+was restructured into `run`/`route` subcommands, so the built image would
+never have actually started the daemon; `jiji-agent`'s own continuous
+reconcile loop (`local_reconcile.rs`, `proxy_bringup.rs`) stayed alive
+through most of `jiji server teardown` (the agent was removed last, after
+the proxy/network-layer steps) and silently reapplied a proxy route and
+recreated the jiji-proxy container moments after the same teardown run had
+already reported both removed -- fixed by stopping the agent first,
+unconditionally, before any step it reconciles; and
+`network_teardown::remove_wireguard` only ever deleted the WireGuard config
+and key files, never the live kernel interface, because before Phase 9 the
+interface was owned by a `wg-quick@{iface}.service` unit whose `stop` tore
+the interface down as a side effect, and Phase 9's move to the agent
+bringing the interface up directly dropped that implicit cleanup without
+anything replacing it -- every `jiji server teardown` between Phase 9 and
+this fix leaked a WireGuard interface on every host it touched, only
+observable by inspecting `ip link` on a real host after a real teardown.
 
 ## Writing style
 

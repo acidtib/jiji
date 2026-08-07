@@ -332,6 +332,13 @@ pub struct ProxyTarget {
     pub path_prefix: Option<String>,
     #[serde(default)]
     pub healthcheck: Option<HealthcheckConfig>,
+    /// Presence selects raw TCP mode instead of HTTP Host-header routing:
+    /// the public port jiji-proxy exposes this target on, distinct from
+    /// `port` (the backend container port). Mutually exclusive with
+    /// `path_prefix`/`ssl`, which are HTTP-only concepts -- see
+    /// `jiji_config::validation::validate_tcp_targets`.
+    #[serde(default)]
+    pub listen_port: Option<u16>,
 }
 
 /// Single-target fields live directly on this struct; multi-target configs use `targets`.
@@ -350,6 +357,9 @@ pub struct ProxyConfig {
     pub healthcheck: Option<HealthcheckConfig>,
     #[serde(default)]
     pub targets: Option<Vec<ProxyTarget>>,
+    /// See `ProxyTarget::listen_port`.
+    #[serde(default)]
+    pub listen_port: Option<u16>,
 }
 
 /// Mirrors Docker/Podman's `--restart` values exactly (`Display`/serde both render the same

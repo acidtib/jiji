@@ -90,6 +90,19 @@ if iptables -n -L DOCKER-USER >/dev/null 2>&1; then
   ensure_rule DOCKER-USER -i {bridge_interface} -o {wireguard_interface} -s {subnet} -d {container_cidr} -j ACCEPT
   ensure_rule DOCKER-USER -i {wireguard_interface} -o {bridge_interface} -s {container_cidr} -d {subnet} -j ACCEPT
 fi
+
+# Exempts mesh-bound traffic from this bridge's own postrouting masquerade/SNAT. Load-bearing on
+# Podman specifically: unlike Docker's bridge (created with enable_ip_masquerade=false above),
+# Podman's netavark backend always masquerades traffic leaving the bridge subnet toward any
+# destination outside it, including a remote host's own container subnet reached over WireGuard --
+# confirmed live: a container's real mesh address was silently rewritten to this host's own
+# WireGuard endpoint address before leaving, so the receiving host's own FORWARD rule (which
+# matches on the real container mesh CIDR, see the two ensure_rule lines above) never matched the
+# masqueraded source and the connection hung. Harmless on Docker, where this traffic was never
+# masqueraded to begin with -- applied on both engines rather than adding another engine branch.
+if ! iptables -t nat -C POSTROUTING -d {container_cidr} -j ACCEPT 2>/dev/null; then
+  iptables -t nat -I POSTROUTING -d {container_cidr} -j ACCEPT
+fi
 {peer_input_rules}
 "#,
         subnet = params.container_subnet,
@@ -246,6 +259,40 @@ mod tests {
             subnet.prefix()
         )));
         assert!(!rendered.contains("gateway_mode_ipv4"));
+        // Podman's netavark backend masquerades any bridge-subnet traffic leaving the local
+        // subnet, including legitimate mesh traffic bound for a remote host's container subnet --
+        // this exemption keeps the real container source address intact so the receiving host's
+        // own FORWARD rule (matched on that real address) still recognizes it.
+        assert!(rendered.contains(&format!(
+            "iptables -t nat -C POSTROUTING -d {container_cidr} -j ACCEPT"
+        )));
+        assert!(rendered.contains(&format!(
+            "iptables -t nat -I POSTROUTING -d {container_cidr} -j ACCEPT"
+        )));
+    }
+
+    #[test]
+    fn nat_postrouting_exemption_is_present_on_docker_too_and_is_harmless_there() {
+        // Docker's bridge already has masquerade fully disabled at network-creation time
+        // (enable_ip_masquerade=false), so this rule is a no-op there -- applied unconditionally
+        // rather than adding another engine branch for a rule that's harmless either way.
+        let (subnet, gateway, container_cidr) = params();
+        let script_params = BridgeScriptParams {
+            bridge_name: "jiji-demo",
+            bridge_interface: "jijibdemo",
+            wireguard_interface: "jijidemo",
+            container_subnet: subnet,
+            bridge_gateway: gateway,
+            dns_address: "198.18.1.2".parse().unwrap(),
+            container_cidr,
+            wireguard_port: 51820,
+            peer_public_ips: &[],
+            public_host: "203.0.113.10",
+        };
+        let rendered = render_restore_script(BridgeEngineKind::Docker, &script_params);
+        assert!(rendered.contains(&format!(
+            "iptables -t nat -I POSTROUTING -d {container_cidr} -j ACCEPT"
+        )));
     }
 
     #[test]

@@ -1,0 +1,56 @@
+[package]
+name = "jiji-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "jiji-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "jiji_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait = "0.1"
+pingora = { version = "0.8", features = ["proxy", "lb", "openssl"] }
+hickory-resolver = "0.26"
+tokio = { workspace = true, features = ["net", "time", "rt", "rt-multi-thread", "sync"] }
+# default-features off to pin the ring crypto backend (matches pingora's own
+# openssl-based build; avoids also pulling in aws-lc-rs's separate toolchain
+# requirements) and to explicitly opt into `rcgen`, which Order::finalize()
+# needs for CSR generation. 0.8+ specifically (not 0.7): it's the first
+# version where an authorization's Challenge.token is #[serde(default)]
+# instead of required, so a server offering a challenge type this crate
+# doesn't recognize (confirmed live against Pebble, which advertises
+# `dns-persist-01`/`dns-account-01`) doesn't fail deserializing every other
+# challenge in the same authorization.
+instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen"] }
+bytes = "1"
+http = "1"
+# Pebble (the local ACME test CA) strictly enforces RFC 8555 section 6.1's
+# User-Agent requirement; instant-acme's own DefaultClient never sets one.
+# These three let acme.rs wrap instant-acme's HttpClient to add it -- kept at
+# the same versions instant-acme's own (non-reexported) internal client uses.
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "rustls-native-certs"] }
+# Only for Asn1Time expiry comparisons -- pingora-openssl re-exports x509/pkey/ssl
+# but not asn1. Version-unified with pingora-openssl's own openssl dependency.
+openssl = "0.10"
+# Raw getsockopt(SOL_IP, SO_ORIGINAL_DST) access for the TCP relay listener
+# (see tcp_relay.rs) -- recovers a DNAT'd connection's pre-NAT public port
+# from the kernel's conntrack table, the standard Linux transparent-proxy
+# technique this crate's raw-TCP routing depends on.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true

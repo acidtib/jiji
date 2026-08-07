@@ -621,12 +621,43 @@ services:
   #           path: /health               # HTTP health check endpoint
   #           interval: 30s
   #           deploy_timeout: 60s
-  #   # Note: Each target is deployed as {project}-{service}-{port} in kamal-proxy
+  #   # Note: Each target is deployed as {project}-{service}-{port} in jiji-proxy
   #   # Example: myproject-garage-3900, myproject-garage-3903
+  #
+  # Example: Raw TCP Proxy for non-HTTP services (e.g. a database)
+  # `listen_port` selects raw TCP mode instead of HTTP Host-header routing:
+  # jiji-proxy relays bytes to/from the backend without any Host-based
+  # matching, so there is no Host header to route by -- `path_prefix`/`ssl`
+  # are HTTP-only and cannot be combined with `listen_port`. `hosts` is
+  # optional and purely informational for a TCP target (the domain you point
+  # at `listen_port`, not a routing key). `port` stays the backend container
+  # port; `listen_port` is the new public-facing port, and the two may
+  # differ if you want a different public port than the backend's own.
+  # postgres:
+  #   image: postgres:18
+  #   servers:
+  #     - db-server
+  #   volumes:
+  #     - "data:/var/lib/postgresql"
+  #   environment:
+  #     clear:
+  #       POSTGRES_USER: appuser
+  #       POSTGRES_DB: app
+  #     secrets:
+  #       - POSTGRES_PASSWORD
+  #   proxy:
+  #     targets:
+  #       - port: 5432
+  #         listen_port: 5432
+  #         hosts: [db.example.com]
+  #         healthcheck:
+  #           cmd: "pg_isready -U appuser -d app"
+  #           interval: 35s
+  #           deploy_timeout: 60s
   #
   # Health Check Configuration:
   # ==========================
-  # Jiji supports two types of health checks via kamal-proxy:
+  # Jiji supports two types of health checks via jiji-proxy:
   #
   # 1. HTTP Health Checks (default)
   #    - Uses HTTP GET requests to check container health

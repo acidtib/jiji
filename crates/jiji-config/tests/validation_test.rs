@@ -700,3 +700,288 @@ services:
         );
     }
 }
+
+#[test]
+fn malformed_wildcard_proxy_hosts_are_rejected() {
+    for bad_host in ["foo.*.com", "*foo.com", "*", "*.", "*.*.com"] {
+        let raw = parse(&format!(
+            r#"
+project: demo
+builder: {{ engine: podman }}
+servers:
+  web: {{ host: 10.0.0.1 }}
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: {{ port: 80, hosts: ["{bad_host}"] }}
+"#
+        ));
+        let result = validate_yaml(&raw);
+        assert!(!result.valid, "expected '{bad_host}' to be rejected");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.code == "PROXY_INVALID_WILDCARD_HOST"),
+            "unexpected errors for '{bad_host}': {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn well_formed_wildcard_proxy_host_with_ssl_true_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 80, hosts: ["*.example.com"], ssl: true }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_WILDCARD_REQUIRES_STATIC_CERT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn well_formed_wildcard_proxy_host_with_static_cert_is_accepted() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy:
+      port: 80
+      hosts: ["*.example.com"]
+      ssl:
+        certificate_pem: CERT
+        private_key_pem: KEY
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn well_formed_wildcard_proxy_host_without_ssl_is_accepted() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 80, hosts: ["*.example.com"] }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn wildcard_validation_also_applies_through_multi_target_proxy_configs() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy:
+      targets:
+        - { port: 80, hosts: ["*.example.com"], ssl: true }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_WILDCARD_REQUIRES_STATIC_CERT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn non_wildcard_proxy_hosts_are_unaffected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 80, hosts: [example.com, www.example.com], ssl: true }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn tcp_listen_port_with_path_prefix_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy: { port: 5432, listen_port: 5432, path_prefix: /admin }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_TCP_HTTP_FIELDS_CONFLICT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn tcp_listen_port_with_ssl_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy: { port: 5432, listen_port: 5432, ssl: false }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_TCP_HTTP_FIELDS_CONFLICT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn tcp_listen_port_reserved_for_http_is_rejected() {
+    for reserved in [80u16, 443, 0] {
+        let raw = parse(&format!(
+            r#"
+project: demo
+builder: {{ engine: podman }}
+servers:
+  web: {{ host: 10.0.0.1 }}
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy: {{ port: 5432, listen_port: {reserved} }}
+"#
+        ));
+        let result = validate_yaml(&raw);
+        assert!(!result.valid, "expected {reserved} to be rejected");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.code == "PROXY_INVALID_TCP_PORT"),
+            "unexpected errors for {reserved}: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn duplicate_tcp_listen_ports_in_the_same_project_are_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy: { port: 5432, listen_port: 5432 }
+  cache:
+    image: redis
+    servers: [web]
+    proxy: { port: 6379, listen_port: 5432 }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_TCP_PORT_CONFLICT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn tcp_listen_port_alone_is_accepted() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy:
+      targets:
+        - port: 5432
+          listen_port: 5432
+          healthcheck:
+            cmd: "pg_isready"
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}

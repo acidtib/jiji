@@ -1,5 +1,5 @@
 use crate::remote_builder::parse_remote_builder_uri;
-use crate::schema::{Config, SshConfigFiles};
+use crate::schema::{Config, SshConfigFiles, SslValue};
 
 const MAX_SERVICES: usize = 500;
 const MAX_REPLICAS: u32 = 2_000;
@@ -245,6 +245,8 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     }
 
     validate_builder(config, &mut errors);
+    validate_proxy_hosts(config, &mut errors);
+    validate_tcp_targets(config, &mut errors);
 
     if let Some(ssh) = &config.ssh {
         let user_can_come_from_config = !matches!(ssh.config, SshConfigFiles::Enabled(false));
@@ -312,4 +314,159 @@ fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+}
+
+/// jiji-proxy supports a single-label wildcard host (`*.example.com`,
+/// matching `foo.example.com` but not `deep.foo.example.com` or the bare
+/// `example.com`) but cannot obtain an ACME certificate for one: its
+/// automation is HTTP-01 only, and only DNS-01 can issue a wildcard
+/// certificate. A wildcard host may still use TLS via a user-supplied
+/// static certificate (`ssl: { certificate_pem, private_key_pem }`).
+fn validate_proxy_hosts(config: &Config, errors: &mut Vec<ValidationError>) {
+    for (name, service) in &config.services {
+        let Some(proxy) = &service.proxy else {
+            continue;
+        };
+        if let Some(targets) = &proxy.targets {
+            for (index, target) in targets.iter().enumerate() {
+                validate_hosts_and_ssl(
+                    name,
+                    &format!("services.{name}.proxy.targets[{index}]"),
+                    target.hosts.as_deref().unwrap_or_default(),
+                    &target.ssl,
+                    errors,
+                );
+            }
+        } else {
+            validate_hosts_and_ssl(
+                name,
+                &format!("services.{name}.proxy"),
+                proxy.hosts.as_deref().unwrap_or_default(),
+                &proxy.ssl,
+                errors,
+            );
+        }
+    }
+}
+
+fn validate_hosts_and_ssl(
+    service_name: &str,
+    path: &str,
+    hosts: &[String],
+    ssl: &Option<SslValue>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for host in hosts {
+        if !host.contains('*') {
+            continue;
+        }
+        let well_formed =
+            host.starts_with("*.") && !host[2..].is_empty() && !host[2..].contains('*');
+        if !well_formed {
+            errors.push(ValidationError {
+                path: path.to_string(),
+                message: format!(
+                    "Service '{service_name}' proxy host '{host}' is not a valid wildcard pattern; only a single leading label may be '*', e.g. '*.example.com'"
+                ),
+                code: "PROXY_INVALID_WILDCARD_HOST",
+            });
+            continue;
+        }
+        if matches!(ssl, Some(SslValue::Enabled(true))) {
+            errors.push(ValidationError {
+                path: path.to_string(),
+                message: format!(
+                    "Service '{service_name}' proxy host '{host}' is a wildcard and cannot use 'ssl: true': jiji-proxy's ACME automation only supports HTTP-01 challenges, which cannot issue a wildcard certificate. Provide a static certificate instead with 'ssl: {{ certificate_pem, private_key_pem }}', or remove 'ssl' for this host."
+                ),
+                code: "PROXY_WILDCARD_REQUIRES_STATIC_CERT",
+            });
+        }
+    }
+}
+
+/// A `listen_port` selects raw TCP proxying instead of HTTP Host-header
+/// routing (see `ProxyTarget::listen_port`): no Host header exists to route
+/// by, so `path_prefix`/`ssl` (HTTP-only concepts) cannot be combined with
+/// it, ports 80/443 stay reserved for HTTP ingress, and each TCP route
+/// needs a public port not already claimed by another service in this same
+/// project (a *different* project sharing the same host can still collide
+/// on `listen_port` -- that can't be caught here, since validation is
+/// per-project only, and is instead rejected at apply time by jiji-proxy
+/// itself, the one component with the whole host's picture).
+fn validate_tcp_targets(config: &Config, errors: &mut Vec<ValidationError>) {
+    let mut seen_listen_ports: std::collections::HashMap<u16, String> =
+        std::collections::HashMap::new();
+    for (name, service) in &config.services {
+        let Some(proxy) = &service.proxy else {
+            continue;
+        };
+        if let Some(targets) = &proxy.targets {
+            for (index, target) in targets.iter().enumerate() {
+                validate_tcp_target(
+                    name,
+                    &format!("services.{name}.proxy.targets[{index}]"),
+                    target.listen_port,
+                    target.path_prefix.as_deref(),
+                    &target.ssl,
+                    &mut seen_listen_ports,
+                    errors,
+                );
+            }
+        } else {
+            validate_tcp_target(
+                name,
+                &format!("services.{name}.proxy"),
+                proxy.listen_port,
+                proxy.path_prefix.as_deref(),
+                &proxy.ssl,
+                &mut seen_listen_ports,
+                errors,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_tcp_target(
+    service_name: &str,
+    path: &str,
+    listen_port: Option<u16>,
+    path_prefix: Option<&str>,
+    ssl: &Option<SslValue>,
+    seen_listen_ports: &mut std::collections::HashMap<u16, String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(listen_port) = listen_port else {
+        return;
+    };
+    if path_prefix.is_some() || ssl.is_some() {
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!(
+                "Service '{service_name}' proxy target sets 'listen_port' (raw TCP mode) alongside 'path_prefix'/'ssl', which only apply to HTTP routing. Remove 'listen_port' for an HTTP route, or remove 'path_prefix'/'ssl' for a TCP route."
+            ),
+            code: "PROXY_TCP_HTTP_FIELDS_CONFLICT",
+        });
+    }
+    if listen_port == 0 || listen_port == 80 || listen_port == 443 {
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!(
+                "Service '{service_name}' proxy target 'listen_port' {listen_port} is invalid: ports 80 and 443 are reserved for HTTP ingress, and 0 is not a valid port."
+            ),
+            code: "PROXY_INVALID_TCP_PORT",
+        });
+        return;
+    }
+    if let Some(existing_service) = seen_listen_ports.get(&listen_port) {
+        errors.push(ValidationError {
+            path: path.to_string(),
+            message: format!(
+                "Service '{service_name}' proxy target 'listen_port' {listen_port} is already used by service '{existing_service}'. Each TCP route needs its own public port within a project."
+            ),
+            code: "PROXY_TCP_PORT_CONFLICT",
+        });
+        return;
+    }
+    seen_listen_ports.insert(listen_port, service_name.to_string());
 }

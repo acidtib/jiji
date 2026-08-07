@@ -95,7 +95,7 @@ pub struct ServerPlan {
     pub container_subnet: Ipv4Cidr,
     pub bridge_gateway: Ipv4Addr,
     pub dns_address: Ipv4Addr,
-    /// Fixed address for the kamal-proxy container, reserved below `FIRST_CONTAINER_OFFSET` so it
+    /// Fixed address for the jiji-proxy container, reserved below `FIRST_CONTAINER_OFFSET` so it
     /// can never collide with a service endpoint address, and pinned explicitly (rather than left
     /// to IPAM auto-assignment) so it can never collide with `dns_address` either.
     pub proxy_address: Ipv4Addr,
