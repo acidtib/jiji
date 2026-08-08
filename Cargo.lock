@@ -2073,7 +2073,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiji-agent"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-cli"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-config"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "jiji-core",
  "serde",
@@ -2137,14 +2137,14 @@ dependencies = [
 
 [[package]]
 name = "jiji-core"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "jiji-network"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "jiji-config",
  "jiji-core",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-proxy"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-ssh"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "rand 0.10.2",
  "russh",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-tui"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "dialoguer",
  "indicatif",
