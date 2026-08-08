@@ -1,4 +1,4 @@
-use jiji_config::{validate_yaml, TEMPLATE};
+use jiji_config::{validate_yaml, Config, TEMPLATE};
 
 fn parse(yaml: &str) -> serde_yaml::Value {
     serde_yaml::from_str(yaml).expect("test fixture must be valid YAML")
@@ -984,4 +984,299 @@ services:
     );
     let result = validate_yaml(&raw);
     assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn cron_jobs_deserialize_with_defaults_and_overrides() {
+    let config: Config = serde_yaml::from_str(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      sync-twitch:
+        schedule: "7 */2 * * *"
+        command: ["npm", "run", "sync:twitch"]
+      remove-expired:
+        schedule: "0 3 * * *"
+        command: ["npm", "run", "remove-expired"]
+        timezone: America/Denver
+        timeout: 30m
+        overlap: forbid
+        missed_runs: skip
+"#,
+    )
+    .unwrap();
+    let service = &config.services["twitch"];
+    assert_eq!(service.crons.len(), 2);
+
+    let sync = &service.crons["sync-twitch"];
+    assert_eq!(sync.timezone, "UTC");
+    assert_eq!(sync.timeout, "1h");
+    assert_eq!(
+        sync.overlap,
+        jiji_config::CronOverlap::Forbid,
+        "overlap must default to forbid"
+    );
+    assert_eq!(
+        sync.missed_runs,
+        jiji_config::CronMissedRuns::Skip,
+        "missed_runs must default to skip"
+    );
+
+    let remove_expired = &service.crons["remove-expired"];
+    assert_eq!(remove_expired.timezone, "America/Denver");
+    assert_eq!(remove_expired.timeout, "30m");
+}
+
+#[test]
+fn cron_job_rejects_unknown_fields() {
+    let raw = r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      sync-twitch:
+        schedule: "7 */2 * * *"
+        command: ["npm", "run", "sync:twitch"]
+        retriez: 3
+"#;
+    let err = serde_yaml::from_str::<Config>(raw).unwrap_err();
+    assert!(
+        err.to_string().contains("retriez"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn cron_job_rejects_invalid_overlap_value() {
+    let raw = r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      sync-twitch:
+        schedule: "7 */2 * * *"
+        command: ["npm", "run", "sync:twitch"]
+        overlap: queue
+"#;
+    assert!(serde_yaml::from_str::<Config>(raw).is_err());
+}
+
+#[test]
+fn cron_job_rejects_invalid_missed_runs_value() {
+    let raw = r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      sync-twitch:
+        schedule: "7 */2 * * *"
+        command: ["npm", "run", "sync:twitch"]
+        missed_runs: catch_up
+"#;
+    assert!(serde_yaml::from_str::<Config>(raw).is_err());
+}
+
+fn cron_config_yaml(cron_body: &str) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: podman }}
+servers:
+  one: {{ host: 10.0.0.1 }}
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      sync-twitch:
+{cron_body}
+"#
+    )
+}
+
+#[test]
+fn cron_job_rejects_schedule_with_seconds_field() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"* * * * * *\"\n        command: [\"npm\", \"run\", \"sync\"]",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_SCHEDULE_INVALID"));
+}
+
+#[test]
+fn cron_job_rejects_schedule_alias() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"@daily\"\n        command: [\"npm\", \"run\", \"sync\"]",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_SCHEDULE_INVALID"));
+}
+
+#[test]
+fn cron_job_rejects_malformed_schedule_field() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"nope * * * *\"\n        command: [\"npm\", \"run\", \"sync\"]",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_SCHEDULE_INVALID"));
+}
+
+#[test]
+fn cron_job_accepts_valid_five_field_schedule() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"7 */2 * * *\"\n        command: [\"npm\", \"run\", \"sync\"]",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
+fn cron_job_rejects_invalid_timezone() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"0 3 * * *\"\n        command: [\"npm\", \"run\", \"sync\"]\n        timezone: Not/AZone",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_TIMEZONE_INVALID"));
+}
+
+#[test]
+fn cron_job_rejects_empty_command() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"0 3 * * *\"\n        command: \"   \"",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result.errors.iter().any(|e| e.code == "CRON_COMMAND_EMPTY"));
+}
+
+#[test]
+fn cron_job_rejects_invalid_timeout() {
+    let raw = parse(&cron_config_yaml(
+        "        schedule: \"0 3 * * *\"\n        command: [\"npm\", \"run\", \"sync\"]\n        timeout: 0m",
+    ));
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_TIMEOUT_INVALID"));
+}
+
+#[test]
+fn cron_job_rejects_invalid_name() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+      Sync_Twitch:
+        schedule: "0 3 * * *"
+        command: ["npm", "run", "sync"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result.errors.iter().any(|e| e.code == "CRON_NAME_INVALID"));
+}
+
+#[test]
+fn cron_job_rejected_on_network_mode_service_dependent() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+    crons:
+      cleanup:
+        schedule: "0 3 * * *"
+        command: ["cleanup.sh"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "CRON_UNSUPPORTED_ON_NETWORK_MODE_SERVICE"));
+}
+
+#[test]
+fn service_exceeding_max_crons_is_rejected() {
+    let mut body = String::from(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  twitch:
+    image: ghcr.io/example/twitch-sync:latest
+    servers: [one]
+    crons:
+"#,
+    );
+    for i in 0..33 {
+        body.push_str(&format!(
+            "      job-{i}:\n        schedule: \"0 3 * * *\"\n        command: [\"run\"]\n"
+        ));
+    }
+    let result = validate_yaml(&parse(&body));
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "TOO_MANY_CRONS_PER_SERVICE"));
 }

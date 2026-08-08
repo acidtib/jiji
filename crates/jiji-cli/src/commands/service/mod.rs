@@ -1,3 +1,4 @@
+pub mod cron;
 pub mod logs;
 pub mod prune;
 pub mod remove;

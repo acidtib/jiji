@@ -1,9 +1,13 @@
+use std::str::FromStr;
+
 use crate::remote_builder::parse_remote_builder_uri;
-use crate::schema::{Config, SshConfigFiles, SslValue};
+use crate::schema::{CommandValue, Config, Service, SshConfigFiles, SslValue};
 
 const MAX_SERVICES: usize = 500;
 const MAX_REPLICAS: u32 = 2_000;
 const MAX_NODES: usize = 32;
+const MAX_CRONS_PER_SERVICE: usize = 32;
+const MAX_CRONS_PER_PROJECT: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct ValidationError {
@@ -108,6 +112,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     }
 
     let mut total_replicas = 0_u32;
+    let mut total_crons = 0_usize;
     for (name, service) in &config.services {
         total_replicas = total_replicas.saturating_add(service.replicas);
         if service.servers.is_empty() {
@@ -233,6 +238,17 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 code: "EXCLUSIVE_RESOURCE_SCALE",
             });
         }
+        validate_service_crons(name, service, &mut errors);
+        total_crons = total_crons.saturating_add(service.crons.len());
+    }
+    if total_crons > MAX_CRONS_PER_PROJECT {
+        errors.push(ValidationError {
+            path: "services".to_string(),
+            message: format!(
+                "A project supports at most {MAX_CRONS_PER_PROJECT} cron jobs; {total_crons} are configured"
+            ),
+            code: "TOO_MANY_CRONS",
+        });
     }
     if total_replicas > MAX_REPLICAS {
         errors.push(ValidationError {
@@ -469,4 +485,147 @@ fn validate_tcp_target(
         return;
     }
     seen_listen_ports.insert(listen_port, service_name.to_string());
+}
+
+/// A cron container has no network namespace of its own to lease into once its service already
+/// shares an upstream's (see `docs/architecture-notes.md#container-namespace-sharing`); this
+/// stays unsupported for the first release rather than guessing at borrowed-namespace semantics.
+fn validate_service_crons(
+    service_name: &str,
+    service: &Service,
+    errors: &mut Vec<ValidationError>,
+) {
+    if service.crons.is_empty() {
+        return;
+    }
+    if service.network_mode_dependency().is_some() {
+        errors.push(ValidationError {
+            path: format!("services.{service_name}.crons"),
+            message: format!(
+                "Service '{service_name}' cannot define 'crons' while using network_mode: service:<name>; a namespace-sharing dependent has no address of its own to lease for a cron container"
+            ),
+            code: "CRON_UNSUPPORTED_ON_NETWORK_MODE_SERVICE",
+        });
+    }
+    if service.crons.len() > MAX_CRONS_PER_SERVICE {
+        errors.push(ValidationError {
+            path: format!("services.{service_name}.crons"),
+            message: format!(
+                "Service '{service_name}' supports at most {MAX_CRONS_PER_SERVICE} cron jobs; {} are configured",
+                service.crons.len()
+            ),
+            code: "TOO_MANY_CRONS_PER_SERVICE",
+        });
+    }
+    for (cron_name, cron) in &service.crons {
+        let path = format!("services.{service_name}.crons.{cron_name}");
+        if let Err(message) = validate_cron_name(cron_name) {
+            errors.push(ValidationError {
+                path: path.clone(),
+                message: format!("Cron '{cron_name}' on service '{service_name}': {message}"),
+                code: "CRON_NAME_INVALID",
+            });
+        }
+        if let Err(message) = validate_cron_schedule(&cron.schedule) {
+            errors.push(ValidationError {
+                path: format!("{path}.schedule"),
+                message: format!(
+                    "Cron '{cron_name}' on service '{service_name}' has an invalid schedule '{}': {message}",
+                    cron.schedule
+                ),
+                code: "CRON_SCHEDULE_INVALID",
+            });
+        }
+        if let Err(message) = validate_cron_timezone(&cron.timezone) {
+            errors.push(ValidationError {
+                path: format!("{path}.timezone"),
+                message: format!(
+                    "Cron '{cron_name}' on service '{service_name}' has an invalid timezone '{}': {message}",
+                    cron.timezone
+                ),
+                code: "CRON_TIMEZONE_INVALID",
+            });
+        }
+        if command_is_empty(&cron.command) {
+            errors.push(ValidationError {
+                path: format!("{path}.command"),
+                message: format!(
+                    "Cron '{cron_name}' on service '{service_name}' must specify a non-empty command"
+                ),
+                code: "CRON_COMMAND_EMPTY",
+            });
+        }
+        match cron.timeout_duration() {
+            Some(duration) if !duration.is_zero() => {}
+            _ => {
+                errors.push(ValidationError {
+                    path: format!("{path}.timeout"),
+                    message: format!(
+                        "Cron '{cron_name}' on service '{service_name}' has an invalid timeout '{}': expected a positive duration like '30s', '5m', or '1h'",
+                        cron.timeout
+                    ),
+                    code: "CRON_TIMEOUT_INVALID",
+                });
+            }
+        }
+    }
+}
+
+/// Mirrors the DNS-safe server-name convention documented in `jiji.yml`: lowercase alphanumeric
+/// and hyphens, no leading/trailing hyphen. A cron name becomes a container-name component
+/// (`plans/service-cron.md`'s `<project>-<service>-cron-<cron-slug>-<run-id>` form).
+fn validate_cron_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("cron name must not be empty".to_string());
+    }
+    if name.len() > 63 {
+        return Err(format!(
+            "cron name is {} characters, longer than the 63-character limit",
+            name.len()
+        ));
+    }
+    let well_formed = name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    if !well_formed {
+        return Err(
+            "cron name must be lowercase alphanumeric characters and hyphens, and cannot start or end with a hyphen"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Requires exactly 5 whitespace-separated fields (standard cron: minute, hour, day-of-month,
+/// month, day-of-week) before ever handing the expression to `jiff_cron`: this is what rejects a
+/// seconds field or an alias like `@daily` outright, since neither splits into 5 fields. The
+/// remaining field syntax (ranges, steps, lists, names) is validated by prepending a `0` seconds
+/// field and delegating to `jiff_cron::Schedule`'s own parser rather than reimplementing it.
+fn validate_cron_schedule(expression: &str) -> Result<(), String> {
+    let field_count = expression.split_whitespace().count();
+    if field_count != 5 {
+        return Err(format!(
+            "must have exactly 5 space-separated fields (minute hour day-of-month month day-of-week); found {field_count} field(s). Seconds fields and aliases like '@daily' are not supported"
+        ));
+    }
+    jiff_cron::Schedule::from_str(&format!("0 {expression}"))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_cron_timezone(name: &str) -> Result<(), String> {
+    jiff::tz::TimeZone::get(name)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn command_is_empty(command: &CommandValue) -> bool {
+    match command {
+        CommandValue::Single(s) => s.trim().is_empty(),
+        CommandValue::Multiple(parts) => {
+            parts.is_empty() || parts.iter().all(|p| p.trim().is_empty())
+        }
+    }
 }

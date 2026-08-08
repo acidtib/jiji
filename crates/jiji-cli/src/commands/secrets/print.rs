@@ -606,6 +606,7 @@ mod tests {
             cap_add: Vec::new(),
             stop_first: false,
             restart: None,
+            crons: Default::default(),
         }
     }
 

@@ -9,6 +9,8 @@ jiji-core.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+jiff.workspace = true
+jiff-cron.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

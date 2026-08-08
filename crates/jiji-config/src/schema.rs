@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 /// Top-level jiji configuration (`.jiji/deploy.yml`).
 ///
@@ -402,6 +403,76 @@ impl fmt::Display for PlacementPolicy {
     }
 }
 
+/// `overlap: forbid` skips a due run while the prior run is still active. Modeled as a
+/// single-variant enum (not `bool`) so a later release can add a queuing/allow variant without a
+/// schema-breaking change; any other value is rejected at parse time like `ContainerEngine`'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronOverlap {
+    #[default]
+    Forbid,
+}
+
+/// `missed_runs: skip` does not replay scheduled times missed while the owning agent was
+/// offline. Single-variant for the same forward-compatibility reason as `CronOverlap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronMissedRuns {
+    #[default]
+    Skip,
+}
+
+/// One scheduled command for a service, run in its own one-off container rather than inside the
+/// serving container (see `plans/service-cron.md`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CronConfig {
+    pub schedule: String,
+    pub command: CommandValue,
+    #[serde(default = "default_cron_timezone")]
+    pub timezone: String,
+    #[serde(default = "default_cron_timeout")]
+    pub timeout: String,
+    #[serde(default)]
+    pub overlap: CronOverlap,
+    #[serde(default)]
+    pub missed_runs: CronMissedRuns,
+}
+
+impl CronConfig {
+    /// Parses `timeout` per `parse_cron_duration`; `None` means the configured value is not a
+    /// well-formed duration (caught by `jiji_config::validation` before this would matter).
+    pub fn timeout_duration(&self) -> Option<Duration> {
+        parse_cron_duration(&self.timeout)
+    }
+}
+
+/// Parses `"<digits><unit>"` where unit is `s`, `m`, or `h`. A cron `timeout` commonly runs
+/// longer than a healthcheck's typical seconds/minutes range (default `1h`), hence `h` here
+/// where `jiji-cli`'s healthcheck duration parsing stops at `m`.
+pub fn parse_cron_duration(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value.len() < 2 {
+        return None;
+    }
+    let (digits, unit) = value.split_at(value.len() - 1);
+    let amount: u64 = digits.parse().ok()?;
+    match unit {
+        "s" => Some(Duration::from_secs(amount)),
+        "m" => Some(Duration::from_secs(amount * 60)),
+        "h" => Some(Duration::from_secs(amount * 3600)),
+        _ => None,
+    }
+}
+
+fn default_cron_timezone() -> String {
+    "UTC".to_string()
+}
+
+fn default_cron_timeout() -> String {
+    "1h".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Service {
     #[serde(default)]
@@ -448,6 +519,10 @@ pub struct Service {
     pub stop_first: bool,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
+    /// Stable map key is the cron name. `BTreeMap` (not `HashMap`, unlike `Config.services`)
+    /// keeps iteration order deterministic for canonical spec hashing and `list` output.
+    #[serde(default)]
+    pub crons: BTreeMap<String, CronConfig>,
 }
 
 impl Service {
