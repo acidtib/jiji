@@ -569,7 +569,7 @@ touching nftables rendering, nested SSH sessions, or teardown ordering):
   directly, and the `cargo-workspace` plugin cascades from there to every
   crate that depends on what changed (see "Version Management & Releases"
   above).
-- Run `/resume-work` at the start of a session to pick up context from
+- Run the resume-work skill at the start of a session to pick up context from
   previous sessions
 - Never use `git commit --no-verify`: if hooks fail, fix every issue before
   committing
@@ -582,7 +582,7 @@ touching nftables rendering, nested SSH sessions, or teardown ordering):
 - Treat all `cargo clippy` warnings as bugs: run `mise lint` and fix before
   committing
 - OSV scanner findings are blockers: run `mise scan` and use
-  `/fix-osv-finding` to remediate; never dismiss without analyzing
+  fix-osv-finding skill to remediate; never dismiss without analyzing
   reachability
 
 ## Workflow
