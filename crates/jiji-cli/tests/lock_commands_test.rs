@@ -240,6 +240,30 @@ fn rejects_service_filter_before_loading_configuration() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not accept -S/--services"));
 }
 
+#[test]
+fn accepts_long_config_flag_and_reports_missing_config_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .args(["--config", "/does/not/exist", "lock", "status"])
+        .output()
+        .expect("run jiji lock status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("/does/not/exist"));
+}
+
+#[test]
+fn rejects_retired_long_config_file_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .args(["--config-file", "/does/not/exist", "lock", "status"])
+        .output()
+        .expect("run jiji lock status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unexpected argument") || stderr.contains("unrecognized"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn acquire_writes_a_lock_file_that_status_and_show_then_report() {
     let (dir, key_path, client_key) = setup_test_dir();

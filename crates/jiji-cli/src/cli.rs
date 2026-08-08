@@ -28,7 +28,7 @@ pub struct Cli {
 
     #[arg(
         short = 'c',
-        long = "config-file",
+        long = "config",
         value_name = "CONFIG_FILE",
         global = true,
         help = "Path to config file"
