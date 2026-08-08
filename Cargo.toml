@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jiji-core",
+    "crates/jiji-tui",
+    "crates/jiji-config",
+    "crates/jiji-network",
+    "crates/jiji-ssh",
+    "crates/jiji-cli",
+    "crates/jiji-agent",
+    "crates/jiji-proxy",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+jiji-core = { path = "crates/jiji-core" }
+jiji-tui = { path = "crates/jiji-tui" }
+jiji-config = { path = "crates/jiji-config" }
+jiji-network = { path = "crates/jiji-network" }
+jiji-ssh = { path = "crates/jiji-ssh" }
+jiji-agent = { path = "crates/jiji-agent" }
+
+thiserror = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.11"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+owo-colors = "4"
+dialoguer = "0.11"
+indicatif = "0.18"
+tempfile = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+aes-gcm = "0.11"
+scrypt = "0.12"
+getrandom = "0.4"
+russh = "0.62.5"
+ssh2-config = { git = "https://github.com/veeso/ssh2-config", rev = "3a9935222aa98a3374701eae2d283a6af74cdba8" }
+tar = "0.4"
+ignore = "0.4"

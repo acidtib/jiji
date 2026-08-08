@@ -4,12 +4,11 @@ Scanner findings are blockers -- they must be resolved before committing.
 
 ## Try to fix first
 
-1. Update the affected dependency in the relevant `deno.json` (root or
-   package-level)
-2. If it's a transitive npm dependency, check if upgrading the parent package
-   resolves it
-3. Run `deno install --allow-scripts=npm:cpu-features,npm:ssh2` to regenerate
-   the lockfile
+1. Update the affected dependency in the relevant crate's `Cargo.toml` (or the
+   workspace `Cargo.toml` if it's a shared dependency)
+2. If it's a transitive dependency, check if upgrading the parent crate
+   resolves it (`cargo update -p <crate>`)
+3. Run `cargo update` (or `cargo update -p <crate>`) to regenerate `Cargo.lock`
 4. Re-run `mise scan` to confirm the finding is resolved
 
 ## If the vuln is unreachable

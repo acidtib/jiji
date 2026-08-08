@@ -1,0 +1,775 @@
+//! Autonomous repair of project-scoped host runtime state.
+//!
+//! Durable catalog records decide ownership; local observations decide what needs repair. Missing
+//! or unreachable resources never produce tombstones. Every action is idempotent and retries with
+//! bounded exponential backoff.
+
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
+use tokio::process::Command;
+
+use crate::catalog::{CatalogRecord, DeploymentState};
+use crate::discovery::{self, DiscoveryOutcome};
+use crate::engine::Engine;
+use crate::runtime::MeshConfig;
+use crate::store::{AgentStore, Observation};
+
+const MIN_BACKOFF: Duration = Duration::from_secs(2);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairOutcome {
+    pub component: &'static str,
+    pub result: Result<(), String>,
+}
+
+#[derive(Debug, Clone)]
+struct Backoff {
+    failures: u32,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self { failures: 0 }
+    }
+
+    fn success(&mut self) -> Duration {
+        self.failures = 0;
+        MIN_BACKOFF
+    }
+
+    fn failure(&mut self) -> Duration {
+        self.failures = self.failures.saturating_add(1);
+        let multiplier = 1_u64 << self.failures.saturating_sub(1).min(5);
+        MIN_BACKOFF
+            .saturating_mul(multiplier as u32)
+            .min(MAX_BACKOFF)
+    }
+}
+
+pub async fn run_loop(
+    store: Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    config: MeshConfig,
+    startup_candidates: BTreeSet<String>,
+) {
+    let mut backoff = Backoff::new();
+    loop {
+        let outcomes = reconcile_once(&store, engine, &config, &startup_candidates).await;
+        let failed = outcomes.iter().any(|outcome| outcome.result.is_err());
+        let delay = if failed {
+            backoff.failure()
+        } else {
+            backoff.success()
+        };
+        let next_retry_at = unix_timestamp().saturating_add(delay.as_secs());
+        if let Ok(store) = store.lock() {
+            for outcome in &outcomes {
+                let result = outcome.result.as_ref().map(|_| ()).map_err(String::as_str);
+                if let Err(error) = store.record_component_result(
+                    outcome.component,
+                    result,
+                    outcome.result.is_err().then_some(next_retry_at),
+                ) {
+                    tracing::warn!(%error, component = outcome.component, "repair diagnostic could not be recorded");
+                }
+            }
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Brings up just the two address-bearing links `runtime::run` binds sockets to
+/// (`config.replication_bind`'s WireGuard management address, `config.dns_bind_address` on the
+/// bridge) -- nothing else. Since Phase 9 removed the systemd-level `Requires=wg-quick@...`/
+/// `jiji-network-restore-{slug}` ordering that used to guarantee these addresses existed before
+/// the agent process even started, `main.rs` now calls this synchronously, with retries, before
+/// spawning `runtime::run` and this module's own `run_loop` as independent concurrent tasks --
+/// otherwise `runtime::run`'s `TcpListener::bind`/`dns::serve` can race the bridge/link coming up
+/// and fail with `EADDRNOTAVAIL` (confirmed live: a real reboot hit this race and crash-looped the
+/// whole agent, since neither address existed on any interface yet at the moment `runtime::run`
+/// tried to bind).
+pub async fn ensure_network_links(
+    engine: Engine,
+    config: &MeshConfig,
+    store: &Arc<Mutex<AgentStore>>,
+) -> Result<(), String> {
+    ensure_link(
+        &config.wireguard_interface,
+        config.replication_bind.ip(),
+        config.local_runtime.wireguard_port,
+        &config.wireguard_private_key_path,
+        store,
+    )
+    .await
+    .map_err(|error| format!("WireGuard interface: {error}"))?;
+    ensure_bridge_and_dns(engine, config)
+        .await
+        .map_err(|error| format!("bridge/DNS address: {error}"))?;
+    Ok(())
+}
+
+pub async fn reconcile_once(
+    store: &Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    config: &MeshConfig,
+    startup_candidates: &BTreeSet<String>,
+) -> Vec<RepairOutcome> {
+    let mut outcomes = Vec::new();
+    outcomes.push(RepairOutcome {
+        component: "wireguard",
+        result: ensure_link(
+            &config.wireguard_interface,
+            config.replication_bind.ip(),
+            config.local_runtime.wireguard_port,
+            &config.wireguard_private_key_path,
+            store,
+        )
+        .await,
+    });
+    let bridge_result = ensure_bridge_and_dns(engine, config).await;
+    let bridge_rebuilt = matches!(bridge_result, Ok(true));
+    outcomes.push(RepairOutcome {
+        component: "bridge_dns",
+        result: bridge_result.map(|_| ()),
+    });
+    if bridge_rebuilt {
+        outcomes.push(RepairOutcome {
+            component: "bridge_runtime_attachments",
+            result: repair_runtime_attachments(engine, config).await,
+        });
+    }
+    outcomes.push(RepairOutcome {
+        component: "proxy_attachment",
+        result: crate::proxy_bringup::reconcile(engine, config).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "containers",
+        result: reconcile_containers(store, engine, config, startup_candidates).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "deployment_recovery",
+        result: recover_startup_candidates(store, engine, config, startup_candidates).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "proxy_routes",
+        result: reconcile_proxy_routes(engine, config).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "tcp_proxy_routes",
+        result: reconcile_tcp_routes(engine, config).await,
+    });
+    outcomes
+}
+
+/// Ensures every route jiji-cli computed for this host at `server setup`
+/// time (`config.local_runtime.proxy_routes`) is applied to this host's own
+/// jiji-proxy. Unlike kamal-proxy's route model, this never reads the
+/// catalog at all: jiji-proxy resolves and load-balances `route.name`'s
+/// backends itself, continuously, against this agent's own `.jiji`
+/// resolver (`config.dns_bind_address:53`), so re-applying the same static
+/// route definition on every tick is a cheap, harmless no-op upsert, not a
+/// per-deployment address push racing catalog replication the way
+/// kamal-proxy's route model did (see "Core design decision" in
+/// plans/jiji-proxy-design.md).
+async fn reconcile_proxy_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
+    for route in &config.local_runtime.proxy_routes {
+        deploy_proxy_route(engine, config, route).await?;
+    }
+    Ok(())
+}
+
+async fn deploy_proxy_route(
+    engine: Engine,
+    config: &MeshConfig,
+    route: &crate::runtime::ProxyRouteSpec,
+) -> Result<(), String> {
+    let mut args = vec![
+        "route".to_string(),
+        "apply".to_string(),
+        format!("--host={}", route.host),
+        format!("--dns-server={}:53", config.dns_bind_address),
+        format!("--name={}", route.name),
+        format!("--port={}", route.port),
+    ];
+    if let Some(prefix) = &route.path_prefix {
+        args.push(format!("--path-prefix={prefix}"));
+    }
+    args.extend(route.apply_args.iter().cloned());
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    proxy_exec(engine, &borrowed, Duration::from_secs(30)).await?;
+    Ok(())
+}
+
+/// Mirrors `reconcile_proxy_routes` for raw TCP routes -- see
+/// `crate::runtime::TcpRouteSpec`. Same idempotent-reapply-every-tick
+/// reasoning applies: jiji-proxy resolves and load-balances `route.name`'s
+/// backends itself, continuously, so re-applying the same static route
+/// definition is a cheap no-op upsert, not a per-deployment push.
+async fn reconcile_tcp_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
+    for route in &config.local_runtime.tcp_routes {
+        deploy_tcp_route(engine, config, route).await?;
+    }
+    Ok(())
+}
+
+async fn deploy_tcp_route(
+    engine: Engine,
+    config: &MeshConfig,
+    route: &crate::runtime::TcpRouteSpec,
+) -> Result<(), String> {
+    let mut args = vec![
+        "tcp-route".to_string(),
+        "apply".to_string(),
+        format!("--listen-port={}", route.listen_port),
+        format!("--dns-server={}:53", config.dns_bind_address),
+        format!("--name={}", route.name),
+        format!("--port={}", route.port),
+    ];
+    args.extend(route.apply_args.iter().cloned());
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    proxy_exec(engine, &borrowed, Duration::from_secs(30)).await?;
+    Ok(())
+}
+
+async fn recover_startup_candidates(
+    store: &Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    config: &MeshConfig,
+    startup_candidates: &BTreeSet<String>,
+) -> Result<(), String> {
+    if startup_candidates.is_empty() {
+        return Ok(());
+    }
+    let observations = match discovery::discover(engine, &config.project_id).await {
+        DiscoveryOutcome::Observed(observations) => observations,
+        DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
+            return Err(error)
+        }
+    };
+    let running = observations
+        .iter()
+        .filter(|observation| observation.state == "running")
+        .filter_map(|observation| {
+            let labels: Value = serde_json::from_str(&observation.labels_json).ok()?;
+            let deployment = labels.get("jiji.deployment")?.as_str()?.to_string();
+            Some((deployment, observation.name.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let present_deployments = observations
+        .iter()
+        .filter_map(|observation| {
+            let labels: Value = serde_json::from_str(&observation.labels_json).ok()?;
+            labels.get("jiji.deployment")?.as_str().map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>();
+    let catalog = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .latest_catalog()
+        .map_err(|error| error.to_string())?;
+    let missing_candidates = catalog
+        .iter()
+        .filter(|record| {
+            startup_candidates.contains(&record.deployment_id)
+                && record.owner_node_id == config.node_id
+                && record.state == DeploymentState::Candidate
+                && !running.contains_key(&record.deployment_id)
+        })
+        .map(|record| record.deployment_id.clone())
+        .collect::<Vec<_>>();
+    for candidate in catalog.iter().filter(|record| {
+        startup_candidates.contains(&record.deployment_id)
+            && record.owner_node_id == config.node_id
+            && record.state == DeploymentState::Candidate
+            && running.contains_key(&record.deployment_id)
+    }) {
+        // No explicit proxy push needed here: `reconcile_proxy_routes` (run every tick,
+        // immediately after this function) keeps jiji-proxy's static route definitions applied
+        // regardless, and jiji-proxy's own continuous DNS re-resolution against this project's
+        // `.jiji` zone picks up this candidate's address on its own within one refresh interval
+        // once it's marked Active/Healthy below -- unlike kamal-proxy's route model, there is no
+        // separate "push this specific address" step for recovery to do.
+        apply_local_catalog_state(
+            store,
+            config,
+            candidate,
+            DeploymentState::Active,
+            crate::catalog::HealthState::Healthy,
+        )?;
+
+        for previous in catalog.iter().filter(|record| {
+            record.replica_id == candidate.replica_id
+                && record.deployment_id != candidate.deployment_id
+                && record.owner_node_id == config.node_id
+                && record.state == DeploymentState::Active
+        }) {
+            apply_local_catalog_state(
+                store,
+                config,
+                previous,
+                DeploymentState::Draining,
+                crate::catalog::HealthState::Unknown,
+            )?;
+            let name = dynamic_container_name(
+                &config.project_id,
+                &previous.service,
+                &previous.deployment_id,
+            );
+            if present_deployments.contains(&previous.deployment_id) {
+                let _ = command_required(engine.as_str(), &["stop", &name]).await;
+                command_required(engine.as_str(), &["rm", "-f", &name]).await?;
+            }
+            apply_local_catalog_state(
+                store,
+                config,
+                previous,
+                DeploymentState::Tombstoned,
+                crate::catalog::HealthState::Unknown,
+            )?;
+            store
+                .lock()
+                .map_err(|_| "local store lock poisoned".to_string())?
+                .quarantine_address_lease(
+                    &previous.deployment_id,
+                    unix_timestamp().saturating_add(crate::leases::DEFAULT_QUARANTINE_SECONDS),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    if missing_candidates.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "startup candidate container(s) are absent and were preserved for operator recovery: {}",
+            missing_candidates.join(", ")
+        ))
+    }
+}
+
+fn apply_local_catalog_state(
+    store: &Arc<Mutex<AgentStore>>,
+    config: &MeshConfig,
+    original: &CatalogRecord,
+    state: DeploymentState,
+    health: crate::catalog::HealthState,
+) -> Result<(), String> {
+    let scope = config.scope();
+    let store = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?;
+    let membership = crate::membership::MembershipView::from_records(
+        store
+            .membership_operations()
+            .map_err(|error| error.to_string())?,
+        &scope,
+    )
+    .map_err(|error| error.to_string())?;
+    let next_revision = store
+        .latest_catalog()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter(|record| record.replica_id == original.replica_id)
+        .map(|record| record.revision)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let mut record = original.clone();
+    record.revision = next_revision;
+    record.state = state;
+    record.health = health;
+    store
+        .apply_catalog(
+            record,
+            crate::membership::RecordProvenance::Local,
+            &config.project_id,
+            config.recovery_epoch,
+            &membership,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn dynamic_container_name(project: &str, service: &str, deployment_id: &str) -> String {
+    format!(
+        "{project}-{service}-{}",
+        deployment_id.get(..12).unwrap_or(deployment_id)
+    )
+}
+
+async fn ensure_link(
+    interface: &str,
+    management_address: std::net::IpAddr,
+    listen_port: u16,
+    private_key_path: &std::path::Path,
+    store: &Arc<Mutex<AgentStore>>,
+) -> Result<(), String> {
+    let std::net::IpAddr::V4(management_address) = management_address else {
+        return Err("WireGuard management address must be IPv4".to_string());
+    };
+    // Checking only that the link *object* exists (rather than that it actually has the
+    // management address bound) is not enough: confirmed live, an interrupted earlier bring-up
+    // attempt can leave the link created (`ip link add` already ran) but still down and
+    // addressless (`wg set`/address/up never completed), and every later tick would then
+    // short-circuit here forever, believing it was already done.
+    if link_has_management_address(interface, management_address).await {
+        return Ok(());
+    }
+    crate::wireguard_bringup::bring_up_interface(
+        interface,
+        management_address,
+        listen_port,
+        private_key_path,
+    )
+    .await?;
+    if !link_has_management_address(interface, management_address).await {
+        return Err(format!(
+            "{interface} is still missing its management address after bring-up"
+        ));
+    }
+    // The interface needed (re)configuring, so its actual peer set is unknown or stale regardless
+    // of whether the link object was freshly created or merely addressless -- clear the durable
+    // peer cache so `runtime.rs`'s next reconcile treats every currently active membership record
+    // as needing a fresh `wg set`, rather than trusting a cache that no longer reflects kernel
+    // state. Confirmed live: without this, a reboot brought the interface back up with no peers at
+    // all, and the cache-diffing incremental reconciler saw no membership *change* and never
+    // reapplied them, since it was designed only for post-boot changes, not full bootstrap (that
+    // used to be `wg-quick up`'s job, reading every `[Peer]` from the rendered config file, before
+    // Phase 9 removed it).
+    store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .replace_peer_cache(&std::collections::BTreeMap::new())
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn link_has_management_address(interface: &str, address: std::net::Ipv4Addr) -> bool {
+    let Ok(output) = Command::new("ip")
+        .args(["-4", "address", "show", "dev", interface])
+        .output()
+        .await
+    else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).contains(&format!("{address}/32"))
+}
+
+async fn ensure_bridge_and_dns(engine: Engine, config: &MeshConfig) -> Result<bool, String> {
+    let dns = config.dns_bind_address.to_string();
+    let ready = command_ok(
+        "ip",
+        &[
+            "-4",
+            "address",
+            "show",
+            "dev",
+            &config.local_runtime.bridge_interface,
+        ],
+    )
+    .await;
+    if ready {
+        let output = Command::new("ip")
+            .args([
+                "-4",
+                "address",
+                "show",
+                "dev",
+                &config.local_runtime.bridge_interface,
+            ])
+            .output()
+            .await
+            .map_err(|error| error.to_string())?;
+        if String::from_utf8_lossy(&output.stdout).contains(&dns) {
+            return Ok(false);
+        }
+    }
+    crate::bridge_bringup::bring_up_bridge_and_dns(
+        engine,
+        &config.wireguard_interface,
+        config.dns_bind_address,
+        &config.local_runtime,
+    )
+    .await?;
+    let output = Command::new("ip")
+        .args([
+            "-4",
+            "address",
+            "show",
+            "dev",
+            &config.local_runtime.bridge_interface,
+        ])
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&dns) {
+        Ok(true)
+    } else {
+        Err(format!(
+            "bridge {} or DNS address {} is still missing after restore",
+            config.local_runtime.bridge_interface, dns
+        ))
+    }
+}
+
+async fn repair_runtime_attachments(engine: Engine, config: &MeshConfig) -> Result<(), String> {
+    // A deleted kernel bridge leaves Podman/Docker's persisted network metadata intact. Merely
+    // recreating the bridge therefore makes `inspect` report healthy attachments whose veth
+    // devices no longer exist. Recreate this project's shared-proxy attachment and restart only
+    // this project's managed containers so the engine materializes fresh veth pairs.
+    let _ = Command::new(engine.as_str())
+        .args([
+            "network",
+            "disconnect",
+            "--force",
+            &config.local_runtime.bridge_network,
+            jiji_network::CONTAINER_NAME,
+        ])
+        .output()
+        .await;
+    command_required(
+        engine.as_str(),
+        &[
+            "network",
+            "connect",
+            "--ip",
+            &config.local_runtime.proxy_address.to_string(),
+            &config.local_runtime.bridge_network,
+            jiji_network::CONTAINER_NAME,
+        ],
+    )
+    .await?;
+
+    let observations = match discovery::discover(engine, &config.project_id).await {
+        DiscoveryOutcome::Observed(observations) => observations,
+        DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
+            return Err(error)
+        }
+    };
+    for observation in observations {
+        let labels: Value =
+            serde_json::from_str(&observation.labels_json).map_err(|error| error.to_string())?;
+        if labels.get("jiji.catalog-managed").and_then(Value::as_str) != Some("true") {
+            continue;
+        }
+        let _ = Command::new(engine.as_str())
+            .args(["stop", &observation.name])
+            .output()
+            .await;
+        command_required(engine.as_str(), &["start", &observation.name]).await?;
+    }
+    Ok(())
+}
+
+async fn reconcile_containers(
+    store: &Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    config: &MeshConfig,
+    startup_candidates: &BTreeSet<String>,
+) -> Result<(), String> {
+    let observations = match discovery::discover(engine, &config.project_id).await {
+        DiscoveryOutcome::Observed(observations) => observations,
+        DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
+            return Err(error)
+        }
+    };
+    let catalog = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .latest_catalog()
+        .map_err(|error| error.to_string())?;
+    for name in restart_candidates(&config.node_id, &observations, &catalog, startup_candidates) {
+        command_required(engine.as_str(), &["start", &name]).await?;
+    }
+    Ok(())
+}
+
+pub fn restart_candidates(
+    local_node_id: &str,
+    observations: &[Observation],
+    catalog: &[CatalogRecord],
+    startup_candidates: &BTreeSet<String>,
+) -> Vec<String> {
+    observations
+        .iter()
+        .filter(|observation| observation.state != "running")
+        .filter_map(|observation| {
+            let labels: Value = serde_json::from_str(&observation.labels_json).ok()?;
+            let label = |key: &str| labels.get(key).and_then(Value::as_str);
+            if label("jiji.catalog-managed") != Some("true") {
+                return None;
+            }
+            let deployment = label("jiji.deployment")?;
+            let lifecycle = label("jiji.lifecycle")?;
+            if !matches!(lifecycle, "candidate" | "active") {
+                return None;
+            }
+            catalog
+                .iter()
+                .any(|record| {
+                    record.owner_node_id == local_node_id
+                        && record.deployment_id == deployment
+                        && (record.state == DeploymentState::Active
+                            || (record.state == DeploymentState::Candidate
+                                && startup_candidates.contains(deployment)))
+                })
+                .then(|| observation.name.clone())
+        })
+        .collect()
+}
+
+async fn command_ok(binary: &str, args: &[&str]) -> bool {
+    Command::new(binary)
+        .args(args)
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success())
+}
+
+async fn command_required(binary: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(binary)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+async fn proxy_exec(engine: Engine, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new(engine.as_str());
+    command.arg("exec");
+    if engine == Engine::Podman {
+        command.arg("--no-session");
+    }
+    command
+        .arg(jiji_network::CONTAINER_NAME)
+        .arg("jiji-proxy")
+        .args(args);
+    let output = tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| format!("jiji-proxy command exceeded {}s", timeout.as_secs()))?
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::{HealthState, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION};
+
+    fn observation(state: &str, lifecycle: &str) -> Observation {
+        Observation {
+            container_id: "container-1".into(),
+            name: "demo-web-deploy-1".into(),
+            image: "nginx".into(),
+            state: state.into(),
+            labels_json: serde_json::json!({
+                "jiji.catalog-managed": "true",
+                "jiji.deployment": "deploy-1",
+                "jiji.lifecycle": lifecycle,
+            })
+            .to_string(),
+        }
+    }
+
+    fn catalog(state: DeploymentState) -> CatalogRecord {
+        CatalogRecord {
+            project_id: "demo".into(),
+            recovery_epoch: 1,
+            protocol_version: CATALOG_PROTOCOL_VERSION,
+            schema_version: CATALOG_SCHEMA_VERSION,
+            service: "web".into(),
+            replica_id: "replica-1".into(),
+            owner_node_id: "node-a".into(),
+            owner_epoch: 1,
+            revision: 1,
+            deployment_id: "deploy-1".into(),
+            address: "10.0.0.4".parse().unwrap(),
+            ports: vec![80],
+            image: "nginx".into(),
+            state,
+            health: HealthState::Healthy,
+        }
+    }
+
+    #[test]
+    fn only_positive_owned_lifecycle_evidence_restarts_a_container() {
+        assert_eq!(
+            restart_candidates(
+                "node-a",
+                &[observation("exited", "active")],
+                &[catalog(DeploymentState::Active)],
+                &BTreeSet::new(),
+            ),
+            vec!["demo-web-deploy-1"]
+        );
+        assert!(restart_candidates(
+            "node-b",
+            &[observation("exited", "active")],
+            &[catalog(DeploymentState::Active)],
+            &BTreeSet::new(),
+        )
+        .is_empty());
+        assert!(restart_candidates(
+            "node-a",
+            &[observation("exited", "candidate")],
+            &[catalog(DeploymentState::Candidate)],
+            &BTreeSet::new(),
+        )
+        .is_empty());
+        assert_eq!(
+            restart_candidates(
+                "node-a",
+                &[observation("exited", "candidate")],
+                &[catalog(DeploymentState::Candidate)],
+                &BTreeSet::from(["deploy-1".to_string()]),
+            ),
+            vec!["demo-web-deploy-1"]
+        );
+        assert!(restart_candidates(
+            "node-a",
+            &[observation("exited", "draining")],
+            &[catalog(DeploymentState::Draining)],
+            &BTreeSet::new(),
+        )
+        .is_empty());
+        assert!(restart_candidates(
+            "node-a",
+            &[observation("running", "active")],
+            &[catalog(DeploymentState::Active)],
+            &BTreeSet::new(),
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn backoff_is_bounded_and_resets_after_success() {
+        let mut backoff = Backoff::new();
+        assert_eq!(backoff.failure(), Duration::from_secs(2));
+        assert_eq!(backoff.failure(), Duration::from_secs(4));
+        for _ in 0..20 {
+            assert!(backoff.failure() <= MAX_BACKOFF);
+        }
+        assert_eq!(backoff.success(), MIN_BACKOFF);
+        assert_eq!(backoff.failure(), Duration::from_secs(2));
+    }
+}

@@ -1,0 +1,15 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "Jiji uses rsa only through russh/ssh-key for SSH public-key authentication: RSA private keys sign session data and public keys verify signatures. Neither dependency calls rsa ciphertext decryption or depadding APIs, so the attacker-observable RSA decryption required by the Marvin attack is unreachable."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0069"
+reason = "Informational unmaintained advisory for daemonize, a non-optional unix dependency of pingora-core (latest release, no fixed version). Jiji never calls pingora's daemonize path: jiji-proxy runs as a foreground systemd service and has no reference to daemonization anywhere in its source."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "Informational unmaintained advisory for derivative, a compile-time proc-macro used by pingora-core/pingora-load-balancing (latest release, no fixed version). It produces Debug/Clone derives at build time only and has no runtime code path in jiji-proxy; replacement requires an upstream pingora change."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0437"
+reason = "Protobuf stack-overflow advisory affects the CodedInputStream::skip_group parsing path, but prometheus 0.13.4 (the only protobuf consumer, pulled by pingora-core) only ever encodes metrics via write_length_delimited_to_writer and never parses protobuf input; jiji-proxy mounts no prometheus endpoint and the vulnerable function is unreachable. Upgrading protobuf to 3.x would break prometheus 0.13's API and requires an upstream pingora change."

@@ -1,0 +1,58 @@
+# jiji-proxy phase 4 config.
+#
+# Backends are discovered by periodically re-querying dns_server for `name`
+# (in production, jiji-agent's local `.jiji` resolver for
+# `{project}-{service}.jiji`), not the host's system resolver -- see
+# src/discovery.rs. There is no static-backend fallback: this is what
+# restores cross-host load balancing over the phase 1 skeleton's
+# single-backend-per-host routing. See plans/jiji-proxy-design.md.
+#
+# Routes are normally pushed at runtime over the admin socket (`jiji-proxy
+# route apply/remove/list`), not listed here -- the `routes:` seed below is
+# mainly for standalone testing. See "Control surface" in the design doc.
+
+http_listen: "0.0.0.0:8080"
+admin_socket: "/run/jiji-proxy/admin.sock"
+
+# Uncomment to terminate TLS. Every terminated host gets its own certificate,
+# resolved dynamically by SNI at handshake time (cert_store.rs) -- not one
+# global cert file. cert_dir is scanned at startup for operator-supplied
+# {host}.crt/{host}.key pairs (loaded once, never touched again) and is
+# where ACME (below) writes/renews certificates for routes with `tls: true`.
+# https_listen: "0.0.0.0:8443"
+# cert_dir: /etc/jiji/certs
+
+# ACME (HTTP-01 only -- see the module doc comment in src/acme.rs for why
+# DNS-01 isn't implemented yet). Omit entirely to serve only static certs
+# dropped into cert_dir.
+# acme:
+#   directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+#   contact_email: "ops@example.com"
+#   renew_before_days: 30
+#   check_interval_secs: 3600
+
+routes:
+  - host: example.com
+    tls: false
+    discovery:
+      dns_server: "127.0.0.1:53"
+      name: "myproject-web.jiji"
+      port: 3000
+      refresh_interval_secs: 5
+    # Optional active health-checking, independent of DNS re-resolution --
+    # see route_manager.rs. Omit entirely to rely on DNS-driven eviction only.
+    # healthcheck:
+    #   path: /health
+    #   interval_secs: 5
+    #   timeout_secs: 2
+
+  # A second route on the *same* host, matched only for requests whose path
+  # starts with /api (longest matching path_prefix wins; a route with no
+  # path_prefix is the catch-all fallback for its host, like the one above).
+  - host: example.com
+    path_prefix: /api
+    discovery:
+      dns_server: "127.0.0.1:53"
+      name: "myproject-api.jiji"
+      port: 4000
+      refresh_interval_secs: 5

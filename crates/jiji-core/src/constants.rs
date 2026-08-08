@@ -1,0 +1,4 @@
+pub const DEFAULT_LOCAL_REGISTRY_PORT: u16 = 31270;
+pub const DEFAULT_MANAGEMENT_CIDR: &str = "198.18.0.0/16";
+pub const DEFAULT_CONTAINER_CIDR: &str = "100.64.0.0/10";
+pub const DEFAULT_SERVICE_DOMAIN: &str = "jiji";

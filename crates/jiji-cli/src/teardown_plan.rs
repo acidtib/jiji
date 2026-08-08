@@ -1,0 +1,218 @@
+use jiji_config::{Config, ContainerEngine};
+use jiji_ssh::SshSession;
+
+use crate::{
+    container_ops, env_resolution, image_teardown, network_teardown, proxy_teardown,
+    volume_teardown,
+};
+
+pub struct ServerTeardownPlan {
+    pub server_name: String,
+    pub containers: Vec<container_ops::ContainerSummary>,
+    /// `(host, path_prefix)` proxy route candidates that are actually present on this host's
+    /// jiji-proxy.
+    pub proxy_routes: Vec<(String, Option<String>)>,
+    /// Raw TCP proxy route (`listen_port`) candidates actually present on this host's jiji-proxy.
+    pub tcp_proxy_routes: Vec<u16>,
+    pub volumes: Vec<volume_teardown::DiscoveredVolume>,
+    /// Image candidates that actually exist on this host.
+    pub images: Vec<String>,
+    pub network: network_teardown::NetworkTeardownStatus,
+    /// Whether `env_resolution::project_staging_dir` exists on this host (staged env files and
+    /// uploaded mount content from past deploys).
+    pub project_directory_exists: bool,
+}
+
+/// Fully read-only: label-filtered container listing, existence checks for volume/image/route
+/// candidates, and reading the installed network generation. No destructive operation happens
+/// here.
+pub async fn discover(
+    session: &SshSession,
+    engine: ContainerEngine,
+    config: &Config,
+    project: &str,
+    server_name: &str,
+    include_volumes: bool,
+) -> anyhow::Result<ServerTeardownPlan> {
+    let containers = container_ops::list_managed_containers(session, engine, project).await?;
+
+    let route_candidates = proxy_teardown::compute_route_candidates(config);
+    let existing_routes = proxy_teardown::list_routes(session, engine).await?;
+    let proxy_routes: Vec<(String, Option<String>)> = route_candidates
+        .into_iter()
+        .filter(|(host, path_prefix)| {
+            existing_routes
+                .iter()
+                .any(|route| &route.host == host && &route.path_prefix == path_prefix)
+        })
+        .collect();
+
+    let tcp_route_candidates = proxy_teardown::compute_tcp_route_candidates(config);
+    let existing_tcp_routes = proxy_teardown::list_tcp_routes(session, engine).await?;
+    let tcp_proxy_routes: Vec<u16> = tcp_route_candidates
+        .into_iter()
+        .filter(|listen_port| {
+            existing_tcp_routes
+                .iter()
+                .any(|route| &route.listen_port == listen_port)
+        })
+        .collect();
+
+    let volumes = if include_volumes {
+        let candidates = volume_teardown::compute_candidates(config);
+        volume_teardown::discover(session, engine, &candidates, project).await?
+    } else {
+        Vec::new()
+    };
+
+    let image_candidates = image_teardown::compute_candidates(config);
+    let mut images = Vec::with_capacity(image_candidates.len());
+    for image in &image_candidates {
+        if container_ops::image_exists(session, engine, image).await? {
+            images.push(image.clone());
+        }
+    }
+
+    let network = network_teardown::discover(session, engine, project).await?;
+    let project_directory_exists = project_directory_exists(session, project).await?;
+
+    Ok(ServerTeardownPlan {
+        server_name: server_name.to_string(),
+        containers,
+        proxy_routes,
+        tcp_proxy_routes,
+        volumes,
+        images,
+        network,
+        project_directory_exists,
+    })
+}
+
+async fn project_directory_exists(session: &SshSession, project: &str) -> anyhow::Result<bool> {
+    let command = format!("test -d {}", env_resolution::project_staging_dir(project));
+    Ok(session.execute(&command).await?.success)
+}
+
+/// Informational only, not a blocker: another jiji project's containers on the same host is the
+/// normal, expected case now that the network layer is per-project isolated (this project's
+/// teardown only ever touches its own labeled containers/images/network subtree). Surfaced so an
+/// operator knows the host isn't fully empty after this teardown, not to make them stop and tear
+/// the other project down first.
+pub fn render_other_project_notices(
+    other_project_containers: &[container_ops::ContainerSummary],
+) -> Vec<String> {
+    other_project_containers
+        .iter()
+        .map(|container| {
+            format!(
+                "another jiji project's container '{}' (project '{}') is also present on this host and will be left untouched",
+                container.name,
+                container.project.as_deref().unwrap_or("unlabeled")
+            )
+        })
+        .collect()
+}
+
+pub fn render_summary(plan: &ServerTeardownPlan) -> String {
+    let mut parts = vec![format!("{} container(s)", plan.containers.len())];
+    if !plan.volumes.is_empty() {
+        let removable = plan
+            .volumes
+            .iter()
+            .filter(|volume| volume.exists && volume.blocked_by.is_none())
+            .count();
+        parts.push(format!("{removable} volume(s)"));
+    }
+    if !plan.images.is_empty() {
+        parts.push(format!("{} image(s)", plan.images.len()));
+    }
+    if !plan.proxy_routes.is_empty() {
+        parts.push(format!("{} proxy route(s)", plan.proxy_routes.len()));
+    }
+    if plan.network.installed_generation.is_some() {
+        parts.push("private network".to_string());
+    }
+    if plan.project_directory_exists {
+        parts.push("staged files/env".to_string());
+    }
+    format!("{}: {}", plan.server_name, parts.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use container_ops::ContainerSummary;
+
+    fn container(name: &str, project: Option<&str>) -> ContainerSummary {
+        ContainerSummary {
+            name: name.to_string(),
+            project: project.map(str::to_string),
+            service: None,
+            server: None,
+            status: "running".to_string(),
+        }
+    }
+
+    #[test]
+    fn other_project_container_produces_an_informational_notice_not_a_blocker() {
+        let notices = render_other_project_notices(&[container("other-web-a", Some("other"))]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("other"));
+        assert!(notices[0].contains("left untouched"));
+    }
+
+    #[test]
+    fn render_other_project_notices_trusts_its_input_and_never_panics_on_an_unlabeled_container() {
+        // Does no filtering of its own -- excluding jiji-proxy (jiji.managed=true but no
+        // jiji.project label) from ever reaching here is
+        // container_ops::list_other_project_containers's job (see its own test:
+        // list_other_project_containers_excludes_the_named_project_and_unlabeled_containers,
+        // confirmed live). This only guards that an unlabeled entry, if it ever did arrive, would
+        // render descriptively rather than panicking.
+        let notices = render_other_project_notices(&[container("jiji-proxy", None)]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("unlabeled"));
+    }
+
+    #[test]
+    fn no_other_project_containers_means_no_notices() {
+        assert!(render_other_project_notices(&[]).is_empty());
+    }
+
+    fn empty_plan(server_name: &str) -> ServerTeardownPlan {
+        ServerTeardownPlan {
+            server_name: server_name.to_string(),
+            containers: Vec::new(),
+            proxy_routes: Vec::new(),
+            tcp_proxy_routes: Vec::new(),
+            volumes: Vec::new(),
+            images: Vec::new(),
+            network: network_teardown::NetworkTeardownStatus {
+                installed_generation: None,
+                other_project_containers: Vec::new(),
+            },
+            project_directory_exists: false,
+        }
+    }
+
+    #[test]
+    fn summary_always_reports_container_count() {
+        let plan = empty_plan("app");
+        assert_eq!(render_summary(&plan), "app: 0 container(s)");
+    }
+
+    #[test]
+    fn summary_includes_staged_files_only_when_the_project_directory_exists() {
+        let mut plan = empty_plan("app");
+        assert!(!render_summary(&plan).contains("staged files/env"));
+        plan.project_directory_exists = true;
+        assert!(render_summary(&plan).contains("staged files/env"));
+    }
+
+    #[test]
+    fn summary_includes_private_network_only_when_installed() {
+        let mut plan = empty_plan("app");
+        plan.network.installed_generation = Some("abc123".to_string());
+        assert!(render_summary(&plan).contains("private network"));
+    }
+}

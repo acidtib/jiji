@@ -1,0 +1,52 @@
+[package]
+name = "jiji-cli"
+version = "0.4.9"
+edition.workspace = true
+license.workspace = true
+default-run = "jiji"
+
+[lib]
+name = "jiji_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jiji"
+path = "src/main.rs"
+
+# Thin wrapper around the same jiji_cli::run(), auto-discovered from src/bin/jiji_dev.rs, so
+# `mise run install-dev` can install a local test build side by side with the real `jiji` on
+# PATH without overwriting it.
+
+[dependencies]
+jiji-core.workspace = true
+jiji-tui.workspace = true
+jiji-config.workspace = true
+jiji-network.workspace = true
+jiji-ssh.workspace = true
+jiji-agent.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["signal", "io-std"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+ssh2-config.workspace = true
+tar.workspace = true
+ignore.workspace = true
+thiserror.workspace = true
+aes-gcm.workspace = true
+scrypt.workspace = true
+getrandom.workspace = true
+nix = { version = "0.31", features = ["term"] }
+libc = "0.2"
+
+[build-dependencies]
+toml = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
+russh.workspace = true
+rand = "0.10"

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/jiji_logo.svg" alt="Jiji Logo" width="400">
+  <img src="assets/jiji_logo.svg" alt="Jiji Logo" width="400">
 </p>
 
 # Jiji
@@ -12,27 +12,20 @@ portability.
 - **Zero downtime deployments** with health checks and automatic rollback
 - **Private networking** via WireGuard mesh with automatic DNS service discovery
 - **Multi server support** with parallel SSH execution
+- **SSH config and ProxyJump support** without invoking an SSH subprocess
+- **Local registry deployments** through per-host reverse SSH tunnels
 - **Container engine agnostic** works with Docker or Podman
 - **kamal-proxy integration** for HTTP/HTTPS routing and SSL termination
 
 ## Installation
 
-### From JSR
-
-```bash
-deno install --allow-all --name jiji jsr:@jiji/cli
-```
-
-### Linux/macOS
-
 ```bash
 curl -fsSL https://get.jiji.run/install.sh | sh
 ```
 
-### Windows
-
-Download from [releases](https://github.com/acidtib/jiji/releases) and add to
-PATH.
+Installs the latest release to `~/.local/bin/jiji` (Linux/macOS,
+x86_64/arm64). Pin a version with `VERSION=v1.2.3`. To build from source
+instead, see Development below.
 
 ## Quick Start
 
@@ -42,35 +35,18 @@ jiji init
 
 # Edit .jiji/deploy.yml with your servers and services
 
-# Initialize servers (installs container runtime, networking)
-jiji server init
+# Initialize servers (installs container runtime and complete networking)
+jiji server setup
 
-# Build and deploy
+# Build and deploy services with `build:` configuration
 jiji deploy --build
+
+# Tear down everything jiji installed on selected servers
+jiji server teardown
+
+# Remove a local registry container when it is no longer needed
+jiji registry teardown
 ```
-
-## Commands
-
-| Command                 | Description                               |
-| ----------------------- | ----------------------------------------- |
-| `jiji init`             | Create config stub in `.jiji/deploy.yml`  |
-| `jiji build`            | Build container images                    |
-| `jiji deploy`           | Deploy services to servers                |
-| `jiji services logs`    | View service logs                         |
-| `jiji services restart` | Restart services                          |
-| `jiji services remove`  | Remove services                           |
-| `jiji services prune`   | Clean up old images                       |
-| `jiji proxy logs`       | View kamal-proxy logs                     |
-| `jiji server init`      | Initialize servers with container runtime |
-| `jiji server exec`      | Execute commands on servers               |
-| `jiji server teardown`  | Remove all jiji components from servers   |
-| `jiji registry setup`   | Setup container registry                  |
-| `jiji network status`   | Show private network status               |
-| `jiji network dns`      | Show DNS records                          |
-| `jiji network gc`       | Garbage collect stale records             |
-| `jiji audit`            | Show deployment audit trail               |
-| `jiji lock`             | Manage deployment locks                   |
-| `jiji secrets print`    | Print resolved secrets for debugging      |
 
 ### Global Options
 
@@ -109,16 +85,16 @@ servers:
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    hosts:
+    # Use a published image, or replace this with `build:` and run
+    # `jiji deploy --build`.
+    image: ghcr.io/yourname/myapp-web:latest
+    servers:
       - server1
       - server2
     ports:
       - "3000"
     proxy:
-      app_port: 3000
+      port: 3000
       host: myapp.example.com
       ssl: true
       healthcheck:
@@ -130,38 +106,42 @@ services:
         - DATABASE_URL
 ```
 
-See [src/jiji.yml](src/jiji.yml) for complete configuration reference.
+See [crates/jiji-config/src/jiji.yml](crates/jiji-config/src/jiji.yml) for the
+complete configuration reference (also the template `jiji init` writes).
 
 ## Documentation
 
-Detailed guides in [docs/](docs/):
+Full guides, configuration reference, and troubleshooting: **[jiji.run/docs](https://jiji.run/docs)**
 
 ## Development
 
+This is a Cargo workspace with seven crates in `crates/`: `jiji-core`,
+`jiji-tui`, `jiji-config`, `jiji-network`, `jiji-ssh`, `jiji-agent`,
+`jiji-cli` (binary name `jiji`, plus a `jiji_dev` binary for local
+iteration).
+
 ```bash
-# Run CLI
-deno task run
+# Run the CLI
+cargo run -- init
 
 # Run tests
-deno task test
-
-# Run single test
-deno test --allow-all tests/deploy_plan_test.ts
+cargo test
 
 # Format and lint
-deno task fmt
-deno task lint
+cargo fmt
+cargo clippy --all-targets --all-features
 
-# Run all checks
-deno task check
+# Build a debug binary
+cargo build
 
-# Build binary
-deno task build
-
-# Install to /usr/local/bin
-deno task install
+# Or via mise (wraps the same cargo commands)
+mise run build
+mise run test
+mise run fmt
+mise run lint
+mise run check
 ```
 
 ## License
 
-jiji is released under the [MIT License](LICENSE)
+Jiji is released under the [MIT License](LICENSE)

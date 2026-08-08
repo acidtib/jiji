@@ -9,117 +9,36 @@ on:
     branches: [main, develop]
 
 jobs:
-  test-cli:
+  test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/cli
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: "24.11.1"
+          components: rustfmt, clippy
 
-      # Ensure npm 11.5.1 or later for trusted publishing
-      - run: npm install -g npm@latest node-gyp
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.5.6
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/deno
-          key: ${{ runner.os }}-deno-${{ hashFiles('deno.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-deno-
-
-      - name: Install dependencies with build scripts
-        run: deno install --allow-scripts=npm:cpu-features,npm:ssh2
-        working-directory: .
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: deno fmt --check
+        run: cargo fmt --all --check
 
-      - name: Lint code
-        run: deno lint
+      - name: Lint
+        run: cargo clippy --all-targets --all-features
 
       - name: Run tests
-        run: deno test --allow-all --parallel
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace
 
       - name: Test CLI functionality
         run: |
-          deno run -A src/main.ts --help
-          deno run -A src/main.ts init --help
-          deno run -A src/main.ts server --help
-          deno run -A src/main.ts version
-
-  test-dns:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/dns
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.5.6
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/deno
-          key: ${{ runner.os }}-deno-${{ hashFiles('deno.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-deno-
-
-      - name: Check formatting
-        run: deno fmt --check
-
-      - name: Lint code
-        run: deno lint
-
-      - name: Run tests
-        run: deno test --allow-net --allow-read --allow-env tests/
-
-  test-daemon:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/daemon
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.5.6
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/deno
-          key: ${{ runner.os }}-deno-${{ hashFiles('deno.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-deno-
-
-      - name: Check formatting
-        run: deno fmt --check
-
-      - name: Lint code
-        run: deno lint
-
-      - name: Run tests
-        run: deno test --allow-all --parallel tests/
+          cargo run --bin jiji -- --help
+          cargo run --bin jiji -- init --help
+          cargo run --bin jiji -- server --help
+          cargo run --bin jiji -- version

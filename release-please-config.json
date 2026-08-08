@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bump-minor-pre-major": true,
+  "plugins": ["cargo-workspace"],
+  "packages": {
+    "crates/jiji-cli": {
+      "release-type": "rust",
+      "package-name": "jiji",
+      "component": "jiji",
+      "include-component-in-tag": false
+    },
+    "crates/jiji-agent": {
+      "release-type": "rust",
+      "package-name": "jiji-agent",
+      "component": "jiji-agent",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
+    },
+    "crates/jiji-proxy": {
+      "release-type": "rust",
+      "package-name": "jiji-proxy",
+      "component": "jiji-proxy",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
+    },
+    "crates/jiji-core": {
+      "release-type": "rust",
+      "package-name": "jiji-core",
+      "skip-github-release": true
+    },
+    "crates/jiji-tui": {
+      "release-type": "rust",
+      "package-name": "jiji-tui",
+      "skip-github-release": true
+    },
+    "crates/jiji-config": {
+      "release-type": "rust",
+      "package-name": "jiji-config",
+      "skip-github-release": true
+    },
+    "crates/jiji-network": {
+      "release-type": "rust",
+      "package-name": "jiji-network",
+      "skip-github-release": true
+    },
+    "crates/jiji-ssh": {
+      "release-type": "rust",
+      "package-name": "jiji-ssh",
+      "skip-github-release": true
+    }
+  }
+}

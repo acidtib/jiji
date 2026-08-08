@@ -1,0 +1,40 @@
+[package]
+name = "jiji-agent"
+version = "0.4.9"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "jiji-agent"
+path = "src/main.rs"
+
+[lib]
+name = "jiji_agent"
+path = "src/lib.rs"
+
+[dependencies]
+jiji-network.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "signal",
+    "io-util",
+    "time",
+    "sync",
+    "process",
+] }
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+libc = "0.2"
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
