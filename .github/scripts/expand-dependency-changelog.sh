@@ -46,5 +46,10 @@ for dep in $deps; do
 done
 
 if [ -n "$sections" ]; then
-  printf '\n### Crate changes in this release\n%s' "$sections"
+  # Trailing newline is required: this output is captured between two
+  # delimiter lines in a GITHUB_OUTPUT heredoc block by every caller. Without
+  # it, the closing delimiter gets appended to this output's last line
+  # instead of starting its own line, and GitHub's parser fails with
+  # "Matching delimiter not found" (confirmed live).
+  printf '\n### Crate changes in this release\n%s\n' "$sections"
 fi
