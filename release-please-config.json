@@ -26,27 +26,37 @@
     "crates/jiji-core": {
       "release-type": "rust",
       "package-name": "jiji-core",
-      "skip-github-release": true
+      "component": "jiji-core",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
     },
     "crates/jiji-tui": {
       "release-type": "rust",
       "package-name": "jiji-tui",
-      "skip-github-release": true
+      "component": "jiji-tui",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
     },
     "crates/jiji-config": {
       "release-type": "rust",
       "package-name": "jiji-config",
-      "skip-github-release": true
+      "component": "jiji-config",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
     },
     "crates/jiji-network": {
       "release-type": "rust",
       "package-name": "jiji-network",
-      "skip-github-release": true
+      "component": "jiji-network",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
     },
     "crates/jiji-ssh": {
       "release-type": "rust",
       "package-name": "jiji-ssh",
-      "skip-github-release": true
+      "component": "jiji-ssh",
+      "include-component-in-tag": true,
+      "tag-separator": "-"
     }
   }
 }
