@@ -15,6 +15,11 @@ path = "src/lib.rs"
 
 [dependencies]
 jiji-network.workspace = true
+# Transitively linked already via jiji-network (whose `NetworkedContainerRun.engine` field is
+# `jiji_config::ContainerEngine`); declared directly here only so `cron_exec.rs` can name that
+# type at the one point it builds a `NetworkedContainerRun` -- this crate's own durable/wire types
+# still deliberately never reuse a jiji-config schema type (see `cron.rs`'s module doc comment).
+jiji-config.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = [

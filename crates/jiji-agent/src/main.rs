@@ -333,7 +333,9 @@ async fn run(
         socket_path.display().to_string(),
     )
     .with_peer_reachability_timeout(config.peer_reachability_timeout_secs())
-    .with_catalog_identity(config.identity());
+    .with_catalog_identity(config.identity())
+    .with_engine(engine)
+    .with_mesh_config(Arc::new(config.clone()));
     let startup_candidates = store
         .lock()
         .map_err(|_| anyhow::anyhow!("local store lock poisoned"))?
@@ -375,6 +377,11 @@ async fn run(
         startup_candidates,
     ));
     let mut mesh = tokio::spawn(jiji_agent::runtime::run(config, Arc::clone(&store)));
+    // Must complete before the API starts accepting `CronRun` requests (the plan's "Address
+    // Leases and Networking" section): reconciles every still-`claimed`/`running` cron run
+    // against actual local containers so a restart never starts a duplicate for one already in
+    // flight, nor leaves a permanently "active" ghost run blocking future claims.
+    jiji_agent::cron_exec::recover_claimed_runs(Arc::clone(&store), engine, &project).await;
     let mut serve = tokio::spawn(api::serve(listener, api));
 
     let unexpected = tokio::select! {

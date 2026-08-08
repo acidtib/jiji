@@ -2215,6 +2215,7 @@ mod cron_tests {
             canonical_hash: String::new(),
             owner_node_id: "node-a".into(),
             owner_epoch: 1,
+            server: "node-a".into(),
             source_deployment_id: "dep-a".into(),
             source_replica_id: "replica-a".into(),
             image: "ghcr.io/example/twitch-sync:latest".into(),

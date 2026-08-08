@@ -31,6 +31,16 @@ pub enum LeaseError {
     Store(#[from] StoreError),
 }
 
+/// The synthetic `replica_id` a cron run's address lease uses (`AddressAllocator::allocate`'s
+/// `deployment_id` is the run's own `run_id` -- see `cron_exec.rs`'s module doc comment for why a
+/// cron run needs no `deployment_id` distinct from its `run_id`). Distinguishes a cron lease from
+/// a real service replica's in diagnostics without a schema change: the plan's "local cron-run
+/// claim type" is this naming convention over the existing generic `address_leases` table, not a
+/// new one -- a cron run has no `CatalogRecord`/replica placement of its own to key against.
+pub fn cron_replica_id(service: &str, cron_name: &str) -> String {
+    format!("cron/{service}/{cron_name}")
+}
+
 pub struct AddressAllocator<'a> {
     store: &'a AgentStore,
     subnet: Ipv4Cidr,
@@ -114,6 +124,18 @@ mod tests {
 
     fn store(temp: &TempDir) -> AgentStore {
         AgentStore::open(&temp.path().join("agent.db")).unwrap()
+    }
+
+    #[test]
+    fn cron_replica_id_is_distinct_per_job_and_never_collides_with_a_real_replica_id() {
+        assert_eq!(
+            cron_replica_id("twitch", "sync-twitch"),
+            "cron/twitch/sync-twitch"
+        );
+        assert_ne!(
+            cron_replica_id("twitch", "sync-twitch"),
+            cron_replica_id("twitch", "cleanup")
+        );
     }
 
     #[test]

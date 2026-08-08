@@ -9,8 +9,10 @@ use crate::membership::content_hash;
 
 /// `forbid` skips a due run while the prior run is still active. A single-variant enum (not
 /// `bool`), mirroring `jiji_config::CronOverlap`, so a later release can add a variant without a
-/// wire-format break; jiji-agent has no dependency on jiji-config (it ships standalone on every
-/// server), so this is a deliberate structural duplicate, not a shared type.
+/// wire-format break. `jiji-agent` links `jiji-config` transitively (via `jiji-network`), but this
+/// crate's own durable/wire types deliberately never reuse a CLI-facing config-schema type
+/// directly -- `CatalogRecord`/`DesiredStateRecord` already follow the same rule -- so this is a
+/// deliberate structural duplicate, not a shared type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CronOverlap {
@@ -45,6 +47,11 @@ pub struct CronJobSpec {
     /// the caller (mirrors `CatalogCommit`'s `owner_node_id`/`owner_epoch` handling in `api.rs`).
     pub owner_node_id: String,
     pub owner_epoch: u64,
+    /// This node's own `MembershipRecord::server_name`, likewise agent-derived: the `jiji.server=`
+    /// label a cron container carries has to match what a service container on this same host
+    /// already carries (`container_runtime::render_labels`), and the agent's own membership
+    /// record is the authoritative source for that name -- not the caller.
+    pub server: String,
     pub source_deployment_id: String,
     pub source_replica_id: String,
     pub image: String,
@@ -65,7 +72,7 @@ pub struct CronJobSpec {
 
 /// The subset of `CronJobSpec` that defines "what should run and when": excludes `project`,
 /// `service`, `cron_name` (the storage key, not content), `revision`/`canonical_hash` (the hash
-/// output itself), and `owner_node_id`/`owner_epoch` (agent-derived, not something the CLI can
+/// output itself), `owner_node_id`/`owner_epoch`/`server` (agent-derived, not something the CLI can
 /// compute standalone -- see `CronJobSpec::owner_epoch`'s doc comment). Kept as a separate type
 /// rather than hashing `CronJobSpec` directly so adding a future bookkeeping field to the spec
 /// never silently changes every installed job's hash.
@@ -270,6 +277,7 @@ mod tests {
             canonical_hash: String::new(),
             owner_node_id: "node-a".into(),
             owner_epoch: 1,
+            server: "node-a".into(),
             source_deployment_id: source_deployment_id.into(),
             source_replica_id: "replica-a".into(),
             image: "ghcr.io/example/twitch-sync:latest".into(),

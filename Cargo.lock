@@ -2172,6 +2172,7 @@ version = "0.5.2"
 dependencies = [
  "anyhow",
  "clap",
+ "jiji-config",
  "jiji-network",
  "libc",
  "rusqlite",

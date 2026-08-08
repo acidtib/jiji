@@ -286,6 +286,14 @@ pub struct AgentApi {
     started_at: Instant,
     peer_reachability_timeout_secs: u64,
     catalog_identity: Option<NodeIdentity>,
+    /// Needed only for `CronRun` (to actually start a container locally, unlike every other
+    /// request here which is a pure store operation); `None` in tests that never exercise it.
+    engine: Option<crate::engine::Engine>,
+    /// Supplies `CronRun`'s address-allocation subnet/reserved set (mirroring exactly what
+    /// `jiji-cli` passes for a service's own `AllocateAddress` call -- see
+    /// `deploy_transaction.rs`'s `deploy_dynamic_endpoint`), since a cron run is claimed and
+    /// executed by this agent on its own initiative, with no CLI round-trip to supply them.
+    mesh_config: Option<Arc<crate::runtime::MeshConfig>>,
 }
 
 impl AgentApi {
@@ -297,7 +305,19 @@ impl AgentApi {
             started_at: Instant::now(),
             peer_reachability_timeout_secs: 30,
             catalog_identity: None,
+            engine: None,
+            mesh_config: None,
         }
+    }
+
+    pub fn with_engine(mut self, engine: crate::engine::Engine) -> Self {
+        self.engine = Some(engine);
+        self
+    }
+
+    pub fn with_mesh_config(mut self, mesh_config: Arc<crate::runtime::MeshConfig>) -> Self {
+        self.mesh_config = Some(mesh_config);
+        self
     }
 
     /// This node's own identity for catalog/desired-state writes it originates locally, via
@@ -615,6 +635,7 @@ impl AgentApi {
                     canonical_hash,
                     owner_node_id: identity.node_id.clone(),
                     owner_epoch: owner.owner_epoch,
+                    server: owner.server_name.clone(),
                     source_deployment_id,
                     source_replica_id,
                     image,
@@ -692,18 +713,17 @@ impl AgentApi {
                 cron_name,
                 timestamp,
             } => {
-                if store
+                let Some(spec) = store
                     .cron_spec(&service, &cron_name)
                     .map_err(|error| internal(&error))?
-                    .is_none()
-                {
+                else {
                     return Err(ApiError::new(
                         ErrorCode::NotFound,
                         format!(
                             "service '{service}' has no installed cron job named '{cron_name}'"
                         ),
                     ));
-                }
+                };
                 let run_id = generate_cron_run_id(&self.identity.project, &service, &cron_name);
                 let outcome = store
                     .claim_cron_run(
@@ -716,12 +736,10 @@ impl AgentApi {
                         timestamp,
                     )
                     .map_err(|error| internal(&error))?;
-                Ok(match outcome {
-                    CronClaimOutcome::Claimed(run) => {
-                        ResponseBody::CronRunAccepted { run_id: run.run_id }
-                    }
+                let run = match outcome {
+                    CronClaimOutcome::Claimed(run) => run,
                     CronClaimOutcome::OverlapForbidden { active_run_id } => {
-                        ResponseBody::CronRunConflict { active_run_id }
+                        return Ok(ResponseBody::CronRunConflict { active_run_id });
                     }
                     CronClaimOutcome::DuplicateScheduledClaim(_) => {
                         return Err(ApiError::new(
@@ -729,7 +747,68 @@ impl AgentApi {
                             "a manual run unexpectedly produced a scheduled-claim outcome",
                         ));
                     }
-                })
+                };
+                let (Some(engine), Some(mesh_config)) = (self.engine, self.mesh_config.as_ref())
+                else {
+                    let _ = store.finish_cron_run(
+                        &run.run_id,
+                        crate::cron::CronRunState::Failed,
+                        timestamp,
+                        None,
+                        Some(
+                            "agent has no engine/mesh runtime configured; cannot execute cron containers"
+                                .to_string(),
+                        ),
+                    );
+                    return Err(ApiError::new(
+                        ErrorCode::Internal,
+                        "agent has no engine/mesh runtime configured; cannot execute cron containers",
+                    ));
+                };
+                let reserved = [
+                    mesh_config.local_runtime.bridge_gateway,
+                    mesh_config.dns_bind_address,
+                    mesh_config.local_runtime.proxy_address,
+                ];
+                let lease = AddressAllocator::new(
+                    &store,
+                    mesh_config.local_runtime.container_cidr,
+                    reserved,
+                )
+                .allocate(
+                    &run.run_id,
+                    &crate::leases::cron_replica_id(&service, &cron_name),
+                    timestamp,
+                );
+                let address = match lease {
+                    Ok(lease) => lease.address,
+                    Err(error) => {
+                        let _ = store.finish_cron_run(
+                            &run.run_id,
+                            crate::cron::CronRunState::Failed,
+                            timestamp,
+                            None,
+                            Some(format!("address allocation failed: {error}")),
+                        );
+                        return Err(ApiError::new(
+                            ErrorCode::Internal,
+                            format!("could not lease an address for this cron run: {error}"),
+                        ));
+                    }
+                };
+                let run_id = run.run_id.clone();
+                let execution_store = Arc::clone(&self.store);
+                tokio::spawn(async move {
+                    crate::cron_exec::execute_claimed_run(
+                        execution_store,
+                        engine,
+                        spec,
+                        run,
+                        address,
+                    )
+                    .await;
+                });
+                Ok(ResponseBody::CronRunAccepted { run_id })
             }
             RequestBody::CronRuns {
                 service,
@@ -1133,6 +1212,7 @@ mod tests {
             canonical_hash: String::new(),
             owner_node_id: "node-a".into(),
             owner_epoch: 1,
+            server: "node-a".into(),
             source_deployment_id: "dep-a".into(),
             source_replica_id: "replica-a".into(),
             image: "ghcr.io/example/twitch-sync:latest".into(),
@@ -1344,7 +1424,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cron_run_accepts_a_manual_run_then_reports_conflict_while_it_is_active() {
+    async fn cron_run_reports_conflict_while_a_run_is_already_active() {
+        let dir = tempdir().unwrap();
+        // Seeded directly through the store (not via a real `CronRun` call), so this test never
+        // needs `.with_engine`/`.with_mesh_config` configured -- see the "not configured" test
+        // below for that path, and `cron_exec.rs`'s own tests for actual execution behavior.
+        let active_run_id = "run-already-active".to_string();
+        let socket_path = spawn_server_with_seeded_store(dir.path(), |store| {
+            store.apply_cron_spec(&seeded_cron_spec()).unwrap();
+            let outcome = store
+                .claim_cron_run(
+                    "demo",
+                    "twitch",
+                    "sync-twitch",
+                    crate::cron::CronRunCause::Manual,
+                    None,
+                    "run-already-active",
+                    100,
+                )
+                .unwrap();
+            assert!(matches!(outcome, crate::cron::CronClaimOutcome::Claimed(_)));
+        })
+        .await;
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRun {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                    timestamp: 101,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response, ResponseBody::CronRunConflict { active_run_id });
+    }
+
+    #[tokio::test]
+    async fn cron_run_fails_cleanly_without_engine_and_mesh_config() {
         let dir = tempdir().unwrap();
         let socket_path = spawn_server_with_seeded_store(dir.path(), |store| {
             store.apply_cron_spec(&seeded_cron_spec()).unwrap();
@@ -1363,33 +1484,28 @@ mod tests {
             },
         )
         .await
-        .unwrap()
         .unwrap();
-        let ResponseBody::CronRunAccepted { run_id } = response else {
-            panic!("expected CronRunAccepted, got {response:?}");
-        };
-        assert!(!run_id.is_empty());
+        assert_eq!(response.unwrap_err().code, ErrorCode::Internal);
 
-        let response = call(
+        // The claim must not linger as a permanently "active" ghost run blocking every future
+        // attempt: the handler finishes it as Failed before returning the error.
+        let statuses = call(
             &socket_path,
             &Request {
                 idempotency_key: None,
-                body: RequestBody::CronRun {
-                    service: "twitch".into(),
-                    cron_name: "sync-twitch".into(),
-                    timestamp: 101,
+                body: RequestBody::CronStatus {
+                    service: None,
+                    cron_name: None,
                 },
             },
         )
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(
-            response,
-            ResponseBody::CronRunConflict {
-                active_run_id: run_id
-            }
-        );
+        let ResponseBody::CronStatuses { statuses } = statuses else {
+            panic!("expected CronStatuses");
+        };
+        assert_eq!(statuses[0].active_run_id, None);
     }
 
     #[tokio::test]
@@ -1415,28 +1531,25 @@ mod tests {
     #[tokio::test]
     async fn cron_runs_and_cron_status_reflect_a_claimed_run() {
         let dir = tempdir().unwrap();
+        // Seeded directly through the store, same reasoning as
+        // `cron_run_reports_conflict_while_a_run_is_already_active` above.
+        let run_id = "run-1".to_string();
         let socket_path = spawn_server_with_seeded_store(dir.path(), |store| {
             store.apply_cron_spec(&seeded_cron_spec()).unwrap();
+            let outcome = store
+                .claim_cron_run(
+                    "demo",
+                    "twitch",
+                    "sync-twitch",
+                    crate::cron::CronRunCause::Manual,
+                    None,
+                    "run-1",
+                    100,
+                )
+                .unwrap();
+            assert!(matches!(outcome, crate::cron::CronClaimOutcome::Claimed(_)));
         })
         .await;
-
-        let response = call(
-            &socket_path,
-            &Request {
-                idempotency_key: None,
-                body: RequestBody::CronRun {
-                    service: "twitch".into(),
-                    cron_name: "sync-twitch".into(),
-                    timestamp: 100,
-                },
-            },
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let ResponseBody::CronRunAccepted { run_id } = response else {
-            panic!("expected CronRunAccepted");
-        };
 
         let runs = call(
             &socket_path,

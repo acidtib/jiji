@@ -27,7 +27,7 @@ pub enum DiscoveryOutcome {
     EngineError(String),
 }
 
-fn label_template(engine: Engine, key: &str) -> String {
+pub(crate) fn label_template(engine: Engine, key: &str) -> String {
     match engine {
         Engine::Docker => format!("{{{{.Label \"{key}\"}}}}"),
         Engine::Podman => format!("{{{{index .Labels \"{key}\"}}}}"),
