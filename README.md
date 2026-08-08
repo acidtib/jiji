@@ -4,18 +4,17 @@
 
 # Jiji
 
-Deploy containerized apps across servers with simplicity, speed, and
-portability.
+Deploy containers across servers. Jiji keeps deployments simple, fast, and portable.
 
 ## Features
 
 - **Zero downtime deployments** with health checks and automatic rollback
 - **Private networking** via WireGuard mesh with automatic DNS service discovery
-- **Multi server support** with parallel SSH execution
-- **SSH config and ProxyJump support** without invoking an SSH subprocess
+- **Multi-server support** with parallel SSH execution
+- **SSH config and ProxyJump support** without an SSH subprocess
 - **Local registry deployments** through per-host reverse SSH tunnels
 - **Container engine agnostic** works with Docker or Podman
-- **kamal-proxy integration** for HTTP/HTTPS routing and SSL termination
+- **jiji-proxy** for HTTP/HTTPS routing and SSL termination with automatic load balancing
 
 ## Installation
 
@@ -53,10 +52,12 @@ jiji registry teardown
 ```bash
 -v, --verbose          # Detailed logging
 -q, --quiet            # Minimal output
+-c, --config           # Path to config file
 -e, --environment      # Use jiji.<env>.yml config
 -H, --hosts            # Target specific hosts (supports wildcards)
 -S, --services         # Target specific services (supports wildcards)
 --host-env             # Fallback to host env vars when secrets not in .env
+--version              # Run commands against a specific app version
 ```
 
 ## Configuration
@@ -115,10 +116,10 @@ Full guides, configuration reference, and troubleshooting: **[jiji.run/docs](htt
 
 ## Development
 
-This is a Cargo workspace with seven crates in `crates/`: `jiji-core`,
+This is a Cargo workspace with eight crates in `crates/`: `jiji-core`,
 `jiji-tui`, `jiji-config`, `jiji-network`, `jiji-ssh`, `jiji-agent`,
-`jiji-cli` (binary name `jiji`, plus a `jiji_dev` binary for local
-iteration).
+`jiji-proxy`, `jiji-cli` (binary name `jiji`, plus a `jiji_dev` binary for
+local iteration).
 
 ```bash
 # Run the CLI
@@ -135,11 +136,11 @@ cargo clippy --all-targets --all-features
 cargo build
 
 # Or via mise (wraps the same cargo commands)
-mise run build
-mise run test
-mise run fmt
-mise run lint
-mise run check
+mise build
+mise test
+mise fmt
+mise lint
+mise check
 ```
 
 ## License

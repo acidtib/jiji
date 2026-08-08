@@ -244,7 +244,7 @@ ssh:
   # proxy_command: "ssh -W %h:%p bastion.example.com"
 
   # SSH Configuration File Support
-  # Load SSH configuration from ~/.ssh/config files to leverage existing SSH setups
+  # Load SSH configuration from ~/.ssh/config files to use existing SSH setups
   # This allows Jiji to inherit host-specific connection and authentication settings.
   # Jiji configuration takes precedence over SSH config file settings
 
@@ -272,8 +272,8 @@ ssh:
 # Network Architecture:
 # - WireGuard: Creates encrypted mesh VPN between all servers
 # - WireGuard management addresses and routed container addresses use separate IPv4 ranges
-# - jiji-dns resolves <project>-<service>.jiji from the compiled deployment plan
-# - Container addresses are assigned by jiji and remain stable across identical deployments
+# - jiji-agent serves <project>-<service>.jiji from its local replicated catalog
+# - Container addresses are leased per deployment and change on each deploy
 #
 # Use Cases:
 # - Microservices communication without exposing ports publicly

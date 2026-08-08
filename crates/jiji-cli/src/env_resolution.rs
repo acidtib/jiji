@@ -267,7 +267,7 @@ pub async fn stage_env_file(
     for (key, value) in &resolved.values {
         if value.contains('\n') {
             anyhow::bail!(
-                "Environment variable '{key}' for service '{service}' contains a newline, which the container engine's --env-file format cannot represent."
+                "Environment variable '{key}' for service '{service}' contains a newline, which the container engine's --env-file format cannot represent. Remove the newline from that value and retry."
             );
         }
         content.push_str(key);
@@ -284,7 +284,7 @@ pub async fn stage_env_file(
         .await?;
     if !result.success {
         anyhow::bail!(
-            "Could not stage environment file on {}: {}",
+            "Could not stage environment file on {}: {}. Check disk space and permissions under .jiji/ on that host, then retry.",
             session.host(),
             result.stderr.trim()
         );

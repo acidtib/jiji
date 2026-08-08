@@ -218,7 +218,7 @@ pub struct SecretsAdapter {
 }
 
 /// A `clear` env var value: YAML allows string, number, or boolean; all are coerced to `String`
-/// for actual use (matching `EnvironmentConfiguration.clear` in the Deno original).
+/// for actual use.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ClearValue {

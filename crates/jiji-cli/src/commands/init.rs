@@ -144,8 +144,7 @@ fn project_cidrs(project_root: &Path) -> (String, String) {
     )
 }
 
-/// Checks engine availability by running `{engine} --version` and checking the exit code —
-/// matches the current Deno implementation (not `which`).
+/// Checks engine availability by running `{engine} --version` and checking the exit code.
 fn engine_available(engine: &str) -> bool {
     Command::new(engine)
         .arg("--version")
