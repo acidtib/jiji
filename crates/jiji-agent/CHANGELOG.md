@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.5.2](https://github.com/acidtib/jiji/compare/jiji-agent-v0.5.1...jiji-agent-v0.5.2) (2026-08-08)
+
 ## [0.5.1](https://github.com/acidtib/jiji/compare/jiji-agent-v0.5.0...jiji-agent-v0.5.1) (2026-08-08)
 
 ## [0.5.0](https://github.com/acidtib/jiji/compare/jiji-agent-v0.4.9...jiji-agent-v0.5.0) (2026-08-08)
