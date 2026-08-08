@@ -1,85 +1,27 @@
-//! `jiji network assess`: read-only comparison of a host's current resources against the
-//! distributed control plane, for operators deciding between clean teardown+setup and
-//! `jiji network import` (Phase 8, "Clean Cutover, Optional Import, and Release"). Never mutates
-//! anything -- every command it runs is either a plain read or a `2>/dev/null || true` probe.
-//! Reuses `catalog.rs`/`membership.rs`'s established `{binary} catalog-export`/`membership-export
-//! --state-dir` exec pattern (works even when the agent process isn't running yet, since both
-//! read the durable store file directly) rather than the socket API, which requires a live agent.
+//! Read-only comparison of a host's current resources against the distributed control plane,
+//! for `jiji server setup --import` to report before deciding what's importable (Phase 8, "Clean
+//! Cutover, Optional Import, and Release"). Never mutates anything -- every command it runs is
+//! either a plain read or a `2>/dev/null || true` probe. Reuses `catalog.rs`/`membership.rs`'s
+//! established `{binary} catalog-export`/`membership-export --state-dir` exec pattern (works even
+//! when the agent process isn't running yet, since both read the durable store file directly)
+//! rather than the socket API, which requires a live agent. There is no standalone `jiji network
+//! assess` command: this module's `assess_host`/`print_report` are called directly by
+//! `commands::network::import::run_import`.
 
 use std::collections::BTreeSet;
 
 use jiji_agent::catalog::{CatalogRecord, DeploymentState};
 use jiji_agent::membership::{MembershipRecord, MembershipState};
 use jiji_agent::AgentPaths;
-use jiji_config::{validate_config, ContainerEngine};
-use jiji_network::{NetworkPlanner, ServerPlan};
+use jiji_config::ContainerEngine;
+use jiji_network::ServerPlan;
 use jiji_ssh::SshSession;
 use jiji_tui::Ui;
 
 use crate::commands::network::setup::network_dir;
-use crate::{container_ops, placement, ssh_adapter};
+use crate::{container_ops, placement};
 
-pub async fn run(
-    environment: Option<&str>,
-    config_file: Option<&str>,
-    hosts: Option<&str>,
-) -> anyhow::Result<()> {
-    let start = std::env::current_dir()?;
-    let (config, _path) = crate::config_loading::load_config_for_ssh(
-        environment,
-        config_file.map(std::path::Path::new),
-        &start,
-    )
-    .await?;
-    if !validate_config(&config).valid {
-        anyhow::bail!("Configuration is invalid; fix it before running an assessment");
-    }
-    let ssh = config
-        .ssh
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
-    let plan = NetworkPlanner::new()
-        .plan(&config)
-        .map_err(|error| anyhow::anyhow!("Could not build the network plan: {error}"))?;
-    let selected = plan.select_hosts(&split(hosts))?;
-    if selected.is_empty() {
-        anyhow::bail!("No servers are configured. Add a `servers:` entry and retry.");
-    }
-
-    let engine = config.builder.engine;
-    let paths = AgentPaths::default_for_project(&config.project);
-    Ui::section("Cutover Assessment:");
-    let mut failures = Vec::new();
-    for server_plan in &selected {
-        let name = &server_plan.name;
-        let named_server = config.servers.get(name).ok_or_else(|| {
-            anyhow::anyhow!("Server '{name}' selected by the network plan is not configured")
-        })?;
-        let options = ssh_adapter::connect_options(name, named_server, ssh)?;
-        let session = match SshSession::connect(&options).await {
-            Ok(session) => session,
-            Err(error) => {
-                failures.push(format!("{name}: {error}"));
-                continue;
-            }
-        };
-        let result = assess_host(&session, engine, &config, server_plan, &paths).await;
-        session.close().await;
-        match result {
-            Ok(report) => print_report(name, &report),
-            Err(error) => failures.push(format!("{name}: {error}")),
-        }
-    }
-    for failure in &failures {
-        Ui::result_warn("unreachable", failure);
-    }
-    if !failures.is_empty() {
-        anyhow::bail!("Could not assess {} server(s)", failures.len());
-    }
-    Ok(())
-}
-
-struct HostReport {
+pub(crate) struct HostReport {
     legacy_runtime_present: bool,
     new_control_plane_enrolled: bool,
     catalog_record_count: usize,
@@ -90,7 +32,7 @@ struct HostReport {
     orphaned_containers: Vec<String>,
 }
 
-async fn assess_host(
+pub(crate) async fn assess_host(
     session: &SshSession,
     engine: ContainerEngine,
     config: &jiji_config::Config,
@@ -172,7 +114,7 @@ async fn assess_host(
     })
 }
 
-fn print_report(name: &str, report: &HostReport) {
+pub(crate) fn print_report(name: &str, report: &HostReport) {
     Ui::result_ok(
         name,
         &format!(
@@ -247,17 +189,4 @@ async fn fetch_catalog(
         return Ok(Vec::new());
     }
     Ok(serde_json::from_str(trimmed).unwrap_or_default())
-}
-
-fn split(value: Option<&str>) -> Vec<String> {
-    value
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }

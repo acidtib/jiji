@@ -45,8 +45,8 @@ mise check              # cargo check
 mise scan               # osv-scanner -r . (vulnerability scan, see fix-osv-finding skill)
 
 # Install locally
-mise install             # cargo build --release --bin jiji -> ~/.local/bin/jiji
-mise install-dev         # cargo build --bin jiji_dev -> ~/.local/bin/jiji_dev
+mise install             # cargo build --release --bin jiji --bin jiji-agent -> ~/.local/bin/{jiji,jiji-agent}
+mise install-dev         # cargo build --bin jiji_dev --bin jiji-agent -> ~/.local/bin/{jiji_dev,jiji-agent}
 
 # Single test file / crate
 cargo test -p jiji-cli --test deploy_test
@@ -362,9 +362,29 @@ poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-de
 - `jiji version` — prints the running binary's version and git SHA.
 - `jiji init` — scaffolds `.jiji/deploy.yml`, including project-directory-derived
   `/24` management and `/16` container CIDRs.
-- `jiji server setup` — engine install, then `jiji-agent` install-and-start
-  (agent brings up WireGuard/bridge/DNS/jiji-proxy itself), one `HostRuntime`
-  lock per targeted host.
+- `jiji server setup [-y/--yes] [--rotate-key] [--import] [--import-dry-run]`
+  — engine install, then `jiji-agent` install-and-start (agent brings up
+  WireGuard/bridge/DNS/jiji-proxy itself), one `HostRuntime` lock per
+  targeted host. Also reconciles membership on every run: compares each
+  target's freshly observed WireGuard public key/endpoint against its last
+  known record (`commands::network::membership::reconcile_record`) —
+  endpoint-only drift bumps `revision`; a changed key fences a new
+  `owner_epoch`. Any server still `Active` in the gathered mesh view but no
+  longer in `servers:` is tombstoned (`compute_decommissions`). Both are
+  gated by confirmation unless `--yes`, and bail actionably (never hang)
+  with no TTY and no `--yes`. `--rotate-key` forces a fresh keypair on the
+  targeted hosts, fenced into a new `owner_epoch` by the same reconcile
+  pass — the private key never leaves the host or flows through
+  `jiji.yml`. `--import`, once each host's agent is up, prints a read-only
+  assessment (legacy runtime, enrollment, catalog count,
+  importable/migrated/orphaned — `commands::network::assess::assess_host`)
+  then one-way seeds any pre-existing container as historical (`Stopped`)
+  catalog history (`commands::network::import::run_import`) — never
+  `Active`, never a lease, never an already-live replica, no lock beyond
+  the `HostRuntime` locks already held. `--import-dry-run` prints the plan
+  without committing. No standalone assess, import, decommission,
+  update-endpoint, rotate-key, or replace command exists — `server setup`
+  absorbs all of it.
 - `jiji network plan` / `jiji network setup` — print or transactionally apply
   the deterministic mesh-bootstrap plan (WireGuard peers, bridge, reserved
   addresses only — no service/deployment state). Setup also migrates an
@@ -373,10 +393,6 @@ poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-de
 - `jiji network catalog` / `diagnostics [--json]` — read-only inspection of a
   host's locally replicated catalog, or its agent's self-healing/
   replication/quota/component diagnostics.
-- `jiji network decommission` / `update-endpoint` / `rotate-key` / `replace`
-  — compute a membership change and fan it out directly over SSH to every
-  configured server, best-effort; an unreachable server just catches up on
-  the next command that reaches it.
 - `jiji network backup --output --passphrase-file` / `restore` / `recover` —
   export an encrypted backup (catalog/desired-state operations, address
   claims; never membership, WireGuard keys, or secrets — membership is
@@ -387,13 +403,6 @@ poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-de
   setup` on replacement hosts, then redeploy desired services.
 - `jiji network compact` — compacts each selected host's superseded
   replicated operation history.
-- `jiji network assess` — read-only comparison of a host's current resources
-  against the control plane, informing a clean teardown+setup vs. `jiji
-  network import` decision. Never mutates anything.
-- `jiji network import [--dry-run] [-y]` — one-way seeding of catalog history
-  (`Stopped` records) from a stopped old installation's containers, so
-  `jiji service`/`catalog` show continuity. Never marks anything `Active`,
-  never allocates a lease.
 - `jiji deploy` — full zero-downtime deploy (see above): mounts, env/secrets,
   dynamic address leasing, health checks, jiji-proxy routing, `-H`/`-S`
   filtering, `stop_first`, optional builds, mesh reconciliation only when a

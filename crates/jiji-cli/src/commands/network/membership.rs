@@ -1,98 +1,83 @@
-//! Membership changes: computed locally by the CLI and fanned out directly over SSH to every
-//! configured server (`jiji-agent membership-import`), best-effort. There is no peer-to-peer
-//! membership relay (see `jiji_agent::membership`'s module doc comment) -- a server that's
-//! unreachable right now simply keeps its last-known membership until the next time any command
-//! reaches it (`jiji server setup`, or a re-run of one of these commands).
+//! Membership changes: computed locally by the CLI from `jiji.yml` plus whatever a host reports
+//! about itself, and fanned out directly over SSH to every configured server (`jiji-agent
+//! membership-import`), best-effort. There is no peer-to-peer membership relay (see
+//! `jiji_agent::membership`'s module doc comment) -- a server that's unreachable right now simply
+//! keeps its last-known membership until the next time any command reaches it. There is no
+//! operator-facing membership-editing command: `reconcile_record` and `compute_decommissions`
+//! (used by `jiji server setup`) derive every membership change from config and observed host
+//! state instead.
 
-use std::net::SocketAddr;
-use std::path::Path;
+use std::collections::BTreeSet;
 
-use jiji_agent::membership::{MembershipRecord, MembershipScope, MembershipState, MembershipView};
+use jiji_agent::membership::{MembershipRecord, MembershipState, MembershipView};
 use jiji_agent::AgentPaths;
-use jiji_config::{validate_config, Config, Ssh};
+use jiji_config::{Config, Ssh};
 use jiji_ssh::{SshPool, SshSession};
-use jiji_tui::Ui;
 
 use crate::ssh_adapter;
 
-pub enum Change {
-    Decommission,
-    Endpoint(String),
-    RotateKey {
-        public_key: String,
-        endpoint: String,
-    },
-    Replace {
-        public_key: String,
-        endpoint: String,
-    },
+/// Reconciles a server's freshly observed WireGuard identity (public key + endpoint, read
+/// straight off the host during `jiji server setup`) against its last known membership record
+/// (`current`, `None` for a brand-new server). `candidate`'s `owner_epoch`/`revision`/`state` are
+/// ignored -- this function decides them -- only its `wireguard_public_key`/`endpoints` (and the
+/// identity/addressing fields that never change) are read. Returns the record to apply, or `None`
+/// if nothing actually changed.
+pub(crate) fn reconcile_record(
+    current: Option<&MembershipRecord>,
+    mut candidate: MembershipRecord,
+) -> Option<MembershipRecord> {
+    let Some(current) = current else {
+        candidate.owner_epoch = 1;
+        candidate.revision = 1;
+        candidate.state = MembershipState::Active;
+        return Some(candidate);
+    };
+    let key_changed = current.wireguard_public_key != candidate.wireguard_public_key;
+    let endpoint_changed = current.endpoints != candidate.endpoints;
+    let was_tombstoned = current.state == MembershipState::Tombstoned;
+    if !key_changed && !endpoint_changed && !was_tombstoned {
+        return None;
+    }
+    if key_changed || was_tombstoned {
+        // A changed key is a new identity; re-enrolling a previously tombstoned node also needs
+        // a new owner_epoch, since `MembershipView::apply` rejects resurrecting `Active` at the
+        // same epoch a tombstone was published at. No separate tombstone message is needed to
+        // fence the old owner_epoch out -- `MembershipView::apply`'s ordering rule already makes
+        // a strictly higher owner_epoch win outright on every peer that receives this record,
+        // and rejects any future record that still asserts the old, lower owner_epoch.
+        candidate.owner_epoch = current.owner_epoch + 1;
+        candidate.revision = 1;
+    } else {
+        candidate.owner_epoch = current.owner_epoch;
+        candidate.revision = current.revision + 1;
+    }
+    candidate.state = MembershipState::Active;
+    Some(candidate)
 }
 
-pub async fn run(
-    environment: Option<&str>,
-    config_file: Option<&str>,
-    server: &str,
-    change: Change,
-) -> anyhow::Result<()> {
-    let start = std::env::current_dir()?;
-    let (config, path) =
-        crate::config_loading::load_config_for_ssh(environment, config_file.map(Path::new), &start)
-            .await?;
-    let validation = validate_config(&config);
-    if !validation.valid {
-        anyhow::bail!("Configuration is invalid; fix it before changing membership");
-    }
-    if !config.servers.contains_key(server) {
-        anyhow::bail!("Unknown membership server '{server}'");
-    }
-    let ssh = config
-        .ssh
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
-    let recovery_epoch = crate::recovery_epoch::read(&path)?;
-    let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
-
-    Ui::section("Publishing Mesh Membership:");
-    let gathered = gather_membership(&config, ssh).await;
-    let mut view = MembershipView::default();
-    for record in gathered {
-        // A stale/superseded record from a lagging peer is expected and harmless; only a
-        // structural problem (wrong project, collision) is worth surfacing.
-        if let Err(error) = view.apply(record, &scope) {
-            Ui::warn(&format!(
-                "Ignoring an inconsistent gathered record: {error}"
-            ));
-        }
-    }
-    let current = view.get(server).cloned().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No reachable server has a membership record for '{server}'; run `jiji server setup` first"
-        )
-    })?;
-    for record in changed_records(current, change)? {
-        view.apply(record, &scope)?;
-    }
-    let records: Vec<MembershipRecord> = view.all().cloned().collect();
-
-    let outcome = push_membership_everywhere(&config, ssh, &records).await?;
-    for name in &outcome.reached {
-        Ui::result_ok(name, "membership updated");
-    }
-    for (name, error) in &outcome.unreachable {
-        Ui::result_warn(
-            name,
-            &format!("unreachable now, will catch up later: {error}"),
-        );
-    }
-    if outcome.reached.is_empty() {
-        anyhow::bail!("Could not reach any server to publish the membership change");
-    }
-    Ui::success("Membership updated on every reachable server.");
-    Ok(())
+/// Tombstones every `Active` record in `view` whose `server_name` is no longer present in
+/// `configured` -- i.e. a server removed from `servers:` in `jiji.yml`. Driven purely by full
+/// membership in `configured`, never by which hosts a particular run could reach or targeted via
+/// `-H`, so a server that's merely offline (or simply outside this run's `-H` filter) is never
+/// mistaken for one that was deliberately removed from config.
+pub(crate) fn compute_decommissions(
+    configured: &BTreeSet<String>,
+    view: &MembershipView,
+) -> Vec<MembershipRecord> {
+    view.all()
+        .filter(|record| {
+            record.state == MembershipState::Active && !configured.contains(&record.server_name)
+        })
+        .cloned()
+        .map(|mut record| {
+            record.revision += 1;
+            record.state = MembershipState::Tombstoned;
+            record
+        })
+        .collect()
 }
 
 pub(crate) struct MembershipPushOutcome {
-    pub reached: Vec<String>,
     pub unreachable: Vec<(String, String)>,
 }
 
@@ -134,18 +119,13 @@ pub(crate) async fn push_membership_everywhere(
         .collect();
     let results: Vec<anyhow::Result<()>> = pool.execute_concurrent(operations).await;
 
-    let mut reached = Vec::new();
     let mut unreachable = Vec::new();
     for (name, result) in names.into_iter().zip(results) {
-        match result {
-            Ok(()) => reached.push(name),
-            Err(error) => unreachable.push((name, error.to_string())),
+        if let Err(error) = result {
+            unreachable.push((name, error.to_string()));
         }
     }
-    Ok(MembershipPushOutcome {
-        reached,
-        unreachable,
-    })
+    Ok(MembershipPushOutcome { unreachable })
 }
 
 pub(crate) async fn push_membership(
@@ -239,60 +219,6 @@ pub(crate) async fn pull_membership(
     Ok(serde_json::from_str(&export.stdout)?)
 }
 
-fn changed_records(
-    mut current: MembershipRecord,
-    change: Change,
-) -> anyhow::Result<Vec<MembershipRecord>> {
-    match change {
-        Change::Decommission => {
-            current.revision += 1;
-            current.state = MembershipState::Tombstoned;
-            Ok(vec![current])
-        }
-        Change::Endpoint(endpoint) => {
-            current.revision += 1;
-            current.endpoints = vec![parse_endpoint(&endpoint)?];
-            current.state = MembershipState::Active;
-            Ok(vec![current])
-        }
-        Change::RotateKey {
-            public_key,
-            endpoint,
-        } => {
-            current.revision += 1;
-            current.wireguard_public_key = public_key;
-            current.endpoints = vec![parse_endpoint(&endpoint)?];
-            current.state = MembershipState::Active;
-            Ok(vec![current])
-        }
-        Change::Replace {
-            public_key,
-            endpoint,
-        } => {
-            let tombstone = if current.state == MembershipState::Active {
-                let mut tombstone = current.clone();
-                tombstone.revision += 1;
-                tombstone.state = MembershipState::Tombstoned;
-                Some(tombstone)
-            } else {
-                None
-            };
-            current.owner_epoch += 1;
-            current.revision = 1;
-            current.wireguard_public_key = public_key;
-            current.endpoints = vec![parse_endpoint(&endpoint)?];
-            current.state = MembershipState::Active;
-            Ok(tombstone.into_iter().chain([current]).collect())
-        }
-    }
-}
-
-fn parse_endpoint(endpoint: &str) -> anyhow::Result<SocketAddr> {
-    endpoint
-        .parse()
-        .map_err(|_| anyhow::anyhow!("'{endpoint}' is not a valid IP:port endpoint"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,28 +243,82 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decommission_is_an_explicit_tombstone() {
-        let changed = changed_records(record(), Change::Decommission).unwrap();
-        assert_eq!(changed[0].revision, 5);
-        assert_eq!(changed[0].state, MembershipState::Tombstoned);
+    fn candidate_with(key: &str, endpoint: &str) -> MembershipRecord {
+        let mut candidate = record();
+        candidate.wireguard_public_key = key.into();
+        candidate.endpoints = vec![endpoint.parse().unwrap()];
+        candidate
     }
 
     #[test]
-    fn replacement_fences_old_owner_before_new_epoch() {
-        let changed = changed_records(
-            record(),
-            Change::Replace {
-                public_key: "new".into(),
-                endpoint: "198.51.100.1:52000".into(),
-            },
-        )
-        .unwrap();
-        assert_eq!(changed.len(), 2);
-        assert_eq!(changed[0].state, MembershipState::Tombstoned);
-        assert_eq!(changed[0].owner_epoch, 1);
-        assert_eq!(changed[1].state, MembershipState::Active);
-        assert_eq!(changed[1].owner_epoch, 2);
-        assert_eq!(changed[1].revision, 1);
+    fn fresh_enroll_when_no_current_record() {
+        let reconciled = reconcile_record(None, candidate_with("new", "192.0.2.1:51820")).unwrap();
+        assert_eq!(reconciled.owner_epoch, 1);
+        assert_eq!(reconciled.revision, 1);
+        assert_eq!(reconciled.state, MembershipState::Active);
+    }
+
+    #[test]
+    fn unchanged_key_and_endpoint_is_a_noop() {
+        let current = record();
+        let candidate = candidate_with("old", "192.0.2.1:51820");
+        assert!(reconcile_record(Some(&current), candidate).is_none());
+    }
+
+    #[test]
+    fn endpoint_only_change_bumps_revision_same_owner_epoch() {
+        let current = record();
+        let candidate = candidate_with("old", "198.51.100.1:52000");
+        let reconciled = reconcile_record(Some(&current), candidate).unwrap();
+        assert_eq!(reconciled.owner_epoch, 1);
+        assert_eq!(reconciled.revision, 5);
+        assert_eq!(reconciled.state, MembershipState::Active);
+        assert_eq!(
+            reconciled.endpoints,
+            vec!["198.51.100.1:52000".parse().unwrap()]
+        );
+    }
+
+    #[test]
+    fn key_change_fences_a_new_owner_epoch() {
+        let current = record();
+        let candidate = candidate_with("new", "198.51.100.1:52000");
+        let reconciled = reconcile_record(Some(&current), candidate).unwrap();
+        assert_eq!(reconciled.state, MembershipState::Active);
+        assert_eq!(reconciled.owner_epoch, 2);
+        assert_eq!(reconciled.revision, 1);
+        assert_eq!(reconciled.wireguard_public_key, "new");
+    }
+
+    #[test]
+    fn resurrecting_a_tombstoned_node_fences_a_new_epoch() {
+        let mut current = record();
+        current.state = MembershipState::Tombstoned;
+        let candidate = candidate_with("old", "192.0.2.1:51820");
+        let reconciled = reconcile_record(Some(&current), candidate).unwrap();
+        assert_eq!(reconciled.state, MembershipState::Active);
+        assert_eq!(reconciled.owner_epoch, 2);
+        assert_eq!(reconciled.revision, 1);
+    }
+
+    #[test]
+    fn decommission_tombstones_only_servers_missing_from_config() {
+        let mut view = MembershipView::default();
+        let scope = jiji_agent::membership::MembershipScope::new("demo", 1);
+        view.apply(record(), &scope).unwrap();
+        let mut other = record();
+        other.node_id = "node-b".into();
+        other.server_name = "node-b".into();
+        other.wireguard_public_key = "other".into();
+        other.management_address = Ipv4Addr::new(100, 98, 64, 2);
+        other.container_subnet = "198.18.2.0/24".into();
+        view.apply(other, &scope).unwrap();
+
+        let configured: BTreeSet<String> = ["node-a".to_string()].into_iter().collect();
+        let decommissions = compute_decommissions(&configured, &view);
+        assert_eq!(decommissions.len(), 1);
+        assert_eq!(decommissions[0].server_name, "node-b");
+        assert_eq!(decommissions[0].state, MembershipState::Tombstoned);
+        assert_eq!(decommissions[0].revision, 5);
     }
 }

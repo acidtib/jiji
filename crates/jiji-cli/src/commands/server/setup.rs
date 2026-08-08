@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -22,10 +23,15 @@ use crate::lock::{LockRequest, LockScope};
 use crate::proxy::{self, ProxyStatus};
 use crate::ssh_adapter;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
     hosts: Option<&str>,
+    yes: bool,
+    rotate_key: bool,
+    import: bool,
+    import_dry_run: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Server Setup:");
     let started_at = std::time::Instant::now();
@@ -105,6 +111,33 @@ pub async fn run(
         1,
     );
 
+    if rotate_key {
+        Ui::warn(&format!(
+            "--rotate-key will force a fresh WireGuard keypair on: {}",
+            servers
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        Ui::say(
+            "Every peer will briefly lose connectivity to each rotated host until it picks up the new key on its next reconcile.",
+            1,
+        );
+        if !yes {
+            if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+                anyhow::bail!(
+                    "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm the key rotation when running non-interactively (e.g. CI/CD)."
+                );
+            }
+            let confirmed =
+                Ui::confirm("Proceed with rotating these hosts' WireGuard keys?", false)?;
+            if !confirmed {
+                anyhow::bail!("Server setup cancelled: key rotation was not confirmed.");
+            }
+        }
+    }
+
     // A dedicated connection purely to hold the host-runtime lock: unlike `deploy`, each phase
     // below (engine install, network setup, proxy, agent install) already manages its own
     // independent connect/close cycle, so there is no single persistent session set to reuse here.
@@ -144,113 +177,122 @@ pub async fn run(
         .map(|(name, _)| LockRequest::new(LockScope::HostRuntime, name.clone()))
         .collect();
 
-    let setup_result =
-        crate::commands::lock::with_locks(
-            &lock_pool,
-            &lock_sessions,
-            &config.project,
-            lock_requests,
-            format!(
-                "jiji server setup: {}",
-                servers
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            crate::commands::lock::AutomaticLockOptions {
-                timeout: 300,
-                force: false,
-            },
-            || async {
-                let pool = SshPool::new(ssh.max_concurrent_starts as usize);
-                let mut connect_operations = Vec::with_capacity(servers.len());
-                for (name, server) in &servers {
-                    connect_operations.push(ssh_adapter::connect_options(name, server, &ssh)?);
-                }
+    let setup_result = crate::commands::lock::with_locks(
+        &lock_pool,
+        &lock_sessions,
+        &config.project,
+        lock_requests,
+        format!(
+            "jiji server setup: {}",
+            servers
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        crate::commands::lock::AutomaticLockOptions {
+            timeout: 300,
+            force: false,
+        },
+        || async {
+            let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+            let mut connect_operations = Vec::with_capacity(servers.len());
+            for (name, server) in &servers {
+                connect_operations.push(ssh_adapter::connect_options(name, server, &ssh)?);
+            }
 
-                Ui::section("Connecting:");
-                let operations: Vec<_> = connect_operations
-                    .into_iter()
-                    .map(|options| move || async move { SshSession::connect(&options).await })
-                    .collect();
-                let connections = pool.execute_concurrent(operations).await;
+            Ui::section("Connecting:");
+            let operations: Vec<_> = connect_operations
+                .into_iter()
+                .map(|options| move || async move { SshSession::connect(&options).await })
+                .collect();
+            let connections = pool.execute_concurrent(operations).await;
 
-                let mut failures: Vec<(String, String)> = Vec::new();
-                let mut sessions: Vec<(String, SshSession)> = Vec::new();
-                for ((name, server), connection) in servers.iter().zip(connections) {
-                    match connection {
-                        Ok(session) => {
-                            Ui::say(&format!("{name} ({}): connected", server.host), 1);
-                            sessions.push((name.clone(), session));
-                        }
-                        Err(err) => {
-                            Ui::error(&format!("{name} ({}): {err}", server.host));
-                            failures.push((name.clone(), err.to_string()));
-                        }
+            let mut failures: Vec<(String, String)> = Vec::new();
+            let mut sessions: Vec<(String, SshSession)> = Vec::new();
+            for ((name, server), connection) in servers.iter().zip(connections) {
+                match connection {
+                    Ok(session) => {
+                        Ui::say(&format!("{name} ({}): connected", server.host), 1);
+                        sessions.push((name.clone(), session));
+                    }
+                    Err(err) => {
+                        Ui::error(&format!("{name} ({}): {err}", server.host));
+                        failures.push((name.clone(), err.to_string()));
                     }
                 }
+            }
 
-                if sessions.is_empty() {
-                    anyhow::bail!("Could not connect to any server; see the errors above");
-                }
+            if sessions.is_empty() {
+                anyhow::bail!("Could not connect to any server; see the errors above");
+            }
 
-                Ui::section("Installing Container Engine:");
-                let engine = config.builder.engine;
-                for (name, session) in &sessions {
-                    Ui::say(&format!("{name} ({}):", session.host()), 1);
-                    match engine::ensure_engine(session, engine).await {
-                        Ok(EngineStatus::AlreadyInstalled(version)) => {
-                            Ui::say(&format!("{engine} already installed ({version})"), 2);
-                        }
-                        Ok(EngineStatus::Installed(version)) => {
-                            Ui::say(&format!("{engine} installed ({version})"), 2);
-                        }
-                        Ok(EngineStatus::Upgraded { from, to }) => {
-                            Ui::say(&format!("{engine} upgraded ({from} -> {to})"), 2);
-                        }
-                        Err(err) => {
-                            Ui::error(&format!("  {err}"));
-                            failures.push((name.clone(), err.to_string()));
-                        }
+            Ui::section("Installing Container Engine:");
+            let engine = config.builder.engine;
+            for (name, session) in &sessions {
+                Ui::say(&format!("{name} ({}):", session.host()), 1);
+                match engine::ensure_engine(session, engine).await {
+                    Ok(EngineStatus::AlreadyInstalled(version)) => {
+                        Ui::say(&format!("{engine} already installed ({version})"), 2);
                     }
-                    session.close().await;
-                }
-
-                if !failures.is_empty() {
-                    Ui::error(&format!("\n{} server(s) failed:", failures.len()));
-                    for (name, message) in &failures {
-                        Ui::say(&format!("{name}: {message}"), 1);
+                    Ok(EngineStatus::Installed(version)) => {
+                        Ui::say(&format!("{engine} installed ({version})"), 2);
                     }
-                    anyhow::bail!("Server setup failed for {} server(s)", failures.len());
+                    Ok(EngineStatus::Upgraded { from, to }) => {
+                        Ui::say(&format!("{engine} upgraded ({from} -> {to})"), 2);
+                    }
+                    Err(err) => {
+                        Ui::error(&format!("  {err}"));
+                        failures.push((name.clone(), err.to_string()));
+                    }
                 }
+                session.close().await;
+            }
 
-                network::setup::reconcile_for_server_setup(&config, &network_plan, &target_names)
-                    .await
-                    .map_err(|error| {
-                        anyhow::anyhow!(
+            if !failures.is_empty() {
+                Ui::error(&format!("\n{} server(s) failed:", failures.len()));
+                for (name, message) in &failures {
+                    Ui::say(&format!("{name}: {message}"), 1);
+                }
+                anyhow::bail!("Server setup failed for {} server(s)", failures.len());
+            }
+
+            if rotate_key {
+                force_rotate_keys(&servers, &config, &ssh).await?;
+            }
+
+            network::setup::reconcile_for_server_setup(&config, &network_plan, &target_names)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
                 "Container engine setup succeeded, but complete network setup failed: {error}"
             )
-                    })?;
+                })?;
 
-                setup_agents(&config, &path, &network_plan, &servers, &ssh).await?;
+            setup_agents(&config, &path, &network_plan, &servers, &ssh, yes).await?;
 
-                setup_proxies(&config, &servers, &ssh, started_at).await?;
-                let replayed = crate::commands::network::backup::replay_recovery_desired_state(
-                    &path, &config, &servers, &ssh,
-                )
-                .await?;
-                if replayed > 0 {
-                    Ui::result_ok(
-            "recovery",
-            &format!("restored desired placement for {replayed} service(s) into the new epoch"),
-        );
-                }
+            if import {
+                perform_import(&config, &servers, &network_plan, &ssh, import_dry_run, yes).await?;
+            }
 
-                Ok(())
-            },
-        )
-        .await;
+            setup_proxies(&config, &servers, &ssh, started_at).await?;
+            let replayed = crate::commands::network::backup::replay_recovery_desired_state(
+                &path, &config, &servers, &ssh,
+            )
+            .await?;
+            if replayed > 0 {
+                Ui::result_ok(
+                    "recovery",
+                    &format!(
+                        "restored desired placement for {replayed} service(s) into the new epoch"
+                    ),
+                );
+            }
+
+            Ok(())
+        },
+    )
+    .await;
     close_all(&lock_sessions).await;
     setup_result?;
 
@@ -264,12 +306,129 @@ async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
     }
 }
 
+/// Forces a fresh WireGuard keypair on every targeted host, bypassing `ensure_keypair`'s normal
+/// idempotency guard (`test -s ... ||`). Only ever called for `--rotate-key`'s explicit targets --
+/// never for an incidental peer this run happens to also connect to. The freshly minted public key
+/// is what `setup_agents`'s Pass 1 reads back moments later, which is what actually fences the old
+/// identity out of the mesh via `membership::reconcile_record`.
+async fn force_rotate_keys(
+    servers: &[(String, NamedServer)],
+    config: &Config,
+    ssh: &Ssh,
+) -> anyhow::Result<()> {
+    Ui::section("Rotating WireGuard Keys:");
+    let slug = jiji_network::systemd_unit_slug(&config.project);
+    let private_key_path = network::setup::private_key_path(&slug);
+    let public_key_path = network::setup::public_key_path(&slug);
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let mut connect_operations = Vec::with_capacity(servers.len());
+    for (name, server) in servers {
+        connect_operations.push(ssh_adapter::connect_options(name, server, ssh)?);
+    }
+    let operations: Vec<_> = connect_operations
+        .into_iter()
+        .map(|options| move || async move { SshSession::connect(&options).await })
+        .collect();
+    let connections = pool.execute_concurrent(operations).await;
+
+    let mut failures = Vec::new();
+    for ((name, _), connection) in servers.iter().zip(connections) {
+        let session = match connection {
+            Ok(session) => session,
+            Err(error) => {
+                failures.push((name.clone(), error.to_string()));
+                continue;
+            }
+        };
+        let command = format!(
+            "set -eu; umask 077; rm -f {private_key_path} {public_key_path}; \
+             wg genkey > {private_key_path}; wg pubkey < {private_key_path} > {public_key_path}; \
+             chmod 0600 {private_key_path}; chmod 0644 {public_key_path}"
+        );
+        let result = session.execute(&command).await;
+        session.close().await;
+        match result {
+            Ok(result) if result.success => {
+                Ui::result_ok(name, "WireGuard keypair rotated");
+            }
+            Ok(result) => failures.push((name.clone(), result.stderr.trim().to_string())),
+            Err(error) => failures.push((name.clone(), error.to_string())),
+        }
+    }
+
+    if !failures.is_empty() {
+        for (name, error) in &failures {
+            Ui::say(&format!("{name}: {error}"), 1);
+        }
+        anyhow::bail!(
+            "Key rotation failed for {} server(s). Fix the reported hosts and retry `jiji server setup --rotate-key`.",
+            failures.len()
+        );
+    }
+    Ok(())
+}
+
+/// Runs after `setup_agents`, since importing a replica's catalog history needs the target
+/// host's agent already up and reachable over its own live socket API. Uses its own connect
+/// cycle (the sessions `setup_agents` opened are already closed by the time it returns) and
+/// relies on the `HostRuntime` locks `run` already holds for `servers` -- no separate lock.
+async fn perform_import(
+    config: &Config,
+    servers: &[(String, NamedServer)],
+    network_plan: &NetworkPlan,
+    ssh: &Ssh,
+    dry_run: bool,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    let mut connect_operations = Vec::with_capacity(servers.len());
+    for (name, server) in servers {
+        connect_operations.push(ssh_adapter::connect_options(name, server, ssh)?);
+    }
+    let operations: Vec<_> = connect_operations
+        .into_iter()
+        .map(|options| move || async move { SshSession::connect(&options).await })
+        .collect();
+    let connections = pool.execute_concurrent(operations).await;
+
+    let mut sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
+    let mut failures = Vec::new();
+    for ((name, _), connection) in servers.iter().zip(connections) {
+        match connection {
+            Ok(session) => {
+                sessions.insert(name.clone(), Arc::new(session));
+            }
+            Err(error) => failures.push((name.clone(), error.to_string())),
+        }
+    }
+    if !failures.is_empty() {
+        for session in sessions.values() {
+            session.close().await;
+        }
+        anyhow::bail!(
+            "Could not connect to server(s) for import: {}",
+            failures
+                .iter()
+                .map(|(name, error)| format!("{name}: {error}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let result = network::import::run_import(config, &sessions, network_plan, dry_run, yes).await;
+    for session in sessions.values() {
+        session.close().await;
+    }
+    result
+}
+
 async fn setup_agents(
     config: &Config,
     config_path: &std::path::Path,
     network_plan: &NetworkPlan,
     servers: &[(String, NamedServer)],
     ssh: &Ssh,
+    yes: bool,
 ) -> anyhow::Result<()> {
     // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
     // sibling binary) still wins; otherwise fall back to a host-side install script that
@@ -336,6 +495,43 @@ async fn setup_agents(
         }
     }
 
+    // A server still Active in the gathered mesh view but no longer present in `servers:` was
+    // deliberately removed from config -- tombstone it. Driven off the full configured set, not
+    // this run's `-H`-filtered targets, so a server that's merely offline or unselected this run
+    // is never mistaken for one that was actually removed.
+    let configured: BTreeSet<String> = config.servers.keys().cloned().collect();
+    let decommissions =
+        crate::commands::network::membership::compute_decommissions(&configured, &view);
+    if !decommissions.is_empty() {
+        let names: Vec<&str> = decommissions
+            .iter()
+            .map(|record| record.server_name.as_str())
+            .collect();
+        Ui::warn(&format!(
+            "The following server(s) are no longer in `servers:` and will be permanently removed \
+             from the mesh: {}",
+            names.join(", ")
+        ));
+        if !yes {
+            if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+                anyhow::bail!(
+                    "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm decommissioning these hosts when running non-interactively (e.g. CI/CD)."
+                );
+            }
+            let confirmed = Ui::confirm("Permanently remove these servers from the mesh?", false)?;
+            if !confirmed {
+                anyhow::bail!("Server setup cancelled: decommissioning was not confirmed.");
+            }
+        }
+        for record in decommissions {
+            if let Err(error) = view.apply(record, &scope) {
+                Ui::warn(&format!(
+                    "Ignoring an inconsistent decommission record: {error}"
+                ));
+            }
+        }
+    }
+
     let mut failures = Vec::new();
     // Pass 1: connect, learn each target's WireGuard key, and fold every target's own record into
     // the shared view -- the sessions stay open so pass 2 can install without reconnecting.
@@ -371,7 +567,7 @@ async fn setup_agents(
                         server_plan.public_host
                     )
                 })?;
-        let record = MembershipRecord {
+        let candidate = MembershipRecord {
             project_id: config.project.clone(),
             recovery_epoch,
             protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
@@ -382,17 +578,23 @@ async fn setup_agents(
             management_address: server_plan.management_address,
             container_subnet: server_plan.container_subnet.to_string(),
             endpoints: vec![endpoint],
+            // Placeholder: `reconcile_record` decides the real owner_epoch/revision/state below,
+            // by comparing this candidate's key/endpoint against `view.get(name)`.
             owner_epoch: 1,
             revision: 1,
             state: MembershipState::Active,
         };
-        if let Err(error) = view.apply(record, &scope) {
-            failures.push((
-                name.clone(),
-                format!("could not enroll membership: {error}"),
-            ));
-            session.close().await;
-            continue;
+        let reconciled =
+            crate::commands::network::membership::reconcile_record(view.get(name), candidate);
+        if let Some(record) = reconciled {
+            if let Err(error) = view.apply(record, &scope) {
+                failures.push((
+                    name.clone(),
+                    format!("could not enroll membership: {error}"),
+                ));
+                session.close().await;
+                continue;
+            }
         }
         let peer_public_ips = network::bridge::BridgeProvisioner::new(
             config.builder.engine,

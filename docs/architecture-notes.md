@@ -160,13 +160,28 @@ projects share default CIDR ranges):
   from `jiji.yml` and pushed directly over SSH to every reachable host
   (`jiji-agent membership-import`, see `jiji-agent/src/membership.rs`'s
   module doc comment) — no peer-to-peer relay, so nothing beyond "installed
-  by root" authenticates a change. A host unreachable at push time keeps its
-  last-known membership until the next command reaches it (`jiji server
-  setup`, or a re-run of `jiji network decommission`/`update-endpoint`/
-  `rotate-key`/`replace`); `jiji server setup` additionally pushes the
-  complete merged set to every already-configured server, not just the ones
-  it's targeting, so an existing peer's own WireGuard reconciliation learns
-  about a newly enrolled host without waiting for that later contact.
+  by root" authenticates a change. There is no operator-facing
+  membership-editing command: every `jiji server setup` run reconciles
+  membership from config and observed host state on its own
+  (`commands/network/membership.rs::reconcile_record`/
+  `compute_decommissions`, invoked from `commands/server/setup.rs::
+  setup_agents`). Per targeted host, it re-reads the current on-disk
+  WireGuard public key and the config-derived endpoint and compares them
+  against the last known record: unchanged is a no-op; an endpoint-only
+  change just bumps `revision` at the same `owner_epoch`; a changed public
+  key (organic drift, a re-provisioned host under the same server name, or
+  `--rotate-key` forcing a fresh keypair before this reconcile pass) fences
+  a new `owner_epoch` — no separate tombstone message is transmitted for
+  this, since `MembershipView::apply`'s ordering rule already makes a
+  strictly higher `owner_epoch` win outright on every peer and reject any
+  future record still asserting the old one. Separately, any server still
+  `Active` in the gathered mesh view but no longer present in `servers:` is
+  tombstoned. A host unreachable at push time keeps its last-known
+  membership until the next `jiji server setup` reaches it; that command
+  additionally pushes the complete merged set to every already-configured
+  server, not just the ones it's targeting, so an existing peer's own
+  WireGuard reconciliation learns about a newly enrolled or changed host
+  without waiting for that later contact.
 - **Service catalog**: `jiji-agent` replicates a node-owned, append-only
   operation log peer-to-peer over WireGuard (`jiji-agent/src/catalog.rs`,
   `catalog_replication.rs`), authoritative for each logical replica's current

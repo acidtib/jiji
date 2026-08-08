@@ -149,11 +149,20 @@ pub async fn run() {
             }
         }
         Some(Commands::Server { command }) => match command {
-            ServerCommands::Setup => {
+            ServerCommands::Setup {
+                yes,
+                rotate_key,
+                import,
+                import_dry_run,
+            } => {
                 if let Err(err) = commands::server::setup::run(
                     cli.environment.as_deref(),
                     cli.config_file.as_deref(),
                     cli.hosts.as_deref(),
+                    *yes,
+                    *rotate_key,
+                    *import,
+                    *import_dry_run,
                 )
                 .await
                 {
@@ -271,32 +280,6 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
-            NetworkCommands::Assess => {
-                if let Err(err) = commands::network::assess::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    cli.hosts.as_deref(),
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Cutover assessment failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::Import { dry_run, yes } => {
-                if let Err(err) = commands::network::import::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    cli.hosts.as_deref(),
-                    *dry_run,
-                    *yes,
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Import failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
             NetworkCommands::Compact => {
                 if let Err(err) = commands::network::compact::run(
                     cli.environment.as_deref(),
@@ -358,72 +341,6 @@ pub async fn run() {
                 .await
                 {
                     jiji_tui::Ui::error(&format!("Control-plane recovery failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::Decommission { server } => {
-                if let Err(err) = commands::network::membership::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    server,
-                    commands::network::membership::Change::Decommission,
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Network decommission failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::UpdateEndpoint { server, endpoint } => {
-                if let Err(err) = commands::network::membership::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    server,
-                    commands::network::membership::Change::Endpoint(endpoint.clone()),
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Network endpoint update failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::RotateKey {
-                server,
-                public_key,
-                endpoint,
-            } => {
-                if let Err(err) = commands::network::membership::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    server,
-                    commands::network::membership::Change::RotateKey {
-                        public_key: public_key.clone(),
-                        endpoint: endpoint.clone(),
-                    },
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Network key rotation failed: {err}"));
-                    std::process::exit(1);
-                }
-            }
-            NetworkCommands::Replace {
-                server,
-                public_key,
-                endpoint,
-            } => {
-                if let Err(err) = commands::network::membership::run(
-                    cli.environment.as_deref(),
-                    cli.config_file.as_deref(),
-                    server,
-                    commands::network::membership::Change::Replace {
-                        public_key: public_key.clone(),
-                        endpoint: endpoint.clone(),
-                    },
-                )
-                .await
-                {
-                    jiji_tui::Ui::error(&format!("Network replacement failed: {err}"));
                     std::process::exit(1);
                 }
             }

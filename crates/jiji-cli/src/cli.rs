@@ -404,7 +404,25 @@ pub enum SecretsCommands {
 #[derive(Subcommand)]
 pub enum ServerCommands {
     #[command(about = "Install the container engine and complete private network on each server")]
-    Setup,
+    Setup {
+        #[arg(short = 'y', long, help = "Skip the confirmation prompt")]
+        yes: bool,
+        #[arg(
+            long,
+            help = "Force a fresh WireGuard keypair on the targeted hosts and fence out their old identity"
+        )]
+        rotate_key: bool,
+        #[arg(
+            long,
+            help = "Assess each targeted host and import any pre-existing container as historical (Stopped) catalog history, once its agent is running"
+        )]
+        import: bool,
+        #[arg(
+            long,
+            help = "With --import, report what would be imported without committing anything"
+        )]
+        import_dry_run: bool,
+    },
     #[command(
         about = "Remove jiji-managed applications and the private network from selected servers"
     )]
@@ -448,22 +466,6 @@ pub enum NetworkCommands {
         #[arg(long, help = "Emit one JSON object per server")]
         json: bool,
     },
-    #[command(
-        about = "Read-only comparison of a host's current resources against the distributed control plane"
-    )]
-    Assess,
-    #[command(
-        about = "One-way import of catalog history from a stopped old installation (operator convenience, not a compatibility layer)"
-    )]
-    Import {
-        #[arg(
-            long,
-            help = "Report what would be imported without committing anything"
-        )]
-        dry_run: bool,
-        #[arg(short = 'y', long, help = "Skip the confirmation prompt")]
-        yes: bool,
-    },
     #[command(about = "Compact superseded replicated operation history")]
     Compact,
     #[command(about = "Export an encrypted operator-controlled control-plane backup")]
@@ -488,37 +490,5 @@ pub enum NetworkCommands {
         passphrase_file: String,
         #[arg(short = 'y', long, help = "Confirm destructive epoch advancement")]
         yes: bool,
-    },
-    #[command(about = "Publish a node tombstone, fanned out to every reachable server")]
-    Decommission {
-        #[arg(value_name = "SERVER")]
-        server: String,
-    },
-    #[command(about = "Publish a changed public endpoint, fanned out to every reachable server")]
-    UpdateEndpoint {
-        #[arg(value_name = "SERVER")]
-        server: String,
-        #[arg(long, value_name = "IP:PORT")]
-        endpoint: String,
-    },
-    #[command(
-        about = "Rotate a node's WireGuard transport key, fanned out to every reachable server"
-    )]
-    RotateKey {
-        #[arg(value_name = "SERVER")]
-        server: String,
-        #[arg(long, value_name = "PUBLIC_KEY")]
-        public_key: String,
-        #[arg(long, value_name = "IP:PORT")]
-        endpoint: String,
-    },
-    #[command(about = "Fence and replace a node identity, fanned out to every reachable server")]
-    Replace {
-        #[arg(value_name = "SERVER")]
-        server: String,
-        #[arg(long, value_name = "PUBLIC_KEY")]
-        public_key: String,
-        #[arg(long, value_name = "IP:PORT")]
-        endpoint: String,
     },
 }

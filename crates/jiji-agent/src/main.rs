@@ -51,8 +51,8 @@ enum Command {
     },
     /// Imports membership pushed directly by `jiji-cli` over SSH into the durable store -- the
     /// only way membership ever changes (no peer-to-peer relay, see `jiji_agent::membership`).
-    /// Used for enrollment/bootstrap and for every later membership change
-    /// (decommission/update-endpoint/rotate-key/replace).
+    /// Used for enrollment/bootstrap and for every later membership change `jiji server setup`
+    /// derives by reconciling `jiji.yml` against each host's observed WireGuard identity.
     MembershipImport {
         #[arg(long)]
         project: String,

@@ -25,12 +25,18 @@ struct CannedResponse {
     stderr: String,
 }
 
+/// (command, stdin bytes) pairs recorded per completed channel, so a test can inspect exactly
+/// what a piped-input command (e.g. `install -m 0600 /dev/stdin membership-update.json`) sent.
+type ReceivedStdin = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 #[derive(Clone)]
 struct TestServer {
     authorized_key: PublicKey,
     responses: HashMap<String, CannedResponse>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
     received: Arc<Mutex<Vec<String>>>,
+    stdin: Arc<Mutex<HashMap<ChannelId, Vec<u8>>>>,
+    received_stdin: ReceivedStdin,
 }
 
 impl server::Server for TestServer {
@@ -76,6 +82,21 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .entry(channel)
+            .or_default()
+            .extend_from_slice(data);
+        Ok(())
+    }
+
     // Deferring to EOF avoids a race with the client's pipelined exec+eof messages, same as
     // jiji-ssh's own test server.
     async fn channel_eof(
@@ -93,6 +114,17 @@ impl server::Handler for TestServer {
             .lock()
             .expect("received mutex poisoned")
             .push(command.clone());
+        if let Some(stdin) = self
+            .stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .remove(&channel)
+        {
+            self.received_stdin
+                .lock()
+                .expect("received_stdin mutex poisoned")
+                .push((command.clone(), stdin));
+        }
 
         // Commands with no canned response (e.g. the many install-step shell commands a test
         // doesn't care about individually) succeed with empty output by default.
@@ -123,7 +155,7 @@ impl server::Handler for TestServer {
 async fn spawn_test_server(
     authorized_key: PublicKey,
     responses: HashMap<String, CannedResponse>,
-) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>, ReceivedStdin) {
     let config = Arc::new(server::Config {
         auth_rejection_time: Duration::from_millis(50),
         keys: vec![PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate host key")],
@@ -136,11 +168,14 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let received_stdin = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses,
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: Arc::clone(&received),
+        stdin: Arc::new(Mutex::new(HashMap::new())),
+        received_stdin: Arc::clone(&received_stdin),
     };
 
     tokio::spawn(async move {
@@ -148,7 +183,7 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    (addr, received)
+    (addr, received, received_stdin)
 }
 
 fn success(stdout: &str) -> CannedResponse {
@@ -205,6 +240,42 @@ servers:
     keys:
       - {key_path}
 services: {{}}
+ssh:
+  user: tester
+  keys_only: true
+"#,
+            ip = addr.ip(),
+            port = addr.port(),
+            key_path = key_path.display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+fn write_config_with_web_service(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: testproject
+builder:
+  engine: docker
+servers:
+  web1:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: [web1]
 ssh:
   user: tester
   keys_only: true
@@ -284,6 +355,20 @@ fn run_jiji_server_setup_with_hosts(
         .expect("run jiji server setup")
 }
 
+fn run_jiji_server_setup_with_args(
+    config_path: &std::path::Path,
+    extra_args: &[&str],
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(config_path)
+        .args(extra_args)
+        .output()
+        .expect("run jiji server setup")
+}
+
 fn run_jiji_proxy_restart(config_path: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("proxy")
@@ -317,7 +402,8 @@ async fn reports_an_already_installed_engine() {
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -370,7 +456,8 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -442,7 +529,8 @@ async fn missing_agent_binary_falls_back_to_remote_release_download() {
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -523,7 +611,8 @@ async fn invalid_explicit_agent_binary_override_fails_setup() {
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -578,7 +667,8 @@ async fn hosts_filter_matches_the_configured_server_name_not_just_its_host_addre
     );
     add_network_setup_responses(&mut responses);
 
-    let (addr, _received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, _received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -622,9 +712,9 @@ async fn filtered_setup_bootstraps_from_one_seed_without_reconciling_that_seed()
     );
     add_network_setup_responses(&mut responses);
 
-    let (existing_addr, existing_received) =
+    let (existing_addr, existing_received, _existing_stdin) =
         spawn_test_server(client_key.public_key().clone(), responses.clone()).await;
-    let (new_addr, new_received) =
+    let (new_addr, new_received, _new_stdin) =
         spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -709,9 +799,9 @@ async fn filtered_setup_enrolls_the_new_host_as_a_live_peer_on_the_seeds_own_int
     );
     add_network_setup_responses(&mut responses);
 
-    let (existing_addr, existing_received) =
+    let (existing_addr, existing_received, _existing_stdin) =
         spawn_test_server(client_key.public_key().clone(), responses.clone()).await;
-    let (new_addr, _new_received) =
+    let (new_addr, _new_received, _new_stdin) =
         spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -767,7 +857,7 @@ async fn installs_a_missing_engine() {
     add_network_setup_responses(&mut responses);
     // Every install command not explicitly listed defaults to success (empty CannedResponse).
 
-    let (addr, _) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, _, _stdin) = spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -804,7 +894,8 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
         "docker inspect jiji-proxy --format '{{.State.Status}}'".to_string(),
         success("running\n"),
     );
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -870,7 +961,8 @@ async fn proxy_logs_sends_quoted_filters_and_prints_host_output() {
         "docker logs --timestamps --since='1 hour ago' jiji-proxy | grep -- 'can'\\''t; echo bad'";
     let mut responses = HashMap::new();
     responses.insert(command.to_string(), success("matched proxy line\n"));
-    let (addr, received) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
 
     let dir = tempfile::tempdir().expect("create temp dir");
     let key_path = dir.path().join("id_ed25519");
@@ -934,4 +1026,530 @@ async fn reports_a_connection_failure_without_touching_the_engine() {
     assert!(!output.status.success(), "expected a non-zero exit code");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Server setup failed"), "stderr: {stderr}");
+}
+
+/// Builds a `MembershipRecord` as if it were already known from a previous `server setup` run,
+/// so a test can simulate "this host already has membership history" without a real two-pass
+/// setup. Only the fields `reconcile_record` actually compares (`wireguard_public_key`,
+/// `endpoints`, `state`) plus `owner_epoch`/`revision` matter for these tests.
+fn seeded_record(
+    server_name: &str,
+    wireguard_public_key: &str,
+    endpoint: &str,
+    owner_epoch: u64,
+    revision: u64,
+) -> jiji_agent::membership::MembershipRecord {
+    jiji_agent::membership::MembershipRecord {
+        project_id: "testproject".into(),
+        recovery_epoch: 1,
+        protocol_version: jiji_agent::membership::MEMBERSHIP_PROTOCOL_VERSION,
+        schema_version: jiji_agent::membership::MEMBERSHIP_SCHEMA_VERSION,
+        node_id: server_name.into(),
+        server_name: server_name.into(),
+        wireguard_public_key: wireguard_public_key.into(),
+        management_address: std::net::Ipv4Addr::new(100, 64, 0, 1),
+        container_subnet: "198.18.1.0/24".into(),
+        endpoints: vec![endpoint.parse().expect("valid seeded endpoint")],
+        owner_epoch,
+        revision,
+        state: jiji_agent::membership::MembershipState::Active,
+    }
+}
+
+fn membership_export_command(project: &str) -> String {
+    let paths = AgentPaths::default_for_project(project);
+    format!(
+        "{} membership-export --state-dir {}",
+        paths.binary_path.display(),
+        paths.state_dir.display()
+    )
+}
+
+fn membership_update_stdin_command(project: &str) -> String {
+    let paths = AgentPaths::default_for_project(project);
+    format!(
+        "install -m 0600 /dev/stdin {}",
+        paths.project_dir.join("membership-update.json").display()
+    )
+}
+
+/// Finds the last captured stdin payload for `command` and parses it as the JSON body
+/// `push_membership` sends (`Vec<MembershipRecord>`).
+fn last_pushed_records(
+    stdin: &ReceivedStdin,
+    command: &str,
+) -> Vec<jiji_agent::membership::MembershipRecord> {
+    let captured = stdin.lock().expect("received_stdin mutex poisoned");
+    let (_, bytes) = captured
+        .iter()
+        .rev()
+        .find(|(recorded_command, _)| recorded_command == command)
+        .expect("expected a captured membership-update push");
+    serde_json::from_slice(bytes).expect("membership push payload must be valid JSON")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn endpoint_drift_is_reconciled_without_a_dedicated_command() {
+    // Simulates "the server's `host:` changed since the last `server setup` run" -- there is no
+    // `update-endpoint` command anymore; a plain re-run of `server setup` must pick this up on
+    // its own by comparing the freshly observed endpoint against the last known membership record.
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    let seed = vec![seeded_record(
+        "web1",
+        "test-wireguard-public-key",
+        "203.0.113.9:9999",
+        1,
+        4,
+    )];
+    responses.insert(
+        membership_export_command("testproject"),
+        success(&serde_json::to_string(&seed).expect("serialize seeded record")),
+    );
+
+    let (addr, _received, stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup(&config_path);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pushed = last_pushed_records(&stdin, &membership_update_stdin_command("testproject"));
+    let web1 = pushed
+        .iter()
+        .find(|record| record.server_name == "web1")
+        .expect("web1's record must be pushed");
+    assert_eq!(
+        web1.owner_epoch, 1,
+        "an endpoint-only change must never fence a new owner_epoch"
+    );
+    assert_eq!(web1.revision, 5, "the seeded revision 4 must be bumped");
+    assert_ne!(
+        web1.endpoints,
+        vec!["203.0.113.9:9999".parse().unwrap()],
+        "the stale seeded endpoint must be replaced with the freshly observed one"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_server_from_config_tombstones_it_with_yes() {
+    // There is no `decommission` command anymore: removing a server from `servers:` and
+    // re-running `server setup -y` on the survivors must tombstone it on its own.
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    // web1 (still in config) already knows about web2, which has since been removed from
+    // `servers:` -- this is exactly what a surviving peer's own local store would still hold.
+    let seed = vec![seeded_record(
+        "web2",
+        "web2-public-key",
+        "203.0.113.10:51820",
+        1,
+        2,
+    )];
+    responses.insert(
+        membership_export_command("testproject"),
+        success(&serde_json::to_string(&seed).expect("serialize seeded record")),
+    );
+
+    let (addr, _received, stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup_with_args(&config_path, &["-y"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pushed = last_pushed_records(&stdin, &membership_update_stdin_command("testproject"));
+    let web2 = pushed
+        .iter()
+        .find(|record| record.server_name == "web2")
+        .expect("web2's tombstone must be pushed");
+    assert_eq!(
+        web2.state,
+        jiji_agent::membership::MembershipState::Tombstoned
+    );
+    assert_eq!(web2.revision, 3, "the seeded revision 2 must be bumped");
+    assert_eq!(
+        web2.owner_epoch, 1,
+        "decommission never fences a new owner_epoch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotate_key_forces_regeneration_and_fences_the_old_owner() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    // A different key than `add_network_setup_responses`'s canned "test-wireguard-public-key" --
+    // simulates a host whose key is about to be force-rotated.
+    let seed = vec![seeded_record(
+        "web1",
+        "old-test-wireguard-public-key",
+        "127.0.0.1:1",
+        1,
+        4,
+    )];
+    responses.insert(
+        membership_export_command("testproject"),
+        success(&serde_json::to_string(&seed).expect("serialize seeded record")),
+    );
+
+    let (addr, received, stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup_with_args(&config_path, &["-y", "--rotate-key"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let commands = received.lock().expect("received mutex poisoned");
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.contains("wg genkey") && command.contains("rm -f")),
+        "expected a forced keypair regeneration command: {commands:?}"
+    );
+    drop(commands);
+
+    // The seeded owner_epoch=1 record for "web1" is never separately transmitted as a tombstone:
+    // a strictly higher owner_epoch alone is what every peer's own CRDT needs to fence the old
+    // identity out (see `reconcile_record`'s doc comment), so only the new, fenced record ships.
+    let pushed = last_pushed_records(&stdin, &membership_update_stdin_command("testproject"));
+    let fenced = pushed
+        .iter()
+        .find(|record| record.server_name == "web1")
+        .expect("web1's fenced record must be pushed");
+    assert_eq!(
+        fenced.state,
+        jiji_agent::membership::MembershipState::Active
+    );
+    assert_eq!(
+        fenced.owner_epoch, 2,
+        "a key change must fence a new owner_epoch"
+    );
+    assert_eq!(fenced.revision, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotate_key_without_yes_or_a_terminal_bails_before_touching_any_host() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup_with_args(&config_path, &["--rotate-key"]);
+    assert!(!output.status.success(), "expected a non-zero exit code");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Refusing to prompt for confirmation"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        received.lock().expect("received mutex poisoned").is_empty(),
+        "the command must bail before connecting to any host"
+    );
+}
+
+fn container_list_command(project: &str) -> String {
+    format!(
+        "docker ps -a --filter label=jiji.managed=true --filter label=jiji.project={project} \
+         --format '{{{{.Names}}}}|{{{{.Label \"jiji.project\"}}}}|{{{{.Label \"jiji.service\"}}}}|{{{{.Label \"jiji.server\"}}}}|{{{{.State}}}}'"
+    )
+}
+
+fn agent_request_command(paths: &AgentPaths, kind: &str) -> String {
+    format!(
+        "{} request --socket {} # jiji-request:{kind}",
+        paths.binary_path.display(),
+        paths.socket_path.display()
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_reports_and_commits_a_replica_with_no_existing_catalog_record() {
+    // There is no standalone `jiji network assess`/`jiji network import` anymore: `--import` on
+    // `server setup` must report the same "importable" finding and actually commit it once the
+    // agent it just installed is up.
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    let paths = AgentPaths::default_for_project("testproject");
+    responses.insert(
+        container_list_command("testproject"),
+        success("testproject-web-a|testproject|web|web1|running\n"),
+    );
+    responses.insert(
+        agent_request_command(&paths, "catalog-list"),
+        success(r#"{"Ok":{"type":"catalog_list","records":[]}}"#),
+    );
+    responses.insert(
+        "docker inspect testproject-web-a --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true".to_string(),
+        success("100.64.0.10\n"),
+    );
+    responses.insert(
+        "docker inspect testproject-web-a --format '{{.Config.Image}}' 2>/dev/null || true"
+            .to_string(),
+        success("nginx:alpine\n"),
+    );
+    responses.insert(
+        agent_request_command(&paths, "catalog-commit"),
+        success(
+            r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"testproject","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"web1","owner_epoch":1,"revision":1,"deployment_id":"imported-testproject-web-a","address":"100.64.0.10","ports":[],"image":"nginx:alpine","state":"stopped","health":"unknown"}}}"#,
+        ),
+    );
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config_with_web_service(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup_with_args(&config_path, &["-y", "--import"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("importable -- web"),
+        "expected an importable finding for web, stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("web -> replica"),
+        "expected the import plan to list the web replica, stdout: {stdout}"
+    );
+    assert!(
+        received
+            .lock()
+            .expect("received mutex poisoned")
+            .iter()
+            .any(|command| command.contains("# jiji-request:catalog-commit")),
+        "expected the import to actually commit a catalog record"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_dry_run_reports_the_plan_without_committing_anything() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    let paths = AgentPaths::default_for_project("testproject");
+    responses.insert(
+        container_list_command("testproject"),
+        success("testproject-web-a|testproject|web|web1|running\n"),
+    );
+    responses.insert(
+        agent_request_command(&paths, "catalog-list"),
+        success(r#"{"Ok":{"type":"catalog_list","records":[]}}"#),
+    );
+    responses.insert(
+        "docker inspect testproject-web-a --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true".to_string(),
+        success("100.64.0.10\n"),
+    );
+    responses.insert(
+        "docker inspect testproject-web-a --format '{{.Config.Image}}' 2>/dev/null || true"
+            .to_string(),
+        success("nginx:alpine\n"),
+    );
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config_with_web_service(dir.path(), addr, &key_path);
+
+    let output =
+        run_jiji_server_setup_with_args(&config_path, &["-y", "--import", "--import-dry-run"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("web -> replica"),
+        "expected the dry-run plan to list the web replica, stdout: {stdout}"
+    );
+    assert!(
+        !received
+            .lock()
+            .expect("received mutex poisoned")
+            .iter()
+            .any(|command| command.contains("# jiji-request:catalog-commit")),
+        "dry-run must never commit anything"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_reports_nothing_to_import_when_a_live_catalog_record_already_exists() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+    let paths = AgentPaths::default_for_project("testproject");
+    let replica_id = jiji_cli::placement::replica_id("testproject", "web", 0);
+    responses.insert(
+        container_list_command("testproject"),
+        success("testproject-web-a|testproject|web|web1|running\n"),
+    );
+    responses.insert(
+        agent_request_command(&paths, "catalog-list"),
+        success(&format!(
+            r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"testproject","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"{replica_id}","owner_node_id":"web1","owner_epoch":1,"revision":3,"deployment_id":"deploy-live","address":"100.64.0.20","ports":[],"image":"nginx:alpine","state":"active","health":"healthy"}}]}}}}"#
+        )),
+    );
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config_with_web_service(dir.path(), addr, &key_path);
+
+    let output = run_jiji_server_setup_with_args(&config_path, &["-y", "--import"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("Nothing to import"),
+        "an already-live replica must never be re-imported: {stdout}"
+    );
+    assert!(
+        !received
+            .lock()
+            .expect("received mutex poisoned")
+            .iter()
+            .any(|command| command.contains("# jiji-request:catalog-commit")),
+        "a live replica must never be committed over"
+    );
 }

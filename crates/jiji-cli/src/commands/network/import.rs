@@ -1,32 +1,38 @@
-//! `jiji network import`: one-way seeding of catalog history from a stopped old installation
-//! (Phase 8, "Clean Cutover, Optional Import, and Release"). Operator convenience, not a
-//! compatibility layer: it only ever writes `Stopped` catalog rows so `jiji service`/`jiji
-//! network catalog` show continuity instead of a blank slate, never marks anything `Active`,
-//! never allocates an address lease, and never touches a replica whose existing catalog record
-//! is already live (`Candidate`/`Active`/`Draining`) -- a normal `jiji deploy` remains the only
-//! way to bring a service up on the new dynamic-lease runtime. Requires the target host's agent
-//! to already be running (`jiji server setup`), since committing a catalog record needs the
-//! agent's own signing identity; there is no offline commit path.
+//! One-way seeding of catalog history from a stopped old installation, run as part of `jiji
+//! server setup --import` (Phase 8, "Clean Cutover, Optional Import, and Release"). Operator
+//! convenience, not a compatibility layer: it only ever writes `Stopped` catalog rows so `jiji
+//! service`/`jiji network catalog` show continuity instead of a blank slate, never marks anything
+//! `Active`, never allocates an address lease, and never touches a replica whose existing catalog
+//! record is already live (`Candidate`/`Active`/`Draining`) -- a normal `jiji deploy` remains the
+//! only way to bring a service up on the new dynamic-lease runtime. Requires the target host's
+//! agent to already be running, since committing a catalog record needs the agent's own signing
+//! identity; there is no offline commit path -- `run_import` is therefore only ever called after
+//! `commands::server::setup::setup_agents` has succeeded.
 //!
 //! Safely retryable: every commit's `deployment_id` is deterministic from the discovered
 //! container's name, and the pre-commit catalog read skips any replica that is no longer eligible
 //! (already live, or already imported with the same deployment ID), so re-running after an
 //! interruption only ever fills in what's still missing.
+//!
+//! There is no standalone `jiji network import` command and no dedicated lock: the caller
+//! (`jiji server setup`) already holds a `HostRuntime` lock on every targeted server for the
+//! whole run, which is sufficient for writing catalog records scoped to those same servers.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use jiji_agent::api::{RequestBody, ResponseBody};
 use jiji_agent::catalog::{DeploymentState, HealthState};
-use jiji_config::validate_config;
-use jiji_network::{NetworkPlanner, ServerPlan};
+use jiji_agent::AgentPaths;
+use jiji_network::NetworkPlan;
 use jiji_ssh::SshSession;
 use jiji_tui::Ui;
 
-use crate::{agent_client, container_ops, placement, ssh_adapter};
+use crate::{agent_client, container_ops, placement};
 
-use super::backup::with_project_maintenance_lock;
+use super::assess;
 
 #[derive(Debug, Clone)]
 struct ImportCandidate {
@@ -38,81 +44,31 @@ struct ImportCandidate {
     image: String,
 }
 
-pub async fn run(
-    environment: Option<&str>,
-    config_file: Option<&str>,
-    hosts: Option<&str>,
+pub(crate) async fn run_import(
+    config: &jiji_config::Config,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    network_plan: &NetworkPlan,
     dry_run: bool,
     yes: bool,
 ) -> anyhow::Result<()> {
-    let start = std::env::current_dir()?;
-    let (config, _path) = crate::config_loading::load_config_for_ssh(
-        environment,
-        config_file.map(std::path::Path::new),
-        &start,
-    )
-    .await?;
-    if !validate_config(&config).valid {
-        anyhow::bail!("Configuration is invalid; fix it before importing");
-    }
-    let ssh = config
-        .ssh
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No `ssh:` section is configured"))?;
-    let plan = NetworkPlanner::new()
-        .plan(&config)
-        .map_err(|error| anyhow::anyhow!("Could not build the network plan: {error}"))?;
-    let selected: Vec<ServerPlan> = plan
-        .select_hosts(&split(hosts))?
-        .into_iter()
-        .cloned()
-        .collect();
-    if selected.is_empty() {
-        anyhow::bail!("No servers are configured. Add a `servers:` entry and retry.");
-    }
     let engine = config.builder.engine;
+    let paths = AgentPaths::default_for_project(&config.project);
 
-    let mut sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
-    let mut connect_failures = Vec::new();
-    for server_plan in &selected {
-        let named_server = config.servers.get(&server_plan.name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Server '{}' selected by the network plan is not configured",
-                server_plan.name
-            )
-        })?;
-        let options = ssh_adapter::connect_options(&server_plan.name, named_server, ssh)?;
-        match SshSession::connect(&options).await {
-            Ok(session) => {
-                sessions.insert(server_plan.name.clone(), Arc::new(session));
-            }
-            Err(error) => connect_failures.push(format!("{}: {error}", server_plan.name)),
+    Ui::section("Cutover Assessment:");
+    let mut assess_failures = Vec::new();
+    for (name, session) in sessions {
+        let server_plan = &network_plan.servers[name];
+        match assess::assess_host(session, engine, config, server_plan, &paths).await {
+            Ok(report) => assess::print_report(name, &report),
+            Err(error) => assess_failures.push(format!("{name}: {error}")),
         }
     }
-    if !connect_failures.is_empty() {
-        for session in sessions.values() {
-            session.close().await;
-        }
-        anyhow::bail!(
-            "Could not connect to server(s): {}. Restore SSH access and retry.",
-            connect_failures.join(", ")
-        );
+    for failure in &assess_failures {
+        Ui::result_warn("unreachable", failure);
     }
 
-    let candidates = match discover_candidates(&config, engine, &sessions).await {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            for session in sessions.values() {
-                session.close().await;
-            }
-            return Err(error);
-        }
-    };
-
+    let candidates = discover_candidates(config, engine, sessions).await?;
     if candidates.is_empty() {
-        for session in sessions.values() {
-            session.close().await;
-        }
         Ui::say(
             "Nothing to import: no old containers found without an existing catalog record.",
             0,
@@ -137,47 +93,29 @@ pub async fn run(
     }
 
     if dry_run {
-        for session in sessions.values() {
-            session.close().await;
-        }
         return Ok(());
     }
 
-    if !yes
-        && !Ui::confirm(
+    if !yes {
+        if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+            anyhow::bail!(
+                "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm the import when running non-interactively (e.g. CI/CD)."
+            );
+        }
+        let confirmed = Ui::confirm(
             &format!(
                 "Import {} replica(s) as historical (Stopped) catalog records? This never marks \
                  anything active and never touches a live replica.",
                 candidates.len()
             ),
             false,
-        )?
-    {
-        for session in sessions.values() {
-            session.close().await;
+        )?;
+        if !confirmed {
+            anyhow::bail!("Import cancelled.");
         }
-        anyhow::bail!("Import cancelled.");
     }
 
-    let selected_for_lock = selected.clone();
-    let project_for_lock = config.project.clone();
-    let servers_for_lock = config.servers.clone();
-    let ssh_for_lock = ssh.clone();
-    let sessions_for_op = sessions.clone();
-    let project = config.project.clone();
-    let result = with_project_maintenance_lock(
-        &project_for_lock,
-        &servers_for_lock,
-        &ssh_for_lock,
-        &selected_for_lock,
-        "jiji network import".to_string(),
-        move || async move { commit_candidates(&sessions_for_op, &project, candidates).await },
-    )
-    .await;
-    for session in sessions.values() {
-        session.close().await;
-    }
-    result
+    commit_candidates(sessions, &config.project, candidates).await
 }
 
 async fn discover_candidates(
@@ -301,17 +239,4 @@ async fn commit_candidates(
         );
     }
     Ok(())
-}
-
-fn split(value: Option<&str>) -> Vec<String> {
-    value
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
