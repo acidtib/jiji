@@ -271,17 +271,29 @@ own `packages` config). Tracked by
 version, no manual bump command; never hand-edit a crate's `version` or
 the manifest outside a release-please PR.
 
-`jiji`, `jiji-agent`, `jiji-proxy` are the only *publicly* released
-crates: independent tags (`vX.Y.Z` / `jiji-agent-vX.Y.Z` /
-`jiji-proxy-vX.Y.Z`), GitHub Release, and build/publish workflow
-(`jiji-release.yml`, `jiji-agent-release.yml`, `jiji-proxy-release.yml`)
-per crate. The 5 internal-only crates are release-please packages too but
-`"skip-github-release": true`: real version bump + `CHANGELOG.md` entry,
-no tag/public release. That's what makes internal-crate changes count:
-`cargo-workspace` patch-bumps every crate that depends on whatever just
-bumped, so a `fix:` to `jiji-core` cascades through `jiji-network` into
-`jiji-cli`/`jiji-agent`, no `Release-As:` footer needed. `jiji-proxy` has
-no internal deps, so nothing cascades into it.
+All 8 crates get an independent tag (`vX.Y.Z` for `jiji`, `{package}-vX.Y.Z`
+for the other 7) and a GitHub Release, but only `jiji`, `jiji-agent`, and
+`jiji-proxy` have a build/publish workflow attached to that tag
+(`jiji-release.yml`, `jiji-agent-release.yml`, `jiji-proxy-release.yml`).
+The other 5 are internal-only: their tag/release exists purely so
+release-please has an anchor for that package (see the loop gotcha below),
+not because anyone should consume them directly. `cargo-workspace`
+patch-bumps every crate that depends on whatever just bumped, so a `fix:`
+to `jiji-core` cascades through `jiji-network` into `jiji-cli`/`jiji-agent`,
+no `Release-As:` footer needed. `jiji-proxy` has no internal deps, so
+nothing cascades into it.
+
+**Gotcha (confirmed live, don't reintroduce):** a package configured with
+`"skip-github-release": true` gets no tag at all, not just no public
+Release page. Without a tag, release-please has no anchor to tell it that
+package was already released, so on every subsequent run it re-surfaces the
+*original* triggering commit and bumps that package again, forever,
+cascading an empty-changelog patch bump onto every real-tagged dependent
+too (confirmed live: this looped through 3 auto-generated release PRs,
+each re-citing the same commit, before being caught). Every package in
+`release-please-config.json` must get a real tag, even the internal-only
+ones; use the build/publish workflow's presence, not `skip-github-release`,
+to distinguish "consumable" from "internal-only."
 
 **Gotcha (confirmed live, don't reintroduce):** internal
 `[workspace.dependencies]` entries must stay bare `{ path = "..." }`, no
