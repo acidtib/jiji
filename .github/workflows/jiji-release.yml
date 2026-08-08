@@ -99,17 +99,18 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Fetch changelog from release-please's release
+      # Reads crates/jiji-cli/CHANGELOG.md directly rather than the GitHub
+      # release's current body: the release body is mutated by this same
+      # job on every run (see "Create GitHub Release" below), so using it
+      # as the starting point is not idempotent -- confirmed live, running
+      # this job twice for the same tag duplicated the whole release body.
+      - name: Extract this release's changelog section
         id: changelog
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
         run: |
           delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
           {
             echo "body<<$delimiter"
-            gh release view "v$TAG_VERSION" \
-              --repo "${{ github.repository }}" --json body -q .body || true
+            awk '/^## / { n++ } n==1' crates/jiji-cli/CHANGELOG.md
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
@@ -144,7 +145,12 @@ jobs:
             curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
             ```
 
+      # A courtesy notification, not part of this repo's release: must never
+      # fail the job over it (confirmed live, an expired/misscoped
+      # JIJI_WEBSITE_DISPATCH_TOKEN red-flagged an otherwise fully
+      # successful binary release).
       - name: Notify jiji-website of the new release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
           TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
