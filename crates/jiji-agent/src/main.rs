@@ -264,6 +264,16 @@ fn membership_export(state_dir: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How often the scheduler evaluates every installed cron job for a due run. Matches
+/// `reconcile_interval_secs`'s own default (`runtime.rs`): frequent enough that a due time is
+/// never missed by more than a few seconds, without polling every job on every tick of a much
+/// tighter loop.
+const SCHEDULER_TICK_INTERVAL_SECS: u64 = 10;
+/// How often the scheduler applies cron run metadata/container retention (`scheduler.rs`'s
+/// `METADATA_RETAIN_SECS`/`CONTAINER_RETAIN_SECS`, both measured in hours/days) -- far less
+/// frequent than the due-run tick above, since retention only ever removes what's already old.
+const SCHEDULER_CLEANUP_INTERVAL_SECS: u64 = 3600;
+
 async fn run(
     project: String,
     engine: Engine,
@@ -324,6 +334,7 @@ async fn run(
         bind = %config.replication_bind,
         "authoritative mesh runtime enabled"
     );
+    let mesh_config = Arc::new(config.clone());
     let api = AgentApi::new(
         Arc::clone(&store),
         Identity {
@@ -335,7 +346,7 @@ async fn run(
     .with_peer_reachability_timeout(config.peer_reachability_timeout_secs())
     .with_catalog_identity(config.identity())
     .with_engine(engine)
-    .with_mesh_config(Arc::new(config.clone()));
+    .with_mesh_config(Arc::clone(&mesh_config));
     let startup_candidates = store
         .lock()
         .map_err(|_| anyhow::anyhow!("local store lock poisoned"))?
@@ -383,6 +394,18 @@ async fn run(
     // flight, nor leaves a permanently "active" ghost run blocking future claims.
     jiji_agent::cron_exec::recover_claimed_runs(Arc::clone(&store), engine, &project).await;
     let mut serve = tokio::spawn(api::serve(listener, api));
+    // Spawned only after `serve` above: the scheduler's very first tick could otherwise claim and
+    // start a run before the API (and thus `CronRun`) even exists to race against it, but there's
+    // no harm either way since `recover_claimed_runs` (which the scheduler must follow) already
+    // completed by this point regardless of `serve`'s own position.
+    let mut scheduler = tokio::spawn(jiji_agent::scheduler::run_loop(
+        Arc::clone(&store),
+        engine,
+        Arc::clone(&mesh_config),
+        project.clone(),
+        Duration::from_secs(SCHEDULER_TICK_INTERVAL_SECS),
+        Duration::from_secs(SCHEDULER_CLEANUP_INTERVAL_SECS),
+    ));
 
     let unexpected = tokio::select! {
         _ = wait_for_shutdown_signal() => {
@@ -414,11 +437,18 @@ async fn run(
                 Err(error) => format!("agent API task failed: {error}"),
             })
         }
+        result = &mut scheduler => {
+            Some(match result {
+                Ok(()) => "cron scheduler stopped unexpectedly".to_string(),
+                Err(error) => format!("cron scheduler task failed: {error}"),
+            })
+        }
     };
     discovery.abort();
     local_reconcile.abort();
     mesh.abort();
     serve.abort();
+    scheduler.abort();
     if let Some(error) = unexpected {
         anyhow::bail!(
             "{error}; exiting so the bounded systemd restart policy can recover all components"

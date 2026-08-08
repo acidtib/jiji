@@ -23,7 +23,8 @@ use tracing::warn;
 
 use crate::cron::{CronJobSpec, CronRun, CronRunState};
 use crate::engine::Engine;
-use crate::leases::DEFAULT_QUARANTINE_SECONDS;
+use crate::leases::{AddressAllocator, DEFAULT_QUARANTINE_SECONDS};
+use crate::runtime::MeshConfig;
 use crate::store::AgentStore;
 
 /// Conservative bound under Docker's (128) and Podman's (~250, but undocumented) own container
@@ -193,10 +194,65 @@ fn finish(
     }
 }
 
+/// The tail half of turning a successful `claim_cron_run` into a running container: lease an
+/// address, then spawn `execute_claimed_run` in the background. Shared by `api.rs`'s `CronRun`
+/// handler (a manual run) and `scheduler.rs`'s tick (a scheduled one) -- identical either way,
+/// since a cron run's address lease and execution have no notion of *why* the run was claimed.
+///
+/// On lease failure, finalizes the run as `Failed` itself (never leaving it as a permanently
+/// "active" ghost blocking every future claim for the same job) and returns the error for the
+/// caller to report; `locked_store` must be the same store already locked to perform the claim,
+/// so this can run inside that same critical section without a second `lock()` call.
+pub fn lease_and_spawn(
+    locked_store: &AgentStore,
+    store: Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    mesh_config: &MeshConfig,
+    spec: CronJobSpec,
+    run: CronRun,
+    timestamp: u64,
+) -> Result<(), String> {
+    let reserved = [
+        mesh_config.local_runtime.bridge_gateway,
+        mesh_config.dns_bind_address,
+        mesh_config.local_runtime.proxy_address,
+    ];
+    let lease = AddressAllocator::new(
+        locked_store,
+        mesh_config.local_runtime.container_cidr,
+        reserved,
+    )
+    .allocate(
+        &run.run_id,
+        &crate::leases::cron_replica_id(&spec.service, &spec.cron_name),
+        timestamp,
+    );
+    let address = match lease {
+        Ok(lease) => lease.address,
+        Err(error) => {
+            let _ = locked_store.finish_cron_run(
+                &run.run_id,
+                CronRunState::Failed,
+                timestamp,
+                None,
+                Some(format!("address allocation failed: {error}")),
+            );
+            return Err(format!(
+                "could not lease an address for cron run '{}': {error}",
+                run.run_id
+            ));
+        }
+    };
+    tokio::spawn(async move {
+        execute_claimed_run(store, engine, spec, run, address).await;
+    });
+    Ok(())
+}
+
 /// Starts a just-claimed run's container and drives it to completion, updating durable state at
-/// each transition so a concurrent agent restart never loses track of it. Spawned as its own task
-/// by the caller (`api.rs`'s `CronRun` handler, or a later phase's scheduler) -- never awaited
-/// inline, since `CronRun` returns as soon as the claim (not the run) succeeds.
+/// each transition so a concurrent agent restart never loses track of it. Spawned by
+/// `lease_and_spawn` above -- never awaited inline, since a claim's caller (`CronRun`, or the
+/// scheduler's tick) returns as soon as the claim, not the run itself, succeeds.
 pub async fn execute_claimed_run(
     store: Arc<Mutex<AgentStore>>,
     engine: Engine,
@@ -504,6 +560,53 @@ async fn recover_claimed_runs_with_binary(
         );
         let _ = run_engine(binary, &["stop", &container.name]).await;
         let _ = run_engine(binary, &["rm", "-f", &container.name]).await;
+    }
+}
+
+/// Removes a terminal run's container once it has sat for at least `keep_seconds` past its own
+/// `finished_at` (the plan's "Durable Storage" container-retention window, distinct from
+/// `AgentStore::retain_cron_runs`'s *metadata* retention -- `scheduler.rs`'s cleanup tick applies
+/// both, with different windows). The store's own `finished_at`/`container_name` columns are the
+/// source of truth for which containers are old enough; this never inspects the engine's own
+/// container creation timestamps.
+pub async fn cleanup_old_cron_containers(
+    store: Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    now: u64,
+    keep_seconds: u64,
+) {
+    cleanup_old_cron_containers_with_binary(engine.as_str(), &store, now, keep_seconds).await;
+}
+
+async fn cleanup_old_cron_containers_with_binary(
+    binary: &str,
+    store: &Mutex<AgentStore>,
+    now: u64,
+    keep_seconds: u64,
+) {
+    let runs = match store.lock() {
+        Ok(store) => store
+            .cron_runs(&crate::cron::CronRunFilter::default())
+            .unwrap_or_default(),
+        Err(_) => {
+            warn!("local store lock poisoned; skipping cron container cleanup");
+            return;
+        }
+    };
+    for run in runs {
+        if run.state.is_active() {
+            continue;
+        }
+        let Some(finished_at) = run.finished_at else {
+            continue;
+        };
+        if now.saturating_sub(finished_at) < keep_seconds {
+            continue;
+        }
+        let Some(container_name) = &run.container_name else {
+            continue;
+        };
+        let _ = run_engine(binary, &["rm", "-f", container_name]).await;
     }
 }
 
@@ -1001,5 +1104,90 @@ esac"#,
             .unwrap();
         assert_eq!(finished.state, CronRunState::Succeeded);
         assert_eq!(finished.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_terminal_runs_past_the_retention_window() {
+        let dir = tempdir().unwrap();
+        let removed = dir.path().join("removed.log");
+        let engine_path = write_fake_engine(
+            dir.path(),
+            &format!(
+                r#"case "$1" in
+  rm) echo "$3" >> "{removed}" ;;
+  *) exit 0 ;;
+esac"#,
+                removed = removed.display()
+            ),
+        );
+        let store = Mutex::new(AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap());
+
+        // old-enough-succeeded: removed. recent-succeeded: kept. still-active: never removed even
+        // though it has no finished_at to be "old enough" by definition.
+        for (run_id, cron_name, state, finished_at) in [
+            ("old-run", "old-cron", CronRunState::Succeeded, Some(0u64)),
+            (
+                "recent-run",
+                "recent-cron",
+                CronRunState::Succeeded,
+                Some(90_000),
+            ),
+            ("active-run", "active-cron", CronRunState::Claimed, None),
+        ] {
+            let claimed = {
+                let store = store.lock().unwrap();
+                let outcome = store
+                    .claim_cron_run(
+                        "demo",
+                        "twitch",
+                        cron_name,
+                        crate::cron::CronRunCause::Manual,
+                        None,
+                        run_id,
+                        0,
+                    )
+                    .unwrap();
+                let crate::cron::CronClaimOutcome::Claimed(run) = outcome else {
+                    panic!("expected Claimed");
+                };
+                run
+            };
+            if let Some(finished_at) = finished_at {
+                store
+                    .lock()
+                    .unwrap()
+                    .start_cron_run(&claimed.run_id, 0, &claimed.run_id, run_id, "100.64.0.9")
+                    .unwrap();
+                store
+                    .lock()
+                    .unwrap()
+                    .finish_cron_run(&claimed.run_id, state, finished_at, Some(0), None)
+                    .unwrap();
+            }
+        }
+
+        // now=100_000, keep_seconds=86_400: old-run (finished at 0) is 100_000s old, past the
+        // window; recent-run (finished at 90_000) is only 10_000s old, within it.
+        cleanup_old_cron_containers_with_binary(
+            engine_path.to_str().unwrap(),
+            &store,
+            100_000,
+            86_400,
+        )
+        .await;
+
+        let removed_names = std::fs::read_to_string(&removed).unwrap_or_default();
+        assert!(
+            removed_names.contains("old-run"),
+            "removed: {removed_names}"
+        );
+        assert!(
+            !removed_names.contains("recent-run"),
+            "removed: {removed_names}"
+        );
+        assert!(
+            !removed_names.contains("active-run"),
+            "removed: {removed_names}"
+        );
     }
 }

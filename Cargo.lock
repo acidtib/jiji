@@ -2172,6 +2172,8 @@ version = "0.5.2"
 dependencies = [
  "anyhow",
  "clap",
+ "jiff",
+ "jiff-cron",
  "jiji-config",
  "jiji-network",
  "libc",

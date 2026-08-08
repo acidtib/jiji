@@ -765,49 +765,17 @@ impl AgentApi {
                         "agent has no engine/mesh runtime configured; cannot execute cron containers",
                     ));
                 };
-                let reserved = [
-                    mesh_config.local_runtime.bridge_gateway,
-                    mesh_config.dns_bind_address,
-                    mesh_config.local_runtime.proxy_address,
-                ];
-                let lease = AddressAllocator::new(
-                    &store,
-                    mesh_config.local_runtime.container_cidr,
-                    reserved,
-                )
-                .allocate(
-                    &run.run_id,
-                    &crate::leases::cron_replica_id(&service, &cron_name),
-                    timestamp,
-                );
-                let address = match lease {
-                    Ok(lease) => lease.address,
-                    Err(error) => {
-                        let _ = store.finish_cron_run(
-                            &run.run_id,
-                            crate::cron::CronRunState::Failed,
-                            timestamp,
-                            None,
-                            Some(format!("address allocation failed: {error}")),
-                        );
-                        return Err(ApiError::new(
-                            ErrorCode::Internal,
-                            format!("could not lease an address for this cron run: {error}"),
-                        ));
-                    }
-                };
                 let run_id = run.run_id.clone();
-                let execution_store = Arc::clone(&self.store);
-                tokio::spawn(async move {
-                    crate::cron_exec::execute_claimed_run(
-                        execution_store,
-                        engine,
-                        spec,
-                        run,
-                        address,
-                    )
-                    .await;
-                });
+                crate::cron_exec::lease_and_spawn(
+                    &store,
+                    Arc::clone(&self.store),
+                    engine,
+                    mesh_config,
+                    spec,
+                    run,
+                    timestamp,
+                )
+                .map_err(|error| ApiError::new(ErrorCode::Internal, error))?;
                 Ok(ResponseBody::CronRunAccepted { run_id })
             }
             RequestBody::CronRuns {
