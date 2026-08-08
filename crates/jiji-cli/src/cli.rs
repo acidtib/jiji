@@ -155,7 +155,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: LockCommands,
     },
-    #[command(about = "Show the deployment audit trail")]
+    #[command(about = "Show the deployment audit trail (host-scoped; -S/--services is rejected)")]
     Audit {
         #[arg(
             short = 'n',

@@ -4,7 +4,7 @@ Deep implementation rationale, full mechanism detail, and the historical
 incident record for jiji's architecture. `CLAUDE.md` keeps a tight,
 always-loaded summary of each area with a pointer here; read this file when
 you need the full "why" and "exactly how," not just the "what." Update this
-file (not just CLAUDE.md) when the underlying mechanism changes — CLAUDE.md's
+file (not just CLAUDE.md) when the underlying mechanism changes. CLAUDE.md's
 summaries are only useful if this detail stays in sync with them.
 
 ## Distributed Control Plane
@@ -72,7 +72,7 @@ into the target host's own agent socket):
    (`container_runtime::build_dynamic_run` + `container_ops::create_and_start`)
    at its own newly leased address, named
    `container_runtime::dynamic_container_name` (`{project}-{service}-{first
-   12 hex chars of deployment_id}`) — the previous deployment keeps serving
+   12 hex chars of deployment_id}`). The previous deployment keeps serving
    traffic throughout.
 5. Health-check the candidate directly at its own address (`health_check.rs`),
    never through the proxy.
@@ -108,13 +108,13 @@ it if the candidate fails to come up.
 
 `jiji network setup` (`crates/jiji-cli/src/commands/network/setup.rs`) still
 writes each host's WireGuard bootstrap material to a symlink-swapped
-"generation" tree under `/etc/jiji/network/{slug}/` — but that generation now
+"generation" tree under `/etc/jiji/network/{slug}/`, but that generation now
 covers **mesh bootstrap only** (the WireGuard interface, its initial peer set,
 the bridge/engine network). It is a one-time/repair step, not something a
 service deploy ever touches: `jiji deploy` never re-runs it except to reconcile
 a genuinely stale host before continuing. Everything that changes on every
-deploy or scale — membership updates after the first tunnel, the service
-catalog, DNS answers, container reconciliation — is owned continuously by the
+deploy or scale (membership updates after the first tunnel, the service
+catalog, DNS answers, container reconciliation) is owned continuously by the
 long-running `jiji-agent-{slug}.service` (`crates/jiji-agent/`, installed by
 `jiji server setup`, one process per project per host), not recomputed and
 reapplied by the CLI. `network setup`'s own `remove_legacy_service_runtime`
@@ -125,7 +125,7 @@ replaced (Phase 8) and are never reinstalled.
 
 **Per-project isolated, not a host-global singleton.** Every name and path
 below is derived purely from `config.project` (`crates/jiji-network/src/
-naming.rs`) — two independent projects can run `jiji server setup` against
+naming.rs`). Two independent projects can run `jiji server setup` against
 the same physical host and get two fully independent sets of the following,
 with zero shared/persisted state between them (see "Naming Conventions"
 below for the exact derivation and the jiji-website repo's Network Reference
@@ -143,7 +143,7 @@ projects share default CIDR ranges):
   `PostUp`/`PostDown` hooks) and repairs it if torn down externally.
   WireGuard port is per-project (`51820..=55819`), not the fixed `51820`.
   Once the first tunnel is up, `jiji-agent` takes over incremental peer
-  repair (`jiji-agent/src/wireguard.rs::plan_reconciliation`) — new hosts
+  repair (`jiji-agent/src/wireguard.rs::plan_reconciliation`). New hosts
   join and endpoints roam without the CLI re-touching this generation.
 - **Bridge/engine network** (`commands/network/bridge.rs`): a
   `jiji-{slug}` docker/podman network per project (kernel device name
@@ -153,13 +153,13 @@ projects share default CIDR ranges):
   instead of depending on a separate `jiji-network-restore-{slug}.service`
   oneshot unit, and the Podman-only `podman-restart.service.d` drop-in
   (which used to restart `unless-stopped` containers on boot) is retired
-  entirely — the agent's own post-restart container reconciliation
+  entirely: the agent's own post-restart container reconciliation
   (`reconcile_containers`/`recover_startup_candidates`) was already
   authoritative, so the drop-in was a straight duplicate.
 - **Membership**: plain (unsigned) records, computed locally by `jiji-cli`
   from `jiji.yml` and pushed directly over SSH to every reachable host
   (`jiji-agent membership-import`, see `jiji-agent/src/membership.rs`'s
-  module doc comment) — no peer-to-peer relay, so nothing beyond "installed
+  module doc comment): no peer-to-peer relay, so nothing beyond "installed
   by root" authenticates a change. There is no operator-facing
   membership-editing command: every `jiji server setup` run reconciles
   membership from config and observed host state on its own
@@ -171,7 +171,7 @@ projects share default CIDR ranges):
   change just bumps `revision` at the same `owner_epoch`; a changed public
   key (organic drift, a re-provisioned host under the same server name, or
   `--rotate-key` forcing a fresh keypair before this reconcile pass) fences
-  a new `owner_epoch` — no separate tombstone message is transmitted for
+  a new `owner_epoch`: no separate tombstone message is transmitted for
   this, since `MembershipView::apply`'s ordering rule already makes a
   strictly higher `owner_epoch` win outright on every peer and reject any
   future record still asserting the old one. Separately, any server still
@@ -188,11 +188,11 @@ projects share default CIDR ranges):
   deployment, address, image, and `Candidate`/`Active`/`Draining`/`Stopped`/
   `Tombstoned` state. Unlike membership, this genuinely is node-originated at
   runtime (crash-restart reconciliation, health flips), so it keeps
-  continuous anti-entropy sync — but direct-only: a node's outbound exchange
+  continuous anti-entropy sync, but direct-only: a node's outbound exchange
   contains only records it owns, never a relayed third party's, and a
   receiver authenticates an inbound record by resolving the TCP connection's
   source address against its local membership view (`RecordProvenance`,
-  `MembershipView::find_by_management_address`) instead of a signature —
+  `MembershipView::find_by_management_address`) instead of a signature:
   sufficient because WireGuard's own peer authentication already makes that
   source address unspoofable within the mesh, and because nothing is ever
   relayed there's only the one hop to authenticate. There is no CLI-driven
@@ -202,7 +202,7 @@ projects share default CIDR ranges):
 - **DNS**: each `jiji-agent` process serves the `.jiji` zone directly from its
   local replicated catalog (`jiji-agent/src/dns.rs`, a hand-rolled minimal
   authoritative resolver on the project's management address, UDP with TCP
-  fallback for large answer sets) — there is no `dnsmasq` process and no
+  fallback for large answer sets). There is no `dnsmasq` process and no
   compiled `dns.conf` in the running system anymore. Only `active`+`healthy`
   records are ever answered with; a peer the local agent currently considers
   unreachable is suppressed reversibly, never deleted, from both the
@@ -218,8 +218,8 @@ projects share default CIDR ranges):
   kamal-proxy Go fork. Deliberately the **one genuinely shared, multi-tenant**
   component: one container per host, **multi-homed** across every project's
   bridge that has active routes on that host (`network connect --ip
-  <ServerPlan::proxy_address> <bridge_name> jiji-proxy`, idempotent/additive
-  — see `ensure_attached`), routes namespaced per project already.
+  <ServerPlan::proxy_address> <bridge_name> jiji-proxy`, idempotent/additive,
+  see `ensure_attached`), routes namespaced per project already.
 
   jiji-proxy's routing model is fundamentally different from kamal-proxy's:
   jiji-cli/jiji-agent push a **static route definition** once per
@@ -232,13 +232,13 @@ projects share default CIDR ranges):
   filtered to local replicas) on its own `refresh_interval_secs`
   (`crates/jiji-proxy/src/discovery.rs`, `route_manager.rs`) and
   load-balances (`pingora::lb::LoadBalancer<RoundRobin>`) across whatever it
-  discovers — this is what gives jiji-proxy genuine **cross-host load
+  discovers. This is what gives jiji-proxy genuine **cross-host load
   balancing** (confirmed live: each host's jiji-proxy independently
   discovers and routes to every healthy replica of a service, not just the
   ones running on that same host), something kamal-proxy could never do.
   jiji-proxy also runs its own **active health-checking**
   (`route_manager.rs::build_health_check`, HTTP or TCP, translated from
-  `service.proxy.healthcheck.{path,interval,timeout}` — `healthcheck.cmd` is
+  `service.proxy.healthcheck.{path,interval,timeout}`: `healthcheck.cmd` is
   never translated, since execing into a container only makes sense when the
   backend happens to be on the same host as jiji-proxy, an assumption
   mesh-wide routing can no longer make; `cmd` remains meaningful only for
@@ -262,8 +262,8 @@ projects share default CIDR ranges):
   fallback for TLS SNI resolution, since it's also an exact-match table.
 
   A deploy's "proxy activation" step (see "Zero-Downtime Deployment
-  Strategy" above) therefore isn't pushing a new target address — the route
-  never carried one — it's re-applying the (unchanged) route definition to
+  Strategy" above) therefore isn't pushing a new target address (the route
+  never carried one); it's re-applying the (unchanged) route definition to
   force an immediate re-resolution, then polling `jiji-proxy route status`
   (`AdminRequest::RouteStatus`, backed by `Backends::get_backend`/`ready`)
   until the candidate's specific address shows up healthy, restoring the
@@ -275,7 +275,7 @@ projects share default CIDR ranges):
   `CERTS_DIR` so `CertStore` picks them up without ACME ever touching them)
   are both handled by jiji-proxy itself now, not a separate cert-management
   path. A wildcard host can never get an ACME certificate (HTTP-01 cannot
-  issue one; that needs DNS-01, not implemented) — `jiji-config` rejects
+  issue one; that needs DNS-01, not implemented). `jiji-config` rejects
   `ssl: true` on a wildcard host outright (`PROXY_WILDCARD_REQUIRES_STATIC_CERT`
   in `validation.rs`), and `RouteManager::tls_hosts` independently excludes
   any wildcard-pattern host from `AcmeManager`'s worklist regardless of how
@@ -284,7 +284,7 @@ projects share default CIDR ranges):
   static certificate. `commands/server/teardown.rs` disconnects jiji-proxy from a
   project's bridge (`proxy::disconnect_bridge_if_attached`) before that
   bridge can be removed, independent of whether jiji-proxy is still running
-  for other projects — and, since jiji-agent's own continuous reconcile loop
+  for other projects, and, since jiji-agent's own continuous reconcile loop
   would otherwise recreate/reapply anything this teardown removes out from
   under it (confirmed live), `jiji-agent` itself is stopped as the very
   first teardown step, before jiji-proxy or any other network-layer
@@ -294,7 +294,7 @@ projects share default CIDR ranges):
   443:8443` silently drops its IPv4 binding, because its primary network is
   always one of the bridges above and those are created with
   `enable_ip_masquerade=false` + `gateway_mode_ipv4=routed` (needed for
-  routable backend addresses across the WireGuard mesh) — dockerd logs "Host
+  routable backend addresses across the WireGuard mesh). dockerd logs "Host
   port ignored, because NAT is disabled" and the IPv6 publish keeps working
   while IPv4 silently doesn't. `crates/jiji-cli/src/proxy_ingress.rs` works
   around this Docker-only (Podman's bridge creation doesn't set either
@@ -306,7 +306,7 @@ projects share default CIDR ranges):
   owned by whichever co-resident project's agent currently holds a
   same-host, non-blocking `flock` lease
   (`crates/jiji-agent/src/host_lease.rs`,
-  `/etc/jiji/proxy-ingress/agent.lock`) — no separate
+  `/etc/jiji/proxy-ingress/agent.lock`). No separate
   `jiji-proxy-ingress-restore.service` boot-persistence unit exists
   anymore; the lease holder's agent reapplies the nftables table on every
   reconcile tick (`proxy_bringup.rs`). `ensure_proxy` (CLI) still
@@ -322,11 +322,11 @@ runs as a host-level systemd process, not a container, so the engine can and
 will hand out `dns_address` to an ad-hoc container started on a jiji bridge
 without an explicit `--ip` (confirmed live, pre-isolation, against the old
 shared `jiji` bridge: `docker run --network jiji nginx:alpine` got assigned
-the DNS address and silently broke resolution for that container — the same
+the DNS address and silently broke resolution for that container; the same
 risk applies to any project's `jiji-{slug}` bridge today). Every jiji-managed
 container avoids this because `container_runtime`/`proxy.rs` always pin
 `--ip` explicitly to an address `jiji-agent` itself leased
-(`leases.rs::AddressAllocator`) — any new code that runs a container on a
+(`leases.rs::AddressAllocator`). Any new code that runs a container on a
 jiji bridge (debug tooling, health-check sidecars, etc.) must do the same.
 
 ## Container Namespace Sharing (`network_mode: service:<name>`)
@@ -334,17 +334,17 @@ jiji bridge (debug tooling, health-check sidecars, etc.) must do the same.
 A service can share another ("upstream") service's container network
 namespace instead of getting its own dynamically-leased bridge address, via
 `network_mode: "service:<upstream-name>"` (Compose's shorthand for what
-Docker/Podman render as `--network container:<name>`) — the standard "VPN
+Docker/Podman render as `--network container:<name>`): the standard "VPN
 killswitch" pattern, where a torrent client shares a VPN gateway container's
 network stack so all its traffic is forced through the tunnel. Naming the
 upstream this way is itself the dependency declaration; there is no separate
 `depends_on` field. `jiji_config::Service::network_mode_dependency()` parses
 it; `validation.rs` rejects an undefined/self-referencing upstream, a
-chained dependency (the upstream must itself use `network_mode: bridge` —
+chained dependency (the upstream must itself use `network_mode: bridge`,
 v1 supports exactly one level, not chains), a `servers:` list that isn't a
 subset of the upstream's, and (via the pre-existing `NON_BRIDGE_SCALE`/
 `NON_BRIDGE_PROXY` rules, which already generalize to any non-`"bridge"`
-value) `replicas` above 1 or a `proxy:` block of its own — a dependent is
+value) `replicas` above 1 or a `proxy:` block of its own. A dependent is
 reached through the upstream's own route, at the upstream's own address,
 never a route of its own.
 
@@ -353,12 +353,12 @@ deploy_shared_endpoint` (a sibling of the normal `deploy_dynamic_endpoint`,
 dispatched from `deploy_endpoint` based on `network_mode_dependency()`)
 skips `AllocateAddress`/`ReleaseAddress` entirely, resolves the upstream's
 current Active/Healthy catalog record by filtering on `service` + `owner_
-node_id` (not by recomputing a replica_id through placement arithmetic —
+node_id` (not by recomputing a replica_id through placement arithmetic,
 the upstream may use a different placement policy, but at most one of its
 replicas can ever be Active/Healthy on a given server), and runs
 `container_runtime::build_shared_run` /
 `NetworkedContainerRun::shared` (`--network container:<upstream's current
-container name>`, no `--ip`/`--dns*`/`-p` — all owned by the upstream).
+container name>`, no `--ip`/`--dns*`/`-p`, all owned by the upstream).
 Since a dependent can't configure `healthcheck:` (no `proxy:` allowed),
 it gets `health_check::plan_for_candidate`'s existing no-config fallback:
 an engine-native container-readiness check, the same one any bridge
@@ -368,7 +368,7 @@ service without an explicit `healthcheck:` already gets.
 direct dependent of a selected upstream to the deployment (visible in the
 printed plan/confirmation prompt), using `placement::endpoint_replica_id`
 (sorted-position-in-`servers` ordinal) rather than `placement::place` for
-the dependent's own replica_id — a dependent's real cardinality is "one
+the dependent's own replica_id: a dependent's real cardinality is "one
 instance per shared-namespace server," not an independently round-robined
 replica count. Selecting a dependent alone never cascades the other
 direction: it just attaches to the upstream's already-existing deployment,
@@ -378,7 +378,7 @@ The upstream's own redeploy must complete (its old container is only torn
 down as part of that same transaction) before any cascaded dependent can
 attach to its new one, so `commands/deploy.rs` deploys in two sequential
 waves (an upstream-with-dependents wave, then a dependents wave) rather than
-the usual single `SshPool::execute_concurrent` call — an in-closure wait on
+the usual single `SshPool::execute_concurrent` call: an in-closure wait on
 the upstream's completion would deadlock, since `execute_concurrent`
 acquires its semaphore permit *before* running a task, and the pool is
 bounded to 1 whenever any selected service configures `proxy:` (true for a
@@ -387,12 +387,12 @@ port only a dependent actually serves, its inline `activate_proxy_routes`
 call is forced to defer (`skip_proxy: true`) whenever it has a dependent in
 the second wave; the route is instead verified by the already-existing
 `reconcile_catalog_routes` pass, which already runs once after every
-selected endpoint — upstream and dependents alike — has finished.
+selected endpoint (upstream and dependents alike) has finished.
 
 This is not itself zero-downtime with respect to upstream churn: there is a
 real gap between the upstream's old container being removed and each
 dependent's own redeploy completing, during which an old dependent
-container may be degraded — matching Compose's own `depends_on: {condition:
+container may be degraded, matching Compose's own `depends_on: {condition:
 service_healthy, restart: true}` semantics for this exact pattern (two
 containers can't simultaneously share one upstream's single network
 namespace during a bridge-swap-style cutover).
@@ -419,7 +419,7 @@ subtree on a shared host). Ownership discovery is by `jiji.managed`/
 a glob) for volumes/images/proxy routes. `-S`/`--services` is explicitly
 rejected rather than silently ignored. Another project's containers being
 present on the same host is surfaced as an informational notice
-(`teardown_plan::render_other_project_notices`), not a blocker — teardown
+(`teardown_plan::render_other_project_notices`), not a blocker: teardown
 only ever acts on this project's own labeled resources.
 
 `jiji-agent` is removed **first**, before anything it reconciles, rather
@@ -427,7 +427,7 @@ than last: confirmed live, leaving it running through the later steps let
 its own continuous reconcile loop (`local_reconcile.rs`,
 `proxy_bringup.rs`) silently reapply a proxy route and recreate the
 jiji-proxy container moments after this same teardown had already reported
-both removed — the agent provides no interactive help investigating a
+both removed: the agent provides no interactive help investigating a
 stuck container removal, it only fights every other step's changes, so
 there's no reason to keep it alive even if a later step fails. Separately,
 `network_teardown::remove_wireguard` deletes the live interface
@@ -453,7 +453,7 @@ and adapts `jiji_config::{NamedServer, Ssh}` into `jiji_ssh::ConnectOptions`.
 
 A remote command killed by a signal never sends `ChannelMsg::ExitStatus` (SSH
 sends `exit-signal` instead, which `classify_channel_msg` in `session.rs`
-ignores) — so `Option<u32>` exit codes must treat `None` the same as a
+ignores), so `Option<u32>` exit codes must treat `None` the same as a
 nonzero exit, never as success. `run_command`'s `success: code == Some(0)`
 gets this right; `commands/server/exec.rs`'s streaming/PTY paths originally
 didn't (`Some(0) | None => Ok(())`), silently reporting success on a killed
@@ -498,17 +498,17 @@ Reference" for the CLI surface this backs.
   first path component is `localhost`, contains a dot, or contains a port
   remain unchanged.
 - **Logical replicas**: `placement::replica_id(project, service, ordinal)`
-  (`crates/jiji-cli/src/placement.rs`) — a stable ID surviving redeploy,
+  (`crates/jiji-cli/src/placement.rs`), a stable ID surviving redeploy,
   independent of which host currently owns it; deterministic per
   `(project, service, ordinal)`, not derived from a container name.
 - **Deployments**: a fresh, random `deployment_id` per container start
   (`deploy_transaction.rs::deploy_dynamic_endpoint`, hashed from project,
   replica ID, a nonce, and the CLI process ID).
 - **Containers**: `{project}-{service}-{first 12 hex chars of deployment_id}`
-  (`container_runtime::dynamic_container_name`) — a new name every deploy, no
+  (`container_runtime::dynamic_container_name`), a new name every deploy, no
   permanent A/B slot names, no rename step.
 - **Proxy routes**: identified by `(host, path_prefix)`, not a generated
-  name — jiji-proxy's route table is keyed by the config's own `hosts:`/
+  name: jiji-proxy's route table is keyed by the config's own `hosts:`/
   `path_prefix:` values (`proxy_routes::RouteTarget`), applied independently
   to every selected server's own jiji-proxy (routes are not shared/synced
   across servers, but jiji-proxy's DNS-driven discovery makes their
@@ -520,7 +520,7 @@ Reference" for the CLI surface this backs.
   jiji.server=<srv> jiji.resource=service` on every service container.
 - **Per-project network identifiers** (`crates/jiji-network/src/naming.rs`,
   all pure functions of `project:` alone, computed the same way independent
-  of whether any other project shares the host — see the jiji-website repo's
+  of whether any other project shares the host, see the jiji-website repo's
   Network Reference page's "Multiple projects on one server" section):
   WireGuard interface `jiji{8 hex}` (`wireguard_interface_name`), kernel
   bridge device `jijib{7 hex}` (`bridge_interface_name`, distinct from the
@@ -530,15 +530,15 @@ Reference" for the CLI surface this backs.
   `jiji-agent-{slug}.service` (`systemd_unit_slug`,
   `jiji-agent/src/paths.rs::unit_name`), WireGuard port `51820..=55819`
   (`wireguard_port`), the agent's catalog/desired-state replication TCP port
-  `58000..60000` (`catalog_replication_port`) — membership has no listener or
+  `58000..60000` (`catalog_replication_port`): membership has no listener or
   port of its own, since it's pushed by the CLI, not replicated peer-to-peer.
   All remote state lives under
   `/etc/jiji/network/{slug}/` (mesh bootstrap) and `/etc/jiji/agent/{slug}/`
-  (agent binary, durable store, socket — `AgentPaths::default_for_project`)
+  (agent binary, durable store, socket; see `AgentPaths::default_for_project`)
   instead of one shared top-level path. `jiji-dns-{slug}.service` /
   `jiji-service-nat-{slug}.service` / `service_nat_table_name` still exist as
   named constants purely so `network setup`/`teardown` can find and remove
-  them from a pre-agent installation (see "Private Networking" above) — no
+  them from a pre-agent installation (see "Private Networking" above). No
   current code path (re)installs them.
 
 ## Container Engine Provisioning (detail)
@@ -554,7 +554,7 @@ still get `dnf install podman`. The static install also writes a managed
 `runtime = "/usr/local/bin/crun"` / `cgroup_manager = "cgroupfs"`, and patches
 the AppArmor `podman` profile to permit `/usr/local/bin/podman`. Unlike
 Docker (which still requires an operator-managed upgrade), an
-already-installed Podman below the minimum is upgraded in place —
+already-installed Podman below the minimum is upgraded in place:
 `reconcile_managed_podman_static_configuration` re-applies the pinned config
 on every `ensure_engine` call so a manual Podman upgrade never drifts from
 it. Every exec into a container (`container_runtime::exec_prefix`) also
@@ -576,7 +576,7 @@ Podman refusing to push/pull the local loopback registry over plain HTTP
 unless `--tls-verify=false` is passed, where Docker trusts `localhost`
 registries by default; and `jiji server exec --interactive` hanging forever
 after the remote shell exited, because `tokio::io::stdin().read()` was
-polled fresh inside a `tokio::select!` loop each iteration — cancelling that
+polled fresh inside a `tokio::select!` loop each iteration: cancelling that
 future does not cancel the underlying blocking read, and the Tokio runtime
 waits for its blocking pool to drain on shutdown, so a still-blocked stdin
 read (input that will never arrive once the remote side is done) hung
@@ -585,7 +585,7 @@ captured-pipe test subprocess has no controlling terminal to hang on); fixed
 by reading stdin on a dedicated `std::thread` forwarding through an `mpsc`
 channel instead. Live-test CLI-command-rendering work against a real Docker
 (and ideally Podman) host, and interactive/PTY work against a real terminal,
-before considering it done — `cargo test` passing is not sufficient evidence
+before considering it done: `cargo test` passing is not sufficient evidence
 for anything that shells out to `docker`/`podman`/`jiji-proxy`/`systemctl`/
 `nft`, or that drives a local TTY.
 

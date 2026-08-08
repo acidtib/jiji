@@ -68,7 +68,7 @@ async fn reconcile_managed_podman_static_configuration(session: &SshSession) -> 
     let result = session.execute(&command).await?;
     if !result.success {
         anyhow::bail!(
-            "Could not reconcile Jiji's Podman configuration on {}: {}",
+            "Could not reconcile Jiji's Podman configuration on {}: {}. Check the host's systemd/Podman state and retry.",
             session.host(),
             result.stderr.trim()
         );
@@ -92,7 +92,7 @@ async fn version_of(session: &SshSession, engine_name: &str) -> anyhow::Result<S
     let result = session.execute(&format!("{engine_name} --version")).await?;
     if !result.success {
         anyhow::bail!(
-            "Could not read {engine_name} version on {}: {}",
+            "Could not read {engine_name} version on {}: {}. Confirm {engine_name} is installed and on PATH for the SSH user, then retry.",
             session.host(),
             result.stderr.trim()
         );
@@ -112,7 +112,7 @@ fn check_min_version(
     };
     if found < min {
         anyhow::bail!(
-            "{engine_name} {}.{}.{} is installed, but jiji requires at least {}.{}.{}. Please upgrade {engine_name} on this host and try again.",
+            "{engine_name} {}.{}.{} is installed, but jiji requires at least {}.{}.{}. Upgrade {engine_name} on this host and retry.",
             found.0,
             found.1,
             found.2,
@@ -152,7 +152,7 @@ async fn install(session: &SshSession, engine: ContainerEngine) -> anyhow::Resul
         let result = session.execute(command).await?;
         if !result.success {
             anyhow::bail!(
-                "Command `{command}` failed on {} (exit {:?}): {}",
+                "Command `{command}` failed on {} (exit {:?}): {}. Fix the reported error on that host and retry.",
                 session.host(),
                 result.code,
                 result.stderr.trim()
@@ -167,7 +167,7 @@ async fn detect_os(session: &SshSession) -> anyhow::Result<OsInfo> {
     let result = session.execute("cat /etc/os-release").await?;
     if !result.success {
         anyhow::bail!(
-            "Could not read /etc/os-release on {}: {}",
+            "Could not read /etc/os-release on {}: {}. Confirm the host is a supported Linux distribution and retry.",
             session.host(),
             result.stderr.trim()
         );
@@ -192,7 +192,7 @@ async fn detect_os(session: &SshSession) -> anyhow::Result<OsInfo> {
 
     if id.is_empty() {
         anyhow::bail!(
-            "Could not determine the OS distribution on {} from /etc/os-release",
+            "Could not determine the OS distribution on {} from /etc/os-release. Confirm the host is a supported Linux distribution and retry.",
             session.host()
         );
     }
@@ -242,7 +242,7 @@ fn docker_install_commands(os: &OsInfo) -> anyhow::Result<Vec<String>> {
             "systemctl enable docker".to_string(),
         ]),
         other => anyhow::bail!(
-            "Don't know how to install docker on unsupported OS '{other}' (version {}). Please install docker manually.",
+            "Don't know how to install docker on unsupported OS '{other}' (version {}). Install docker manually and retry.",
             os.version_id
         ),
     }
@@ -264,7 +264,7 @@ fn podman_install_commands(os: &OsInfo) -> anyhow::Result<Vec<String>> {
             policy_cmd,
         ]),
         other => anyhow::bail!(
-            "Don't know how to install podman on unsupported OS '{other}' (version {}). Please install podman manually.",
+            "Don't know how to install podman on unsupported OS '{other}' (version {}). Install podman manually and retry.",
             os.version_id
         ),
     }

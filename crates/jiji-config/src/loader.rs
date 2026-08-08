@@ -102,7 +102,7 @@ pub fn load_config(
     Ok((config, actual_path))
 }
 
-/// Lists `.jiji/*.{yml,yaml}` files directly under `search_path` (non-recursive — unlike
+/// Lists `.jiji/*.{yml,yaml}` files directly under `search_path` (non-recursive: unlike
 /// `find_config_file`, this does not climb parent directories). Missing/unreadable dir -> `[]`.
 pub fn get_available_configs(search_path: &Path) -> Vec<PathBuf> {
     let config_dir = search_path.join(CONFIG_DIR);
