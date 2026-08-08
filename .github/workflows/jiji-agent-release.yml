@@ -72,6 +72,14 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
+      # When backfilling an old tag, the checkout above reverts this whole
+      # tree, including this script, back to whatever existed at that
+      # historical commit -- confirmed live, this shadowed a bugfix that
+      # only existed on main. Always use main's current copy instead.
+      - name: Use current changelog script
+        if: ${{ inputs.tag != '' }}
+        run: git checkout ${{ github.sha }} -- .github/scripts/expand-dependency-changelog.sh
+
       - name: Get tag version
         id: get_tag_version
         run: |

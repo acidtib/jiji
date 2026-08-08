@@ -26,7 +26,11 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: jiji-linux-arm64
-          - os: macos-13
+          # Cross-compiling to x86_64 on Apple Silicon hardware rather than
+          # using macos-13 (native Intel): confirmed live, macos-13 runners
+          # can queue indefinitely waiting for a runner to be assigned,
+          # while macos-14 gets one immediately.
+          - os: macos-14
             target: x86_64-apple-darwin
             artifact: jiji-macos-x86_64
           - os: macos-14
@@ -74,6 +78,14 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
+
+      # When backfilling an old tag, the checkout above reverts this whole
+      # tree, including this script, back to whatever existed at that
+      # historical commit -- confirmed live, this shadowed a bugfix that
+      # only existed on main. Always use main's current copy instead.
+      - name: Use current changelog script
+        if: ${{ inputs.tag != '' }}
+        run: git checkout ${{ github.sha }} -- .github/scripts/expand-dependency-changelog.sh
 
       - name: Get tag version
         id: get_tag_version
