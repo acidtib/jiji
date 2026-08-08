@@ -5,6 +5,10 @@ on:
     tags:
       - "jiji-agent-v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and attach binaries to, e.g. jiji-agent-v0.5.2"
+        required: true
 
 jobs:
   test:
@@ -26,6 +30,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -63,11 +69,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Get tag version
         id: get_tag_version
-        run: echo "TAG_VERSION=${GITHUB_REF/refs\/tags\/jiji-agent-v/}" >> "$GITHUB_OUTPUT"
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "TAG_VERSION=${TAG#jiji-agent-v}" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
         uses: actions/download-artifact@v8
