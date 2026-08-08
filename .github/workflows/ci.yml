@@ -30,8 +30,14 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --all-features
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace
 
       - name: Build
         run: cargo build --workspace
