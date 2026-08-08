@@ -136,8 +136,8 @@ struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    /// jiji does not verify host keys against a known_hosts file (matching the Deno original,
-    /// which connects with `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`).
+    /// jiji does not verify host keys against a known_hosts file
+    /// (connects with `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`).
     async fn check_server_key(
         &mut self,
         _server_public_key: &russh::keys::PublicKey,
