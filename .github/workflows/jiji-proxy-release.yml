@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "jiji-proxy-v*"
+  workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/acidtib/jiji-proxy

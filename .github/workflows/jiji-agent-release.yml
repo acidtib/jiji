@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "jiji-agent-v*"
+  workflow_dispatch:
 
 jobs:
   test:
