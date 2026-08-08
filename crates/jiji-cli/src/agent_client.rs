@@ -29,6 +29,12 @@ pub async fn call(
         RequestBody::ReconciliationStatus => "reconciliation-status",
         RequestBody::CatalogRead { .. } => "catalog-read",
         RequestBody::LocalTransaction { .. } => "local-transaction",
+        RequestBody::CronSpecApply { .. } => "cron-spec-apply",
+        RequestBody::CronSpecRemove { .. } => "cron-spec-remove",
+        RequestBody::CronSpecList => "cron-spec-list",
+        RequestBody::CronStatus { .. } => "cron-status",
+        RequestBody::CronRun { .. } => "cron-run",
+        RequestBody::CronRuns { .. } => "cron-runs",
     };
     let command = format!(
         "{} request --socket {} # jiji-request:{request_kind}",

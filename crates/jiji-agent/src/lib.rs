@@ -11,6 +11,7 @@ pub mod backup;
 pub mod bridge_bringup;
 pub mod catalog;
 pub mod catalog_replication;
+pub mod cron;
 pub mod desired;
 pub mod discovery;
 pub mod dns;

@@ -18,6 +18,10 @@ use tracing::{debug, warn};
 use crate::catalog::{
     CatalogRecord, DeploymentState, HealthState, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION,
 };
+use crate::cron::{
+    CronClaimOutcome, CronJobSpec, CronJobStatus, CronMissedRuns, CronOverlap, CronRun,
+    CronRunCause, CronRunFilter, CronSpecApplyOutcomeKind,
+};
 use crate::desired::{
     DesiredStateRecord, ReplicaAssignment, DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION,
 };
@@ -40,8 +44,13 @@ pub struct Request {
     pub body: RequestBody,
 }
 
+// One request/response value exists at a time per exchange (never batched into a bulk
+// collection), so `CronSpecApply`/`CronSpecApplied` being much larger than e.g. `Health` costs a
+// few hundred stack bytes per call, not a real allocation/throughput concern; boxing an arbitrary
+// field to appease the size heuristic would be noise, not a fix.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum RequestBody {
     Health,
     Identity,
@@ -88,10 +97,65 @@ pub enum RequestBody {
         state: DeploymentState,
         health: HealthState,
     },
+    /// Idempotent upsert by `(service, cron_name, revision, canonical_hash)`; `owner_node_id`/
+    /// `owner_epoch` are never taken from the caller (see `CronJobSpec`'s doc comment) --
+    /// `jiji-cli` sends everything else, already rendered (`plans/service-cron.md`'s "Deployment
+    /// Context" section).
+    #[allow(clippy::too_many_arguments)]
+    CronSpecApply {
+        service: String,
+        cron_name: String,
+        revision: u64,
+        canonical_hash: String,
+        source_deployment_id: String,
+        source_replica_id: String,
+        image: String,
+        schedule: String,
+        timezone: String,
+        timeout_seconds: u64,
+        overlap: CronOverlap,
+        missed_runs: CronMissedRuns,
+        command: Vec<String>,
+        env_file_path: String,
+        mount_args: Vec<String>,
+        resource_args: Vec<String>,
+        bridge_network: String,
+        dns_address: String,
+    },
+    CronSpecRemove {
+        service: String,
+        cron_name: String,
+    },
+    /// Every cron spec installed on this agent (`list`'s per-host installation state, and the
+    /// source of `list`'s canonical-hash drift comparison).
+    CronSpecList,
+    /// An absent `service`/`cron_name` matches every installed job with that field unconstrained,
+    /// same as `CronRuns`' filter.
+    CronStatus {
+        service: Option<String>,
+        cron_name: Option<String>,
+    },
+    /// Requests an immediate run of an already-installed job. `timestamp` is caller-supplied (not
+    /// read from the wall clock here) so the claim, and any future scheduler-driven claim
+    /// alongside it, stays testable against a controllable clock.
+    CronRun {
+        service: String,
+        cron_name: String,
+        timestamp: u64,
+    },
+    CronRuns {
+        service: Option<String>,
+        cron_name: Option<String>,
+        run_id: Option<String>,
+        since: Option<u64>,
+        limit: Option<u32>,
+    },
 }
 
+// See `RequestBody`'s doc comment on the identical `large_enum_variant` allow.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ResponseBody {
     Health {
         schema_version: i64,
@@ -150,6 +214,30 @@ pub enum ResponseBody {
     },
     CatalogCommitted {
         record: CatalogRecord,
+    },
+    CronSpecApplied {
+        spec: CronJobSpec,
+        outcome: CronSpecApplyOutcomeKind,
+    },
+    CronSpecRemoved {
+        removed: bool,
+    },
+    CronSpecs {
+        specs: Vec<CronJobSpec>,
+    },
+    CronStatuses {
+        statuses: Vec<CronJobStatus>,
+    },
+    CronRunAccepted {
+        run_id: String,
+    },
+    /// `overlap: forbid` refused the run; `active_run_id` names the run already occupying this
+    /// job so the caller can inspect it instead (see the plan's `jiji service cron run` section).
+    CronRunConflict {
+        active_run_id: String,
+    },
+    CronRuns {
+        runs: Vec<CronRun>,
     },
 }
 
@@ -482,6 +570,185 @@ impl AgentApi {
                     .map_err(|error| internal(&error))?;
                 Ok(ResponseBody::CatalogCommitted { record })
             }
+            RequestBody::CronSpecApply {
+                service,
+                cron_name,
+                revision,
+                canonical_hash,
+                source_deployment_id,
+                source_replica_id,
+                image,
+                schedule,
+                timezone,
+                timeout_seconds,
+                overlap,
+                missed_runs,
+                command,
+                env_file_path,
+                mount_args,
+                resource_args,
+                bridge_network,
+                dns_address,
+            } => {
+                let identity = self.catalog_identity.as_ref().ok_or_else(|| {
+                    ApiError::new(ErrorCode::Invalid, "cron identity is not configured")
+                })?;
+                let scope = identity.scope();
+                let membership = MembershipView::from_records(
+                    store
+                        .membership_operations()
+                        .map_err(|error| internal(&error))?,
+                    &scope,
+                )
+                .map_err(|error| ApiError::new(ErrorCode::Internal, error.to_string()))?;
+                let owner = membership.get(&identity.node_id).ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Invalid,
+                        "local node has no active membership record",
+                    )
+                })?;
+                let spec = CronJobSpec {
+                    project: identity.project_id.clone(),
+                    service,
+                    cron_name,
+                    revision,
+                    canonical_hash,
+                    owner_node_id: identity.node_id.clone(),
+                    owner_epoch: owner.owner_epoch,
+                    source_deployment_id,
+                    source_replica_id,
+                    image,
+                    schedule,
+                    timezone,
+                    timeout_seconds,
+                    overlap,
+                    missed_runs,
+                    command,
+                    env_file_path,
+                    mount_args,
+                    resource_args,
+                    bridge_network,
+                    dns_address,
+                };
+                let outcome = store
+                    .apply_cron_spec(&spec)
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::CronSpecApplied {
+                    outcome: outcome.kind(),
+                    spec: outcome.spec().clone(),
+                })
+            }
+            RequestBody::CronSpecRemove { service, cron_name } => {
+                let removed = store
+                    .remove_cron_spec(&service, &cron_name)
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::CronSpecRemoved { removed })
+            }
+            RequestBody::CronSpecList => Ok(ResponseBody::CronSpecs {
+                specs: store.cron_specs().map_err(|error| internal(&error))?,
+            }),
+            RequestBody::CronStatus { service, cron_name } => {
+                let specs = store.cron_specs().map_err(|error| internal(&error))?;
+                let mut statuses = Vec::new();
+                for spec in specs
+                    .into_iter()
+                    .filter(|spec| service.as_deref().is_none_or(|s| s == spec.service))
+                    .filter(|spec| cron_name.as_deref().is_none_or(|c| c == spec.cron_name))
+                {
+                    let scheduler_state = store
+                        .cron_scheduler_state(&spec.service, &spec.cron_name)
+                        .map_err(|error| internal(&error))?;
+                    let last_run = store
+                        .cron_runs(&CronRunFilter {
+                            service: Some(spec.service.clone()),
+                            cron_name: Some(spec.cron_name.clone()),
+                            limit: Some(1),
+                            ..Default::default()
+                        })
+                        .map_err(|error| internal(&error))?
+                        .into_iter()
+                        .next();
+                    let active_run = store
+                        .active_cron_run(&spec.service, &spec.cron_name)
+                        .map_err(|error| internal(&error))?;
+                    statuses.push(CronJobStatus {
+                        service: spec.service,
+                        cron_name: spec.cron_name,
+                        last_scheduled_at: last_run.as_ref().and_then(|run| run.scheduled_at),
+                        last_started_at: last_run.as_ref().and_then(|run| run.started_at),
+                        last_finished_at: last_run.as_ref().and_then(|run| run.finished_at),
+                        last_state: last_run.as_ref().map(|run| run.state),
+                        last_exit_code: last_run.as_ref().and_then(|run| run.exit_code),
+                        next_due_at: scheduler_state.as_ref().and_then(|s| s.next_due_at),
+                        active_run_id: active_run.map(|run| run.run_id),
+                        skipped_overlap_count: scheduler_state
+                            .map_or(0, |s| s.skipped_overlap_count),
+                    });
+                }
+                Ok(ResponseBody::CronStatuses { statuses })
+            }
+            RequestBody::CronRun {
+                service,
+                cron_name,
+                timestamp,
+            } => {
+                if store
+                    .cron_spec(&service, &cron_name)
+                    .map_err(|error| internal(&error))?
+                    .is_none()
+                {
+                    return Err(ApiError::new(
+                        ErrorCode::NotFound,
+                        format!(
+                            "service '{service}' has no installed cron job named '{cron_name}'"
+                        ),
+                    ));
+                }
+                let run_id = generate_cron_run_id(&self.identity.project, &service, &cron_name);
+                let outcome = store
+                    .claim_cron_run(
+                        &self.identity.project,
+                        &service,
+                        &cron_name,
+                        CronRunCause::Manual,
+                        None,
+                        &run_id,
+                        timestamp,
+                    )
+                    .map_err(|error| internal(&error))?;
+                Ok(match outcome {
+                    CronClaimOutcome::Claimed(run) => {
+                        ResponseBody::CronRunAccepted { run_id: run.run_id }
+                    }
+                    CronClaimOutcome::OverlapForbidden { active_run_id } => {
+                        ResponseBody::CronRunConflict { active_run_id }
+                    }
+                    CronClaimOutcome::DuplicateScheduledClaim(_) => {
+                        return Err(ApiError::new(
+                            ErrorCode::Internal,
+                            "a manual run unexpectedly produced a scheduled-claim outcome",
+                        ));
+                    }
+                })
+            }
+            RequestBody::CronRuns {
+                service,
+                cron_name,
+                run_id,
+                since,
+                limit,
+            } => {
+                let runs = store
+                    .cron_runs(&CronRunFilter {
+                        service,
+                        cron_name,
+                        run_id,
+                        since,
+                        limit,
+                    })
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::CronRuns { runs })
+            }
         }
     }
 
@@ -518,6 +785,27 @@ impl AgentApi {
 
 fn internal(error: &crate::store::StoreError) -> ApiError {
     ApiError::new(ErrorCode::Internal, error.to_string())
+}
+
+/// Mirrors `jiji-cli`'s `deploy_transaction.rs` deployment-id generation: a SHA-256 hex digest of
+/// a wall-clock-nanosecond-plus-pid nonce, not a `uuid` dependency this crate otherwise has no
+/// need for.
+fn generate_cron_run_id(project: &str, service: &str, cron_name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Sha256::digest(
+        format!(
+            "{project}\0{service}\0{cron_name}\0{nonce}\0{}",
+            std::process::id()
+        )
+        .as_bytes(),
+    )
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect()
 }
 
 /// Accepts connections until `listener` is dropped, handling backpressure by immediately
@@ -834,5 +1122,362 @@ mod tests {
         assert!(is_authorized_uid(0));
         assert!(is_authorized_uid(current_uid()));
         assert!(!is_authorized_uid(current_uid() + 12345));
+    }
+
+    fn seeded_cron_spec() -> CronJobSpec {
+        let mut spec = CronJobSpec {
+            project: "demo".into(),
+            service: "twitch".into(),
+            cron_name: "sync-twitch".into(),
+            revision: 1,
+            canonical_hash: String::new(),
+            owner_node_id: "node-a".into(),
+            owner_epoch: 1,
+            source_deployment_id: "dep-a".into(),
+            source_replica_id: "replica-a".into(),
+            image: "ghcr.io/example/twitch-sync:latest".into(),
+            schedule: "7 */2 * * *".into(),
+            timezone: "UTC".into(),
+            timeout_seconds: 3600,
+            overlap: CronOverlap::Forbid,
+            missed_runs: CronMissedRuns::Skip,
+            command: vec!["npm".into(), "run".into(), "sync:twitch".into()],
+            env_file_path: "/var/lib/jiji/demo/env/twitch".into(),
+            mount_args: vec![],
+            resource_args: vec![],
+            bridge_network: "jiji-demo".into(),
+            dns_address: "100.64.0.5".into(),
+        };
+        spec.canonical_hash = spec.canonical_hash();
+        spec
+    }
+
+    fn cron_spec_apply_request(revision: u64, canonical_hash: &str, schedule: &str) -> RequestBody {
+        RequestBody::CronSpecApply {
+            service: "twitch".into(),
+            cron_name: "sync-twitch".into(),
+            revision,
+            canonical_hash: canonical_hash.into(),
+            source_deployment_id: "dep-a".into(),
+            source_replica_id: "replica-a".into(),
+            image: "ghcr.io/example/twitch-sync:latest".into(),
+            schedule: schedule.into(),
+            timezone: "UTC".into(),
+            timeout_seconds: 3600,
+            overlap: CronOverlap::Forbid,
+            missed_runs: CronMissedRuns::Skip,
+            command: vec!["npm".into(), "run".into(), "sync:twitch".into()],
+            env_file_path: "/var/lib/jiji/demo/env/twitch".into(),
+            mount_args: vec![],
+            resource_args: vec![],
+            bridge_network: "jiji-demo".into(),
+            dns_address: "100.64.0.5".into(),
+        }
+    }
+
+    /// Installs an `Active` membership record for `node-a` and returns the matching
+    /// `NodeIdentity`, so `CronSpecApply`'s owner-derivation path (mirroring `CatalogCommit`'s)
+    /// has a real local node to resolve.
+    fn seed_membership(store: &AgentStore) -> NodeIdentity {
+        use crate::membership::{
+            MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
+            MEMBERSHIP_SCHEMA_VERSION,
+        };
+        let scope = MembershipScope::new("demo", 1);
+        let record = MembershipRecord {
+            project_id: "demo".into(),
+            recovery_epoch: 1,
+            protocol_version: MEMBERSHIP_PROTOCOL_VERSION,
+            schema_version: MEMBERSHIP_SCHEMA_VERSION,
+            node_id: "node-a".into(),
+            server_name: "node-a".into(),
+            wireguard_public_key: "wg-node-a".into(),
+            management_address: "100.98.64.2".parse().unwrap(),
+            container_subnet: "198.18.2.0/24".into(),
+            endpoints: vec!["192.0.2.2:51820".parse().unwrap()],
+            owner_epoch: 7,
+            revision: 1,
+            state: MembershipState::Active,
+        };
+        store.apply_membership(record, &scope).unwrap();
+        NodeIdentity {
+            project_id: "demo".into(),
+            recovery_epoch: 1,
+            node_id: "node-a".into(),
+        }
+    }
+
+    async fn spawn_server_with_catalog_identity(dir: &std::path::Path) -> std::path::PathBuf {
+        let socket_path = dir.join("agent.sock");
+        let store = AgentStore::open(&dir.join("agent.sqlite3")).unwrap();
+        let identity = seed_membership(&store);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let api = AgentApi::new(
+            Arc::new(Mutex::new(store)),
+            Identity {
+                project: "demo".into(),
+                engine: "docker".into(),
+            },
+            socket_path.display().to_string(),
+        )
+        .with_catalog_identity(identity);
+        tokio::spawn(serve(listener, api));
+        tokio::task::yield_now().await;
+        socket_path
+    }
+
+    async fn spawn_server_with_seeded_store(
+        dir: &std::path::Path,
+        seed: impl FnOnce(&AgentStore),
+    ) -> std::path::PathBuf {
+        {
+            let store = AgentStore::open(&dir.join("agent.sqlite3")).unwrap();
+            seed(&store);
+        }
+        spawn_server(dir).await
+    }
+
+    #[tokio::test]
+    async fn cron_spec_apply_derives_owner_from_membership_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server_with_catalog_identity(dir.path()).await;
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: cron_spec_apply_request(1, "hash-a", "7 */2 * * *"),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronSpecApplied { spec, outcome } = response else {
+            panic!("expected CronSpecApplied");
+        };
+        assert_eq!(outcome, CronSpecApplyOutcomeKind::Installed);
+        assert_eq!(spec.owner_node_id, "node-a");
+        assert_eq!(spec.owner_epoch, 7);
+        assert_eq!(spec.project, "demo");
+
+        // Re-applying the identical spec is unchanged.
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: cron_spec_apply_request(1, "hash-a", "7 */2 * * *"),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            response,
+            ResponseBody::CronSpecApplied {
+                outcome: CronSpecApplyOutcomeKind::Unchanged,
+                ..
+            }
+        ));
+
+        // A different revision/hash updates.
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: cron_spec_apply_request(2, "hash-b", "0 3 * * *"),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronSpecApplied { spec, outcome } = response else {
+            panic!("expected CronSpecApplied");
+        };
+        assert_eq!(outcome, CronSpecApplyOutcomeKind::Updated);
+        assert_eq!(spec.schedule, "0 3 * * *");
+
+        let list = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronSpecList,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronSpecs { specs } = list else {
+            panic!("expected CronSpecs");
+        };
+        assert_eq!(specs.len(), 1);
+
+        let removed = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronSpecRemove {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(removed, ResponseBody::CronSpecRemoved { removed: true });
+    }
+
+    #[tokio::test]
+    async fn cron_spec_apply_without_configured_identity_is_rejected() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server(dir.path()).await;
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: cron_spec_apply_request(1, "hash-a", "7 */2 * * *"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.unwrap_err().code, ErrorCode::Invalid);
+    }
+
+    #[tokio::test]
+    async fn cron_run_accepts_a_manual_run_then_reports_conflict_while_it_is_active() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server_with_seeded_store(dir.path(), |store| {
+            store.apply_cron_spec(&seeded_cron_spec()).unwrap();
+        })
+        .await;
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRun {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                    timestamp: 100,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronRunAccepted { run_id } = response else {
+            panic!("expected CronRunAccepted, got {response:?}");
+        };
+        assert!(!run_id.is_empty());
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRun {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                    timestamp: 101,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            response,
+            ResponseBody::CronRunConflict {
+                active_run_id: run_id
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_run_rejects_a_job_with_no_installed_spec() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server(dir.path()).await;
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRun {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                    timestamp: 100,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn cron_runs_and_cron_status_reflect_a_claimed_run() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server_with_seeded_store(dir.path(), |store| {
+            store.apply_cron_spec(&seeded_cron_spec()).unwrap();
+        })
+        .await;
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRun {
+                    service: "twitch".into(),
+                    cron_name: "sync-twitch".into(),
+                    timestamp: 100,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronRunAccepted { run_id } = response else {
+            panic!("expected CronRunAccepted");
+        };
+
+        let runs = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronRuns {
+                    service: Some("twitch".into()),
+                    cron_name: None,
+                    run_id: None,
+                    since: None,
+                    limit: None,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronRuns { runs } = runs else {
+            panic!("expected CronRuns");
+        };
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, run_id);
+
+        let status = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::CronStatus {
+                    service: None,
+                    cron_name: None,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::CronStatuses { statuses } = status else {
+            panic!("expected CronStatuses");
+        };
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].active_run_id, Some(run_id));
+        assert_eq!(statuses[0].skipped_overlap_count, 0);
     }
 }

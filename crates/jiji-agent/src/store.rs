@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::catalog::{CatalogApply, CatalogError, CatalogRecord, CatalogView};
+use crate::cron::{
+    CronClaimOutcome, CronJobSpec, CronRun, CronRunCause, CronRunFilter, CronRunState,
+    CronSchedulerState, CronSpecApplyOutcome,
+};
 use crate::desired::{DesiredApply, DesiredError, DesiredStateRecord, DesiredStateView};
 use crate::membership::{
     MembershipApply, MembershipError, MembershipRecord, MembershipScope, MembershipState,
@@ -237,6 +241,44 @@ const MIGRATIONS: &[Migration] = &[
                   kind TEXT NOT NULL,
                   detail_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
+              );",
+    },
+    Migration {
+        version: 8,
+        // Local-only (see `cron.rs`'s module doc comment): no `_operations` replication log
+        // table alongside these, unlike membership/catalog/desired-state above. `scheduled_at`
+        // is nullable so SQLite's own NULL-is-never-equal semantics give scheduled runs a real
+        // `(service, cron_name, scheduled_at)` dedup constraint while manual runs (always NULL)
+        // never collide with each other or with a scheduled run.
+        sql: "CREATE TABLE cron_job_specs (
+                  service TEXT NOT NULL,
+                  cron_name TEXT NOT NULL,
+                  revision INTEGER NOT NULL,
+                  canonical_hash TEXT NOT NULL,
+                  spec_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (service, cron_name)
+              );
+              CREATE TABLE cron_runs (
+                  run_id TEXT PRIMARY KEY,
+                  service TEXT NOT NULL,
+                  cron_name TEXT NOT NULL,
+                  cause TEXT NOT NULL,
+                  scheduled_at INTEGER,
+                  claimed_at INTEGER NOT NULL,
+                  state TEXT NOT NULL,
+                  run_json TEXT NOT NULL,
+                  UNIQUE(service, cron_name, scheduled_at)
+              );
+              CREATE INDEX cron_runs_service_cron_name
+                  ON cron_runs(service, cron_name, claimed_at);
+              CREATE TABLE cron_scheduler_state (
+                  service TEXT NOT NULL,
+                  cron_name TEXT NOT NULL,
+                  skipped_overlap_count INTEGER NOT NULL DEFAULT 0,
+                  state_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (service, cron_name)
               );",
     },
 ];
@@ -1320,6 +1362,392 @@ impl AgentStore {
         }
         Ok(liveness)
     }
+
+    /// Idempotent upsert keyed by `(service, cron_name)`, comparing `revision` and
+    /// `canonical_hash` against whatever is already installed (see `cron.rs`'s `CronJobSpec` doc
+    /// comment and the plan's "Agent API" section).
+    pub fn apply_cron_spec(&self, spec: &CronJobSpec) -> Result<CronSpecApplyOutcome, StoreError> {
+        let existing: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT revision, canonical_hash FROM cron_job_specs
+                 WHERE service = ?1 AND cron_name = ?2",
+                params![spec.service, spec.cron_name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let unchanged = existing.as_ref().is_some_and(|(revision, hash)| {
+            *revision == spec.revision as i64 && *hash == spec.canonical_hash
+        });
+        self.conn.execute(
+            "INSERT INTO cron_job_specs
+                 (service, cron_name, revision, canonical_hash, spec_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(service, cron_name) DO UPDATE SET
+               revision = excluded.revision,
+               canonical_hash = excluded.canonical_hash,
+               spec_json = excluded.spec_json,
+               updated_at = excluded.updated_at",
+            params![
+                spec.service,
+                spec.cron_name,
+                spec.revision as i64,
+                spec.canonical_hash,
+                serde_json::to_string(spec)?,
+                now(),
+            ],
+        )?;
+        Ok(if unchanged {
+            CronSpecApplyOutcome::Unchanged(spec.clone())
+        } else if existing.is_some() {
+            CronSpecApplyOutcome::Updated(spec.clone())
+        } else {
+            CronSpecApplyOutcome::Installed(spec.clone())
+        })
+    }
+
+    pub fn remove_cron_spec(&self, service: &str, cron_name: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.execute(
+            "DELETE FROM cron_job_specs WHERE service = ?1 AND cron_name = ?2",
+            params![service, cron_name],
+        )? == 1)
+    }
+
+    pub fn cron_spec(
+        &self,
+        service: &str,
+        cron_name: &str,
+    ) -> Result<Option<CronJobSpec>, StoreError> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT spec_json FROM cron_job_specs WHERE service = ?1 AND cron_name = ?2",
+                params![service, cron_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(StoreError::from))
+            .transpose()
+    }
+
+    pub fn cron_specs(&self) -> Result<Vec<CronJobSpec>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT spec_json FROM cron_job_specs ORDER BY service, cron_name")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_, StoreError>>()
+    }
+
+    /// Transactionally claims a due (scheduled) or requested (manual) cron run (see the plan's
+    /// "Scheduler Rules" section). Checks an exact repeat of the same `(service, cron_name,
+    /// scheduled_at)` first -- unconditionally returning the existing run, regardless of its own
+    /// state -- before the general `overlap: forbid` check, so retrying the identical scheduled
+    /// claim while its own run is still active is never mistaken for a different run blocking it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_cron_run(
+        &self,
+        project: &str,
+        service: &str,
+        cron_name: &str,
+        cause: CronRunCause,
+        scheduled_at: Option<u64>,
+        run_id: &str,
+        timestamp: u64,
+    ) -> Result<CronClaimOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        if let Some(scheduled_at_value) = scheduled_at {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT run_json FROM cron_runs
+                     WHERE service = ?1 AND cron_name = ?2 AND scheduled_at = ?3",
+                    params![service, cron_name, scheduled_at_value as i64],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(existing_json) = existing {
+                tx.commit()?;
+                return Ok(CronClaimOutcome::DuplicateScheduledClaim(
+                    serde_json::from_str(&existing_json)?,
+                ));
+            }
+        }
+
+        let active: Option<String> = tx
+            .query_row(
+                "SELECT run_id FROM cron_runs
+                 WHERE service = ?1 AND cron_name = ?2 AND state IN ('claimed', 'running')
+                 LIMIT 1",
+                params![service, cron_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(active_run_id) = active {
+            let default_state = serde_json::to_string(&SchedulerStateJson {
+                last_evaluated_at: None,
+                next_due_at: None,
+            })?;
+            tx.execute(
+                "INSERT INTO cron_scheduler_state
+                     (service, cron_name, skipped_overlap_count, state_json, updated_at)
+                 VALUES (?1, ?2, 1, ?3, ?4)
+                 ON CONFLICT(service, cron_name) DO UPDATE SET
+                   skipped_overlap_count = skipped_overlap_count + 1,
+                   updated_at = excluded.updated_at",
+                params![service, cron_name, default_state, now()],
+            )?;
+            tx.commit()?;
+            return Ok(CronClaimOutcome::OverlapForbidden { active_run_id });
+        }
+
+        let run = CronRun {
+            run_id: run_id.to_string(),
+            project: project.to_string(),
+            service: service.to_string(),
+            cron_name: cron_name.to_string(),
+            cause,
+            scheduled_at,
+            claimed_at: timestamp,
+            started_at: None,
+            finished_at: None,
+            state: CronRunState::Claimed,
+            deployment_id: None,
+            container_name: None,
+            address: None,
+            exit_code: None,
+            error: None,
+        };
+        tx.execute(
+            "INSERT INTO cron_runs
+                 (run_id, service, cron_name, cause, scheduled_at, claimed_at, state, run_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'claimed', ?7)",
+            params![
+                run.run_id,
+                run.service,
+                run.cron_name,
+                match cause {
+                    CronRunCause::Scheduled => "scheduled",
+                    CronRunCause::Manual => "manual",
+                },
+                scheduled_at.map(|value| value as i64),
+                timestamp as i64,
+                serde_json::to_string(&run)?,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(CronClaimOutcome::Claimed(run))
+    }
+
+    pub fn cron_run(&self, run_id: &str) -> Result<Option<CronRun>, StoreError> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT run_json FROM cron_runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(StoreError::from))
+            .transpose()
+    }
+
+    pub fn active_cron_run(
+        &self,
+        service: &str,
+        cron_name: &str,
+    ) -> Result<Option<CronRun>, StoreError> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT run_json FROM cron_runs
+                 WHERE service = ?1 AND cron_name = ?2 AND state IN ('claimed', 'running')
+                 LIMIT 1",
+                params![service, cron_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| serde_json::from_str(&value).map_err(StoreError::from))
+            .transpose()
+    }
+
+    pub fn cron_runs(&self, filter: &CronRunFilter) -> Result<Vec<CronRun>, StoreError> {
+        let limit = filter.limit.map_or(i64::MAX, i64::from);
+        let since = filter.since.map(|value| value as i64);
+        let mut statement = self.conn.prepare(
+            "SELECT run_json FROM cron_runs
+             WHERE (?1 IS NULL OR service = ?1)
+               AND (?2 IS NULL OR cron_name = ?2)
+               AND (?3 IS NULL OR run_id = ?3)
+               AND (?4 IS NULL OR claimed_at >= ?4)
+             ORDER BY claimed_at DESC
+             LIMIT ?5",
+        )?;
+        let rows = statement.query_map(
+            params![
+                filter.service,
+                filter.cron_name,
+                filter.run_id,
+                since,
+                limit
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_, StoreError>>()
+    }
+
+    /// Moves a claimed run to `running` once its container actually starts. Returns `false`
+    /// (rather than an error) for an unknown `run_id`: a caller bug, not a storage failure.
+    pub fn start_cron_run(
+        &self,
+        run_id: &str,
+        started_at: u64,
+        deployment_id: &str,
+        container_name: &str,
+        address: &str,
+    ) -> Result<bool, StoreError> {
+        let Some(mut run) = self.cron_run(run_id)? else {
+            return Ok(false);
+        };
+        run.state = CronRunState::Running;
+        run.started_at = Some(started_at);
+        run.deployment_id = Some(deployment_id.to_string());
+        run.container_name = Some(container_name.to_string());
+        run.address = Some(address.to_string());
+        self.conn.execute(
+            "UPDATE cron_runs SET state = 'running', run_json = ?2 WHERE run_id = ?1",
+            params![run_id, serde_json::to_string(&run)?],
+        )?;
+        Ok(true)
+    }
+
+    /// Moves a run to a terminal state (`succeeded`/`failed`/`timed_out`/`skipped`). Returns
+    /// `false` for an unknown `run_id`, as `start_cron_run` does.
+    pub fn finish_cron_run(
+        &self,
+        run_id: &str,
+        state: CronRunState,
+        finished_at: u64,
+        exit_code: Option<i32>,
+        error: Option<String>,
+    ) -> Result<bool, StoreError> {
+        let Some(mut run) = self.cron_run(run_id)? else {
+            return Ok(false);
+        };
+        run.state = state;
+        run.finished_at = Some(finished_at);
+        run.exit_code = exit_code;
+        run.error = error;
+        let state_text = match state {
+            CronRunState::Claimed => "claimed",
+            CronRunState::Running => "running",
+            CronRunState::Succeeded => "succeeded",
+            CronRunState::Failed => "failed",
+            CronRunState::TimedOut => "timed_out",
+            CronRunState::Skipped => "skipped",
+        };
+        self.conn.execute(
+            "UPDATE cron_runs SET state = ?2, run_json = ?3 WHERE run_id = ?1",
+            params![run_id, state_text, serde_json::to_string(&run)?],
+        )?;
+        Ok(true)
+    }
+
+    pub fn cron_scheduler_state(
+        &self,
+        service: &str,
+        cron_name: &str,
+    ) -> Result<Option<CronSchedulerState>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT service, cron_name, skipped_overlap_count, state_json
+                 FROM cron_scheduler_state WHERE service = ?1 AND cron_name = ?2",
+                params![service, cron_name],
+                scheduler_state_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Preserves `skipped_overlap_count` (bumped separately, by `claim_cron_run`'s overlap
+    /// path); this only ever touches `last_evaluated_at`/`next_due_at`.
+    pub fn set_cron_scheduler_state(
+        &self,
+        service: &str,
+        cron_name: &str,
+        last_evaluated_at: Option<u64>,
+        next_due_at: Option<u64>,
+    ) -> Result<(), StoreError> {
+        let state_json = serde_json::to_string(&SchedulerStateJson {
+            last_evaluated_at,
+            next_due_at,
+        })?;
+        self.conn.execute(
+            "INSERT INTO cron_scheduler_state
+                 (service, cron_name, skipped_overlap_count, state_json, updated_at)
+             VALUES (?1, ?2, 0, ?3, ?4)
+             ON CONFLICT(service, cron_name) DO UPDATE SET
+               state_json = excluded.state_json,
+               updated_at = excluded.updated_at",
+            params![service, cron_name, state_json, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Applies the plan's "Durable Storage" retention: a completed run older than `keep_seconds`
+    /// is removed unless it is among each job's latest `keep_latest` runs (by `claimed_at`),
+    /// which are kept regardless of age. An active (`claimed`/`running`) run is never removed.
+    pub fn retain_cron_runs(
+        &self,
+        now_ts: u64,
+        keep_seconds: u64,
+        keep_latest: u32,
+    ) -> Result<usize, StoreError> {
+        let cutoff = now_ts.saturating_sub(keep_seconds) as i64;
+        Ok(self.conn.execute(
+            "DELETE FROM cron_runs
+             WHERE state IN ('succeeded', 'failed', 'timed_out', 'skipped')
+               AND claimed_at < ?1
+               AND run_id IN (
+                   SELECT run_id FROM (
+                       SELECT run_id,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY service, cron_name ORDER BY claimed_at DESC
+                              ) AS rn
+                       FROM cron_runs
+                       WHERE state IN ('succeeded', 'failed', 'timed_out', 'skipped')
+                   )
+                   WHERE rn > ?2
+               )",
+            params![cutoff, keep_latest],
+        )?)
+    }
+}
+
+/// The part of `CronSchedulerState` not already covered by `cron_scheduler_state`'s own indexed
+/// `skipped_overlap_count` column.
+#[derive(Serialize, Deserialize)]
+struct SchedulerStateJson {
+    last_evaluated_at: Option<u64>,
+    next_due_at: Option<u64>,
+}
+
+fn scheduler_state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronSchedulerState> {
+    let service: String = row.get(0)?;
+    let cron_name: String = row.get(1)?;
+    let skipped_overlap_count: i64 = row.get(2)?;
+    let state_json: String = row.get(3)?;
+    let parsed: SchedulerStateJson = serde_json::from_str(&state_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(CronSchedulerState {
+        service,
+        cron_name,
+        last_evaluated_at: parsed.last_evaluated_at,
+        next_due_at: parsed.next_due_at,
+        skipped_overlap_count: skipped_overlap_count.max(0) as u64,
+    })
 }
 
 fn check_integrity(conn: &Connection, path: &Path) -> Result<(), StoreError> {
@@ -1761,5 +2189,525 @@ mod tests {
         // Re-marking the same node updates rather than duplicating.
         store.mark_node_seen("node-a").unwrap();
         assert_eq!(store.node_liveness().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod cron_tests {
+    use super::*;
+    use crate::cron::{CronMissedRuns, CronOverlap};
+    use tempfile::tempdir;
+
+    fn store() -> AgentStore {
+        let dir = tempdir().unwrap();
+        // Leak the tempdir so it outlives the store within a single test; each test gets its own
+        // directory regardless, since `tempdir()` is called fresh per call.
+        let path = dir.keep().join("agent.sqlite3");
+        AgentStore::open(&path).unwrap()
+    }
+
+    fn spec(service: &str, cron_name: &str, revision: u64) -> CronJobSpec {
+        let mut spec = CronJobSpec {
+            project: "demo".into(),
+            service: service.into(),
+            cron_name: cron_name.into(),
+            revision,
+            canonical_hash: String::new(),
+            owner_node_id: "node-a".into(),
+            owner_epoch: 1,
+            source_deployment_id: "dep-a".into(),
+            source_replica_id: "replica-a".into(),
+            image: "ghcr.io/example/twitch-sync:latest".into(),
+            schedule: "7 */2 * * *".into(),
+            timezone: "UTC".into(),
+            timeout_seconds: 3600,
+            overlap: CronOverlap::Forbid,
+            missed_runs: CronMissedRuns::Skip,
+            command: vec!["npm".into(), "run".into(), "sync:twitch".into()],
+            env_file_path: "/var/lib/jiji/demo/env/twitch".into(),
+            mount_args: vec![],
+            resource_args: vec![],
+            bridge_network: "jiji-demo".into(),
+            dns_address: "100.64.0.5".into(),
+        };
+        spec.canonical_hash = spec.canonical_hash();
+        spec
+    }
+
+    #[test]
+    fn apply_cron_spec_reports_installed_then_unchanged_then_updated() {
+        let store = store();
+        let spec = spec("twitch", "sync-twitch", 1);
+
+        assert_eq!(
+            store.apply_cron_spec(&spec).unwrap(),
+            CronSpecApplyOutcome::Installed(spec.clone())
+        );
+        assert_eq!(
+            store.apply_cron_spec(&spec).unwrap(),
+            CronSpecApplyOutcome::Unchanged(spec.clone())
+        );
+
+        let mut changed = spec.clone();
+        changed.revision = 2;
+        changed.schedule = "0 3 * * *".into();
+        changed.canonical_hash = changed.canonical_hash();
+        assert_eq!(
+            store.apply_cron_spec(&changed).unwrap(),
+            CronSpecApplyOutcome::Updated(changed.clone())
+        );
+        assert_eq!(
+            store.cron_spec("twitch", "sync-twitch").unwrap(),
+            Some(changed)
+        );
+    }
+
+    #[test]
+    fn cron_specs_lists_every_installed_spec_sorted() {
+        let store = store();
+        store
+            .apply_cron_spec(&spec("twitch", "sync-twitch", 1))
+            .unwrap();
+        store
+            .apply_cron_spec(&spec("backups", "nightly", 1))
+            .unwrap();
+        let names: Vec<(String, String)> = store
+            .cron_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| (spec.service, spec.cron_name))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("backups".to_string(), "nightly".to_string()),
+                ("twitch".to_string(), "sync-twitch".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_cron_spec_deletes_an_installed_spec_and_is_idempotent() {
+        let store = store();
+        store
+            .apply_cron_spec(&spec("twitch", "sync-twitch", 1))
+            .unwrap();
+        assert!(store.remove_cron_spec("twitch", "sync-twitch").unwrap());
+        assert!(store.cron_spec("twitch", "sync-twitch").unwrap().is_none());
+        assert!(!store.remove_cron_spec("twitch", "sync-twitch").unwrap());
+    }
+
+    #[test]
+    fn claim_cron_run_claims_a_fresh_manual_run() {
+        let store = store();
+        let outcome = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Manual,
+                None,
+                "run-1",
+                100,
+            )
+            .unwrap();
+        let CronClaimOutcome::Claimed(run) = outcome else {
+            panic!("expected Claimed, got {outcome:?}");
+        };
+        assert_eq!(run.run_id, "run-1");
+        assert_eq!(run.cause, CronRunCause::Manual);
+        assert_eq!(run.scheduled_at, None);
+        assert_eq!(run.state, CronRunState::Claimed);
+        assert_eq!(
+            store.active_cron_run("twitch", "sync-twitch").unwrap(),
+            Some(run)
+        );
+    }
+
+    #[test]
+    fn claim_cron_run_forbids_overlap_while_a_run_is_active_and_counts_the_skip() {
+        let store = store();
+        store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Manual,
+                None,
+                "run-1",
+                100,
+            )
+            .unwrap();
+
+        let outcome = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(200),
+                "run-2",
+                200,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            CronClaimOutcome::OverlapForbidden {
+                active_run_id: "run-1".to_string()
+            }
+        );
+        assert_eq!(
+            store
+                .cron_scheduler_state("twitch", "sync-twitch")
+                .unwrap()
+                .unwrap()
+                .skipped_overlap_count,
+            1
+        );
+        // The forbidden claim must never have inserted a row for run-2.
+        assert!(store.cron_run("run-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn claim_cron_run_replays_a_duplicate_scheduled_claim_without_starting_a_new_run() {
+        let store = store();
+        let first = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(100),
+                "run-1",
+                100,
+            )
+            .unwrap();
+        let CronClaimOutcome::Claimed(first_run) = first else {
+            panic!("expected Claimed");
+        };
+
+        // A retried claim of the exact same scheduled time, even while that run is still
+        // active, must return the existing run rather than treating it as an overlap.
+        let replay = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(100),
+                "run-2",
+                101,
+            )
+            .unwrap();
+        assert_eq!(replay, CronClaimOutcome::DuplicateScheduledClaim(first_run));
+        assert!(store.cron_run("run-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn different_scheduled_times_claim_independently_once_the_prior_run_finishes() {
+        let store = store();
+        let CronClaimOutcome::Claimed(first) = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(100),
+                "run-1",
+                100,
+            )
+            .unwrap()
+        else {
+            panic!("expected Claimed");
+        };
+        store
+            .finish_cron_run(&first.run_id, CronRunState::Succeeded, 150, Some(0), None)
+            .unwrap();
+
+        let outcome = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(200),
+                "run-2",
+                200,
+            )
+            .unwrap();
+        assert!(matches!(outcome, CronClaimOutcome::Claimed(_)));
+    }
+
+    #[test]
+    fn start_and_finish_cron_run_update_state_and_report_unknown_run_ids() {
+        let store = store();
+        let CronClaimOutcome::Claimed(run) = store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Manual,
+                None,
+                "run-1",
+                100,
+            )
+            .unwrap()
+        else {
+            panic!("expected Claimed");
+        };
+
+        assert!(store
+            .start_cron_run(
+                &run.run_id,
+                101,
+                "dep-b",
+                "demo-twitch-cron-sync-twitch-abc123",
+                "100.64.0.9"
+            )
+            .unwrap());
+        let started = store.cron_run(&run.run_id).unwrap().unwrap();
+        assert_eq!(started.state, CronRunState::Running);
+        assert_eq!(started.deployment_id.as_deref(), Some("dep-b"));
+
+        assert!(store
+            .finish_cron_run(&run.run_id, CronRunState::Succeeded, 130, Some(0), None)
+            .unwrap());
+        let finished = store.cron_run(&run.run_id).unwrap().unwrap();
+        assert_eq!(finished.state, CronRunState::Succeeded);
+        assert_eq!(finished.exit_code, Some(0));
+        assert_eq!(finished.finished_at, Some(130));
+        assert!(store
+            .active_cron_run("twitch", "sync-twitch")
+            .unwrap()
+            .is_none());
+
+        assert!(!store
+            .start_cron_run("no-such-run", 1, "d", "c", "a")
+            .unwrap());
+        assert!(!store
+            .finish_cron_run("no-such-run", CronRunState::Failed, 1, None, None)
+            .unwrap());
+    }
+
+    #[test]
+    fn cron_runs_filters_by_service_cron_name_run_id_since_and_limit() {
+        let store = store();
+        for (service, cron_name, run_id, claimed_at) in [
+            ("twitch", "sync-twitch", "run-1", 100u64),
+            ("twitch", "sync-twitch", "run-2", 200),
+            ("twitch", "cleanup", "run-3", 300),
+            ("backups", "nightly", "run-4", 400),
+        ] {
+            store
+                .claim_cron_run(
+                    "demo",
+                    service,
+                    cron_name,
+                    CronRunCause::Scheduled,
+                    Some(claimed_at),
+                    run_id,
+                    claimed_at,
+                )
+                .unwrap();
+            store
+                .finish_cron_run(
+                    run_id,
+                    CronRunState::Succeeded,
+                    claimed_at + 1,
+                    Some(0),
+                    None,
+                )
+                .unwrap();
+        }
+
+        let by_service = store
+            .cron_runs(&CronRunFilter {
+                service: Some("twitch".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_service.len(), 3);
+
+        let by_cron_name = store
+            .cron_runs(&CronRunFilter {
+                service: Some("twitch".into()),
+                cron_name: Some("cleanup".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_cron_name.len(), 1);
+        assert_eq!(by_cron_name[0].run_id, "run-3");
+
+        let by_run_id = store
+            .cron_runs(&CronRunFilter {
+                run_id: Some("run-2".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(by_run_id.len(), 1);
+
+        let since = store
+            .cron_runs(&CronRunFilter {
+                since: Some(300),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(since.len(), 2);
+
+        let limited = store
+            .cron_runs(&CronRunFilter {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        // ORDER BY claimed_at DESC: the single row returned must be the most recent.
+        assert_eq!(limited[0].run_id, "run-4");
+    }
+
+    #[test]
+    fn set_cron_scheduler_state_preserves_the_skip_counter() {
+        let store = store();
+        store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Manual,
+                None,
+                "run-1",
+                100,
+            )
+            .unwrap();
+        store
+            .claim_cron_run(
+                "demo",
+                "twitch",
+                "sync-twitch",
+                CronRunCause::Scheduled,
+                Some(200),
+                "run-2",
+                200,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .cron_scheduler_state("twitch", "sync-twitch")
+                .unwrap()
+                .unwrap()
+                .skipped_overlap_count,
+            1
+        );
+
+        store
+            .set_cron_scheduler_state("twitch", "sync-twitch", Some(200), Some(7_200))
+            .unwrap();
+        let state = store
+            .cron_scheduler_state("twitch", "sync-twitch")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.last_evaluated_at, Some(200));
+        assert_eq!(state.next_due_at, Some(7_200));
+        assert_eq!(state.skipped_overlap_count, 1);
+    }
+
+    #[test]
+    fn retain_cron_runs_keeps_the_latest_n_regardless_of_age_and_never_removes_active_runs() {
+        let store = store();
+        // Five terminal runs, 1 day apart starting at t=0; keep_seconds=1 day means only the
+        // very latest survives on age alone, but keep_latest=2 protects one more.
+        for i in 0..5u64 {
+            let claimed_at = i * 86_400;
+            let run_id = format!("run-{i}");
+            store
+                .claim_cron_run(
+                    "demo",
+                    "twitch",
+                    "sync-twitch",
+                    CronRunCause::Scheduled,
+                    Some(claimed_at),
+                    &run_id,
+                    claimed_at,
+                )
+                .unwrap();
+            store
+                .finish_cron_run(
+                    &run_id,
+                    CronRunState::Succeeded,
+                    claimed_at + 1,
+                    Some(0),
+                    None,
+                )
+                .unwrap();
+        }
+        // A still-active run must survive regardless of age.
+        store
+            .claim_cron_run(
+                "demo",
+                "backups",
+                "nightly",
+                CronRunCause::Scheduled,
+                Some(0),
+                "run-active",
+                0,
+            )
+            .unwrap();
+
+        let now_ts = 4 * 86_400;
+        let removed = store.retain_cron_runs(now_ts, 86_400, 2).unwrap();
+        // Cutoff is now_ts - 86_400 = 259_200: run-0/1/2 are older than that. Rank (by
+        // claimed_at DESC) beyond the latest 2 is run-0/1/2 too, so all three are removed;
+        // run-3 and run-4 survive on rank alone even though run-2 also satisfies the age check.
+        assert_eq!(
+            removed, 3,
+            "run-0, run-1, and run-2 are old and beyond the latest 2"
+        );
+
+        let remaining: Vec<String> = store
+            .cron_runs(&CronRunFilter::default())
+            .unwrap()
+            .into_iter()
+            .map(|run| run.run_id)
+            .collect();
+        assert!(!remaining.contains(&"run-0".to_string()));
+        assert!(!remaining.contains(&"run-1".to_string()));
+        assert!(!remaining.contains(&"run-2".to_string()));
+        assert!(remaining.contains(&"run-3".to_string()));
+        assert!(remaining.contains(&"run-4".to_string()));
+        assert!(remaining.contains(&"run-active".to_string()));
+    }
+
+    #[test]
+    fn retain_cron_runs_protects_old_runs_within_the_latest_n() {
+        let store = store();
+        for i in 0..5u64 {
+            let claimed_at = i * 86_400;
+            let run_id = format!("run-{i}");
+            store
+                .claim_cron_run(
+                    "demo",
+                    "twitch",
+                    "sync-twitch",
+                    CronRunCause::Scheduled,
+                    Some(claimed_at),
+                    &run_id,
+                    claimed_at,
+                )
+                .unwrap();
+            store
+                .finish_cron_run(
+                    &run_id,
+                    CronRunState::Succeeded,
+                    claimed_at + 1,
+                    Some(0),
+                    None,
+                )
+                .unwrap();
+        }
+        // Every run is well past a 1-day cutoff, but keep_latest=100 exceeds the total run
+        // count, so rank alone protects all of them regardless of age.
+        let removed = store.retain_cron_runs(4 * 86_400, 86_400, 100).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(store.cron_runs(&CronRunFilter::default()).unwrap().len(), 5);
     }
 }
