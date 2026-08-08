@@ -1,0 +1,18 @@
+[build]
+incremental = true
+
+# Uncomment to use mold linker (30-40% faster linking for 22 integration binaries).
+# Requires `mold` and `clang` installed: sudo apt-get install mold clang
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# [target.aarch64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Uncomment to use sccache (caches libsqlite3-sys C compilation, the largest
+# single crate in this workspace due to `rusqlite/bundled`).
+# Requires `cargo install sccache` and `export RUSTC_WRAPPER=sccache`
+# [build]
+# rustc-wrapper = "sccache"

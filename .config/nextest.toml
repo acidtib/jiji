@@ -1,0 +1,11 @@
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Run test binaries in parallel (nextest default), but keep heavy SSH tests from
+# saturating the runner. Each integration binary spawns full russh servers.
+[test-groups]
+heavy = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = "binary(deploy_test) | binary(server_setup_test) | binary(remote_build_test) | binary(server_teardown_test)"
+test-group = "heavy"
