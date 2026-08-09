@@ -278,25 +278,23 @@ pub async fn run(
             }
         }
         if config.builder.registry.is_local() {
-                Ui::section("Local Registry:");
-                registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
-                    .await?;
+            Ui::section("Local Registry:");
+            registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
+                .await?;
         } else {
-                let raw_password =
-                    config.builder.registry.password.as_deref().ok_or_else(|| {
+            let raw_password = config.builder.registry.password.as_deref().ok_or_else(|| {
                         anyhow::anyhow!(
                             "`jiji deploy --build` requires `builder.registry.password` so deploy hosts can pull the built image."
                         )
                     })?;
-                if config.builder.registry.username.is_none() {
-                    anyhow::bail!(
-                        "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
-                    );
-                }
-                let password =
-                    registry::resolve_registry_password(raw_password, &loaded_env, host_env)
-                        .await?;
-                registry_password = Some(password);
+            if config.builder.registry.username.is_none() {
+                anyhow::bail!(
+                    "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
+                );
+            }
+            let password = registry::resolve_registry_password(raw_password, &loaded_env, host_env)
+                .await?;
+            registry_password = Some(password);
         }
         let mut executor = build_executor::BuildExecutor::prepare(
             executor_target,

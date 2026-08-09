@@ -32,9 +32,12 @@ fn salted_hash(salt: &str, project: &str) -> u64 {
 /// remains available when either derived range overlaps infrastructure outside Jiji's control.
 pub fn project_cidrs(project: &str) -> (String, String) {
     let slot = salted_hash("cidr", project) % 64;
+    let [management_first, management_second] = jiji_core::DEFAULT_MANAGEMENT_POOL_PREFIX;
+    let [container_first, container_base] = jiji_core::DEFAULT_CONTAINER_POOL_PREFIX;
+    let container_second = u64::from(container_base) + slot;
     (
-        format!("198.18.{slot}.0/24"),
-        format!("100.{}.0.0/16", 64 + slot),
+        format!("{management_first}.{management_second}.{slot}.0/24"),
+        format!("{container_first}.{container_second}.0.0/16"),
     )
 }
 

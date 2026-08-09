@@ -149,10 +149,8 @@ pub async fn run(
                     &format!("Tunneled local registry to {executor_identity}"),
                     1,
                 )
-            } else {
-                if resolved_password.is_some() {
-                    Ui::say(&format!("Logged in on {executor_identity}"), 1);
-                }
+            } else if resolved_password.is_some() {
+                Ui::say(&format!("Logged in on {executor_identity}"), 1);
             }
         }
     }

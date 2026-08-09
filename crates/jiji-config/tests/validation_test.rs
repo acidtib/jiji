@@ -494,6 +494,34 @@ services:
 }
 
 #[test]
+fn registry_credentials_without_server_are_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  registry:
+    username: demo
+    password: REGISTRY_PASSWORD
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    let error = result
+        .errors
+        .iter()
+        .find(|error| error.code == "REGISTRY_CREDENTIALS_REQUIRE_SERVER")
+        .expect("expected registry credentials without a server to be rejected");
+    assert_eq!(error.path, "builder.registry.server");
+}
+
+#[test]
 fn builder_local_false_with_valid_remote_validates_cleanly() {
     let raw = parse(
         r#"

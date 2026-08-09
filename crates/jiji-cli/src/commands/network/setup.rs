@@ -42,6 +42,23 @@ pub(crate) fn network_current(slug: &str) -> String {
     format!("{}/current", network_dir(slug))
 }
 
+fn address_range_marker(plan: &NetworkPlan) -> String {
+    format!(
+        "{} {} {}\n",
+        project_marker_identity(&plan.project),
+        plan.management_cidr,
+        plan.container_cidr
+    )
+}
+
+fn project_marker_identity(project: &str) -> String {
+    let mut identity = String::with_capacity(64);
+    for byte in Sha256::digest(project.as_bytes()) {
+        write!(identity, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    identity
+}
+
 // Version 5 separates immutable mesh artifacts from service-runtime/DNS
 // artifacts. It is an intentional clean break: older monolithic installations
 // must be torn down and set up again rather than activated through this code.
@@ -447,26 +464,25 @@ async fn apply_connected(
         require_root(&host.session).await?;
         reject_monolithic_generation(&host.session, &slug).await?;
         ensure_engine_available(&host.session, config.builder.engine).await?;
+        if mesh_current[&host.name] {
+            write_generation_file(
+                &host.session,
+                &format!("{}/address-ranges", network_current(&slug)),
+                "0644",
+                &address_range_marker(plan),
+            )
+            .await?;
+            Ui::say(&format!("{}: mesh address ranges unchanged", host.name), 1);
+            continue;
+        }
         let migration = inspect_conflicts(
             &host.session,
             &host.name,
             &plan.servers[&host.name],
             plan,
             config.builder.engine,
-            &slug,
         )
         .await?;
-        if mesh_current[&host.name] {
-            write_generation_file(
-                &host.session,
-                &format!("{}/address-ranges", network_current(&slug)),
-                "0644",
-                &format!("{} {}\n", plan.management_cidr, plan.container_cidr),
-            )
-            .await?;
-            Ui::say(&format!("{}: mesh address ranges unchanged", host.name), 1);
-            continue;
-        }
         if let Some(migration) = migration {
             migrations.insert(host.name.clone(), migration);
             Ui::say(
@@ -876,19 +892,21 @@ async fn inspect_conflicts(
     server_plan: &ServerPlan,
     plan: &NetworkPlan,
     engine: ContainerEngine,
-    slug: &str,
 ) -> anyhow::Result<Option<BridgeMigration>> {
     let network_command = BridgeProvisioner::network_inspection_command(engine);
+    let network_root = network_dir("");
+    let project_identity = project_marker_identity(&plan.project);
     let command = format!(
         "ip -o -4 route show table all; {network_command}; \
          wg show all listen-port 2>/dev/null | sed 's/^/PORT /' || true; \
          ip -o -4 address show | sed 's/^/ADDR /'; \
-         for range_file in /etc/jiji/network/*/current/address-ranges; do \
+         for range_file in {network_root}*/current/address-ranges; do \
            test -f \"$range_file\" || continue; \
-           owner=${{range_file#/etc/jiji/network/}}; owner=${{owner%%/*}}; \
-           test \"$owner\" = \"{slug}\" && continue; \
-           read management container < \"$range_file\" || continue; \
-           printf 'RANGE %s %s %s\\n' \"$owner\" \"$management\" \"$container\"; \
+           owner=${{range_file#{network_root}}}; owner=${{owner%%/*}}; \
+           read identity management container < \"$range_file\" || continue; \
+           if test -z \"$container\"; then container=$management; management=$identity; identity=$owner; fi; \
+           test \"$identity\" = \"{project_identity}\" && continue; \
+           printf 'RANGE %s %s %s\\n' \"$identity\" \"$management\" \"$container\"; \
          done"
     );
     let result = session.execute(&command).await?;
@@ -1193,7 +1211,7 @@ async fn stage_host(
             session,
             &format!("{generation_dir}/address-ranges"),
             "0644",
-            &format!("{} {}\n", plan.management_cidr, plan.container_cidr),
+            &address_range_marker(plan),
         )
         .await?;
         write_generation_file(
@@ -1833,6 +1851,17 @@ services:
             true,
         );
         assert!(!command.contains("; ;"), "command: {command}");
+    }
+
+    #[test]
+    fn address_range_marker_uses_the_full_project_identity() {
+        let first = project_marker_identity("abcdefghijklmnopqrst-first");
+        let second = project_marker_identity("abcdefghijklmnopqrst-second");
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 64);
+
+        let marker = address_range_marker(&plan());
+        assert!(marker.starts_with(&format!("{} ", project_marker_identity("demo"))));
     }
 
     #[test]

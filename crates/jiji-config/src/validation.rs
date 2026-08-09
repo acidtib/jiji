@@ -312,6 +312,15 @@ fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+    if builder.registry.server.is_none()
+        && (builder.registry.username.is_some() || builder.registry.password.is_some())
+    {
+        errors.push(ValidationError {
+            path: "builder.registry.server".to_string(),
+            message: "Registry credentials require `builder.registry.server`; add the remote registry server or remove `username` and `password` to use Jiji's local registry".to_string(),
+            code: "REGISTRY_CREDENTIALS_REQUIRE_SERVER",
+        });
+    }
 }
 
 /// jiji-proxy supports a single-label wildcard host (`*.example.com`,
