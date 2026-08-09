@@ -28,6 +28,9 @@ services:
 fn run_build(config: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("build")
+        // These tests cover executor selection. A push would prepare the configured registry
+        // first and make the result depend on Docker and local registry state on the test host.
+        .arg("--no-push")
         .arg("-c")
         .arg(config)
         .output()
