@@ -326,6 +326,7 @@ async fn list_reports_installed_and_drifted_states() {
         active_catalog_response_for("worker", &replica_id, "dep-a"),
     );
     responses.insert(agent_request_command("cron-spec-list"), success(&specs));
+    responses.insert("pwd".to_string(), success("/root"));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path);

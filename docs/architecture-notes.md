@@ -472,14 +472,30 @@ Cron specs and run history are agent-local and **deliberately never
 replicated** between hosts, unlike the catalog (`cron.rs`'s module doc: "only
 a job's assigned owner ever needs it, so there is no `RecordProvenance`/
 anti-entropy machinery here"). The practical consequence: finding a stale
-spec left behind on a *former* owner after an ownership transfer requires
-connecting to that host's agent directly -- there is no other way to
-discover it. `cron_reconcile.rs` therefore connects to every server in a
-cron-having service's `servers:` list, not just whatever `-H`/`-S` the
+spec -- left behind on a *former* owner after an ownership transfer, or left
+behind entirely because its `crons:` entry was renamed or deleted -- requires
+connecting to every eligible agent and asking what it actually has
+installed; the CLI has no memory of what used to be configured, so there is
+no other way to discover one. `cron_reconcile.rs` therefore connects to
+every server in a service's `servers:` list, not just whatever `-H`/`-S` the
 triggering command selected, extending the caller's SSH session pool in
-place and closing only the sessions it newly opened. A cron-only failure
-(installation, not the deploy itself) is reported as a human-readable
-problem, never a rolled-back deploy -- a service deployment that already
+place and closing only the sessions it newly opened, and always sweeps every
+one of them (`remove_specs_absent_from`: list installed specs, remove
+whatever isn't in the current desired set) after installing on the owner --
+even when `service.crons` is now empty, and even when installation itself
+failed (a broken owner shouldn't block cleanup on hosts that are still
+reachable). `remove_all_cron_specs` (`service remove`) uses the same sweep
+with an empty desired set, removing every installed spec for the service
+regardless of `crons:`'s current content. (Found by code review, not a
+real-host incident: an earlier version of this reconciliation only removed
+specs whose names were still present in the current config, so a renamed or
+deleted `crons:` entry -- or a service whose `crons:` block became empty --
+left its old installation running forever, undiscoverable by `service
+remove` either, since it had the same current-config dependency.)
+
+A cron-only failure (installation, not the deploy itself) is reported as a
+human-readable problem, never a rolled-back deploy -- a service deployment
+that already
 succeeded must not be undone for a cron-only failure.
 
 ### Execution model

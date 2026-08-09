@@ -199,20 +199,39 @@ Each service can define `crons:` (name -> `CronConfig`: `schedule`,
 The CLI picks the lowest-ordinal Active/Healthy replica as the job's
 *owner* (`cron_reconcile::select_cron_owner`) and pushes an idempotent
 `CronSpecApply` to that replica's `jiji-agent` after every deploy/restart/
-rollback/scale that could move ownership (`reconcile_after_deploy`);
-`service remove` unconditionally removes it. Cron specs and run history are
-agent-local and deliberately never replicated (unlike the catalog): finding
-a stale spec left on a former owner after an ownership transfer requires
-connecting to every eligible server's agent directly, which is why
-`cron_reconcile.rs` extends the caller's SSH session pool to the whole
-`servers:` list, not just whatever `-H`/`-S` selected. The owning agent's
-own scheduler (`jiji-agent/src/scheduler.rs`) claims and runs jobs itself,
-in a fresh one-off container per run (`cron_exec.rs`), reusing the durable
+rollback (`reconcile_after_deploy`) or `scale` (calls `reconcile_service_crons`
+directly instead, since scaling can move ownership without a redeploy),
+whether or not the service currently has `crons:` configured; `service
+remove` unconditionally removes every installed spec for the service. Cron
+specs and run history are agent-local and deliberately never replicated
+(unlike the catalog): finding a stale spec -- left on a former owner after
+an ownership transfer, or left behind because its `crons:` entry was
+renamed/deleted -- requires connecting to every eligible server's agent and
+asking what it actually has installed, which is why `cron_reconcile.rs`
+extends the caller's SSH session pool to the whole `servers:` list (not just
+whatever `-H`/`-S` selected) and always sweeps every one of them (list
+installed specs, remove whatever isn't in the current desired set), even
+when `service.crons` is now empty. The owning agent's own scheduler
+(`jiji-agent/src/scheduler.rs`) claims and runs jobs itself, in a fresh
+one-off container per run (`cron_exec.rs`), reusing the durable
 `AddressAllocator`/`address_leases` machinery (`cron_replica_id(service,
 cron_name)` naming) rather than any new leasing path. `missed_runs: skip`
 collapses any pile-up of missed ticks by comparing the schedule's natural
 next occurrence against "next after now" -- no separate startup-recovery
 pass needed.
+
+Two bugs found by code review, not real-host testing: an earlier version of
+the sweep above only removed specs whose names were still present in the
+current `service.crons` map, so a renamed/deleted entry (or a service whose
+`crons:` block went empty) left its old installation running forever,
+undiscoverable by `service remove` either. Separately, `jiji service cron
+list`'s drift check (`commands/service/cron/list.rs`) must recompute a
+spec's expected hash using the exact same absolutized `env_file_path`/
+`mount_args` the sweep above installs with (`remote_home_dir`/`absolutize`/
+`absolutize_mount_args`, all `pub(crate)` from `cron_reconcile.rs` for this
+reason) -- comparing against the unabsolutized form reports every installed
+job as permanently `drifted`, regardless of whether anything actually
+changed.
 
 Two gotchas confirmed live, both because `jiji-agent` spawns cron
 containers directly via `tokio::process::Command`, never over SSH:

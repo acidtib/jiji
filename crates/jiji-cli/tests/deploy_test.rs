@@ -55,6 +55,8 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"node-test","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}}"#
     } else if command.contains("# jiji-request:release-address") {
         r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else if command.contains("# jiji-request:cron-spec-list") {
+        r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
     } else if command.contains("# jiji-request:health") {
         return success(&format!(
             r#"{{"Ok":{{"type":"health","schema_version":1,"observation_count":0,"version":"{}"}}}}"#,
@@ -979,6 +981,64 @@ async fn deploy_reports_a_partial_failure_when_cron_installation_fails_without_u
     assert!(
         stderr.contains("Run `jiji deploy` again"),
         "the error must tell the operator to redeploy: {stderr}"
+    );
+}
+
+/// A `type=cron_specs` response reporting one spec still installed for `web`'s `orphaned` cron --
+/// used to simulate a cron entry that was renamed or deleted from `crons:` (or a service that
+/// dropped `crons:` entirely) while a previous installation is still sitting on the agent.
+fn cron_specs_response_with_one_orphan() -> CannedResponse {
+    success(
+        r#"{"Ok":{"type":"cron_specs","specs":[{"project":"demo","service":"web","cron_name":"orphaned","revision":1,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-c1fe97ed0787","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":"/root/.jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"}]}}"#,
+    )
+}
+
+/// Regression test: a cron spec that disappeared from configuration (renamed, deleted, or the
+/// whole `crons:` block removed) must be swept up on the next deploy, not left running forever.
+/// `web` here has no `crons:` at all -- the sweep must still run and find/remove the orphan
+/// reported by the canned `cron-spec-list` response above, even though there is nothing to
+/// install.
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_removes_a_cron_spec_that_disappeared_from_configuration() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+    responses.insert(
+        agent_request_command("cron-spec-list"),
+        cron_specs_response_with_one_orphan(),
+    );
+    responses.insert(
+        agent_request_command("cron-spec-remove"),
+        success(r#"{"Ok":{"type":"cron_spec_removed","removed":true}}"#),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("# jiji-request:cron-spec-remove")),
+        "a cron spec no longer present in configuration must be removed from its agent: {received:?}"
     );
 }
 

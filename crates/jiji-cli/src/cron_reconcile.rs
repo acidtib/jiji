@@ -1,17 +1,20 @@
 //! Installs/removes cron job specifications on the owning replica's agent
 //! (`docs/architecture-notes.md#ownership-and-reconciliation`).
 //! Called by `jiji deploy`/`jiji service restart`/`rollback` (via `reconcile_after_deploy`, after
-//! every endpoint of a service with `crons:` configured has deployed successfully), by `jiji
-//! service scale` (ownership may move even without a redeploy), and by `jiji service remove`
-//! (unconditional removal, no ownership computation needed).
+//! every endpoint of a service has deployed successfully, whether or not it currently has
+//! `crons:` configured), by `jiji service scale` (ownership may move even without a redeploy),
+//! and by `jiji service remove` (unconditional removal, no ownership computation needed).
 //!
 //! Cron specs are never replicated between agents (see `jiji_agent::cron`'s module doc comment),
-//! so finding a stale spec left on a former owner after a transfer requires actually connecting
-//! to that host's agent -- the CLI cannot discover it any other way. This module therefore
-//! connects to every server in a cron-having service's `servers:` list, not just whatever the
-//! current command's `-H`/`-S` filters selected, extending the caller's session map in place.
+//! so finding a stale spec -- left on a former owner after an ownership transfer, or left behind
+//! entirely because its `crons:` entry was renamed or deleted -- requires actually connecting to
+//! every eligible agent and asking what it has installed; the CLI has no other way to discover it
+//! and no memory of what used to be configured. This module therefore connects to every server in
+//! a service's `servers:` list, not just whatever the current command's `-H`/`-S` filters
+//! selected, extending the caller's session map in place, and always sweeps every one of them
+//! (`remove_specs_absent_from`) regardless of whether `service.crons` is empty.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -161,7 +164,13 @@ pub(crate) fn owner_env_file_path(project: &str, service_name: &str, owner_serve
 /// `mounts::remote_mount_base`'s `.jiji/...`-relative paths implicitly resolve against (confirmed
 /// live: a scheduled cron run failed with "no such file or directory" against jiji-agent's own `/`
 /// working directory). A cron spec sent to the agent must therefore carry an absolute path.
-async fn remote_home_dir(session: &SshSession) -> anyhow::Result<String> {
+///
+/// `pub(crate)`: also used by `commands/service/cron/list.rs`, which must render the exact same
+/// absolute paths to recompute a spec's expected `canonical_hash` for drift detection -- a
+/// relative path there would make every installed cron report `drifted` unconditionally, since
+/// the actually-installed hash (computed here, from `reconcile_service_crons_inner`) always has
+/// the absolute form baked in.
+pub(crate) async fn remote_home_dir(session: &SshSession) -> anyhow::Result<String> {
     let result = session.execute("pwd").await.with_context(|| {
         format!(
             "could not determine the home directory on {}",
@@ -179,14 +188,14 @@ async fn remote_home_dir(session: &SshSession) -> anyhow::Result<String> {
     Ok(home.to_string())
 }
 
-fn absolutize(home: &str, relative: &str) -> String {
+pub(crate) fn absolutize(home: &str, relative: &str) -> String {
     format!("{home}/{relative}")
 }
 
 /// Only `.jiji/...`-relative bind-mount sources (from `files:`/`directories:`) need rewriting --
 /// named volumes and already-absolute host bind mounts (`mounts::build_all_mount_args`'s other two
 /// kinds of `-v` argument) pass through unchanged.
-fn absolutize_mount_args(home: &str, args: Vec<String>) -> Vec<String> {
+pub(crate) fn absolutize_mount_args(home: &str, args: Vec<String>) -> Vec<String> {
     args.into_iter()
         .map(|arg| {
             if arg.starts_with(".jiji/") {
@@ -316,10 +325,12 @@ pub(crate) async fn close_newly_opened(
     }
 }
 
-/// Reconciles every `crons:` entry for one service: installs on the current owner, then removes
-/// any stale installation left on a different eligible host by a previous owner (the plan's "If
-/// the owner replica changes, the CLI installs the new specification first. Then it removes the
-/// old specification."). A no-op if the service defines no `crons:`.
+/// Reconciles every `crons:` entry for one service: installs on the current owner, then sweeps
+/// every eligible host (owner included) for an installed spec that no longer belongs there --
+/// left by a previous owner after an ownership transfer, or left behind because its `crons:`
+/// entry was renamed or deleted. Always runs the sweep, even when `service.crons` is now empty
+/// (there may still be a spec installed from before the last edit) and even when installation
+/// itself failed (a broken owner shouldn't block cleanup on hosts that are still reachable).
 ///
 /// Never returns an error the caller should fail its own command over: a service deployment that
 /// already succeeded must not be rolled back for a cron-only failure (Phase 5's "partial failure"
@@ -333,9 +344,6 @@ pub(crate) async fn reconcile_service_crons(
     service: &Service,
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> Vec<String> {
-    if service.crons.is_empty() {
-        return Vec::new();
-    }
     let mut problems = Vec::new();
     let redeploy_hint = "Run `jiji deploy` again to retry cron installation.";
 
@@ -365,6 +373,47 @@ pub(crate) async fn reconcile_service_crons(
 }
 
 async fn reconcile_service_crons_inner(
+    config: &Config,
+    plan: &NetworkPlan,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    redeploy_hint: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+
+    if !service.crons.is_empty() {
+        problems.extend(
+            install_on_owner(config, plan, service_name, service, sessions, redeploy_hint).await,
+        );
+    }
+
+    // Always sweep every eligible session, regardless of whether the install step above ran or
+    // succeeded: the only way to find a spec that disappeared from `crons:` (a rename or a full
+    // deletion) is to ask each agent what it actually has installed and compare against the
+    // current desired set, since the CLI has no memory of what used to be configured.
+    let desired: BTreeSet<&str> = service.crons.keys().map(String::as_str).collect();
+    for (server_name, session) in sessions {
+        problems.extend(
+            remove_specs_absent_from(
+                session,
+                &config.project,
+                service_name,
+                server_name,
+                &desired,
+            )
+            .await,
+        );
+    }
+
+    problems
+}
+
+/// Installs/updates every `crons:` entry on the current owner. Split out from
+/// `reconcile_service_crons_inner` so that function can skip straight to the stale-spec sweep
+/// when `service.crons` is empty, instead of failing here on e.g. "no active, healthy replica"
+/// for a service that was never going to install anything in the first place.
+async fn install_on_owner(
     config: &Config,
     plan: &NetworkPlan,
     service_name: &str,
@@ -463,32 +512,63 @@ async fn reconcile_service_crons_inner(
         }
     }
 
-    for server_name in &service.servers {
-        if *server_name == owner_server_name {
-            continue;
+    problems
+}
+
+/// Removes every installed spec for `service_name` on `session` whose `cron_name` isn't in
+/// `desired`. `desired` empty removes every installed spec for the service, regardless of
+/// `crons:`'s current content (`remove_all_cron_specs`'s case); a non-empty `desired` set removes
+/// only what's genuinely absent, leaving an untouched spec's revision/hash exactly as installed
+/// (`reconcile_service_crons_inner`'s case, where `install_on_owner` already applied the current
+/// set separately). No `redeploy_hint` here: unlike an install failure, a stale-removal failure
+/// doesn't need a specific "run this command again" pointer -- the next reconciliation pass (any
+/// deploy/restart/rollback/scale) retries it the same way.
+async fn remove_specs_absent_from(
+    session: &SshSession,
+    project: &str,
+    service_name: &str,
+    server_name: &str,
+    desired: &BTreeSet<&str>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let installed = match crate::agent_client::call(
+        session,
+        project,
+        None,
+        RequestBody::CronSpecList,
+    )
+    .await
+    {
+        Ok(ResponseBody::CronSpecs { specs }) => specs,
+        Ok(_) => Vec::new(),
+        Err(error) => {
+            problems.push(format!(
+                "service '{service_name}': could not list installed cron jobs on '{server_name}': {error}"
+            ));
+            return problems;
         }
-        let Some(session) = sessions.get(server_name) else {
-            continue;
-        };
-        for cron_name in service.crons.keys() {
-            if let Err(error) = crate::agent_client::call(
-                session,
-                &config.project,
-                None,
-                RequestBody::CronSpecRemove {
-                    service: service_name.to_string(),
-                    cron_name: cron_name.clone(),
-                },
-            )
-            .await
-            {
-                problems.push(format!(
-                    "service '{service_name}' cron '{cron_name}': could not remove a stale installation on '{server_name}': {error}. {redeploy_hint}"
-                ));
-            }
+    };
+    for spec in installed
+        .iter()
+        .filter(|spec| spec.service == service_name && !desired.contains(spec.cron_name.as_str()))
+    {
+        if let Err(error) = crate::agent_client::call(
+            session,
+            project,
+            None,
+            RequestBody::CronSpecRemove {
+                service: service_name.to_string(),
+                cron_name: spec.cron_name.clone(),
+            },
+        )
+        .await
+        {
+            problems.push(format!(
+                "service '{service_name}' cron '{}': could not remove a stale installation on '{server_name}': {error}",
+                spec.cron_name
+            ));
         }
     }
-
     problems
 }
 
@@ -529,9 +609,6 @@ pub(crate) async fn reconcile_after_deploy(
             continue;
         }
         let service = &config.services[service_name];
-        if service.crons.is_empty() {
-            continue;
-        }
         problems.extend(
             reconcile_service_crons(ssh, config, plan, service_name, service, sessions).await,
         );
@@ -541,8 +618,11 @@ pub(crate) async fn reconcile_after_deploy(
 
 /// `jiji service remove`'s cron reconciliation: unconditional removal from every eligible server,
 /// no ownership computation needed (the plan's "`jiji service remove` removes all cron
-/// specifications for the selected service"). Does not stop an active run (out of scope for this
-/// release, per the plan).
+/// specifications for the selected service"). Removes every spec actually installed for the
+/// service, not just names still present in `service.crons` -- a cron renamed or deleted from
+/// config just before `remove` would otherwise never be cleaned up, the same gap
+/// `reconcile_service_crons` closes for deploy/restart/rollback/scale. Does not stop an active run
+/// (out of scope for this release, per the plan).
 pub(crate) async fn remove_all_cron_specs(
     ssh: &Ssh,
     config: &Config,
@@ -550,9 +630,6 @@ pub(crate) async fn remove_all_cron_specs(
     service: &Service,
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> Vec<String> {
-    if service.crons.is_empty() {
-        return Vec::new();
-    }
     let mut problems = Vec::new();
     let (sessions, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
         .await
@@ -565,27 +642,18 @@ pub(crate) async fn remove_all_cron_specs(
             return problems;
         }
     };
-    for server_name in &service.servers {
-        let Some(session) = sessions.get(server_name) else {
-            continue;
-        };
-        for cron_name in service.crons.keys() {
-            if let Err(error) = crate::agent_client::call(
+    let none_desired = BTreeSet::new();
+    for (server_name, session) in &sessions {
+        problems.extend(
+            remove_specs_absent_from(
                 session,
                 &config.project,
-                None,
-                RequestBody::CronSpecRemove {
-                    service: service_name.to_string(),
-                    cron_name: cron_name.clone(),
-                },
+                service_name,
+                server_name,
+                &none_desired,
             )
-            .await
-            {
-                problems.push(format!(
-                    "service '{service_name}' cron '{cron_name}': could not remove on '{server_name}': {error}"
-                ));
-            }
-        }
+            .await,
+        );
     }
     close_newly_opened(&sessions, &newly_opened).await;
     problems

@@ -110,56 +110,78 @@ async fn list_service_crons(
         Ok(_) | Err(_) => Vec::new(),
     };
 
-    let mount_args =
-        mounts::build_all_mount_args(service, &config.project, service_name).unwrap_or_default();
+    // Drift detection must recompute the exact same absolute paths `cron_reconcile.rs` sends on
+    // install (`remote_home_dir`/`absolutize`/`absolutize_mount_args`), or every installed job
+    // would report `drifted` unconditionally: the actually-installed hash always has the
+    // absolute form baked in, since `jiji-agent` spawns cron containers directly, never over SSH
+    // (see `docs/architecture-notes.md#scheduled-cron-execution-crons`).
+    let owner_home = crate::cron_reconcile::remote_home_dir(&owner.session).await;
+    let mount_args = match (
+        &owner_home,
+        mounts::build_all_mount_args(service, &config.project, service_name),
+    ) {
+        (Ok(home), Ok(args)) => Some(crate::cron_reconcile::absolutize_mount_args(home, args)),
+        _ => None,
+    };
     let resource_args = container_runtime::render_resource_options(service);
-    let env_file_path = crate::cron_reconcile::owner_env_file_path(
-        &config.project,
-        service_name,
-        &owner.server_name,
-    );
+    let env_file_path = owner_home.as_ref().ok().map(|home| {
+        crate::cron_reconcile::absolutize(
+            home,
+            &crate::cron_reconcile::owner_env_file_path(
+                &config.project,
+                service_name,
+                &owner.server_name,
+            ),
+        )
+    });
     let server = plan.servers.get(&owner.server_name);
 
     for (cron_name, cron) in &service.crons {
         let installed = installed_specs
             .iter()
             .find(|spec| spec.service == service_name && spec.cron_name == *cron_name);
-        let state = match (installed, server) {
-            (None, _) => "not-deployed".to_string(),
-            (Some(_), None) => {
-                format!(
+        let state = match installed {
+            None => "not-deployed".to_string(),
+            Some(installed) => match server {
+                None => format!(
                     "installed (drift unknown: '{}' is not in the current network plan)",
                     owner.server_name
-                )
-            }
-            (Some(installed), Some(server)) => {
-                let expected = crate::cron_reconcile::render_apply_request(
-                    service_name,
-                    cron_name,
-                    cron,
-                    &owner.record.image,
-                    &mount_args,
-                    &resource_args,
-                    &env_file_path,
-                    &owner.record.deployment_id,
-                    &owner.assignment.replica_id,
-                    &server.bridge_name,
-                    server.dns_address,
-                    owner.record.revision,
-                );
-                let RequestBody::CronSpecApply {
-                    canonical_hash: expected_hash,
-                    ..
-                } = expected
-                else {
-                    unreachable!("render_apply_request always returns CronSpecApply")
-                };
-                if expected_hash == installed.canonical_hash {
-                    "installed".to_string()
-                } else {
-                    "drifted".to_string()
-                }
-            }
+                ),
+                Some(server) => match (&mount_args, &env_file_path) {
+                    (None, _) | (_, None) => format!(
+                        "installed (drift unknown: could not determine the cron owner's home directory on '{}')",
+                        owner.server_name
+                    ),
+                    (Some(mount_args), Some(env_file_path)) => {
+                        let expected = crate::cron_reconcile::render_apply_request(
+                            service_name,
+                            cron_name,
+                            cron,
+                            &owner.record.image,
+                            mount_args,
+                            &resource_args,
+                            env_file_path,
+                            &owner.record.deployment_id,
+                            &owner.assignment.replica_id,
+                            &server.bridge_name,
+                            server.dns_address,
+                            owner.record.revision,
+                        );
+                        let RequestBody::CronSpecApply {
+                            canonical_hash: expected_hash,
+                            ..
+                        } = expected
+                        else {
+                            unreachable!("render_apply_request always returns CronSpecApply")
+                        };
+                        if expected_hash == installed.canonical_hash {
+                            "installed".to_string()
+                        } else {
+                            "drifted".to_string()
+                        }
+                    }
+                },
+            },
         };
         Ui::say(
             &format!(
