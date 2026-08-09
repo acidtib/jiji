@@ -562,8 +562,9 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   "Deployment Locking" above); `release --replica <id>` / `--service <name>`
   / `--scope host-runtime|proxy` targets a specific stuck lock.
 - `jiji audit`: a per-project, per-server, append-only JSONL trail at
-  `.jiji/{project}/audit.log`. Every state-changing command writes to it.
-  Writes are best-effort (never mask/block the command's own outcome).
+  `.jiji/{project}/audit.log`. Current writers are deploy, service lifecycle,
+  scale, prune, server setup/teardown, and manual lock changes. Writes are
+  best-effort and never mask or block the command's own outcome.
   `-n/--lines`, `-g/--grep`, `--status`, `--json`, `-f/--follow`, `--stats`
   (with `--since`, e.g. `30m`/`12h`/`7d`). `-S`/`--services` is rejected:
   the trail is host-scoped.
@@ -581,6 +582,8 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   either value, so a service configured with them still gets normal bridge
   networking, silently. Only `"bridge"` (default) and `"service:<name>"`
   (see "Container Namespace Sharing" above) actually change behavior today.
+- Audit coverage is incomplete. Network, registry, and proxy mutations do not
+  write audit entries. See `docs/todo.md` for the coverage plan.
 
 ## Testing
 
