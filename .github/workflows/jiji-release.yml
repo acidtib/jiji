@@ -11,150 +11,27 @@ on:
         required: true
 
 jobs:
-  test:
-    uses: ./.github/workflows/ci.yml
-
-  build:
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: jiji-linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: jiji-linux-arm64
-          # Cross-compiling to x86_64 on Apple Silicon hardware rather than
-          # using macos-13 (native Intel): confirmed live, macos-13 runners
-          # can queue indefinitely waiting for a runner to be assigned,
-          # while macos-14 gets one immediately.
-          - os: macos-14
-            target: x86_64-apple-darwin
-            artifact: jiji-macos-x86_64
-          - os: macos-14
-            target: aarch64-apple-darwin
-            artifact: jiji-macos-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build release binary
-        run: cargo build --release --bin jiji --target ${{ matrix.target }}
-
-      - name: Package binary
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/jiji dist/${{ matrix.artifact }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
-
   release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.tag || github.ref }}
-          fetch-depth: 0
-
-      # When backfilling an old tag, the checkout above reverts this whole
-      # tree, including this script, back to whatever existed at that
-      # historical commit -- confirmed live, this shadowed a bugfix that
-      # only existed on main. Always use main's current copy instead.
-      - name: Use current changelog script
-        if: ${{ inputs.tag != '' }}
-        run: git checkout ${{ github.sha }} -- .github/scripts/expand-dependency-changelog.sh
-
-      - name: Get tag version
-        id: get_tag_version
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          echo "TAG_VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      # Reads crates/jiji-cli/CHANGELOG.md directly rather than the GitHub
-      # release's current body: the release body is mutated by this same
-      # job on every run (see "Create GitHub Release" below), so using it
-      # as the starting point is not idempotent -- confirmed live, running
-      # this job twice for the same tag duplicated the whole release body.
-      - name: Extract this release's changelog section
-        id: changelog
-        run: |
-          delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
-          {
-            echo "body<<$delimiter"
-            awk '/^## / { n++ } n==1' crates/jiji-cli/CHANGELOG.md
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Expand bumped crates' actual changelog content
-        id: expanded
-        env:
-          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
-        run: |
-          delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
-          {
-            echo "body<<$delimiter"
-            printf '%s' "$CHANGELOG_BODY" | \
-              .github/scripts/expand-dependency-changelog.sh jiji-cli
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: ncipollo/release-action@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
-          name: v${{ steps.get_tag_version.outputs.TAG_VERSION }}
-          allowUpdates: true
-          generateReleaseNotes: false
-          artifacts: "dist/jiji-linux-x86_64,dist/jiji-linux-arm64,dist/jiji-macos-x86_64,dist/jiji-macos-arm64"
-          body: |
-            ${{ steps.expanded.outputs.body }}
-
-            ## Installation
-
-            ```bash
-            curl -fsSL https://get.jiji.run/install.sh | VERSION=v${{ steps.get_tag_version.outputs.TAG_VERSION }} sh
-            ```
-
-      # A courtesy notification, not part of this repo's release: must never
-      # fail the job over it (confirmed live, an expired/misscoped
-      # JIJI_WEBSITE_DISPATCH_TOKEN red-flagged an otherwise fully
-      # successful binary release).
-      - name: Notify jiji-website of the new release
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
-          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
-        run: |
-          gh api repos/acidtib/jiji-website/dispatches \
-            -f event_type=jiji-release \
-            -f "client_payload[version]=v$TAG_VERSION"
+    uses: ./.github/workflows/binary-release.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      tag_prefix: "v"
+      bin_name: jiji
+      changelog_crate: jiji-cli
+      checksum: false
+      install_instructions: true
+      notify_website: true
+      refresh_changelog_script: ${{ inputs.tag != '' }}
+      # Cross-compiling to x86_64 on Apple Silicon hardware rather than
+      # using macos-13 (native Intel): confirmed live, macos-13 runners
+      # can queue indefinitely waiting for a runner to be assigned,
+      # while macos-14 gets one immediately.
+      matrix_json: >-
+        [
+          {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","artifact":"jiji-linux-x86_64"},
+          {"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","artifact":"jiji-linux-arm64"},
+          {"os":"macos-14","target":"x86_64-apple-darwin","artifact":"jiji-macos-x86_64"},
+          {"os":"macos-14","target":"aarch64-apple-darwin","artifact":"jiji-macos-arm64"}
+        ]
+    secrets:
+      JIJI_WEBSITE_DISPATCH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}

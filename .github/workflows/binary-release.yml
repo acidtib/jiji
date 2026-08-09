@@ -1,0 +1,212 @@
+name: binary release
+
+# Shared build-matrix + GitHub Release logic for the native-binary release
+# workflows (jiji, jiji-agent). jiji-proxy is a Docker image with no binaries
+# and no GitHub Release step, so it stays a separate workflow rather than
+# being folded in here.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to check out, build, and release (short name, e.g. v0.5.2)"
+        required: true
+        type: string
+      tag_prefix:
+        description: "Prefix to strip from the tag to get the version, e.g. v or jiji-agent-v"
+        required: true
+        type: string
+      bin_name:
+        description: "Cargo --bin name to build"
+        required: true
+        type: string
+      changelog_crate:
+        description: "Crate directory under crates/ whose CHANGELOG.md and expand-dependency-changelog.sh argument this release uses"
+        required: true
+        type: string
+      matrix_json:
+        description: "JSON-encoded build matrix: [{os, target, artifact}, ...]"
+        required: true
+        type: string
+      checksum:
+        description: "Generate a sha256 file alongside each binary"
+        required: false
+        type: boolean
+        default: false
+      install_instructions:
+        description: "Append the curl install snippet to the release body"
+        required: false
+        type: boolean
+        default: false
+      notify_website:
+        description: "Dispatch a jiji-website release notification"
+        required: false
+        type: boolean
+        default: false
+      refresh_changelog_script:
+        description: "Re-checkout the changelog script from main (workflow_dispatch backfill only)"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      JIJI_WEBSITE_DISPATCH_TOKEN:
+        required: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.matrix_json) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --bin ${{ inputs.bin_name }} --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ inputs.bin_name }} dist/${{ matrix.artifact }}
+
+      - name: Generate checksum
+        if: ${{ inputs.checksum }}
+        run: sha256sum dist/${{ matrix.artifact }} | awk '{print $1}' > dist/${{ matrix.artifact }}.sha256
+
+      - name: Upload artifact
+        if: ${{ !inputs.checksum }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+      - name: Upload artifact with checksum
+        if: ${{ inputs.checksum }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.artifact }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      # When backfilling an old tag, the checkout above reverts this whole
+      # tree, including this script, back to whatever existed at that
+      # historical commit -- confirmed live, this shadowed a bugfix that
+      # only existed on main. Always use main's current copy instead.
+      - name: Use current changelog script
+        if: ${{ inputs.refresh_changelog_script }}
+        run: git checkout ${{ github.sha }} -- .github/scripts/expand-dependency-changelog.sh
+
+      - name: Get tag version
+        id: get_tag_version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "TAG_VERSION=${TAG#${{ inputs.tag_prefix }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Reads the crate's CHANGELOG.md directly rather than the GitHub
+      # release's current body: the release body is mutated by this same
+      # job on every run (see "Create GitHub Release" below), so using it
+      # as the starting point is not idempotent -- confirmed live, running
+      # this job twice for the same tag duplicated the whole release body.
+      - name: Extract this release's changelog section
+        id: changelog
+        run: |
+          delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            awk '/^## / { n++ } n==1' crates/${{ inputs.changelog_crate }}/CHANGELOG.md
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Expand bumped crates' actual changelog content
+        id: expanded
+        env:
+          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            printf '%s' "$CHANGELOG_BODY" | \
+              .github/scripts/expand-dependency-changelog.sh ${{ inputs.changelog_crate }}
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compose release body
+        id: body
+        env:
+          EXPANDED_BODY: ${{ steps.expanded.outputs.body }}
+          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          INSTALL_INSTRUCTIONS: ${{ inputs.install_instructions }}
+        run: |
+          delimiter="BODY_EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delimiter"
+            printf '%s\n' "$EXPANDED_BODY"
+            if [ "$INSTALL_INSTRUCTIONS" = "true" ]; then
+              printf '\n## Installation\n\n```bash\ncurl -fsSL https://get.jiji.run/install.sh | VERSION=v%s sh\n```\n' "$TAG_VERSION"
+            fi
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ inputs.tag_prefix }}${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          name: ${{ inputs.tag_prefix }}${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          allowUpdates: true
+          generateReleaseNotes: false
+          artifacts: "dist/*"
+          body: |
+            ${{ steps.body.outputs.body }}
+
+      # A courtesy notification, not part of this repo's release: must never
+      # fail the job over it (confirmed live, an expired/misscoped
+      # JIJI_WEBSITE_DISPATCH_TOKEN red-flagged an otherwise fully
+      # successful binary release).
+      - name: Notify jiji-website of the new release
+        if: ${{ inputs.notify_website }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
+          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
+        run: |
+          gh api repos/acidtib/jiji-website/dispatches \
+            -f event_type=jiji-release \
+            -f "client_payload[version]=v$TAG_VERSION"
