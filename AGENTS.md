@@ -124,7 +124,7 @@ cardinality above these outright.
 Full mechanism, protocol/schema-version rejection, and record-provenance
 authentication detail: `docs/architecture-notes.md#distributed-control-plane`.
 
-### Zero-Downtime Deployment Strategy
+### Health-Gated Deployment Strategy
 
 Jiji uses **dynamically leased deployment addresses**, not fixed A/B slots or
 a stable service VIP: a **logical replica** (stable `replica_id`, survives
@@ -139,6 +139,10 @@ down. `service.stop_first: true` is a distinct transaction that stops the
 previous container first, for services that can't tolerate two running
 instances.
 
+Rolling services use a zero-downtime transaction. Direct host-port bindings
+cannot coexist during replacement, and `service.stop_first: true` deliberately
+stops the previous container first.
+
 Full 9-step transaction: `docs/architecture-notes.md#zero-downtime-deployment-strategy`.
 
 ### Private Networking (WireGuard mesh + agent-served DNS)
@@ -146,20 +150,29 @@ Full 9-step transaction: `docs/architecture-notes.md#zero-downtime-deployment-st
 Per-project isolated, not a host-global singleton: WireGuard interface,
 bridge network, and agent state are all derived purely from `config.project`
 (`crates/jiji-network/src/naming.rs`), so two independent projects can share
-one physical host with zero shared state. `jiji-agent` owns WireGuard
+one physical host without sharing project network or control-plane state.
+`jiji-agent` owns WireGuard
 peers/DNS/catalog continuously once bootstrapped; `jiji network setup`
 covers one-time mesh bootstrap only, never re-run by a service deploy except
 to reconcile a genuinely stale host.
 
 **jiji-proxy** (`crates/jiji-proxy/`) is deliberately the **one shared,
 multi-tenant** component: one container per host, multi-homed across every
-project's bridge with active routes. It's pushed a static route definition
-once per `(host, path_prefix)`, then continuously re-resolves the
-**aggregate** `{project}-{service}.jiji` DNS name itself and load-balances
-across whatever it discovers mesh-wide. This is what gives it genuine
-cross-host load balancing. A wildcard `hosts:` entry (`*.example.com`)
+project's bridge with active routes. HTTP routes are keyed by
+`(host, path_prefix)`, while raw TCP routes are keyed by `listen_port`.
+The proxy continuously re-resolves the **aggregate**
+`{project}-{service}.jiji` DNS name and load-balances across whatever it
+discovers mesh-wide. This is what gives it genuine cross-host load balancing.
+A wildcard `hosts:` entry (`*.example.com`)
 matches exactly one DNS label (`foo.example.com` matches; `deep.foo.
 example.com` doesn't); an exact-host route always wins over a wildcard.
+
+`proxy.listen_port` selects raw TCP relay mode. `port` remains the backend
+container port. Raw TCP targets cannot use HTTP-only `path_prefix` or `ssl`,
+ports 80 and 443 remain reserved for HTTP ingress, and every shared-host TCP
+route needs a unique public port. `hosts` is optional metadata for TCP routes,
+not a routing key. Validation catches conflicts within one project;
+jiji-proxy rejects cross-project conflicts when applying the route.
 
 Two gotchas worth knowing before touching this layer:
 - Docker/Podman's IPAM has no knowledge of jiji's reserved addresses or
@@ -492,7 +505,7 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
   setup` on replacement hosts, then redeploy desired services.
 - `jiji network compact`: compacts each selected host's superseded
   replicated operation history.
-- `jiji deploy`: full zero-downtime deploy (see above): mounts, env/secrets,
+- `jiji deploy`: health-gated deploy (see above): mounts, env/secrets,
   dynamic address leasing, health checks, jiji-proxy routing, `-H`/`-S`
   filtering, `stop_first`, optional builds, mesh reconciliation only when a
   targeted host is stale. Prints the plan and prompts for confirmation
@@ -527,8 +540,8 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
   recreate the shared per-host jiji-proxy container, or read its logs
   (`--follow` requires exactly one host).
 - `jiji service logs/restart/rollback/remove/prune/scale`: singular
-  `service`. `restart`/`rollback` are zero-downtime cycles on the same
-  `deploy_endpoint` primitive `jiji deploy` uses. `remove` locks only the
+  `service`. `restart`/`rollback` use the same configured replacement
+  strategy and `deploy_endpoint` primitive as `jiji deploy`. `remove` locks only the
   endpoint's actually-owned replicas, tombstones the catalog record;
   `--volumes` also removes named volumes. `prune` enforces `service.retain`
   (build-configured services only, keeps first N image tags, removes the

@@ -4,17 +4,25 @@
 
 # Jiji
 
-Deploy containers across servers. Jiji keeps deployments simple, fast, and portable.
+Deploy containers across Linux servers you control. Jiji provides health-gated
+rollouts, private networking, service discovery, and ingress without requiring
+a managed platform.
 
 ## Features
 
-- **Zero downtime deployments** with health checks and automatic rollback
+- **Fail-safe rolling deployments** that remove failed candidates while the healthy version keeps serving
 - **Private networking** via WireGuard mesh with automatic DNS service discovery
 - **Multi-server support** with parallel SSH execution
 - **SSH config and ProxyJump support** without an SSH subprocess
 - **Local registry deployments** through per-host reverse SSH tunnels
-- **Container engine agnostic** works with Docker or Podman
-- **jiji-proxy** for HTTP/HTTPS routing and SSL termination with automatic load balancing
+- **Docker or Podman** with the same deployment configuration
+- **jiji-proxy** for HTTP, HTTPS, and raw TCP routing with mesh-wide load balancing
+- **Automatic TLS** for configured domains, plus custom certificate support
+- **Scheduled jobs** in isolated one-off service containers
+
+Rolling services keep the previous version active until its replacement passes
+health checks. Services using `stop_first` or direct host-port bindings use a
+brief stop-then-start window instead.
 
 ## Installation
 
@@ -40,7 +48,7 @@ jiji server setup
 # Build and deploy services with `build:` configuration
 jiji deploy --build
 
-# Tear down everything jiji installed on selected servers
+# Remove this project's services, network, agent, and unused proxy resources
 jiji server teardown
 
 # Remove a local registry container when it is no longer needed
@@ -96,7 +104,7 @@ services:
       - "3000"
     proxy:
       port: 3000
-      host: myapp.example.com
+      hosts: [myapp.example.com]
       ssl: true
       healthcheck:
         path: "/health"
