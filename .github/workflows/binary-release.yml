@@ -179,6 +179,8 @@ jobs:
             echo "body<<$delimiter"
             printf '%s\n' "$EXPANDED_BODY"
             if [ "$INSTALL_INSTRUCTIONS" = "true" ]; then
+              # Backticks and $ stay literal in the Markdown body.
+              # shellcheck disable=SC2016
               printf '\n## Installation\n\n```bash\ncurl -fsSL https://get.jiji.run/install.sh | VERSION=v%s sh\n```\n' "$TAG_VERSION"
             fi
             echo "$delimiter"
