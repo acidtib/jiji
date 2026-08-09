@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{load_config, validate_config, RegistryType};
+use jiji_config::{load_config, validate_config};
 use jiji_tui::Ui;
 
 use crate::build_executor::{self, BuildExecutor};
@@ -30,7 +30,7 @@ pub async fn run(
         }
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
     }
-    if !config.builder.local {
+    if config.builder.remote.is_some() {
         let project_root = env_resolution::project_root_from_config_path(&path);
         let (loaded, _) = env_resolution::load_env_file(
             &project_root,
@@ -75,22 +75,20 @@ pub async fn run(
     let project_root = env_resolution::project_root_from_config_path(&path);
     let mut resolved_password = None;
     if push {
-        match config.builder.registry.kind {
-            RegistryType::Local => {
-                Ui::section("Local Registry:");
-                registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
-                    .await?;
+        if config.builder.registry.is_local() {
+            Ui::section("Local Registry:");
+            registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
+                .await?;
+        } else {
+            let (loaded, loaded_from) = env_resolution::load_env_file(
+                &project_root,
+                environment,
+                config.secrets_path.as_deref(),
+            )?;
+            if let Some(path) = loaded_from {
+                Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
             }
-            RegistryType::Remote => {
-                let (loaded, loaded_from) = env_resolution::load_env_file(
-                    &project_root,
-                    environment,
-                    config.secrets_path.as_deref(),
-                )?;
-                if let Some(path) = loaded_from {
-                    Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
-                }
-                match (
+            match (
                     config.builder.registry.username.as_deref(),
                     config.builder.registry.password.as_deref(),
                 ) {
@@ -102,7 +100,6 @@ pub async fn run(
                         "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",
                     ),
                 }
-            }
         }
     }
 
@@ -147,15 +144,14 @@ pub async fn run(
             )
             .await;
         if run_result.is_ok() && is_remote {
-            match config.builder.registry.kind {
-                RegistryType::Local => Ui::say(
+            if config.builder.registry.is_local() {
+                Ui::say(
                     &format!("Tunneled local registry to {executor_identity}"),
                     1,
-                ),
-                RegistryType::Remote => {
-                    if resolved_password.is_some() {
-                        Ui::say(&format!("Logged in on {executor_identity}"), 1);
-                    }
+                )
+            } else {
+                if resolved_password.is_some() {
+                    Ui::say(&format!("Logged in on {executor_identity}"), 1);
                 }
             }
         }
@@ -173,7 +169,7 @@ pub async fn run(
                 push,
                 &config.project,
                 &project_root,
-                config.builder.registry.kind == RegistryType::Local,
+                config.builder.registry.is_local(),
             )
             .await
             .with_context(|| format!("Build failed for service '{}'", entry.service_name));

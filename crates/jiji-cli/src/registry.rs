@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use jiji_config::{ContainerEngine, Registry, RegistryType};
+use jiji_config::{ContainerEngine, Registry};
 use jiji_ssh::SshSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -21,7 +21,7 @@ pub const LOCAL_REGISTRY_IMAGE: &str = "registry:2";
 /// The tag-less repository prefix `full_image_name` appends a tag to -- exposed on its own so
 /// `service prune` can filter an `images` listing by repository without a tag, or knowing one.
 pub fn repo_reference(registry: &Registry, project: &str, service: &str) -> anyhow::Result<String> {
-    if registry.kind == RegistryType::Local {
+    if registry.is_local() {
         return Ok(format!("localhost:{}/{project}-{service}", registry.port));
     }
     let server = registry.server.as_deref().ok_or_else(|| {
@@ -101,7 +101,7 @@ pub async fn ensure_local_registry(
     engine: ContainerEngine,
     registry: &Registry,
 ) -> anyhow::Result<()> {
-    if registry.kind != RegistryType::Local {
+    if !registry.is_local() {
         return Ok(());
     }
     if !local_exec::command_exists(&engine.to_string()).await {
@@ -419,11 +419,8 @@ pub async fn logout_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiji_config::RegistryType;
-
     fn registry(server: &str, username: Option<&str>) -> Registry {
         Registry {
-            kind: RegistryType::Remote,
             port: 443,
             server: Some(server.into()),
             username: username.map(str::to_string),
@@ -446,7 +443,6 @@ mod tests {
     #[test]
     fn local_registry_names_and_lifecycle_commands_are_loopback_only() {
         let local = Registry {
-            kind: RegistryType::Local,
             port: 31270,
             server: None,
             username: None,
@@ -557,7 +553,6 @@ mod tests {
     #[test]
     fn missing_credentials_produce_actionable_errors() {
         let no_server = Registry {
-            kind: RegistryType::Remote,
             port: 443,
             server: None,
             username: None,

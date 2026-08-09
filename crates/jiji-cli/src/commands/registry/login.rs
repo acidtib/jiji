@@ -1,4 +1,4 @@
-use jiji_config::{validate_config, RegistryType};
+use jiji_config::validate_config;
 use jiji_tui::Ui;
 
 use super::shared::{self, TargetKind, TargetOutcome};
@@ -32,7 +32,7 @@ pub async fn run(
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
     }
 
-    if config.builder.registry.kind == RegistryType::Local {
+    if config.builder.registry.is_local() {
         Ui::say(
             "Registry: local (loopback-only, unauthenticated). No login is required.",
             1,

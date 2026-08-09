@@ -45,8 +45,6 @@ impl fmt::Display for ContainerEngine {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Builder {
     pub engine: ContainerEngine,
-    #[serde(default = "default_true")]
-    pub local: bool,
     #[serde(default)]
     pub remote: Option<String>,
     #[serde(default = "default_true")]
@@ -55,18 +53,8 @@ pub struct Builder {
     pub registry: Registry,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RegistryType {
-    #[default]
-    Local,
-    Remote,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Registry {
-    #[serde(rename = "type", default)]
-    pub kind: RegistryType,
     #[serde(default = "default_registry_port")]
     pub port: u16,
     #[serde(default)]
@@ -80,12 +68,18 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         Registry {
-            kind: RegistryType::Local,
             port: default_registry_port(),
             server: None,
             username: None,
             password: None,
         }
+    }
+}
+
+impl Registry {
+    /// A registry is remote when it has an explicit server; otherwise Jiji manages a local one.
+    pub fn is_local(&self) -> bool {
+        self.server.is_none()
     }
 }
 

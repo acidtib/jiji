@@ -16,10 +16,7 @@ builder:
   # Options: docker, podman
   engine: podman
 
-  # Build location - determines where images are built
-  local: true
-
-  # Remote builder SSH connection (required when local: false)
+  # Remote builder SSH connection (optional; builds run locally when omitted)
   # Enables building on remote servers with more resources or different architectures
   # Format: ssh://[user@]hostname[:port]
   # Examples:
@@ -35,14 +32,11 @@ builder:
   # ===============================
   # Determines where built images are stored and retrieved from
   registry:
-    # Registry type: "local" or "remote"
-    type: local
-
-    # Local Registry Settings (type: local)
+    # Local Registry Settings (used when server is omitted)
     # Creates a local registry with SSH port forwarding to deployment hosts
     port: 31270
 
-    # Remote Registry Settings (type: remote)
+    # Remote Registry Settings (setting server selects a remote registry)
     # Supported: Docker Hub, GitHub Container Registry, or any other
     # server: registry.example.com:5000
     # server: ghcr.io
@@ -59,29 +53,23 @@ builder:
 # Example 1: Local Development Setup
 # builder:
 #   engine: podman
-#   local: true
 #   cache: true
 #   registry:
-#     type: local
 #     port: 31270
 #
 # Example 2: Remote Building with Local Registry
 # builder:
 #   engine: docker
-#   local: false
 #   remote: ssh://builder@192.168.1.100:22
 #   cache: true
 #   registry:
-#     type: local
 #     port: 31270
 #
 # Example 3: Remote Registry (Docker Hub)
 # builder:
 #   engine: docker
-#   local: true
 #   cache: false  # Always fresh builds
 #   registry:
-#     type: remote
 #     server: docker.io
 #     username: myusername
 #     password: DOCKER_HUB_TOKEN
@@ -91,9 +79,7 @@ builder:
 # of a stored secret -- resolved fresh on every build/deploy/registry login.
 # builder:
 #   engine: docker
-#   local: true
 #   registry:
-#     type: remote
 #     server: 123456789012.dkr.ecr.us-west-2.amazonaws.com
 #     username: AWS
 #     password: "$(aws ecr get-login-password --region us-west-2)"
@@ -101,11 +87,9 @@ builder:
 # Example 5: Remote Building with Custom Registry Port
 # builder:
 #   engine: podman
-#   local: false
 #   remote: ssh://build-server@192.168.1.200:22
 #   cache: true
 #   registry:
-#     type: local
 #     port: 6000
 
 # Server Definitions (required)

@@ -422,7 +422,7 @@ fn shipped_template_parses_and_validates_cleanly() {
 }
 
 #[test]
-fn builder_local_true_with_remote_reports_mode_conflict() {
+fn builder_remote_selects_remote_even_with_legacy_local_true() {
     let raw = parse(
         r#"
 project: demo
@@ -440,15 +440,11 @@ services:
 "#,
     );
     let result = validate_yaml(&raw);
-    assert!(!result.valid);
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.code == "BUILDER_MODE_CONFLICT" && e.path == "builder.remote"));
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
 }
 
 #[test]
-fn builder_local_false_without_remote_reports_remote_required() {
+fn legacy_builder_local_false_without_remote_still_defaults_to_local() {
     let raw = parse(
         r#"
 project: demo
@@ -465,11 +461,7 @@ services:
 "#,
     );
     let result = validate_yaml(&raw);
-    assert!(!result.valid);
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.code == "BUILDER_REMOTE_REQUIRED" && e.path == "builder.remote"));
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
 }
 
 #[test]

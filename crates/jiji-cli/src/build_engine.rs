@@ -533,7 +533,6 @@ mod tests {
             project: "demo".into(),
             builder: Builder {
                 engine: ContainerEngine::Docker,
-                local: true,
                 remote: None,
                 cache: true,
                 registry: Registry::default(),
