@@ -369,7 +369,7 @@ ssh:
 # External Secret Adapters (NOT YET IMPLEMENTED):
 # The schema below parses, but no runtime code path reads it today --
 # configuring `secrets:` is currently a silent no-op. Tracked in
-# plans/followup.md. For a live equivalent today, use a $(...) command value
+# docs/todo.md. For a live equivalent today, use a $(...) command value
 # instead (see "password can be a literal value..." above and the
 # jiji-website docs' Registry Reference page), e.g.
 # $(doppler secrets get API_KEY --plain).
