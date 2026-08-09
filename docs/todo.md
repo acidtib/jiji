@@ -88,6 +88,38 @@ Sources:
 - `crates/jiji-cli/src/container_runtime.rs`
 - `crates/jiji-cli/src/deploy_transaction.rs`
 
+### Increase project capacity
+
+The current limits are 32 servers, 500 services, and 2,000 logical replicas
+per project. Use these initial targets for the next capacity increase:
+
+- Support 64 servers per project.
+- Use a `/15` project container range.
+- Keep one `/21` container subnet for each server.
+- Support 10,000 logical replicas per project.
+- Keep a limit of 2,000 replicas for each service.
+- Reject placement that exceeds the address capacity of a server.
+
+Complete these measurements before you increase the limits:
+
+- Measure WireGuard configuration and repair with 64 nodes.
+- Measure direct catalog replication between 64 nodes.
+- Measure catalog frame sizes with the maximum records on one node.
+- Measure aggregate DNS response sizes with 2,000 service replicas.
+- Measure placement, deployment fan-out, and agent store usage with 10,000 replicas.
+- Define migration behavior for existing `/16` project ranges.
+- Define collision behavior for the 32 available `/15` ranges in `100.64.0.0/10`.
+
+Sources:
+
+- `crates/jiji-config/src/validation.rs`
+- `crates/jiji-network/src/planner.rs`
+- `crates/jiji-agent/src/catalog_replication.rs`
+- `crates/jiji-agent/src/dns.rs`
+- `crates/jiji-agent/src/leases.rs`
+- `crates/jiji-cli/src/placement.rs`
+- `crates/jiji-cli/src/commands/service/scale.rs`
+
 ## Deferred cron features
 
 These items are feature additions, not defects in the current cron contract.

@@ -134,6 +134,11 @@ stable project-specific `/24` management and `/16` container ranges from
 identical on every operator machine. The `/16` contains exactly 32 `/21`
 server subnets. Explicit CIDRs remain the escape hatch for overlap with a LAN,
 VPN, cloud VPC, or another project that selected the same finite default slot.
+Each active compiled generation records its full reserved ranges. Network
+preflight compares those markers across co-located projects before mutation,
+in addition to inspecting host routes, container networks, interface
+addresses, and WireGuard ports. This catches a shared project-range collision
+before two projects happen to allocate the same server subnet.
 
 `jiji server setup` bootstraps the host. After bootstrap, the agent owns
 continuous repair of its WireGuard interface, bridge, DNS binding, proxy
