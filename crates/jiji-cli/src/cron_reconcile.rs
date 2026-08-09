@@ -382,31 +382,58 @@ async fn reconcile_service_crons_inner(
 ) -> Vec<String> {
     let mut problems = Vec::new();
 
-    if !service.crons.is_empty() {
-        problems.extend(
-            install_on_owner(config, plan, service_name, service, sessions, redeploy_hint).await,
-        );
-    }
+    let (owner_server_name, installed_on_owner) = if service.crons.is_empty() {
+        (None, BTreeSet::new())
+    } else {
+        let (install_problems, owner_server_name, installed_on_owner) =
+            install_on_owner(config, plan, service_name, service, sessions, redeploy_hint).await;
+        problems.extend(install_problems);
+        (owner_server_name, installed_on_owner)
+    };
 
     // Always sweep every eligible session, regardless of whether the install step above ran or
     // succeeded: the only way to find a spec that disappeared from `crons:` (a rename or a full
     // deletion) is to ask each agent what it actually has installed and compare against the
     // current desired set, since the CLI has no memory of what used to be configured.
     let desired: BTreeSet<&str> = service.crons.keys().map(String::as_str).collect();
+    let none_desired = BTreeSet::new();
     for (server_name, session) in sessions {
+        // The owner keeps all configured jobs. A former owner keeps a configured job only until
+        // that specific job installs successfully on the new owner. This preserves the required
+        // install-before-remove order when one apply fails. If ownership could not be resolved,
+        // preserve configured names everywhere for this pass. Deleted names remain absent from
+        // every set and are removed from every reachable agent.
+        let former_owner_desired = desired_on_former_owner(&desired, &installed_on_owner);
+        let desired_for_server = match owner_server_name.as_deref() {
+            Some(owner) if owner == server_name => &desired,
+            Some(_) => &former_owner_desired,
+            None if desired.is_empty() => &none_desired,
+            None => &desired,
+        };
         problems.extend(
             remove_specs_absent_from(
                 session,
                 &config.project,
                 service_name,
                 server_name,
-                &desired,
+                desired_for_server,
             )
             .await,
         );
     }
 
     problems
+}
+
+fn desired_on_former_owner<'a>(
+    desired: &BTreeSet<&'a str>,
+    installed_on_owner: &BTreeSet<String>,
+) -> BTreeSet<&'a str> {
+    desired
+        .iter()
+        .copied()
+        .filter(|cron_name| !installed_on_owner.contains(*cron_name))
+        .collect()
 }
 
 /// Installs/updates every `crons:` entry on the current owner. Split out from
@@ -420,13 +447,14 @@ async fn install_on_owner(
     service: &Service,
     sessions: &BTreeMap<String, Arc<SshSession>>,
     redeploy_hint: &str,
-) -> Vec<String> {
+) -> (Vec<String>, Option<String>, BTreeSet<String>) {
     let mut problems = Vec::new();
+    let mut installed = BTreeSet::new();
     let Some(seed) = service.servers.iter().find_map(|name| sessions.get(name)) else {
         problems.push(format!(
             "service '{service_name}': no reachable server; cron jobs were not reconciled. {redeploy_hint}"
         ));
-        return problems;
+        return (problems, None, installed);
     };
     let catalog = match crate::agent_client::catalog(seed, &config.project).await {
         Ok(catalog) => catalog,
@@ -434,7 +462,7 @@ async fn install_on_owner(
             problems.push(format!(
                 "service '{service_name}': could not read the service catalog to determine cron ownership: {error}. {redeploy_hint}"
             ));
-            return problems;
+            return (problems, None, installed);
         }
     };
     let assignments = crate::placement::place(
@@ -448,7 +476,7 @@ async fn install_on_owner(
         problems.push(format!(
             "service '{service_name}': no active, healthy replica; cron jobs were not reconciled. {redeploy_hint}"
         ));
-        return problems;
+        return (problems, None, installed);
     };
     let owner_server_name = owner_record.owner_node_id.clone();
     let (Some(owner_session), Some(owner_server)) = (
@@ -458,7 +486,7 @@ async fn install_on_owner(
         problems.push(format!(
             "service '{service_name}': could not reach '{owner_server_name}', the owning host for its cron jobs. {redeploy_hint}"
         ));
-        return problems;
+        return (problems, Some(owner_server_name), installed);
     };
 
     let owner_home = match remote_home_dir(&owner_session).await {
@@ -467,7 +495,7 @@ async fn install_on_owner(
             problems.push(format!(
                 "service '{service_name}': could not determine the cron owner's home directory on '{owner_server_name}': {error}. {redeploy_hint}"
             ));
-            return problems;
+            return (problems, Some(owner_server_name), installed);
         }
     };
 
@@ -477,7 +505,7 @@ async fn install_on_owner(
             problems.push(format!(
                 "service '{service_name}': could not render mount arguments for its cron jobs: {error}. {redeploy_hint}"
             ));
-            return problems;
+            return (problems, Some(owner_server_name), installed);
         }
     };
     let resource_args = container_runtime::render_resource_options(service);
@@ -502,7 +530,9 @@ async fn install_on_owner(
             owner_record.revision,
         );
         match crate::agent_client::call(&owner_session, &config.project, None, request).await {
-            Ok(ResponseBody::CronSpecApplied { .. }) => {}
+            Ok(ResponseBody::CronSpecApplied { .. }) => {
+                installed.insert(cron_name.clone());
+            }
             Ok(response) => problems.push(format!(
                 "service '{service_name}' cron '{cron_name}': agent on '{owner_server_name}' returned an unexpected response: {response:?}. {redeploy_hint}"
             )),
@@ -512,7 +542,7 @@ async fn install_on_owner(
         }
     }
 
-    problems
+    (problems, Some(owner_server_name), installed)
 }
 
 /// Removes every installed spec for `service_name` on `session` whose `cron_name` isn't in
@@ -731,6 +761,25 @@ mod tests {
         let (owner_assignment, _) =
             select_cron_owner(&assignments, &catalog).expect("expected an owner");
         assert_eq!(owner_assignment.replica_id, "r1");
+    }
+
+    #[test]
+    fn former_owner_keeps_only_jobs_that_failed_to_install_on_the_new_owner() {
+        let desired = BTreeSet::from(["cleanup", "sync"]);
+        let installed = BTreeSet::from(["sync".to_string()]);
+
+        assert_eq!(
+            desired_on_former_owner(&desired, &installed),
+            BTreeSet::from(["cleanup"])
+        );
+    }
+
+    #[test]
+    fn former_owner_keeps_no_jobs_after_all_install_on_the_new_owner() {
+        let desired = BTreeSet::from(["cleanup", "sync"]);
+        let installed = BTreeSet::from(["cleanup".to_string(), "sync".to_string()]);
+
+        assert!(desired_on_former_owner(&desired, &installed).is_empty());
     }
 
     fn cron_config() -> CronConfig {
