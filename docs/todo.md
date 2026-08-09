@@ -4,6 +4,58 @@ This file lists confirmed gaps in the current code.
 
 ## Current gaps
 
+### Keep public documentation within implemented behavior
+
+The public website must not present schema-only or deferred behavior as an
+available feature. Keep these limits visible until their runtime work is
+complete:
+
+- `network_mode: host` and `network_mode: none` do not change container
+  networking. Implement or reject them as described below.
+- External `secrets:` adapters do not resolve values. Implement the adapter
+  path described below.
+- `service.retain` does not prune images during deployment. Operators must run
+  `jiji service prune`.
+- Deploy progress does not show output from failed health-check attempts. It
+  shows the useful output only in the final error.
+- Cron jobs do not retry, transfer ownership during an outage, or run once per
+  replica.
+- Audit coverage is not yet complete for every state-changing command. The
+  current trail covers deploys, service lifecycle operations, scaling, pruning,
+  server setup and teardown, and manual lock changes.
+
+When a release implements one of these items, update the website and this file
+in the same change.
+
+Sources:
+
+- `crates/jiji-config/src/jiji.yml`
+- `crates/jiji-cli/src/container_runtime.rs`
+- `crates/jiji-cli/src/commands/service/prune.rs`
+- `crates/jiji-cli/src/health_check.rs`
+- `crates/jiji-agent/src/scheduler.rs`
+- `crates/jiji-cli/src/audit.rs`
+
+### Complete audit coverage
+
+The CLI describes the audit trail as a record of every state-changing command,
+but several commands do not write an audit entry yet. These include network,
+registry, and proxy mutations.
+
+- List every command that can change local or remote state.
+- Add a success or failure entry for each command.
+- Keep audit writes best-effort so an audit failure does not hide the command
+  result.
+- Use stable action names and include the affected lock scope when applicable.
+- Add tests that compare the state-changing command surface with audit coverage.
+
+Sources:
+
+- `crates/jiji-cli/src/audit.rs`
+- `crates/jiji-cli/src/commands/network/`
+- `crates/jiji-cli/src/commands/registry/`
+- `crates/jiji-cli/src/commands/proxy/`
+
 ### Implement external secret adapters
 
 The `secrets:` configuration parses, but no runtime path reads
