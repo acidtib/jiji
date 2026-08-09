@@ -4,7 +4,8 @@
 //! jiji-proxy jiji-proxy route ...` from jiji-cli/jiji-agent, mirroring how
 //! `docker exec kamal-proxy kamal-proxy deploy ...` reaches kamal-proxy's
 //! own admin API today -- this replaces that call, not the exec pattern
-//! itself. See "Control surface" in plans/jiji-proxy-design.md.
+//! itself. See "Control surface" in
+//! `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;

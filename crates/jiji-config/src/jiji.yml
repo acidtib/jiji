@@ -1031,7 +1031,7 @@ services:
 #     and runtime context (environment, mounts, resources, project network),
 #     NOT inside the running service container. It does not inherit the
 #     service's own command, ports, proxy routes, health checks, or restart
-#     policy. See docs/architecture-notes.md and plans/service-cron.md.
+#     policy. See docs/architecture-notes.md#scheduled-cron-execution-crons.
 #   - The jiji-agent scheduler runs these, not host crontabs or systemd
 #     timers -- a job continues to run even if the CLI operator disconnects.
 #   - Fields:

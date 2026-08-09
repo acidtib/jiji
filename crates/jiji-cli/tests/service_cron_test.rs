@@ -1,5 +1,6 @@
-//! Integration tests for `jiji service cron list/status/logs/run` (Phase 6 of
-//! `plans/service-cron.md`), run as a real subprocess against a real, in-process SSH server
+//! Integration tests for `jiji service cron list/status/logs/run`
+//! (`docs/architecture-notes.md#scheduled-cron-execution-crons`), run as a real subprocess
+//! against a real, in-process SSH server
 //! (mirroring `deploy_test.rs`'s pattern): these commands now connect to a service's current
 //! owner over SSH to read/apply agent state, unlike Phase 1's purely-local/not-yet-implemented
 //! stubs.

@@ -173,8 +173,8 @@ pub async fn reconcile_once(
 /// resolver (`config.dns_bind_address:53`), so re-applying the same static
 /// route definition on every tick is a cheap, harmless no-op upsert, not a
 /// per-deployment address push racing catalog replication the way
-/// kamal-proxy's route model did (see "Core design decision" in
-/// plans/jiji-proxy-design.md).
+/// kamal-proxy's route model did (see
+/// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`).
 async fn reconcile_proxy_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
     for route in &config.local_runtime.proxy_routes {
         deploy_proxy_route(engine, config, route).await?;

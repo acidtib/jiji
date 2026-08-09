@@ -1,7 +1,7 @@
-//! Cron job specifications and run history (`plans/service-cron.md`): durable local state for
-//! `jiji-agent`'s scheduled-command feature. Unlike membership/catalog/desired-state, none of
-//! this is replicated between hosts (see the plan's "Agent API" section) -- only a job's assigned
-//! owner ever needs it, so there is no `RecordProvenance`/anti-entropy machinery here.
+//! Cron job specifications and run history (`docs/architecture-notes.md#ownership-and-reconciliation`):
+//! durable local state for `jiji-agent`'s scheduled-command feature. Unlike membership/catalog/
+//! desired-state, none of this is replicated between hosts -- only a job's assigned owner ever
+//! needs it, so there is no `RecordProvenance`/anti-entropy machinery here.
 
 use serde::{Deserialize, Serialize};
 

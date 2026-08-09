@@ -315,6 +315,48 @@ projects share default CIDR ranges):
   removes it only when jiji-proxy's own container is finally removed (no
   project has routes left).
 
+  **Control surface** (`crates/jiji-proxy/src/admin.rs`): a length-prefixed
+  JSON request/response protocol over a container-local Unix socket, the
+  same framing shape as `jiji-agent`'s own API (`jiji-agent/src/api.rs`).
+  Reached via `docker exec jiji-proxy jiji-proxy route ...` from
+  `jiji-cli`/`jiji-agent`, mirroring how `docker exec kamal-proxy
+  kamal-proxy deploy ...` reached kamal-proxy's own admin API -- this
+  replaces that call, not the exec pattern itself. `RouteManager`
+  (`route_manager.rs`) is the single struct registered with the Pingora
+  `Server` for both admin-socket handling and per-route DNS refresh, since
+  Pingora only accepts new services before `run_forever()` consumes it:
+  routes added later at runtime through the admin socket could never be
+  individually registered as their own background service otherwise.
+  Driving one shared tick loop over a table `RouteManager` owns is what
+  makes route apply/remove dynamic without a restart. `config.rs`'s
+  `routes:`/TCP-route seed (mainly for standalone testing) is applied once
+  at startup, before the admin socket accepts any requests; routes pushed
+  later through the admin socket (the normal production path) are layered
+  on top of that seed, never replacing it.
+
+  **TLS certificates**: `CertStore` (`cert_store.rs`) resolves a
+  terminated host's certificate by SNI at handshake time
+  (`certificate_callback`, Pingora's `TlsAccept` hook), populated either by
+  a static file pair an operator drops into `cert_dir`
+  (`{host}.crt`/`{host}.key`, loaded once at startup and never touched
+  again) or by `acme.rs`'s issuance/renewal loop. A static file always
+  wins: `acme.rs` only ever issues/renews a host whose current entry is
+  missing or itself ACME-sourced. ACME automation
+  (`crates/jiji-proxy/src/acme.rs`, `instant-acme`) implements HTTP-01
+  only, deliberately never DNS-01: DNS-01 is the right challenge type once
+  more than one `jiji-proxy` instance can answer for the same hostname
+  (HTTP-01's challenge response must be served by whichever instance
+  ACME's validator happens to hit), but that needs a specific DNS
+  provider's API wired in, which nobody has chosen yet -- HTTP-01 is
+  correct and sufficient for today's single-ingress-host-per-hostname
+  model. Pebble (the local ACME test CA used to validate this integration)
+  strictly enforces RFC 8555 section 6.1's `User-Agent` requirement and
+  rejects any request missing one with a 400 `malformed` problem document;
+  `instant-acme`'s own `DefaultClient` never sets one, so `Account::
+  builder()`/`from_credentials` against Pebble fail with a confusing
+  "missing field newNonce" JSON error (parsing that 400 problem body as if
+  it were the directory) unless wrapped with a client that adds it.
+
 Docker/Podman's own IPAM has no knowledge of jiji's reserved infrastructure
 addresses (`ServerPlan::dns_address`, `proxy_address`, `bridge_gateway`) or of
 whatever deployment addresses the agent has currently leased: `jiji-agent`
@@ -396,6 +438,173 @@ container may be degraded, matching Compose's own `depends_on: {condition:
 service_healthy, restart: true}` semantics for this exact pattern (two
 containers can't simultaneously share one upstream's single network
 namespace during a bridge-swap-style cutover).
+
+## Scheduled Cron Execution (`crons:`)
+
+A service's `crons:` map (name -> schedule/timezone/command/timeout/
+overlap/missed_runs) runs each job in a fresh one-off container built from
+the service's own image and runtime context (environment, mounts,
+resources, project network) -- never inside the running service container,
+and never through host crontabs or systemd timers, so a job keeps running
+even if the CLI operator disconnects. `jiji-agent`'s own scheduler
+(`scheduler.rs`) owns the whole lifecycle locally; `jiji-cli` only ever
+installs/removes a job's specification.
+
+### Ownership and reconciliation
+
+After every `jiji deploy`/`service restart`/`rollback`/`scale` that could
+move ownership, `cron_reconcile::reconcile_after_deploy` picks the
+lowest-ordinal Active/Healthy replica as the job's *owner*
+(`select_cron_owner`) and pushes an idempotent `CronSpecApply` to that
+replica's agent; `service remove` unconditionally removes every installed
+spec for the service (`remove_all_cron_specs`). Idempotency is a content
+hash, not a version number a caller has to track: `CronJobSpec::
+canonical_hash` hashes a `CronSpecContent` view that deliberately excludes
+identity/ownership bookkeeping (`project`/`service`/`cron_name`, `revision`/
+the hash itself, `owner_node_id`/`owner_epoch`/`server`), computed as a
+separate struct rather than hashed off `CronJobSpec` directly so a future
+bookkeeping field never silently changes every installed job's hash. The
+receiving agent stamps `owner_node_id`/`owner_epoch`/`server` from its own
+local membership record, never trusting the caller for them (mirrors
+`CatalogCommit`'s handling in `api.rs`).
+
+Cron specs and run history are agent-local and **deliberately never
+replicated** between hosts, unlike the catalog (`cron.rs`'s module doc: "only
+a job's assigned owner ever needs it, so there is no `RecordProvenance`/
+anti-entropy machinery here"). The practical consequence: finding a stale
+spec left behind on a *former* owner after an ownership transfer requires
+connecting to that host's agent directly -- there is no other way to
+discover it. `cron_reconcile.rs` therefore connects to every server in a
+cron-having service's `servers:` list, not just whatever `-H`/`-S` the
+triggering command selected, extending the caller's SSH session pool in
+place and closing only the sessions it newly opened. A cron-only failure
+(installation, not the deploy itself) is reported as a human-readable
+problem, never a rolled-back deploy -- a service deployment that already
+succeeded must not be undone for a cron-only failure.
+
+### Execution model
+
+The owning agent names each run's container `{project}-{service}-cron-
+{cron_name}-{first 12 hex chars of run_id}` (falling back to a hash suffix
+if that would exceed the engine's name-length limit, `cron_exec::
+cron_container_name`), labeled `jiji.resource=cron`, `jiji.cron=<name>`,
+`jiji.cron-run=<run_id>` alongside the usual `jiji.managed`/`jiji.project`/
+`jiji.service`/`jiji.server` labels every jiji-managed container carries.
+Network/address/DNS argv rendering reuses `jiji-network`'s
+`NetworkedContainerRun` directly (the same renderer a normal service
+deploy uses) rather than a second cron-specific renderer. Address leasing
+reuses the durable `AddressAllocator`/`address_leases` machinery
+generically, keyed by `cron_replica_id(service, cron_name)` ->
+`"cron/{service}/{cron_name}"` (`leases.rs`) so a cron job's lease can never
+collide with a real replica's.
+
+On agent startup, `cron_exec::recover_claimed_runs` runs before the
+scheduler starts (`main.rs`), so a still-`claimed`/`running` run from before
+a restart is never raced by a fresh scheduler tick: it matches each active
+run against actually-running containers (by the `jiji.cron-run` label),
+resumes monitoring anything still running with whatever timeout remains
+(not the full configured duration again), finalizes anything that already
+exited while the agent was down, marks a run `Failed` if its container is
+simply gone, and stops/removes any *unclaimed* cron container found on the
+host (a container with no matching active run in the store at all).
+
+### Scheduler rules
+
+`scheduler.rs::tick` evaluates every installed spec once per pass: a
+freshly installed job is only initialized forward from `now` (never claims
+retroactively, since there is no prior schedule to have missed). A due job
+is claimed via `AgentStore::claim_cron_run`, a single SQLite transaction
+that handles three outcomes atomically -- a fresh claim, an idempotent
+replay of the same due time (`DuplicateScheduledClaim`, e.g. two overlapping
+ticks), or `OverlapForbidden` (the only supported `overlap` value: skips a
+due run while the prior run for this job is still active, incrementing the
+durable `skipped_overlap` counter `service cron status` reports). Claim
+atomicity is entirely local to this transaction -- unlike `deploy`/`restart`/
+`rollback`, a cron claim never goes through the CLI's `LogicalReplica` SSH
+lock scope (`lock.rs`); there is no distributed coordination to speak of,
+since only one agent (the owner) ever runs a given job's ticks.
+
+`missed_runs: skip` (the only supported value) advances the schedule from
+the *natural* next occurrence after the due time just claimed, but only if
+that occurrence is still in the future; if it has also already passed (the
+tick fell behind by more than one interval, whether from a long agent
+outage or just a slow tick), it skips straight to the next occurrence after
+`now` instead of claiming every missed tick one by one -- collapsing any
+pile-up of missed ticks without a separate startup-recovery pass.
+
+A second periodic pass (hourly, `SCHEDULER_CLEANUP_INTERVAL_SECS` in
+`main.rs`) enforces retention: completed run *metadata* is kept 30 days or
+the latest 100 runs per job, whichever is more (`METADATA_RETAIN_SECS`/
+`METADATA_RETAIN_LATEST`, `AgentStore::retain_cron_runs`, and never removes
+a still-active run); a completed run's *container* is kept 24 hours past its
+own `finished_at` so `cron logs` can still read its output
+(`CONTAINER_RETAIN_SECS`, `cron_exec::cleanup_old_cron_containers`) --
+these are fixed constants today, not per-service configuration.
+
+### Failure semantics
+
+- **Container creation failure**: finished as `Failed` immediately (no
+  retry in this release), with its address lease released back to the
+  pool.
+- **Timeout**: the container is `stop`ped, given a short grace period to
+  exit on its own, then force-removed if it hasn't; recorded as
+  `TimedOut` with whatever exit code was observed, or none if it never
+  produced one.
+- **Owner outage**: no automatic failover. The old owner simply stops
+  scheduling once it's offline; a new owner only starts once the CLI
+  installs a spec there (naturally, on the next deploy/restart/rollback/
+  scale that changes ownership).
+- **Specification removal while a run is still active**: the plan's
+  intended semantics are that an in-flight run keeps completing on its own
+  already-claimed context even though its spec is gone. Since that context
+  no longer includes a timeout once the spec is removed, this path falls
+  back to a fixed 1-hour timeout (`cron_exec::FALLBACK_TIMEOUT_SECS`,
+  matching `jiji_config`'s own default) rather than failing the run outright.
+
+### Three gotchas confirmed live
+
+All three surfaced only against real hosts during Phase 6+ live validation
+(two droplets, real `podman`, real `systemd`) -- none reproducible against
+the mock-SSH test suite, since they all depend on `jiji-agent` actually
+spawning a container process itself rather than a canned SSH response:
+
+1. **Env/mount paths must be absolutized for the agent, not the CLI's own
+   convention.** `jiji-agent` spawns cron containers directly via
+   `tokio::process::Command`, never over SSH -- but `stage_env_file`'s and
+   `mounts::remote_mount_base`'s `.jiji/{project}/...` paths are
+   deliberately *relative*, resolving against an SSH login's home
+   directory (see "SSH Connection Management" -- this works for a normal
+   deploy because that render happens inside an SSH-executed command).
+   `jiji-agent`'s own working directory is `/` (no SSH login at all), so a
+   cron run consistently failed with "no such file or directory" until
+   `cron_reconcile.rs` started resolving the owner's home directory once
+   per reconciliation (`remote_home_dir`, a plain `pwd` over the already-open
+   session) and sending `CronSpecApply` absolute paths (`absolutize`/
+   `absolutize_mount_args`) instead.
+2. **Lease cron addresses from `container_subnet`, never `container_cidr`.**
+   `MeshConfig::local_runtime` carries both: `container_subnet` is this
+   host's actual bridge subnet (what a container can really be given an
+   address from); `container_cidr` is the whole-mesh reserved range
+   spanning every project and server, used elsewhere for firewall/NAT
+   rules, never for picking a real address. `lease_and_spawn` originally
+   allocated from `container_cidr`, and podman rejected every cron
+   container start outright ("requested static ip ... not in any subnet
+   on network ...") since the leased address was never actually inside the
+   bridge's subnet.
+3. **`jiji-agent`'s systemd unit needs `KillMode=process`.** Podman here
+   runs `cgroup_manager = cgroupfs` (see "Container Engine Provisioning"
+   below), so a container's conmon/crun process stays in the launching
+   unit's own cgroup rather than escaping into a systemd-delegated scope.
+   Under the default `KillMode=control-group`, stopping/restarting the
+   agent's own unit (an upgrade, `Restart=on-failure`) `SIGKILL`s that
+   whole cgroup -- silently killing every container the agent manages
+   along with it, `jiji-proxy` included. `podman ps` kept reporting the
+   dead `jiji-proxy` container "Up" since conmon never got the chance to
+   record an orderly exit; only a resolver-level probe (`podman exec`, the
+   admin socket) caught the drift. `process` mode kills only the tracked
+   main PID; already-running containers are untouched and get re-adopted
+   by `recover_claimed_runs`/`local_reconcile.rs` on the next start, same
+   as any other agent restart.
 
 ## `jiji server teardown` (inverse of `server setup`)
 

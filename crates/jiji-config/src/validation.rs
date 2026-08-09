@@ -573,7 +573,8 @@ fn validate_service_crons(
 
 /// Mirrors the DNS-safe server-name convention documented in `jiji.yml`: lowercase alphanumeric
 /// and hyphens, no leading/trailing hyphen. A cron name becomes a container-name component
-/// (`plans/service-cron.md`'s `<project>-<service>-cron-<cron-slug>-<run-id>` form).
+/// (`docs/architecture-notes.md#execution-model`'s
+/// `{project}-{service}-cron-{cron_name}-{run_id}` form).
 fn validate_cron_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("cron name must not be empty".to_string());

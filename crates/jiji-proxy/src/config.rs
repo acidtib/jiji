@@ -25,8 +25,8 @@ pub struct Config {
     /// Applied once at startup, before the admin socket accepts any
     /// requests. Routes pushed later through the admin socket (the normal
     /// production path -- see "Control surface" in
-    /// plans/jiji-proxy-design.md) are layered on top of this seed, not
-    /// replaced by it.
+    /// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`)
+    /// are layered on top of this seed, not replaced by it.
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
     /// Raw TCP routes -- see `crate::tcp_relay`. Same seed-then-layer

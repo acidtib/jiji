@@ -54,8 +54,9 @@ pub struct LocalRuntimeConfig {
 /// as part of the mesh config -- unlike kamal-proxy's route model, this
 /// carries no explicit target address at all: jiji-proxy resolves and
 /// load-balances `name`'s backends itself, continuously, so applying this
-/// spec doesn't need to change per deployment (see "Core design decision"
-/// in plans/jiji-proxy-design.md). `local_reconcile.rs` fills in
+/// spec doesn't need to change per deployment (see
+/// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`).
+/// `local_reconcile.rs` fills in
 /// `--dns-server` itself (always this agent's own local `.jiji` resolver
 /// address) when rendering the actual `jiji-proxy route apply` command.
 #[derive(Debug, Clone, Serialize, Deserialize)]

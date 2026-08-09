@@ -19,8 +19,7 @@ use crate::discovery::JijiDnsDiscovery;
 /// fast eviction from `select()` rather than waiting out
 /// `refresh_interval_secs`. Feature-parity requirement for the kamal-proxy
 /// cutover (kamal-proxy checks every route continuously; jiji-proxy
-/// previously only trusted DNS-driven active/healthy filtering, per the
-/// "Open questions" section of plans/jiji-proxy-design.md). `path: None`
+/// previously only trusted DNS-driven active/healthy filtering). `path: None`
 /// checks TCP connectivity only, matching kamal-proxy's own fallback when no
 /// `healthcheck.path`/`cmd` is configured. There is deliberately no `cmd`
 /// variant: once routing is DNS-discovered mesh-wide instead of
@@ -88,8 +87,8 @@ pub struct TcpRouteEntry {
 /// admin socket) can never be individually registered as their own
 /// background service the way phase 2's static routes were. Driving one
 /// shared tick loop over a table this struct owns is what makes route
-/// apply/remove dynamic without a restart. See "Core design decision" and
-/// "Control surface" in plans/jiji-proxy-design.md.
+/// apply/remove dynamic without a restart. See
+/// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
 #[derive(Clone)]
 pub struct RouteManager {
     /// Keyed by host; each host's entries are kept sorted by path_prefix

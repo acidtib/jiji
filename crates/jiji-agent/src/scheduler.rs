@@ -1,4 +1,4 @@
-//! The cron scheduler (`plans/service-cron.md`'s "Scheduler Rules" and Phase 4): ticks over every
+//! The cron scheduler (`docs/architecture-notes.md#scheduler-rules`): ticks over every
 //! installed `CronJobSpec`, claims a due run, and periodically retains old run metadata/containers.
 //! Runs entirely inside `jiji-agent`, never host crontabs or systemd timers -- and only starts
 //! after `cron_exec::recover_claimed_runs` completes (`main.rs`), so it never races a resumed run.

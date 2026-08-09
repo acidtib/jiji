@@ -1,7 +1,8 @@
-//! Runs a claimed cron run's one-off container locally (`plans/service-cron.md`'s "Execution
-//! Model"). Unlike a service deployment (rendered by `jiji-cli` and started over SSH), a cron run
-//! is started by this agent process itself: the scheduler (a later phase) and `CronRun`'s manual
-//! path (`api.rs`) both claim a run, lease an address, then hand off here.
+//! Runs a claimed cron run's one-off container locally
+//! (`docs/architecture-notes.md#execution-model`). Unlike a service deployment (rendered by
+//! `jiji-cli` and started over SSH), a cron run is started by this agent process itself:
+//! `scheduler.rs`'s tick and `CronRun`'s manual path (`api.rs`) both claim a run, lease an
+//! address, then hand off here.
 //!
 //! A cron run's own `run_id` plays the role a service deployment's `deployment_id` plays: unique
 //! per container start, immutable for the run's full lifetime (invariant 9), and the key

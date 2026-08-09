@@ -4,11 +4,13 @@
 //! risk drifting from -- the other's understanding of jiji-proxy's run command, image
 //! fingerprint, or DNAT rules.
 //!
-//! Replaces the kamal-proxy fork (see plans/jiji-proxy-design.md): jiji-proxy never execs into a
-//! sibling container the way kamal-proxy's `--health-check-cmd` did, so unlike kamal-proxy's own
-//! run command, this one needs no docker socket, no Podman toolchain bind-mount list, and no
-//! `--privileged`/`--pid=host`/`--cgroupns=host`. It only needs network attachment (unchanged from
-//! kamal-proxy) plus its own config file and certificate directory.
+//! Replaces the kamal-proxy fork
+//! (see `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`):
+//! jiji-proxy never execs into a sibling container the way kamal-proxy's `--health-check-cmd`
+//! did, so unlike kamal-proxy's own run command, this one needs no docker socket, no Podman
+//! toolchain bind-mount list, and no `--privileged`/`--pid=host`/`--cgroupns=host`. It only
+//! needs network attachment (unchanged from kamal-proxy) plus its own config file and
+//! certificate directory.
 
 use std::net::Ipv4Addr;
 

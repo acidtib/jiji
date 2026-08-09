@@ -423,7 +423,7 @@ pub enum CronMissedRuns {
 }
 
 /// One scheduled command for a service, run in its own one-off container rather than inside the
-/// serving container (see `plans/service-cron.md`).
+/// serving container (see `docs/architecture-notes.md#scheduled-cron-execution-crons`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CronConfig {

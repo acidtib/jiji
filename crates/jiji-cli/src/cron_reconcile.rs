@@ -1,5 +1,5 @@
 //! Installs/removes cron job specifications on the owning replica's agent
-//! (`plans/service-cron.md`'s "Deployment Context" and "Configuration Reconciliation" sections).
+//! (`docs/architecture-notes.md#ownership-and-reconciliation`).
 //! Called by `jiji deploy`/`jiji service restart`/`rollback` (via `reconcile_after_deploy`, after
 //! every endpoint of a service with `crons:` configured has deployed successfully), by `jiji
 //! service scale` (ownership may move even without a redeploy), and by `jiji service remove`

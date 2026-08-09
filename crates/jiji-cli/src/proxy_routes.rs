@@ -20,7 +20,8 @@ const UNUSED_DNS_SERVER: &str = "0.0.0.0:0";
 /// One route jiji-proxy should serve for a service: a single `(host,
 /// path_prefix)` pair pointing at `name`'s DNS-discovered backends on
 /// `dns_server` -- jiji-proxy resolves and load-balances those backends
-/// itself (see `plans/jiji-proxy-design.md`'s "Core design decision"),
+/// itself (see
+/// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`),
 /// so unlike kamal-proxy's route model this carries no explicit target
 /// address at all, and applying it doesn't change per deployment.
 #[derive(Debug)]

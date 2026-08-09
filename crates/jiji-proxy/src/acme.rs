@@ -2,10 +2,11 @@
 //!
 //! DNS-01 is deliberately not implemented here: it's the right challenge
 //! type once more than one `jiji-proxy` instance can answer for the same
-//! hostname (see "Challenge type" in plans/jiji-proxy-design.md), but that
-//! needs a specific DNS provider's API wired in, which nobody has chosen
-//! yet. HTTP-01 is correct and sufficient for a single ingress host per
-//! hostname, which is what this phase actually needs to prove.
+//! hostname (see "TLS certificates" in
+//! `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`),
+//! but that needs a specific DNS provider's API wired in, which nobody has
+//! chosen yet. HTTP-01 is correct and sufficient for a single ingress host
+//! per hostname, which is what this phase actually needs to prove.
 
 use bytes::Bytes;
 use hyper_rustls::HttpsConnector;
@@ -26,9 +27,8 @@ use std::time::Duration;
 use crate::cert_store::CertStore;
 use crate::route_manager::RouteManager;
 
-/// Pebble (the local ACME test CA used to validate this integration -- see
-/// plans/jiji-proxy-design.md) strictly enforces RFC 8555 section 6.1's
-/// User-Agent requirement and rejects any request missing one with a 400
+/// Pebble (the local ACME test CA used to validate this integration) strictly enforces RFC 8555
+/// section 6.1's User-Agent requirement and rejects any request missing one with a 400
 /// `malformed` problem document. instant-acme's own `DefaultClient` never
 /// sets one, so `Account::builder()`/`from_credentials` against Pebble fail
 /// with a confusing "missing field newNonce" JSON error (parsing that 400

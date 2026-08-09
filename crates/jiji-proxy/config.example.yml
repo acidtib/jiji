@@ -5,11 +5,12 @@
 # `{project}-{service}.jiji`), not the host's system resolver -- see
 # src/discovery.rs. There is no static-backend fallback: this is what
 # restores cross-host load balancing over the phase 1 skeleton's
-# single-backend-per-host routing. See plans/jiji-proxy-design.md.
+# single-backend-per-host routing. See
+# docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns.
 #
 # Routes are normally pushed at runtime over the admin socket (`jiji-proxy
 # route apply/remove/list`), not listed here -- the `routes:` seed below is
-# mainly for standalone testing. See "Control surface" in the design doc.
+# mainly for standalone testing. See "Control surface" in the same section.
 
 http_listen: "0.0.0.0:8080"
 admin_socket: "/run/jiji-proxy/admin.sock"

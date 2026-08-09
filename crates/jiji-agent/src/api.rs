@@ -99,8 +99,8 @@ pub enum RequestBody {
     },
     /// Idempotent upsert by `(service, cron_name, revision, canonical_hash)`; `owner_node_id`/
     /// `owner_epoch` are never taken from the caller (see `CronJobSpec`'s doc comment) --
-    /// `jiji-cli` sends everything else, already rendered (`plans/service-cron.md`'s "Deployment
-    /// Context" section).
+    /// `jiji-cli` sends everything else, already rendered
+    /// (`docs/architecture-notes.md#ownership-and-reconciliation`).
     #[allow(clippy::too_many_arguments)]
     CronSpecApply {
         service: String,

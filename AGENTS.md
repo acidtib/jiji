@@ -236,6 +236,8 @@ the agent manages, `jiji-proxy` included (confirmed live; `podman ps` kept
 reporting the dead container "Up" since conmon never got to record an
 orderly exit).
 
+Full detail: `docs/architecture-notes.md#scheduled-cron-execution-crons`.
+
 ### `jiji server teardown` (inverse of `server setup`)
 
 Order matters: `jiji-agent` is removed **first**, unconditionally, before
