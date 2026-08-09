@@ -79,10 +79,8 @@ ssh:
   user: deploy
 
 builder:
-  local: true
   engine: docker
   registry:
-    type: remote
     server: ghcr.io
     username: yourname
     password: GITHUB_TOKEN
