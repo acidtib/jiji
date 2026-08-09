@@ -6,7 +6,10 @@
 //! compile time keeps it accurate to what's actually in the repo without
 //! any manual upkeep.
 
-include!("../../build-support/sibling_crate_version.rs");
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../lib/build-support/sibling_crate_version.rs"
+));
 
 fn main() {
     let proxy_version = sibling_crate_version(env!("CARGO_MANIFEST_DIR"), "jiji-proxy");

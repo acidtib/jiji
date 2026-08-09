@@ -6,8 +6,8 @@
 // separate workspace crate: the latter would need its own
 // `[package].version` and release-please tracking for ~15 shared lines.
 //
-// `include!("../../build-support/sibling_crate_version.rs")`, relative to
-// the including `build.rs`'s own directory.
+// Include this file with an absolute path derived from `CARGO_MANIFEST_DIR`.
+// This form works in rustc and rust-analyzer.
 
 /// Reads `<manifest_dir>/../<sibling_crate_dir>/Cargo.toml`'s
 /// `[package].version`, registering it for `cargo:rerun-if-changed`.

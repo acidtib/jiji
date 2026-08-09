@@ -1,8 +1,9 @@
 # AGENTS.md
 
-Full mechanism detail, deep rationale, and historical incident write-ups for
-everything summarized below live in `docs/architecture-notes.md`: read it
-when the "what" here isn't enough and you need the "exactly how"/"why".
+Current invariants, ownership boundaries, transaction ordering, and source
+pointers for the architecture summarized below live in
+`docs/architecture-notes.md`. Read the relevant section before changing that
+subsystem.
 
 ## Workspace Structure
 
@@ -24,7 +25,7 @@ crates/
 │                 # scheduled per-service cron execution.
 ├── jiji-proxy/   # The `jiji-proxy` binary: Pingora-based ingress proxy, host-global and
 │                 # shared across projects (see "jiji-proxy" under "Private Networking"
-│                 # below). Replaced the kamal-proxy Go fork entirely.
+│                 # below).
 └── jiji-cli/     # The `jiji` binary: commands, orchestration, everything else
 ```
 
@@ -143,7 +144,7 @@ Rolling services use a zero-downtime transaction. Direct host-port bindings
 cannot coexist during replacement, and `service.stop_first: true` deliberately
 stops the previous container first.
 
-Full 9-step transaction: `docs/architecture-notes.md#zero-downtime-deployment-strategy`.
+Full transaction: `docs/architecture-notes.md#health-gated-deployment-transaction`.
 
 ### Private Networking (WireGuard mesh + agent-served DNS)
 
@@ -172,7 +173,9 @@ container port. Raw TCP targets cannot use HTTP-only `path_prefix` or `ssl`,
 ports 80 and 443 remain reserved for HTTP ingress, and every shared-host TCP
 route needs a unique public port. `hosts` is optional metadata for TCP routes,
 not a routing key. Validation catches conflicts within one project;
-jiji-proxy rejects cross-project conflicts when applying the route.
+jiji-proxy rejects cross-project conflicts when applying the route. The main
+implementation paths are `jiji-cli/src/proxy_routes.rs`,
+`jiji-proxy/src/route_manager.rs`, and `jiji-proxy/src/tcp_relay.rs`.
 
 Two gotchas worth knowing before touching this layer:
 - Docker/Podman's IPAM has no knowledge of jiji's reserved addresses or
@@ -187,7 +190,8 @@ Two gotchas worth knowing before touching this layer:
 
 Full mechanism (membership/catalog/DNS wiring, jiji-proxy ACME/TLS,
 per-project identifier list, the ingress DNAT gotcha in full):
-`docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
+`docs/architecture-notes.md#project-networking` and
+`docs/architecture-notes.md#shared-ingress-proxy`.
 
 ### Container Namespace Sharing (`network_mode: service:<name>`)
 
@@ -203,7 +207,7 @@ selected (`add_cascaded_dependents`): deployed in two sequential waves
 (upstream first, then dependents) since a dependent can't attach until the
 upstream's new container exists.
 
-Full detail: `docs/architecture-notes.md#container-namespace-sharing-network_mode-servicename`.
+Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
 
 ### Scheduled Cron Execution (`crons:`)
 
@@ -268,7 +272,7 @@ the agent manages, `jiji-proxy` included (confirmed live; `podman ps` kept
 reporting the dead container "Up" since conmon never got to record an
 orderly exit).
 
-Full detail: `docs/architecture-notes.md#scheduled-cron-execution-crons`.
+Full detail: `docs/architecture-notes.md#scheduled-jobs`.
 
 ### `jiji server teardown` (inverse of `server setup`)
 
@@ -282,7 +286,7 @@ compiled network state). `-S`/`--services` is rejected. Another project's
 resources on the same host are surfaced as an informational notice, never a
 blocker.
 
-Full detail: `docs/architecture-notes.md#jiji-server-teardown-inverse-of-server-setup`.
+Full detail: `docs/architecture-notes.md#teardown-ordering`.
 
 ### SSH Connection Management
 
@@ -296,7 +300,7 @@ Gotcha: a remote command killed by a signal never sends
 `ChannelMsg::ExitStatus` (SSH sends `exit-signal` instead). `Option<u32>`
 exit codes must treat `None` the same as a nonzero exit, never as success.
 
-Full detail: `docs/architecture-notes.md#ssh-connection-management-detail`.
+Full detail: `docs/architecture-notes.md#ssh-connection-semantics`.
 
 ### Deployment Locking
 
@@ -315,12 +319,12 @@ never deadlock. `LogicalReplica` (keyed by `replica_id`) is what `deploy`/
 `service restart`/`rollback`/`remove` actually lock, so an unrelated offline
 host never blocks a targeted operation.
 
-Full rationale: `docs/architecture-notes.md#deployment-locking-detail`.
+Full rationale: `docs/architecture-notes.md#deployment-locks`.
 
 ### Naming Conventions
 
 Quick-recognition patterns (full derivation/rationale in
-`docs/architecture-notes.md#naming-conventions-detail`):
+`docs/architecture-notes.md#naming-and-ownership`):
 
 - Logical replica: `placement::replica_id(project, service, ordinal)`,
   stable across redeploys.
@@ -398,7 +402,7 @@ free-text commit/PR content.
 `jiji-cli`'s and `jiji-network`'s `build.rs` each read a sibling crate's
 version at compile time (`jiji-agent` → `AGENT_BUILD_VERSION`, `jiji-proxy`
 → `PROXY_VERSION`/`image()`) via a shared `sibling_crate_version()` helper,
-`include!`-ed from `build-support/sibling_crate_version.rs`, needed
+`include!`-ed from `lib/build-support/sibling_crate_version.rs`, needed
 because a fresh `jiji server setup` can no longer assume the agent/proxy
 build to install/pull is "the same version as me".
 
@@ -457,7 +461,7 @@ enable-linger` for the SSH user, otherwise a rootful container started over
 SSH gets silently killed once that SSH session's systemd scope is cleaned
 up.
 
-Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
+Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
 
 ## Command Reference
 
@@ -541,8 +545,8 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
   (`--follow` requires exactly one host).
 - `jiji service logs/restart/rollback/remove/prune/scale`: singular
   `service`. `restart`/`rollback` use the same configured replacement
-  strategy and `deploy_endpoint` primitive as `jiji deploy`. `remove` locks only the
-  endpoint's actually-owned replicas, tombstones the catalog record;
+  strategy and `deploy_endpoint` primitive as `jiji deploy`. `remove` locks
+  only the endpoint's actually-owned replicas, tombstones the catalog record;
   `--volumes` also removes named volumes. `prune` enforces `service.retain`
   (build-configured services only, keeps first N image tags, removes the
   rest unless still referenced), deliberately left unlocked. `scale -S
@@ -570,7 +574,7 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
   `Config.secrets` parses but no runtime code path reads it, so configuring
   `secrets:` today changes nothing and produces no warning. `.env` files and
   host-env fallback are implemented; no adapter implementations exist. See
-  `plans/followup.md` for the concrete integration plan.
+  `docs/todo.md` for the concrete integration plan.
 - `network_mode: "host"` / `"none"` are documented in `crates/jiji-config/
   src/jiji.yml` but not implemented by any runtime code path:
   `container_runtime::build_dynamic_run` never reads `network_mode` for
@@ -611,15 +615,12 @@ authenticate against) and exercise `sync_once`/`serve` directly. Membership
 tests don't need any of that: they exercise `MembershipView::apply` directly
 against plain records.
 
-**Important:** this mock-SSH suite is necessary but not sufficient: several
-real bugs (signal-killed exit codes, Docker/Podman label-format differences,
-nftables rules hijacking unrelated traffic, ARP staleness, a WireGuard
-interface leak on teardown) only ever surfaced against real hosts, never
-against `cargo test`. Live-test CLI-command-rendering work against a real
-Docker (and ideally Podman) host, and interactive/PTY work against a real
-terminal, before considering it done. Full incident write-ups (useful before
-touching nftables rendering, nested SSH sessions, or teardown ordering):
-`docs/architecture-notes.md#testing-real-hosts-only-incidents`.
+**Important:** this mock-SSH suite is necessary but not sufficient. Live-test
+CLI command rendering against a real Docker host and, when possible, Podman.
+Test interactive and PTY work in a real terminal. Networking, nftables,
+systemd ownership, and teardown changes require real-host validation. See
+`docs/architecture-notes.md#testing-boundaries` for the constraints mock tests
+cannot cover.
 
 ## Writing style
 
@@ -691,9 +692,9 @@ touching nftables rendering, nested SSH sessions, or teardown ordering):
 
 ## External References
 
-- `docs/architecture-notes.md` (this repo): full mechanism detail, deep
-  design rationale, and real-hosts-only incident write-ups for every
-  architecture section summarized above.
+- `docs/architecture-notes.md` (this repo): current invariants, ownership
+  boundaries, transaction ordering, failure semantics, and source pointers
+  for the architecture summarized above.
 - Docs site: `~/Code/jiji-website` (Next.js/Nextra site under `app/docs/`) is
   the single source of user-facing documentation (architecture, deployment
   guide, testing guide, configuration/network/registry/logs/commands

@@ -1,6 +1,9 @@
 use std::process::Command;
 
-include!("../../build-support/sibling_crate_version.rs");
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../lib/build-support/sibling_crate_version.rs"
+));
 
 fn main() {
     let sha = Command::new("git")
