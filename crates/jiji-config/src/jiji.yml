@@ -266,13 +266,12 @@ ssh:
 # - Secure inter-service authentication
 # - Zero-trust networking with encryption by default
 #
+# Private networking is enabled automatically. Jiji derives stable project-specific
+# ranges from `project:` when this section is absent. Add `network:` only to override
+# those defaults for infrastructure with conflicting LAN, VPN, or cloud VPC routes.
 # network:
-#   # Enable private networking (default: true)
-#   enabled: true
-#
-#   # Optional, non-overlapping address ranges
-#   management_cidr: "198.18.0.0/16"
-#   container_cidr: "100.64.0.0/10"
+#   management_cidr: "172.20.0.0/24"
+#   container_cidr: "172.21.0.0/16"
 #
 #   # Note: Service domain is always 'jiji' - containers reach each other via <project>-<service>.jiji
 #   # Jiji validates that these ranges do not overlap.
@@ -290,15 +289,11 @@ ssh:
 # ==============================
 #
 # Example 1: Basic Setup (Recommended)
-# network:
-#   enabled: true
-#   management_cidr: "198.18.0.0/16"
-#   container_cidr: "100.64.0.0/10"
+# Omit `network:`. Private networking and project-specific ranges are automatic.
 #
 # Example 2: Custom CIDR for Existing Network
 # network:
-#   enabled: true
-#   management_cidr: "172.20.0.0/20"
+#   management_cidr: "172.20.0.0/24"
 #   container_cidr: "172.21.0.0/16"
 #
 # Example 3: Disable Networking

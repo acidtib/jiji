@@ -181,20 +181,6 @@ pub struct Network {
     pub dns_forwarders: Vec<Ipv4Addr>,
 }
 
-impl Network {
-    pub fn management_cidr(&self) -> &str {
-        self.management_cidr
-            .as_deref()
-            .unwrap_or(jiji_core::DEFAULT_MANAGEMENT_CIDR)
-    }
-
-    pub fn container_cidr(&self) -> &str {
-        self.container_cidr
-            .as_deref()
-            .unwrap_or(jiji_core::DEFAULT_CONTAINER_CIDR)
-    }
-}
-
 /// The default forwarders used both by serde (when `network:` is present but omits
 /// `dns_forwarders`) and by callers resolving a fully-absent `network:` section (`Config.network`
 /// is itself `Option<Network>` -- see `NetworkPlanner::plan`'s equivalent `unwrap_or` pattern for

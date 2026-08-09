@@ -128,6 +128,13 @@ state directory, DNS address, proxy attachment address, and replication port.
 Projects on one host do not share project network or control-plane state.
 The host-global jiji-proxy is the intentional exception.
 
+When `network:` or either CIDR override is absent, the network planner derives
+stable project-specific `/24` management and `/16` container ranges from
+`config.project`. The result is independent of the checkout directory and is
+identical on every operator machine. The `/16` contains exactly 32 `/21`
+server subnets. Explicit CIDRs remain the escape hatch for overlap with a LAN,
+VPN, cloud VPC, or another project that selected the same finite default slot.
+
 `jiji server setup` bootstraps the host. After bootstrap, the agent owns
 continuous repair of its WireGuard interface, bridge, DNS binding, proxy
 attachment, and local containers. `jiji deploy` reconciles networking only
