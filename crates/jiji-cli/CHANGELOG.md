@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/acidtib/jiji/compare/v0.6.0...v0.7.0) (2026-08-09)
+
+
+### Features
+
+* infer builder, registry, and network defaults ([#85](https://github.com/acidtib/jiji/issues/85)) ([e089f46](https://github.com/acidtib/jiji/commit/e089f46b31d7fb1ec9088f086b6633eafafe3eab))
+
 ## [0.6.0](https://github.com/acidtib/jiji/compare/v0.5.2...v0.6.0) (2026-08-09)
 
 

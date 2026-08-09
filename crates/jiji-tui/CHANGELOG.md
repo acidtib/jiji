@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.6.1](https://github.com/acidtib/jiji/compare/jiji-tui-v0.6.0...jiji-tui-v0.6.1) (2026-08-09)
+
 ## [0.6.0](https://github.com/acidtib/jiji/compare/jiji-tui-v0.5.0...jiji-tui-v0.6.0) (2026-08-08)
 
 
