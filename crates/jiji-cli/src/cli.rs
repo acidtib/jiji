@@ -361,6 +361,50 @@ pub enum ServiceCommands {
         )]
         retain: Option<u32>,
     },
+    #[command(about = "Scheduled command management for services")]
+    Cron {
+        #[command(subcommand)]
+        command: ServiceCronCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceCronCommands {
+    #[command(about = "Show configured cron jobs and their installation state")]
+    List,
+    #[command(about = "Show durable run state from each job's assigned agent")]
+    Status,
+    #[command(about = "View logs for one cron job's runs (requires -S <service> and a cron name)")]
+    Logs {
+        #[arg(help = "Cron name (as defined under the service's 'crons' map)")]
+        cron: String,
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Show logs for a specific run instead of the latest"
+        )]
+        run: Option<String>,
+        #[arg(short = 'n', long, value_name = "N", help = "Number of lines to show")]
+        lines: Option<u32>,
+        #[arg(
+            short = 's',
+            long,
+            value_name = "TIMESTAMP",
+            help = "Show logs since this timestamp or relative duration"
+        )]
+        since: Option<String>,
+        #[arg(short = 'f', long, help = "Follow logs (requires one active run)")]
+        follow: bool,
+    },
+    #[command(
+        about = "Request an immediate run of one cron job (requires -S <service> and a cron name)"
+    )]
+    Run {
+        #[arg(help = "Cron name (as defined under the service's 'crons' map)")]
+        cron: String,
+        #[arg(long, help = "Stream output after the agent accepts the run")]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand)]

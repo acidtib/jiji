@@ -648,6 +648,14 @@ pub async fn run(
         .collect();
     drop(deploy_spinner);
     cancel_forwards(&sessions, &registry_forwards).await;
+    // Runs regardless of `skip_proxy`/ingress outcome below: a service's own endpoints already
+    // succeeded or failed by this point, and cron reconciliation is independent of proxy routing.
+    // Never fails the deploy itself (Phase 5's "partial failure" requirement) -- problems are
+    // folded into the failure count alongside endpoint/ingress failures further down.
+    let cron_problems = crate::cron_reconcile::reconcile_after_deploy(
+        &ssh, &config, &plan, &sessions, &selected, &results,
+    )
+    .await;
     let deployment_succeeded = results
         .iter()
         .flatten()
@@ -743,6 +751,10 @@ pub async fn run(
     }
     if let Some(error) = ingress_error {
         Ui::result_error("ingress:", &error.to_string());
+        failures += 1;
+    }
+    for problem in &cron_problems {
+        Ui::result_error("cron:", problem);
         failures += 1;
     }
 

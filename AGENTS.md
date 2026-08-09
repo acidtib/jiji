@@ -20,7 +20,8 @@ crates/
 ├── jiji-ssh/     # SSH abstraction over russh (SshSession, SshPool)
 ├── jiji-agent/   # The project-scoped `jiji-agent` binary/library installed on every
 │                 # server: durable local store, replicated catalog, incremental
-│                 # WireGuard repair, distributed DNS, container reconciliation.
+│                 # WireGuard repair, distributed DNS, container reconciliation,
+│                 # scheduled per-service cron execution.
 ├── jiji-proxy/   # The `jiji-proxy` binary: Pingora-based ingress proxy, host-global and
 │                 # shared across projects (see "jiji-proxy" under "Private Networking"
 │                 # below). Replaced the kamal-proxy Go fork entirely.
@@ -190,6 +191,71 @@ selected (`add_cascaded_dependents`): deployed in two sequential waves
 upstream's new container exists.
 
 Full detail: `docs/architecture-notes.md#container-namespace-sharing-network_mode-servicename`.
+
+### Scheduled Cron Execution (`crons:`)
+
+Each service can define `crons:` (name -> `CronConfig`: `schedule`,
+`timezone`, `command`, `timeout`, `overlap: forbid`, `missed_runs: skip`).
+The CLI picks the lowest-ordinal Active/Healthy replica as the job's
+*owner* (`cron_reconcile::select_cron_owner`) and pushes an idempotent
+`CronSpecApply` to that replica's `jiji-agent` after every deploy/restart/
+rollback (`reconcile_after_deploy`) or `scale` (calls `reconcile_service_crons`
+directly instead, since scaling can move ownership without a redeploy),
+whether or not the service currently has `crons:` configured; `service
+remove` unconditionally removes every installed spec for the service. Cron
+specs and run history are agent-local and deliberately never replicated
+(unlike the catalog): finding a stale spec -- left on a former owner after
+an ownership transfer, or left behind because its `crons:` entry was
+renamed/deleted -- requires connecting to every eligible server's agent and
+asking what it actually has installed, which is why `cron_reconcile.rs`
+extends the caller's SSH session pool to the whole `servers:` list (not just
+whatever `-H`/`-S` selected) and always sweeps every one of them (list
+installed specs, remove whatever isn't in the current desired set), even
+when `service.crons` is now empty. The owning agent's own scheduler
+(`jiji-agent/src/scheduler.rs`) claims and runs jobs itself, in a fresh
+one-off container per run (`cron_exec.rs`), reusing the durable
+`AddressAllocator`/`address_leases` machinery (`cron_replica_id(service,
+cron_name)` naming) rather than any new leasing path. `missed_runs: skip`
+collapses any pile-up of missed ticks by comparing the schedule's natural
+next occurrence against "next after now" -- no separate startup-recovery
+pass needed.
+
+Two bugs found by code review, not real-host testing: an earlier version of
+the sweep above only removed specs whose names were still present in the
+current `service.crons` map, so a renamed/deleted entry (or a service whose
+`crons:` block went empty) left its old installation running forever,
+undiscoverable by `service remove` either. Separately, `jiji service cron
+list`'s drift check (`commands/service/cron/list.rs`) must recompute a
+spec's expected hash using the exact same absolutized `env_file_path`/
+`mount_args` the sweep above installs with (`remote_home_dir`/`absolutize`/
+`absolutize_mount_args`, all `pub(crate)` from `cron_reconcile.rs` for this
+reason) -- comparing against the unabsolutized form reports every installed
+job as permanently `drifted`, regardless of whether anything actually
+changed.
+
+Two gotchas confirmed live, both because `jiji-agent` spawns cron
+containers directly via `tokio::process::Command`, never over SSH:
+- The `.jiji/{project}/...`-relative paths `stage_env_file`/
+  `mounts::remote_mount_base` hand back only resolve against an *SSH
+  login's* home directory. `jiji-agent`'s own cwd is `/` (no such login),
+  so `cron_reconcile.rs` resolves the owner's home directory once
+  (`remote_home_dir`) and sends `CronSpecApply` absolute paths instead.
+- Lease cron container addresses from `mesh_config.local_runtime.
+  container_subnet` (this host's actual bridge subnet), never
+  `container_cidr` (the whole-mesh reserved range covering every project
+  and server) -- the latter hands out addresses podman rejects outright as
+  outside the bridge's subnet.
+
+`jiji-agent`'s systemd unit also needs `KillMode=process` (not the default
+`control-group`): Podman here runs `cgroup_manager = cgroupfs` (see
+"Container Engine Provisioning" below), so a container's conmon/crun
+process stays in the unit's own cgroup, and any agent restart -- an
+upgrade, `Restart=on-failure` -- would otherwise `SIGKILL` every container
+the agent manages, `jiji-proxy` included (confirmed live; `podman ps` kept
+reporting the dead container "Up" since conmon never got to record an
+orderly exit).
+
+Full detail: `docs/architecture-notes.md#scheduled-cron-execution-crons`.
 
 ### `jiji server teardown` (inverse of `server setup`)
 
@@ -367,7 +433,18 @@ SHA256-verified static Podman binary (distro packages are too old for
 current CDI specs); Fedora/RHEL get `dnf install podman`. An
 already-installed Podman below the minimum is upgraded in place. Podman execs
 always pass `--no-session` (avoids a new PAM/login session per health-check
-poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
+poll).
+
+Two gotchas confirmed live on real Ubuntu 24.04 droplets, both blocking
+`jiji server setup` outright until fixed: the static storage.conf's
+`mountopt` must never include `fsync=0` (not a valid kernel overlayfs
+option -- EINVAL on every container mount); mesh bootstrap's
+`install_prerequisites` (`commands/network/setup.rs`) must run `loginctl
+enable-linger` for the SSH user, otherwise a rootful container started over
+SSH gets silently killed once that SSH session's systemd scope is cleaned
+up.
+
+Full detail: `docs/architecture-notes.md#container-engine-provisioning-detail`.
 
 ## Command Reference
 
@@ -458,6 +535,12 @@ poll). Full detail: `docs/architecture-notes.md#container-engine-provisioning-de
   rest unless still referenced), deliberately left unlocked. `scale -S
   <service> --replicas N` writes a distributed desired-scale override under
   one `ServiceScale` lock keyed by service name.
+- `jiji service cron list/status/run/logs`: scheduled per-service commands
+  (see "Scheduled Cron Execution" above). `list`/`status` read installation
+  state and durable run history from the owning replica's agent; `run
+  <cron> -S <service>` requests an immediate out-of-schedule run (rejected
+  as an actionable conflict if one is already active); `logs <cron> -S
+  <service> [--run <id>] [-f]` streams a run's container output.
 - `jiji lock acquire/release/status/show`: scope-aware locking (see
   "Deployment Locking" above); `release --replica <id>` / `--service <name>`
   / `--scope host-runtime|proxy` targets a specific stuck lock.

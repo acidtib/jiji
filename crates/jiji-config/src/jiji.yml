@@ -1024,6 +1024,60 @@ services:
 #         image: myapp/worker:latest
 #         restart: on-failure
 #
+# crons: Scheduled commands, each run in its own one-off container
+#   - Type: map, keyed by a stable cron name (DNS-safe: lowercase alphanumeric
+#     and hyphens, no leading/trailing hyphen, max 63 characters)
+#   - The command runs in a fresh container built from the service's image
+#     and runtime context (environment, mounts, resources, project network),
+#     NOT inside the running service container. It does not inherit the
+#     service's own command, ports, proxy routes, health checks, or restart
+#     policy. See docs/architecture-notes.md#scheduled-cron-execution-crons.
+#   - The jiji-agent scheduler runs these, not host crontabs or systemd
+#     timers -- a job continues to run even if the CLI operator disconnects.
+#   - Fields:
+#     schedule:     Required. A standard 5-field cron expression (minute
+#                   hour day-of-month month day-of-week). Seconds fields and
+#                   aliases like "@daily" are rejected.
+#     command:      Required. String or list of strings; replaces the
+#                   service's own command for this run.
+#     timezone:     Optional, default "UTC". An IANA time-zone name, used
+#                   only to calculate scheduled times (persisted timestamps
+#                   stay UTC).
+#     timeout:      Optional, default "1h". Maximum run time before the
+#                   agent stops the container. Format: <number><unit> with
+#                   unit s, m, or h (e.g. "30s", "5m", "1h").
+#     overlap:      Optional, default "forbid". "forbid" skips a due run
+#                   while the prior run for this job is still active.
+#     missed_runs:  Optional, default "skip". "skip" does not replay
+#                   scheduled times missed while the agent was offline.
+#   - A cron job cannot be defined on a service using
+#     `network_mode: service:<name>` (see network_mode above): a
+#     namespace-sharing dependent has no address of its own to lease for a
+#     cron container.
+#   - Limits: at most 32 cron jobs per service, 1000 per project.
+#   - `jiji deploy` is the command that installs/updates cron jobs; a
+#     schedule-only change still requires a deploy.
+#   - Manage installed jobs with `jiji service cron list/status/logs/run`.
+#   - Example:
+#     services:
+#       twitch:
+#         image: ghcr.io/example/twitch-sync:latest
+#         servers: [app-1, app-2]
+#         environment:
+#           secrets: [TWITCH_TOKEN]
+#         command: ["npm", "run", "serve"]
+#         crons:
+#           sync-twitch:
+#             schedule: "7 */2 * * *"
+#             command: ["npm", "run", "sync:twitch"]
+#           remove-expired:
+#             schedule: "0 3 * * *"
+#             command: ["npm", "run", "remove-expired"]
+#             timezone: America/Denver
+#             timeout: 30m
+#             overlap: forbid
+#             missed_runs: skip
+#
 
 # Proxy Routing Configuration:
 # ============================

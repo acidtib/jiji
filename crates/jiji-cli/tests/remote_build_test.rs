@@ -72,6 +72,8 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-test","owner_node_id":"app","owner_epoch":1,"revision":1,"deployment_id":"test-deploy","address":"100.64.0.10","ports":[],"image":"registry.example.com/demo-web:v1","state":"active","health":"healthy"}}}"#
     } else if command.contains("# jiji-request:release-address") {
         r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else if command.contains("# jiji-request:cron-spec-list") {
+        r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
     } else if command.contains("# jiji-request:health") {
         return success(&format!(
             r#"{{"Ok":{{"type":"health","schema_version":1,"observation_count":0,"version":"{}"}}}}"#,

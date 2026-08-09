@@ -1023,10 +1023,24 @@ elif command -v dnf >/dev/null 2>&1; then \
 else \
   echo 'Unsupported package manager. Install wireguard-tools, DNS query tools, iptables, and nftables manually.' >&2; exit 1; \
 fi; \
-install -d -m 0700 /etc/jiji/network; install -d -m 0700 {project_dir}; install -d -m 0700 /etc/wireguard"
-    );
+install -d -m 0700 /etc/jiji/network; install -d -m 0700 {project_dir}; install -d -m 0700 /etc/wireguard; \
+{}"
+    , enable_linger_command());
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)
+}
+
+/// Without this, a rootful container (jiji-proxy, or any jiji-managed service container) started
+/// by a command run over this SSH session can be killed by systemd once the session's own cgroup
+/// scope is torn down at disconnect -- confirmed live on a stock Ubuntu 24.04 droplet, where
+/// `jiji-proxy` died silently minutes after `jiji server setup` returned, with `podman`'s own
+/// cached container state still (wrongly) reporting it as running. `loginctl enable-linger`
+/// keeps the SSH user's systemd instance (and everything under it) running independently of any
+/// login session. Best-effort: `loginctl` doesn't exist on every init system jiji might target,
+/// so a missing binary must never fail the whole prerequisites step.
+fn enable_linger_command() -> String {
+    "command -v loginctl >/dev/null 2>&1 && loginctl enable-linger \"$(whoami)\" || true"
+        .to_string()
 }
 
 async fn ensure_keypair(session: &SshSession, slug: &str) -> anyhow::Result<()> {

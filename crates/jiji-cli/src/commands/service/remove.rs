@@ -503,6 +503,25 @@ pub async fn run(
             )
             .await;
 
+            let mut cron_services: BTreeSet<&str> = BTreeSet::new();
+            for endpoint in &selected {
+                cron_services.insert(endpoint.service.as_str());
+            }
+            let mut cron_problems = Vec::new();
+            for service_name in cron_services {
+                let service = &config.services[service_name];
+                cron_problems.extend(
+                    crate::cron_reconcile::remove_all_cron_specs(
+                        &ssh,
+                        &config,
+                        service_name,
+                        service,
+                        &sessions,
+                    )
+                    .await,
+                );
+            }
+
             Ui::section("Remove Summary:");
             let mut failures = 0usize;
             for (identity, steps, _) in &results {
@@ -526,6 +545,11 @@ pub async fn run(
                 if has_failure {
                     failures += 1;
                 }
+            }
+
+            for problem in &cron_problems {
+                Ui::error(&format!("cron: {problem}"));
+                failures += 1;
             }
 
             if failures > 0 {

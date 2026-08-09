@@ -24,6 +24,7 @@ jiji-config.workspace = true
 jiji-network.workspace = true
 jiji-ssh.workspace = true
 jiji-agent.workspace = true
+jiff.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["signal", "io-std"] }
 anyhow.workspace = true

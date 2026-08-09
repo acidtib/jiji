@@ -472,6 +472,31 @@ pub async fn run(
                 )
                 .await?;
             }
+
+            {
+                // Always reconciles, even when `service.crons` is empty: ownership may have
+                // moved without a redeploy, and a cron renamed/deleted from config still needs
+                // its stale installation swept up (`reconcile_service_crons`'s own doc comment).
+                let cron_problems = crate::cron_reconcile::reconcile_service_crons(
+                    ssh,
+                    &config,
+                    &plan,
+                    service_name,
+                    service,
+                    &sessions,
+                )
+                .await;
+                for problem in &cron_problems {
+                    Ui::result_error("cron:", problem);
+                }
+                if !cron_problems.is_empty() {
+                    anyhow::bail!(
+                        "Scale succeeded, but {} cron reconciliation problem(s) occurred; see above.",
+                        cron_problems.len()
+                    );
+                }
+            }
+
             Ok(())
     }
     .await;

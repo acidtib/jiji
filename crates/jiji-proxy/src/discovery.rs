@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 /// rather than the host's system resolver. This is what lets a route's
 /// backend set track jiji-agent's replicated catalog (mesh-wide, not just
 /// this host) without jiji-cli ever pushing a per-deployment route update --
-/// see "Core design decision" in plans/jiji-proxy-design.md.
+/// see `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
 pub struct JijiDnsDiscovery {
     resolver: TokioResolver,
     name: String,

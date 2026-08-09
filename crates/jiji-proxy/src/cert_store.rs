@@ -5,8 +5,8 @@
 //! operator drops into `cert_dir` (`{host}.crt`/`{host}.key`, loaded once at
 //! startup and never touched again) or by `acme.rs`'s issuance/renewal loop.
 //! A static file always wins: `acme.rs` only ever issues/renews hosts whose
-//! current entry is missing or itself ACME-sourced. See "Cert storage and
-//! renewal" in plans/jiji-proxy-design.md.
+//! current entry is missing or itself ACME-sourced. See "TLS certificates"
+//! in `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
 
 use async_trait::async_trait;
 use pingora::listeners::TlsAccept;

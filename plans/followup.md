@@ -247,3 +247,54 @@ once at the start of the wait -- no new `Ui` primitive needed, this is an
 existing pattern. Also capture `stdout` per attempt (currently dropped
 entirely), since a `cmd`-based check's own diagnostic output commonly goes
 to stdout, not stderr.
+
+## Service cron: deferred v1 scope (retries, per-replica jobs, configurable retention)
+
+**Status: not started, deliberately deferred from the v1 cron plan
+(`plans/service-cron.md`).** The plan's own scope line: "The first release
+does not include retries, per-replica jobs, catch-up runs, or automatic
+owner failover" (`plans/service-cron.md` line 58). Manual triggering was
+also considered a possible later addition during early planning, but ended
+up in v1 scope and shipped in Phase 6 (`jiji service cron run`) -- it does
+not need a followup item.
+
+### Retries for failed runs
+
+A `Failed`/`TimedOut` run is never retried on its own; the scheduler's next
+tick is the only thing that runs the job again, at its next natural
+schedule occurrence (`scheduler.rs::tick`). There is no configurable
+per-job retry policy (max attempts, backoff). Adding one would need: a
+`retry:` block on `CronConfig` (max attempts, backoff), a decision point in
+`cron_exec.rs`'s `finish` (or `scheduler.rs`'s tick logic) on whether to
+reschedule an immediate retry versus waiting for the next natural
+occurrence, and a new `CronRunCause` variant (alongside `Scheduled`/
+`Manual`) so `service cron status`/`logs` can distinguish a retry from a
+normal scheduled run.
+
+### Per-replica cron jobs
+
+v1 always runs a service's cron job on exactly one owner -- the
+lowest-ordinal Active/Healthy replica (`cron_reconcile::select_cron_owner`)
+-- one execution per tick regardless of replica count. A "run on every
+replica" mode (e.g. per-node cache warming) would need: a new `CronConfig`
+field (e.g. `per_replica: bool`), `cron_reconcile.rs` pushing
+`CronSpecApply` to every eligible replica's agent instead of just the
+owner, and each replica's own scheduler claiming/running independently.
+The `(service, cron_name, scheduled_at)` uniqueness constraint in
+`cron_runs` is already per-agent/local-store, so concurrent independent
+claims mostly just work; the real work is making `service cron
+list/status/logs` replica-aware instead of reporting a single "owner" row.
+
+### Configurable output/container retention
+
+Retention already exists in v1, just as fixed constants, not per-service
+configuration (`scheduler.rs`): completed run metadata is kept for 30 days
+or the latest 100 runs per job, whichever is more (`METADATA_RETAIN_SECS`/
+`METADATA_RETAIN_LATEST`); a completed run's container is kept 24 hours so
+`cron logs` can still read it (`CONTAINER_RETAIN_SECS`). Making these
+configurable would need a `retention:` block on `CronConfig` (e.g.
+`runs`/`container_ttl`) threaded through `CronSpecApply` into
+`CronJobSpec`, with `scheduler.rs`'s cleanup tick reading the per-job value
+instead of the shared constants -- decide the fallback behavior (a service
+without an explicit `retention:` keeps today's fixed defaults) before
+implementing, so this stays additive.

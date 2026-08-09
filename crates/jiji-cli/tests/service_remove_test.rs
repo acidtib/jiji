@@ -38,6 +38,8 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":3,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"stopped","health":"unhealthy"}}}"#
     } else if command.contains("# jiji-request:release-address") {
         r#"{"Ok":{"type":"address_released","released":true}}"#
+    } else if command.contains("# jiji-request:cron-spec-list") {
+        r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
     } else {
         ""
     };

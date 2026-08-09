@@ -13,6 +13,7 @@ mod commands;
 mod config_loading;
 mod container_ops;
 mod container_runtime;
+mod cron_reconcile;
 mod deploy_transaction;
 mod engine;
 mod env_resolution;
@@ -40,7 +41,7 @@ mod volume_teardown;
 use clap::{CommandFactory, Parser};
 use cli::{
     Cli, Commands, LockCommands, NetworkCommands, ProxyCommands, RegistryCommands, SecretsCommands,
-    ServerCommands, ServiceCommands,
+    ServerCommands, ServiceCommands, ServiceCronCommands,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -583,6 +584,76 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
+            ServiceCommands::Cron { command } => match command {
+                ServiceCronCommands::List => {
+                    if let Err(err) = commands::service::cron::list::run(
+                        cli.environment.as_deref(),
+                        cli.config_file.as_deref(),
+                        cli.services.as_deref(),
+                    )
+                    .await
+                    {
+                        println!();
+                        jiji_tui::Ui::error(&format!("Service cron list failed: {err}"));
+                        std::process::exit(1);
+                    }
+                }
+                ServiceCronCommands::Status => {
+                    if let Err(err) = commands::service::cron::status::run(
+                        cli.environment.as_deref(),
+                        cli.config_file.as_deref(),
+                        cli.hosts.as_deref(),
+                        cli.services.as_deref(),
+                    )
+                    .await
+                    {
+                        println!();
+                        jiji_tui::Ui::error(&format!("Service cron status failed: {err}"));
+                        std::process::exit(1);
+                    }
+                }
+                ServiceCronCommands::Logs {
+                    cron,
+                    run: run_id,
+                    lines,
+                    since,
+                    follow,
+                } => {
+                    if let Err(err) = commands::service::cron::logs::run(
+                        commands::service::cron::logs::LogsOptions {
+                            environment: cli.environment.as_deref(),
+                            config_file: cli.config_file.as_deref(),
+                            services: cli.services.as_deref(),
+                            cron,
+                            run: run_id.as_deref(),
+                            lines: *lines,
+                            since: since.as_deref(),
+                            follow: *follow,
+                        },
+                    )
+                    .await
+                    {
+                        println!();
+                        jiji_tui::Ui::error(&format!("Service cron logs failed: {err}"));
+                        std::process::exit(1);
+                    }
+                }
+                ServiceCronCommands::Run { cron, follow } => {
+                    if let Err(err) = commands::service::cron::run::run(
+                        cli.environment.as_deref(),
+                        cli.config_file.as_deref(),
+                        cli.services.as_deref(),
+                        cron,
+                        *follow,
+                    )
+                    .await
+                    {
+                        println!();
+                        jiji_tui::Ui::error(&format!("Service cron run failed: {err}"));
+                        std::process::exit(1);
+                    }
+                }
+            },
         },
         Some(Commands::Secrets { command }) => match command {
             SecretsCommands::Print { show_values } => {
