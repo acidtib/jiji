@@ -1,10 +1,10 @@
 {
-  "crates/jiji-cli": "0.5.2",
-  "crates/jiji-agent": "0.5.2",
-  "crates/jiji-proxy": "0.5.0",
+  "crates/jiji-cli": "0.6.0",
+  "crates/jiji-agent": "0.6.0",
+  "crates/jiji-proxy": "0.6.0",
   "crates/jiji-core": "0.6.0",
   "crates/jiji-tui": "0.6.0",
-  "crates/jiji-config": "0.6.0",
-  "crates/jiji-network": "0.6.0",
+  "crates/jiji-config": "0.7.0",
+  "crates/jiji-network": "0.7.0",
   "crates/jiji-ssh": "0.6.0"
 }
