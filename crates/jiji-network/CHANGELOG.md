@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/acidtib/jiji/compare/jiji-network-v0.6.0...jiji-network-v0.7.0) (2026-08-09)
+
+
+### Features
+
+* add scheduled service cron jobs ([#82](https://github.com/acidtib/jiji/issues/82)) ([bb9e771](https://github.com/acidtib/jiji/commit/bb9e771e6710b7c2537ba96276ab3feb719e44f8))
+
 ## [0.6.0](https://github.com/acidtib/jiji/compare/jiji-network-v0.5.0...jiji-network-v0.6.0) (2026-08-08)
 
 
