@@ -416,6 +416,11 @@ pub async fn run(
                 .collect();
             drop(restart_spinner);
 
+            let cron_problems = crate::cron_reconcile::reconcile_after_deploy(
+                &ssh, &config, &plan, &sessions, &selected, &results,
+            )
+            .await;
+
             let server_by_identity: BTreeMap<String, String> = selected
                 .iter()
                 .map(|endpoint| (endpoint.identity.clone(), endpoint.server.clone()))
@@ -471,6 +476,11 @@ pub async fn run(
                         }
                     }
                 }
+            }
+
+            for problem in &cron_problems {
+                Ui::result_error("cron:", problem);
+                failures += 1;
             }
 
             if failures > 0 {

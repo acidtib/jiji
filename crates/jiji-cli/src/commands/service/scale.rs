@@ -472,6 +472,28 @@ pub async fn run(
                 )
                 .await?;
             }
+
+            if !service.crons.is_empty() {
+                let cron_problems = crate::cron_reconcile::reconcile_service_crons(
+                    ssh,
+                    &config,
+                    &plan,
+                    service_name,
+                    service,
+                    &sessions,
+                )
+                .await;
+                for problem in &cron_problems {
+                    Ui::result_error("cron:", problem);
+                }
+                if !cron_problems.is_empty() {
+                    anyhow::bail!(
+                        "Scale succeeded, but {} cron reconciliation problem(s) occurred; see above.",
+                        cron_problems.len()
+                    );
+                }
+            }
+
             Ok(())
     }
     .await;

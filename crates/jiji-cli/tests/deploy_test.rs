@@ -297,6 +297,49 @@ fn write_config(
     config_path
 }
 
+/// `config_yaml` plus a single `crons:` entry on "web", for Phase 5 deployment-integration tests.
+fn config_yaml_with_cron(addr: SocketAddr, key_path: &std::path::Path, engine: &str) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: {engine} }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    servers: [app]
+    crons:
+      sync:
+        schedule: "*/5 * * * *"
+        command: ["echo", "hi"]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        engine = engine,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn write_config_with_cron(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(&config_path, config_yaml_with_cron(addr, key_path, engine))
+        .expect("write test deploy.yml");
+    config_path
+}
+
 /// Two servers: "app" hosts the only service and is reachable; "peer" is configured but
 /// unreachable (port 1, nothing listens there), so `--wait-for-peers` has exactly one
 /// unreachable peer to report as offline.
@@ -815,6 +858,125 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
             .iter()
             .any(|c| c.contains("rm -f demo-web-") && !c.contains(old_name)),
         "the healthy candidate itself must never be removed: {received:?}"
+    );
+}
+
+/// Like `active_catalog_response`, but `owner_node_id` is the real configured server name
+/// ("app"), not the unrelated placeholder "node-test": cron reconciliation looks up the owner's
+/// session by that name, so it must match this file's single-server test topology.
+fn active_catalog_response_owned_by_app(deployment_id: &str, address: &str) -> CannedResponse {
+    success(&format!(
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
+    ))
+}
+
+/// A full `type=cron_spec_applied` response for `web`'s `sync` cron: only the wire shape matters
+/// for this test (parseable `ResponseBody::CronSpecApplied`), not the field values.
+fn cron_spec_applied_response() -> CannedResponse {
+    success(
+        r#"{"Ok":{"type":"cron_spec_applied","spec":{"project":"demo","service":"web","cron_name":"sync","revision":2,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-c1fe97ed0787","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":".jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"},"outcome":"installed"}}"#,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_applies_cron_specs_after_catalog_activation() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_owned_by_app(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    responses.insert(
+        agent_request_command("cron-spec-apply"),
+        cron_spec_applied_response(),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_cron(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let apply_index = received
+        .iter()
+        .position(|c| c.contains("# jiji-request:cron-spec-apply"))
+        .expect("cron spec should have been applied after deploy");
+    let run_index = received
+        .iter()
+        .position(|c| c.contains("docker run --name demo-web-"))
+        .expect("candidate should have been created");
+    assert!(
+        run_index < apply_index,
+        "cron spec application must happen after the candidate is created/activated: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_reports_a_partial_failure_when_cron_installation_fails_without_undeploying() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_owned_by_app(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    responses.insert(agent_request_command("cron-spec-apply"), failure());
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_cron(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        !output.status.success(),
+        "a cron installation failure must be reported, not silently swallowed"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("docker run --name demo-web-")),
+        "the service container must still have been deployed: {received:?}"
+    );
+    assert!(
+        !received.iter().any(|c| c.contains("rm -f demo-web-")
+            && !c.contains("olddeploymen")),
+        "a cron-only failure must never remove the healthy candidate that was just deployed: {received:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Run `jiji deploy` again"),
+        "the error must tell the operator to redeploy: {stderr}"
     );
 }
 

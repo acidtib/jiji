@@ -13,6 +13,7 @@ mod commands;
 mod config_loading;
 mod container_ops;
 mod container_runtime;
+mod cron_reconcile;
 mod deploy_transaction;
 mod engine;
 mod env_resolution;

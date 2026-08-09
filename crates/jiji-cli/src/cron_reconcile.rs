@@ -1,0 +1,667 @@
+//! Installs/removes cron job specifications on the owning replica's agent
+//! (`plans/service-cron.md`'s "Deployment Context" and "Configuration Reconciliation" sections).
+//! Called by `jiji deploy`/`jiji service restart`/`rollback` (via `reconcile_after_deploy`, after
+//! every endpoint of a service with `crons:` configured has deployed successfully), by `jiji
+//! service scale` (ownership may move even without a redeploy), and by `jiji service remove`
+//! (unconditional removal, no ownership computation needed).
+//!
+//! Cron specs are never replicated between agents (see `jiji_agent::cron`'s module doc comment),
+//! so finding a stale spec left on a former owner after a transfer requires actually connecting
+//! to that host's agent -- the CLI cannot discover it any other way. This module therefore
+//! connects to every server in a cron-having service's `servers:` list, not just whatever the
+//! current command's `-H`/`-S` filters selected, extending the caller's session map in place.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use anyhow::Context;
+use jiji_agent::api::{RequestBody, ResponseBody};
+use jiji_agent::catalog::{CatalogRecord, DeploymentState, HealthState};
+use jiji_agent::cron::CronJobSpec;
+use jiji_config::{CommandValue, Config, CronConfig, Service, Ssh};
+use jiji_network::{NetworkPlan, ServiceEndpointPlan};
+use jiji_ssh::SshSession;
+
+use crate::deploy_transaction::EndpointOutcome;
+use crate::placement::ReplicaAssignment;
+use crate::{container_runtime, mounts, ssh_adapter};
+
+fn to_agent_overlap(value: jiji_config::CronOverlap) -> jiji_agent::cron::CronOverlap {
+    match value {
+        jiji_config::CronOverlap::Forbid => jiji_agent::cron::CronOverlap::Forbid,
+    }
+}
+
+fn to_agent_missed_runs(value: jiji_config::CronMissedRuns) -> jiji_agent::cron::CronMissedRuns {
+    match value {
+        jiji_config::CronMissedRuns::Skip => jiji_agent::cron::CronMissedRuns::Skip,
+    }
+}
+
+fn render_command(command: &CommandValue) -> Vec<String> {
+    match command {
+        CommandValue::Single(value) => vec![value.clone()],
+        CommandValue::Multiple(values) => values.clone(),
+    }
+}
+
+/// Among `assignments`, the lowest-ordinal one whose `replica_id` has an Active/Healthy record in
+/// `catalog` right now (the plan's "The CLI selects the active replica with the lowest ordinal as
+/// the source and owner").
+pub(crate) fn select_cron_owner<'a>(
+    assignments: &'a [ReplicaAssignment],
+    catalog: &'a [CatalogRecord],
+) -> Option<(&'a ReplicaAssignment, &'a CatalogRecord)> {
+    assignments
+        .iter()
+        .filter_map(|assignment| {
+            catalog
+                .iter()
+                .find(|record| {
+                    record.replica_id == assignment.replica_id
+                        && record.state == DeploymentState::Active
+                        && record.health == HealthState::Healthy
+                })
+                .map(|record| (assignment, record))
+        })
+        .min_by_key(|(assignment, _)| assignment.ordinal)
+}
+
+/// `.jiji/{project}/env/{service}-{server}.env`, matching `env_resolution::stage_env_file`'s own
+/// formula exactly: since the owner replica is Active/Healthy, its own most recent deploy already
+/// staged this file at this deterministic, service-scoped (not deployment-id-scoped) path, so a
+/// cron run can reuse it verbatim without re-staging or needing `ResolvedEnvironment` at all.
+fn owner_env_file_path(project: &str, service_name: &str, owner_server: &str) -> String {
+    format!(".jiji/{project}/env/{service_name}-{owner_server}.env")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_apply_request(
+    service_name: &str,
+    cron_name: &str,
+    cron: &CronConfig,
+    image: &str,
+    mount_args: &[String],
+    resource_args: &[String],
+    env_file_path: &str,
+    source_deployment_id: &str,
+    source_replica_id: &str,
+    bridge_network: &str,
+    dns_address: std::net::Ipv4Addr,
+    revision: u64,
+) -> RequestBody {
+    let command = render_command(&cron.command);
+    let timeout_seconds = cron
+        .timeout_duration()
+        .unwrap_or(std::time::Duration::from_secs(3600))
+        .as_secs();
+    let overlap = to_agent_overlap(cron.overlap);
+    let missed_runs = to_agent_missed_runs(cron.missed_runs);
+
+    // Computed via the exact same function the agent itself uses for its own idempotent-upsert
+    // comparison (`jiji-cli` already depends on `jiji-agent`), so drift detection can never
+    // silently diverge between the two crates. Identity/ownership fields are irrelevant to the
+    // hash (see `CronJobSpec::canonical_hash`'s doc comment) -- placeholders here are never sent.
+    let canonical_hash = CronJobSpec {
+        project: String::new(),
+        service: service_name.to_string(),
+        cron_name: cron_name.to_string(),
+        revision,
+        canonical_hash: String::new(),
+        owner_node_id: String::new(),
+        owner_epoch: 0,
+        server: String::new(),
+        source_deployment_id: source_deployment_id.to_string(),
+        source_replica_id: source_replica_id.to_string(),
+        image: image.to_string(),
+        schedule: cron.schedule.clone(),
+        timezone: cron.timezone.clone(),
+        timeout_seconds,
+        overlap,
+        missed_runs,
+        command: command.clone(),
+        env_file_path: env_file_path.to_string(),
+        mount_args: mount_args.to_vec(),
+        resource_args: resource_args.to_vec(),
+        bridge_network: bridge_network.to_string(),
+        dns_address: dns_address.to_string(),
+    }
+    .canonical_hash();
+
+    RequestBody::CronSpecApply {
+        service: service_name.to_string(),
+        cron_name: cron_name.to_string(),
+        revision,
+        canonical_hash,
+        source_deployment_id: source_deployment_id.to_string(),
+        source_replica_id: source_replica_id.to_string(),
+        image: image.to_string(),
+        schedule: cron.schedule.clone(),
+        timezone: cron.timezone.clone(),
+        timeout_seconds,
+        overlap,
+        missed_runs,
+        command,
+        env_file_path: env_file_path.to_string(),
+        mount_args: mount_args.to_vec(),
+        resource_args: resource_args.to_vec(),
+        bridge_network: bridge_network.to_string(),
+        dns_address: dns_address.to_string(),
+    }
+}
+
+/// Builds a local session map covering every one of `servers`: an `Arc` clone from `sessions`
+/// wherever already connected (the command's own `-H`/`-S`-selected targets), a fresh connection
+/// for anything else. Returns the names newly connected here alongside the map so the caller can
+/// close exactly those when done -- `sessions` itself is never mutated (this module never holds
+/// a long-lived `&mut` on the caller's session pool, since callers invoke this from inside a
+/// closure that's often already borrowing it immutably for lock management).
+async fn resolve_sessions(
+    ssh: &Ssh,
+    config: &Config,
+    servers: &[String],
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> anyhow::Result<(BTreeMap<String, Arc<SshSession>>, Vec<String>)> {
+    let mut resolved = BTreeMap::new();
+    let mut newly_opened = Vec::new();
+    for server_name in servers {
+        if let Some(session) = sessions.get(server_name) {
+            resolved.insert(server_name.clone(), Arc::clone(session));
+            continue;
+        }
+        let named = config.servers.get(server_name).ok_or_else(|| {
+            anyhow::anyhow!("Server '{server_name}' referenced by cron reconciliation is not defined in configuration")
+        })?;
+        let options = ssh_adapter::connect_options(server_name, named, ssh)?;
+        let session = SshSession::connect(&options).await.with_context(|| {
+            format!("Could not connect to '{server_name}' to reconcile cron ownership")
+        })?;
+        resolved.insert(server_name.clone(), Arc::new(session));
+        newly_opened.push(server_name.clone());
+    }
+    Ok((resolved, newly_opened))
+}
+
+async fn close_newly_opened(sessions: &BTreeMap<String, Arc<SshSession>>, newly_opened: &[String]) {
+    for name in newly_opened {
+        if let Some(session) = sessions.get(name) {
+            session.close().await;
+        }
+    }
+}
+
+/// Reconciles every `crons:` entry for one service: installs on the current owner, then removes
+/// any stale installation left on a different eligible host by a previous owner (the plan's "If
+/// the owner replica changes, the CLI installs the new specification first. Then it removes the
+/// old specification."). A no-op if the service defines no `crons:`.
+///
+/// Never returns an error the caller should fail its own command over: a service deployment that
+/// already succeeded must not be rolled back for a cron-only failure (Phase 5's "partial failure"
+/// requirement). Returns human-readable problems instead, empty on full success; each already
+/// tells the operator to redeploy.
+pub(crate) async fn reconcile_service_crons(
+    ssh: &Ssh,
+    config: &Config,
+    plan: &NetworkPlan,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> Vec<String> {
+    if service.crons.is_empty() {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    let redeploy_hint = "Run `jiji deploy` again to retry cron installation.";
+
+    let (sessions, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            problems.push(format!(
+                    "service '{service_name}': could not reach every eligible server to reconcile cron jobs: {error}. {redeploy_hint}"
+                ));
+            return problems;
+        }
+    };
+
+    let result = reconcile_service_crons_inner(
+        config,
+        plan,
+        service_name,
+        service,
+        &sessions,
+        redeploy_hint,
+    )
+    .await;
+    close_newly_opened(&sessions, &newly_opened).await;
+    result
+}
+
+async fn reconcile_service_crons_inner(
+    config: &Config,
+    plan: &NetworkPlan,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    redeploy_hint: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(seed) = service.servers.iter().find_map(|name| sessions.get(name)) else {
+        problems.push(format!(
+            "service '{service_name}': no reachable server; cron jobs were not reconciled. {redeploy_hint}"
+        ));
+        return problems;
+    };
+    let catalog = match crate::agent_client::catalog(seed, &config.project).await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            problems.push(format!(
+                "service '{service_name}': could not read the service catalog to determine cron ownership: {error}. {redeploy_hint}"
+            ));
+            return problems;
+        }
+    };
+    let assignments = crate::placement::place(
+        &config.project,
+        service_name,
+        service.replicas,
+        &service.servers,
+        service.placement,
+    );
+    let Some((owner_assignment, owner_record)) = select_cron_owner(&assignments, &catalog) else {
+        problems.push(format!(
+            "service '{service_name}': no active, healthy replica; cron jobs were not reconciled. {redeploy_hint}"
+        ));
+        return problems;
+    };
+    let owner_server_name = owner_record.owner_node_id.clone();
+    let (Some(owner_session), Some(owner_server)) = (
+        sessions.get(&owner_server_name).cloned(),
+        plan.servers.get(&owner_server_name),
+    ) else {
+        problems.push(format!(
+            "service '{service_name}': could not reach '{owner_server_name}', the owning host for its cron jobs. {redeploy_hint}"
+        ));
+        return problems;
+    };
+
+    let mount_args = match mounts::build_all_mount_args(service, &config.project, service_name) {
+        Ok(args) => args,
+        Err(error) => {
+            problems.push(format!(
+                "service '{service_name}': could not render mount arguments for its cron jobs: {error}. {redeploy_hint}"
+            ));
+            return problems;
+        }
+    };
+    let resource_args = container_runtime::render_resource_options(service);
+    let env_file_path = owner_env_file_path(&config.project, service_name, &owner_server_name);
+
+    for (cron_name, cron) in &service.crons {
+        let request = render_apply_request(
+            service_name,
+            cron_name,
+            cron,
+            &owner_record.image,
+            &mount_args,
+            &resource_args,
+            &env_file_path,
+            &owner_record.deployment_id,
+            &owner_assignment.replica_id,
+            &owner_server.bridge_name,
+            owner_server.dns_address,
+            owner_record.revision,
+        );
+        match crate::agent_client::call(&owner_session, &config.project, None, request).await {
+            Ok(ResponseBody::CronSpecApplied { .. }) => {}
+            Ok(response) => problems.push(format!(
+                "service '{service_name}' cron '{cron_name}': agent on '{owner_server_name}' returned an unexpected response: {response:?}. {redeploy_hint}"
+            )),
+            Err(error) => problems.push(format!(
+                "service '{service_name}' cron '{cron_name}': could not install on '{owner_server_name}': {error}. {redeploy_hint}"
+            )),
+        }
+    }
+
+    for server_name in &service.servers {
+        if *server_name == owner_server_name {
+            continue;
+        }
+        let Some(session) = sessions.get(server_name) else {
+            continue;
+        };
+        for cron_name in service.crons.keys() {
+            if let Err(error) = crate::agent_client::call(
+                session,
+                &config.project,
+                None,
+                RequestBody::CronSpecRemove {
+                    service: service_name.to_string(),
+                    cron_name: cron_name.clone(),
+                },
+            )
+            .await
+            {
+                problems.push(format!(
+                    "service '{service_name}' cron '{cron_name}': could not remove a stale installation on '{server_name}': {error}. {redeploy_hint}"
+                ));
+            }
+        }
+    }
+
+    problems
+}
+
+/// Reconciles cron specs for every service in `results` whose every selected endpoint deployed
+/// successfully -- the shared post-processing step `jiji deploy`, `jiji service restart`, and
+/// `jiji service rollback` all call after their own endpoint deployment completes (they share the
+/// same `deploy_service_endpoints` primitive, but each computes `selected`/`results` itself, so
+/// this takes them as parameters rather than assuming a single caller's exact variable shape).
+pub(crate) async fn reconcile_after_deploy(
+    ssh: &Ssh,
+    config: &Config,
+    plan: &NetworkPlan,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    selected: &[ServiceEndpointPlan],
+    results: &[Vec<(String, EndpointOutcome)>],
+) -> Vec<String> {
+    let identity_to_service: BTreeMap<&str, &str> = selected
+        .iter()
+        .map(|endpoint| (endpoint.identity.as_str(), endpoint.service.as_str()))
+        .collect();
+    let mut service_success: BTreeMap<&str, bool> = BTreeMap::new();
+    for outcomes in results {
+        for (identity, outcome) in outcomes {
+            let Some(service_name) = identity_to_service.get(identity.as_str()).copied() else {
+                continue;
+            };
+            let succeeded = matches!(outcome, EndpointOutcome::Deployed { .. });
+            service_success
+                .entry(service_name)
+                .and_modify(|ok| *ok &= succeeded)
+                .or_insert(succeeded);
+        }
+    }
+
+    let mut problems = Vec::new();
+    for (service_name, succeeded) in service_success {
+        if !succeeded {
+            continue;
+        }
+        let service = &config.services[service_name];
+        if service.crons.is_empty() {
+            continue;
+        }
+        problems.extend(
+            reconcile_service_crons(ssh, config, plan, service_name, service, sessions).await,
+        );
+    }
+    problems
+}
+
+/// `jiji service remove`'s cron reconciliation: unconditional removal from every eligible server,
+/// no ownership computation needed (the plan's "`jiji service remove` removes all cron
+/// specifications for the selected service"). Does not stop an active run (out of scope for this
+/// release, per the plan).
+pub(crate) async fn remove_all_cron_specs(
+    ssh: &Ssh,
+    config: &Config,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> Vec<String> {
+    if service.crons.is_empty() {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    let (sessions, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            problems.push(format!(
+                    "service '{service_name}': could not reach every eligible server to remove its cron jobs: {error}"
+                ));
+            return problems;
+        }
+    };
+    for server_name in &service.servers {
+        let Some(session) = sessions.get(server_name) else {
+            continue;
+        };
+        for cron_name in service.crons.keys() {
+            if let Err(error) = crate::agent_client::call(
+                session,
+                &config.project,
+                None,
+                RequestBody::CronSpecRemove {
+                    service: service_name.to_string(),
+                    cron_name: cron_name.clone(),
+                },
+            )
+            .await
+            {
+                problems.push(format!(
+                    "service '{service_name}' cron '{cron_name}': could not remove on '{server_name}': {error}"
+                ));
+            }
+        }
+    }
+    close_newly_opened(&sessions, &newly_opened).await;
+    problems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(replica_id: &str, state: DeploymentState, health: HealthState) -> CatalogRecord {
+        CatalogRecord {
+            project_id: "demo".into(),
+            recovery_epoch: 1,
+            protocol_version: jiji_agent::catalog::CATALOG_PROTOCOL_VERSION,
+            schema_version: jiji_agent::catalog::CATALOG_SCHEMA_VERSION,
+            service: "twitch".into(),
+            replica_id: replica_id.into(),
+            owner_node_id: format!("server-for-{replica_id}"),
+            owner_epoch: 1,
+            revision: 3,
+            deployment_id: format!("dep-{replica_id}"),
+            address: "100.64.0.5".parse().unwrap(),
+            ports: vec![],
+            image: "ghcr.io/example/twitch-sync:latest".into(),
+            state,
+            health,
+        }
+    }
+
+    fn assignment(replica_id: &str, ordinal: u32) -> ReplicaAssignment {
+        ReplicaAssignment {
+            replica_id: replica_id.into(),
+            ordinal,
+            server: format!("server-for-{replica_id}"),
+        }
+    }
+
+    #[test]
+    fn owner_is_the_lowest_ordinal_active_healthy_replica() {
+        let assignments = vec![
+            assignment("r0", 0),
+            assignment("r1", 1),
+            assignment("r2", 2),
+        ];
+        // r0 is Candidate (mid-deploy), r1 and r2 are Active/Healthy: r1 wins, not r0.
+        let catalog = vec![
+            record("r0", DeploymentState::Candidate, HealthState::Unknown),
+            record("r1", DeploymentState::Active, HealthState::Healthy),
+            record("r2", DeploymentState::Active, HealthState::Healthy),
+        ];
+        let (owner_assignment, owner_record) =
+            select_cron_owner(&assignments, &catalog).expect("expected an owner");
+        assert_eq!(owner_assignment.replica_id, "r1");
+        assert_eq!(owner_record.replica_id, "r1");
+    }
+
+    #[test]
+    fn no_active_healthy_replica_yields_no_owner() {
+        let assignments = vec![assignment("r0", 0)];
+        let catalog = vec![record(
+            "r0",
+            DeploymentState::Draining,
+            HealthState::Unknown,
+        )];
+        assert!(select_cron_owner(&assignments, &catalog).is_none());
+    }
+
+    #[test]
+    fn owner_ignores_an_unhealthy_active_replica() {
+        let assignments = vec![assignment("r0", 0), assignment("r1", 1)];
+        let catalog = vec![
+            record("r0", DeploymentState::Active, HealthState::Unhealthy),
+            record("r1", DeploymentState::Active, HealthState::Healthy),
+        ];
+        let (owner_assignment, _) =
+            select_cron_owner(&assignments, &catalog).expect("expected an owner");
+        assert_eq!(owner_assignment.replica_id, "r1");
+    }
+
+    fn cron_config() -> CronConfig {
+        serde_yaml::from_str(
+            r#"
+schedule: "7 */2 * * *"
+command: ["npm", "run", "sync:twitch"]
+timezone: America/Denver
+timeout: 30m
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn render_apply_request_carries_every_field_and_a_stable_hash() {
+        let cron = cron_config();
+        let request = render_apply_request(
+            "twitch",
+            "sync-twitch",
+            &cron,
+            "ghcr.io/example/twitch-sync:latest",
+            &["-v".to_string(), "twitch-data:/data".to_string()],
+            &["--memory".to_string(), "512m".to_string()],
+            ".jiji/demo/env/twitch-app-1.env",
+            "dep-a",
+            "replica-a",
+            "jiji-demo",
+            "100.64.0.5".parse().unwrap(),
+            3,
+        );
+        let RequestBody::CronSpecApply {
+            service,
+            cron_name,
+            revision,
+            canonical_hash,
+            schedule,
+            timezone,
+            timeout_seconds,
+            command,
+            ..
+        } = &request
+        else {
+            panic!("expected CronSpecApply");
+        };
+        assert_eq!(service, "twitch");
+        assert_eq!(cron_name, "sync-twitch");
+        assert_eq!(*revision, 3);
+        assert!(!canonical_hash.is_empty());
+        assert_eq!(schedule, "7 */2 * * *");
+        assert_eq!(timezone, "America/Denver");
+        assert_eq!(*timeout_seconds, 30 * 60);
+        assert_eq!(
+            command,
+            &vec![
+                "npm".to_string(),
+                "run".to_string(),
+                "sync:twitch".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn render_apply_request_hash_is_stable_and_ignores_revision() {
+        let cron = cron_config();
+        let build = |revision: u64| {
+            let RequestBody::CronSpecApply { canonical_hash, .. } = render_apply_request(
+                "twitch",
+                "sync-twitch",
+                &cron,
+                "ghcr.io/example/twitch-sync:latest",
+                &[],
+                &[],
+                ".jiji/demo/env/twitch-app-1.env",
+                "dep-a",
+                "replica-a",
+                "jiji-demo",
+                "100.64.0.5".parse().unwrap(),
+                revision,
+            ) else {
+                panic!("expected CronSpecApply");
+            };
+            canonical_hash
+        };
+        // A revision bump alone (e.g. a redeploy with no config change) must not look like drift.
+        assert_eq!(build(1), build(2));
+    }
+
+    #[test]
+    fn render_apply_request_hash_changes_with_schedule() {
+        let mut changed = cron_config();
+        changed.schedule = "0 3 * * *".to_string();
+        let RequestBody::CronSpecApply {
+            canonical_hash: a, ..
+        } = render_apply_request(
+            "twitch",
+            "sync-twitch",
+            &cron_config(),
+            "img",
+            &[],
+            &[],
+            "env",
+            "dep",
+            "replica",
+            "bridge",
+            "100.64.0.5".parse().unwrap(),
+            1,
+        )
+        else {
+            panic!()
+        };
+        let RequestBody::CronSpecApply {
+            canonical_hash: b, ..
+        } = render_apply_request(
+            "twitch",
+            "sync-twitch",
+            &changed,
+            "img",
+            &[],
+            &[],
+            "env",
+            "dep",
+            "replica",
+            "bridge",
+            "100.64.0.5".parse().unwrap(),
+            1,
+        )
+        else {
+            panic!()
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn owner_env_file_path_matches_env_resolutions_own_formula() {
+        assert_eq!(
+            owner_env_file_path("demo", "twitch", "app-1"),
+            ".jiji/demo/env/twitch-app-1.env"
+        );
+    }
+}
