@@ -73,7 +73,7 @@ fn run_build(
 #[test]
 fn single_arch_no_push_build_renders_the_expected_local_docker_command() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let config = write_config(dir.path(), "    type: local\n");
+    let config = write_config(dir.path(), "");
     let bin = write_fake_docker(dir.path());
     let log = dir.path().join("log.txt");
     std::fs::write(&log, "").expect("create log");
@@ -110,10 +110,7 @@ fn single_arch_push_build_renders_build_then_push() {
     // readiness wait, which a fake `docker` script can't meaningfully satisfy -- this still
     // exercises the exact same `BuildExecutor::Local` build-then-push sequence.
     let dir = tempfile::tempdir().expect("tempdir");
-    let config = write_config(
-        dir.path(),
-        "    type: remote\n    server: registry.example.com\n",
-    );
+    let config = write_config(dir.path(), "    server: registry.example.com\n");
     let bin = write_fake_docker(dir.path());
     let log = dir.path().join("log.txt");
     std::fs::write(&log, "").expect("create log");
@@ -150,7 +147,6 @@ project: demo
 builder:
   engine: docker
   registry:
-    type: remote
     server: registry.example.com
 servers:
   app1:

@@ -26,6 +26,21 @@ fn salted_hash(salt: &str, project: &str) -> u64 {
     stable_hash(format!("{salt}:{project}").as_bytes())
 }
 
+/// Stable project-specific defaults selected from the shared Jiji address pools.
+///
+/// The `/16` container range contains exactly 32 `/21` server subnets. Explicit configuration
+/// remains available when either derived range overlaps infrastructure outside Jiji's control.
+pub fn project_cidrs(project: &str) -> (String, String) {
+    let slot = salted_hash("cidr", project) % 64;
+    let [management_first, management_second] = jiji_core::DEFAULT_MANAGEMENT_POOL_PREFIX;
+    let [container_first, container_base] = jiji_core::DEFAULT_CONTAINER_POOL_PREFIX;
+    let container_second = u64::from(container_base) + slot;
+    (
+        format!("{management_first}.{management_second}.{slot}.0/24"),
+        format!("{container_first}.{container_second}.0.0/16"),
+    )
+}
+
 /// WireGuard interface name, e.g. `jiji1a2b3c4d` (12 chars, well under the 15-char `IFNAMSIZ`
 /// limit). Also the `wg-quick@` systemd instance name, which needs no separate scoping since it's
 /// already systemd's own per-instance template mechanism.
@@ -140,6 +155,21 @@ mod tests {
             assert!(name.starts_with("jiji"));
             assert!(name[4..].chars().all(|c| c.is_ascii_hexdigit()));
         }
+    }
+
+    #[test]
+    fn project_cidrs_are_stable_and_cover_all_supported_servers() {
+        let first = project_cidrs("demo");
+        let second = project_cidrs("demo");
+        assert_eq!(first, second);
+        assert!(first.0.starts_with("198.18."));
+        assert!(first.0.ends_with(".0/24"));
+
+        let container: crate::Ipv4Cidr = first.1.parse().unwrap();
+        assert_eq!(
+            container.subnet_count(crate::CONTAINER_SERVER_PREFIX),
+            Some(32)
+        );
     }
 
     #[test]

@@ -42,6 +42,23 @@ pub(crate) fn network_current(slug: &str) -> String {
     format!("{}/current", network_dir(slug))
 }
 
+fn address_range_marker(plan: &NetworkPlan) -> String {
+    format!(
+        "{} {} {}\n",
+        project_marker_identity(&plan.project),
+        plan.management_cidr,
+        plan.container_cidr
+    )
+}
+
+fn project_marker_identity(project: &str) -> String {
+    let mut identity = String::with_capacity(64);
+    for byte in Sha256::digest(project.as_bytes()) {
+        write!(identity, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    identity
+}
+
 // Version 5 separates immutable mesh artifacts from service-runtime/DNS
 // artifacts. It is an intentional clean break: older monolithic installations
 // must be torn down and set up again rather than activated through this code.
@@ -408,8 +425,12 @@ fn print_network_requirements(config: &Config, plan: &NetworkPlan) {
         network.container_cidr.is_none() || network.management_cidr.is_none()
     });
     if uses_default_cidr {
-        Ui::warn(
-            "network.container_cidr/management_cidr are unset, so this project uses jiji's shared default address ranges -- if another project also uses the defaults on the same host, their subnets could collide (rare, but not negligible past a handful of co-located projects). Consider setting distinct ranges in jiji.yml if you expect multiple projects on one server.",
+        Ui::say(
+            &format!(
+                "Using inferred project ranges: management {}, containers {}.",
+                plan.management_cidr, plan.container_cidr
+            ),
+            1,
         );
     }
 }
@@ -444,18 +465,25 @@ async fn apply_connected(
         reject_monolithic_generation(&host.session, &slug).await?;
         ensure_engine_available(&host.session, config.builder.engine).await?;
         if mesh_current[&host.name] {
+            write_generation_file(
+                &host.session,
+                &format!("{}/address-ranges", network_current(&slug)),
+                "0644",
+                &address_range_marker(plan),
+            )
+            .await?;
             Ui::say(&format!("{}: mesh address ranges unchanged", host.name), 1);
             continue;
         }
-        if let Some(migration) = inspect_conflicts(
+        let migration = inspect_conflicts(
             &host.session,
             &host.name,
             &plan.servers[&host.name],
             plan,
             config.builder.engine,
         )
-        .await?
-        {
+        .await?;
+        if let Some(migration) = migration {
             migrations.insert(host.name.clone(), migration);
             Ui::say(
                 &format!(
@@ -866,15 +894,37 @@ async fn inspect_conflicts(
     engine: ContainerEngine,
 ) -> anyhow::Result<Option<BridgeMigration>> {
     let network_command = BridgeProvisioner::network_inspection_command(engine);
+    let network_root = network_dir("");
+    let project_identity = project_marker_identity(&plan.project);
     let command = format!(
         "ip -o -4 route show table all; {network_command}; \
          wg show all listen-port 2>/dev/null | sed 's/^/PORT /' || true; \
-         ip -o -4 address show | sed 's/^/ADDR /'"
+         ip -o -4 address show | sed 's/^/ADDR /'; \
+         for range_file in {network_root}*/current/address-ranges; do \
+           test -f \"$range_file\" || continue; \
+           owner=${{range_file#{network_root}}}; owner=${{owner%%/*}}; \
+           read identity management container < \"$range_file\" || continue; \
+           if test -z \"$container\"; then container=$management; management=$identity; identity=$owner; fi; \
+           test \"$identity\" = \"{project_identity}\" && continue; \
+           printf 'RANGE %s %s %s\\n' \"$identity\" \"$management\" \"$container\"; \
+         done"
     );
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)?;
 
     for line in result.stdout.lines() {
+        if let Some(rest) = line.strip_prefix("RANGE ") {
+            let mut fields = rest.split_whitespace();
+            let owner = fields.next().unwrap_or("unknown");
+            for value in fields {
+                let Ok(cidr) = value.parse::<Ipv4Cidr>() else {
+                    continue;
+                };
+                reject_project_range_overlap(server_name, owner, cidr, plan)?;
+            }
+            continue;
+        }
+
         if line.starts_with("NETWORK ") {
             let mut fields = line.split_whitespace();
             let _prefix = fields.next();
@@ -979,6 +1029,22 @@ async fn inspect_conflicts(
     Ok(migration)
 }
 
+fn reject_project_range_overlap(
+    server_name: &str,
+    owner: &str,
+    existing: Ipv4Cidr,
+    plan: &NetworkPlan,
+) -> anyhow::Result<()> {
+    if existing.overlaps(plan.management_cidr) || existing.overlaps(plan.container_cidr) {
+        anyhow::bail!(
+            "Server '{server_name}' has another jiji project ('{owner}') reserving '{existing}', which overlaps this project's planned management range '{}' or container range '{}'. Set explicit non-overlapping `network.management_cidr` and `network.container_cidr` values in jiji.yml, then retry.",
+            plan.management_cidr,
+            plan.container_cidr
+        );
+    }
+    Ok(())
+}
+
 /// A collision between this project's planned resource and a resource that looks like it belongs
 /// to a *different* jiji project sharing this host -- the rare-but-real hash collision case (see
 /// the project's network-isolation design notes for the actual odds), not a foreign-infrastructure
@@ -991,7 +1057,7 @@ fn reject_jiji_collision(
     other_interface_or_network: &str,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
-        "Server '{server_name}' already has a jiji-managed resource ('{other_interface_or_network}') using {what} '{value}', which this project also needs. This is a hash collision between two independent jiji projects sharing the same default network ranges on this host -- set a distinct `network.container_cidr`/`management_cidr` for one of them in `jiji.yml` and retry. This becomes more likely as more projects share a host with default ranges; consider setting distinct ranges proactively."
+        "Server '{server_name}' already has a jiji-managed resource ('{other_interface_or_network}') using {what} '{value}', which this project also needs. This is a collision between two independent jiji projects on the same host. Set distinct `network.container_cidr` and `network.management_cidr` values for one project in jiji.yml, then retry."
     );
 }
 
@@ -1139,6 +1205,13 @@ async fn stage_host(
             &format!("{generation_dir}/restore.sh"),
             "0750",
             &bridge.render_restore_script()?,
+        )
+        .await?;
+        write_generation_file(
+            session,
+            &format!("{generation_dir}/address-ranges"),
+            "0644",
+            &address_range_marker(plan),
         )
         .await?;
         write_generation_file(
@@ -1781,6 +1854,17 @@ services:
     }
 
     #[test]
+    fn address_range_marker_uses_the_full_project_identity() {
+        let first = project_marker_identity("abcdefghijklmnopqrst-first");
+        let second = project_marker_identity("abcdefghijklmnopqrst-second");
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 64);
+
+        let marker = address_range_marker(&plan());
+        assert!(marker.starts_with(&format!("{} ", project_marker_identity("demo"))));
+    }
+
+    #[test]
     fn installed_generation_parser_rejects_paths_outside_managed_roots() {
         let slug = jiji_network::systemd_unit_slug("demo");
         let generations = network_generations(&slug);
@@ -1857,5 +1941,22 @@ services:
         assert!(reject_overlap("app", "route", plan.management_cidr, &plan).is_err());
         assert!(reject_overlap("app", "route", plan.container_cidr, &plan).is_err());
         assert!(reject_overlap("app", "route", "10.10.0.0/16".parse().unwrap(), &plan).is_ok());
+    }
+
+    #[test]
+    fn project_range_marker_rejects_overlap_before_server_subnets_collide() {
+        let plan = plan();
+        let error =
+            reject_project_range_overlap("app", "other-project", plan.container_cidr, &plan)
+                .unwrap_err();
+        assert!(error.to_string().contains("other-project"));
+        assert!(error.to_string().contains("network.container_cidr"));
+        assert!(reject_project_range_overlap(
+            "app",
+            "other-project",
+            "10.10.0.0/16".parse().unwrap(),
+            &plan,
+        )
+        .is_ok());
     }
 }

@@ -321,7 +321,6 @@ mod tests {
             project: "demo".to_string(),
             builder: Builder {
                 engine: ContainerEngine::Docker,
-                local: true,
                 remote: None,
                 cache: true,
                 registry: Default::default(),

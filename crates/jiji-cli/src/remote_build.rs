@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use jiji_config::{ContainerEngine, Registry, RegistryType};
+use jiji_config::{ContainerEngine, Registry};
 use jiji_ssh::{ConnectOptions, RemoteForward, SshSession, StreamChunk};
 use tokio::io::AsyncWriteExt;
 
@@ -92,9 +92,8 @@ impl RemoteBuildExecutor {
         registry: &Registry,
         password: Option<&str>,
     ) -> anyhow::Result<()> {
-        match registry.kind {
-            RegistryType::Local => {
-                let forward = self
+        if registry.is_local() {
+            let forward = self
                     .session
                     .start_reverse_forward("127.0.0.1", registry.port, registry.port)
                     .await
@@ -105,15 +104,13 @@ impl RemoteBuildExecutor {
                             registry.port
                         )
                     })?;
-                self.registry_forward = Some(forward);
-                Ok(())
-            }
-            RegistryType::Remote => {
-                let Some(password) = password else {
-                    return Ok(());
-                };
-                registry::login_remote(&self.session, engine_kind, registry, password).await
-            }
+            self.registry_forward = Some(forward);
+            Ok(())
+        } else {
+            let Some(password) = password else {
+                return Ok(());
+            };
+            registry::login_remote(&self.session, engine_kind, registry, password).await
         }
     }
 

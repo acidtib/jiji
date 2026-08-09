@@ -303,24 +303,6 @@ pub fn validate_config(config: &Config) -> ValidationResult {
 
 fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
     let builder = &config.builder;
-    if builder.local && builder.remote.is_some() {
-        errors.push(ValidationError {
-            path: "builder.remote".to_string(),
-            message: "'builder.local: true' and 'builder.remote' cannot both be set. Choose one build target: set `builder.local: false` to build remotely, or remove `builder.remote` to build locally.".to_string(),
-            code: "BUILDER_MODE_CONFLICT",
-        });
-        return;
-    }
-
-    if !builder.local && builder.remote.is_none() {
-        errors.push(ValidationError {
-            path: "builder.remote".to_string(),
-            message: "'builder.local: false' requires `builder.remote` to be set to `ssh://[user@]hostname[:port]`.".to_string(),
-            code: "BUILDER_REMOTE_REQUIRED",
-        });
-        return;
-    }
-
     if let Some(remote) = &builder.remote {
         if let Err(error) = parse_remote_builder_uri(remote) {
             errors.push(ValidationError {
@@ -329,6 +311,15 @@ fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
                 code: "INVALID_BUILDER_REMOTE",
             });
         }
+    }
+    if builder.registry.server.is_none()
+        && (builder.registry.username.is_some() || builder.registry.password.is_some())
+    {
+        errors.push(ValidationError {
+            path: "builder.registry.server".to_string(),
+            message: "Registry credentials require `builder.registry.server`; add the remote registry server or remove `username` and `password` to use Jiji's local registry".to_string(),
+            code: "REGISTRY_CREDENTIALS_REQUIRE_SERVER",
+        });
     }
 }
 

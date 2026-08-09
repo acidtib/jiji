@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use jiji_config::{ContainerEngine, Registry, RegistryType};
+use jiji_config::{ContainerEngine, Registry};
 
 use crate::build_plan::{BuildPlanEntry, ExecutorTarget};
 use crate::{build_engine, engine, registry, remote_build};
@@ -63,7 +63,7 @@ impl BuildExecutor {
     ) -> anyhow::Result<()> {
         match self {
             BuildExecutor::Local => {
-                if registry_config.kind == RegistryType::Remote {
+                if !registry_config.is_local() {
                     if let Some(password) = password {
                         registry::login_local(engine, registry_config, password).await?;
                     }

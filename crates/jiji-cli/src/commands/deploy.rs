@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{validate_config, NamedServer, RegistryType};
+use jiji_config::{validate_config, NamedServer};
 use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{RemoteForward, SshPool, SshSession};
 use jiji_tui::Ui;
@@ -277,29 +277,24 @@ pub async fn run(
                 anyhow::bail!("Service '{}': {error}", entry.service_name);
             }
         }
-        match config.builder.registry.kind {
-            RegistryType::Local => {
-                Ui::section("Local Registry:");
-                registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
-                    .await?;
-            }
-            RegistryType::Remote => {
-                let raw_password =
-                    config.builder.registry.password.as_deref().ok_or_else(|| {
+        if config.builder.registry.is_local() {
+            Ui::section("Local Registry:");
+            registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
+                .await?;
+        } else {
+            let raw_password = config.builder.registry.password.as_deref().ok_or_else(|| {
                         anyhow::anyhow!(
                             "`jiji deploy --build` requires `builder.registry.password` so deploy hosts can pull the built image."
                         )
                     })?;
-                if config.builder.registry.username.is_none() {
-                    anyhow::bail!(
-                        "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
-                    );
-                }
-                let password =
-                    registry::resolve_registry_password(raw_password, &loaded_env, host_env)
-                        .await?;
-                registry_password = Some(password);
+            if config.builder.registry.username.is_none() {
+                anyhow::bail!(
+                    "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
+                );
             }
+            let password = registry::resolve_registry_password(raw_password, &loaded_env, host_env)
+                .await?;
+            registry_password = Some(password);
         }
         let mut executor = build_executor::BuildExecutor::prepare(
             executor_target,
@@ -340,12 +335,13 @@ pub async fn run(
             )
             .await;
         if run_result.is_ok() && is_remote_executor {
-            match config.builder.registry.kind {
-                RegistryType::Local => Ui::say(
+            if config.builder.registry.is_local() {
+                Ui::say(
                     &format!("Tunneled local registry to {executor_identity}"),
                     1,
-                ),
-                RegistryType::Remote => Ui::say(&format!("Logged in on {executor_identity}"), 1),
+                )
+            } else {
+                Ui::say(&format!("Logged in on {executor_identity}"), 1)
             }
         }
 
@@ -361,7 +357,7 @@ pub async fn run(
                     true,
                     &config.project,
                     &project_root,
-                    config.builder.registry.kind == RegistryType::Local,
+                    config.builder.registry.is_local(),
                 )
                 .await
                 .with_context(|| format!("Build failed for service '{}'", entry.service_name));
@@ -428,7 +424,7 @@ pub async fn run(
     }
 
     let mut registry_forwards: Vec<(String, RemoteForward)> = Vec::new();
-    if !services_to_build.is_empty() && config.builder.registry.kind == RegistryType::Local {
+    if !services_to_build.is_empty() && config.builder.registry.is_local() {
         Ui::section("Registry Tunnels:");
         let hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
         for server_name in hosts {

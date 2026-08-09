@@ -40,19 +40,13 @@ impl ExecutorTarget {
 }
 
 /// Resolves which executor a build runs on. Assumes `validate_config` already ran (both call
-/// sites run it first), so `builder.local`/`builder.remote` are known to be in one of the two
-/// valid states; the remaining checks here are defense in depth, not the primary guard.
+/// sites run it first). The presence of `builder.remote` selects remote execution; omitting it
+/// selects local execution.
 pub fn select_executor(config: &Config) -> anyhow::Result<ExecutorTarget> {
     let builder = &config.builder;
-    if builder.local {
+    let Some(raw_remote) = builder.remote.as_deref() else {
         return Ok(ExecutorTarget::Local);
-    }
-
-    let raw_remote = builder.remote.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "'builder.local: false' requires `builder.remote` to be set to `ssh://[user@]hostname[:port]`."
-        )
-    })?;
+    };
     let remote = jiji_config::parse_remote_builder_uri(raw_remote)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let ssh = config.ssh.as_ref().ok_or_else(|| {
@@ -212,7 +206,6 @@ services:
 project: demo
 builder:
   engine: podman
-  local: false
   remote: ssh://build@10.0.0.9:2222
 servers:
   web:
@@ -236,7 +229,6 @@ ssh:
 project: demo
 builder:
   engine: podman
-  local: false
   remote: ssh://build@10.0.0.9
 servers:
   web:
@@ -260,7 +252,6 @@ services:
 project: demo
 builder:
   engine: podman
-  local: false
   remote: ssh://build@203.0.113.1
 servers:
   web:

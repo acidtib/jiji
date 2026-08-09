@@ -45,8 +45,6 @@ impl fmt::Display for ContainerEngine {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Builder {
     pub engine: ContainerEngine,
-    #[serde(default = "default_true")]
-    pub local: bool,
     #[serde(default)]
     pub remote: Option<String>,
     #[serde(default = "default_true")]
@@ -55,18 +53,8 @@ pub struct Builder {
     pub registry: Registry,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RegistryType {
-    #[default]
-    Local,
-    Remote,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Registry {
-    #[serde(rename = "type", default)]
-    pub kind: RegistryType,
     #[serde(default = "default_registry_port")]
     pub port: u16,
     #[serde(default)]
@@ -80,12 +68,18 @@ pub struct Registry {
 impl Default for Registry {
     fn default() -> Self {
         Registry {
-            kind: RegistryType::Local,
             port: default_registry_port(),
             server: None,
             username: None,
             password: None,
         }
+    }
+}
+
+impl Registry {
+    /// A registry is remote when it has an explicit server; otherwise Jiji manages a local one.
+    pub fn is_local(&self) -> bool {
+        self.server.is_none()
     }
 }
 
@@ -185,20 +179,6 @@ pub struct Network {
     /// a home router, Pi-hole, or other local resolver instead.
     #[serde(default = "default_dns_forwarders")]
     pub dns_forwarders: Vec<Ipv4Addr>,
-}
-
-impl Network {
-    pub fn management_cidr(&self) -> &str {
-        self.management_cidr
-            .as_deref()
-            .unwrap_or(jiji_core::DEFAULT_MANAGEMENT_CIDR)
-    }
-
-    pub fn container_cidr(&self) -> &str {
-        self.container_cidr
-            .as_deref()
-            .unwrap_or(jiji_core::DEFAULT_CONTAINER_CIDR)
-    }
 }
 
 /// The default forwarders used both by serde (when `network:` is present but omits

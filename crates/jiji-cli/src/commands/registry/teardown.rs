@@ -1,4 +1,4 @@
-use jiji_config::{load_config, validate_config, RegistryType};
+use jiji_config::{load_config, validate_config};
 use jiji_tui::Ui;
 
 use crate::registry;
@@ -19,9 +19,9 @@ pub async fn run(
         }
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
     }
-    if config.builder.registry.kind != RegistryType::Local {
+    if !config.builder.registry.is_local() {
         anyhow::bail!(
-            "This project uses a remote registry. Set `builder.registry.type: local` only if you intend to manage a local Jiji registry."
+            "This project uses a remote registry. Remove `builder.registry.server` only if you intend to manage a local Jiji registry."
         );
     }
 

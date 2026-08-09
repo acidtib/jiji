@@ -12,8 +12,8 @@ pub use bridge_script::{
 pub use cidr::Ipv4Cidr;
 pub use error::NetworkPlanError;
 pub use naming::{
-    bridge_interface_name, bridge_network_name, catalog_replication_port, service_nat_table_name,
-    systemd_unit_slug, wireguard_interface_name, wireguard_port,
+    bridge_interface_name, bridge_network_name, catalog_replication_port, project_cidrs,
+    service_nat_table_name, systemd_unit_slug, wireguard_interface_name, wireguard_port,
 };
 pub use planner::{
     FirewallPlan, NetworkPlan, NetworkPlanner, RoutePlan, ServerPlan, ServiceEndpointPlan,

@@ -422,7 +422,7 @@ fn shipped_template_parses_and_validates_cleanly() {
 }
 
 #[test]
-fn builder_local_true_with_remote_reports_mode_conflict() {
+fn builder_remote_selects_remote_even_with_legacy_local_true() {
     let raw = parse(
         r#"
 project: demo
@@ -440,15 +440,11 @@ services:
 "#,
     );
     let result = validate_yaml(&raw);
-    assert!(!result.valid);
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.code == "BUILDER_MODE_CONFLICT" && e.path == "builder.remote"));
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
 }
 
 #[test]
-fn builder_local_false_without_remote_reports_remote_required() {
+fn legacy_builder_local_false_without_remote_still_defaults_to_local() {
     let raw = parse(
         r#"
 project: demo
@@ -465,11 +461,7 @@ services:
 "#,
     );
     let result = validate_yaml(&raw);
-    assert!(!result.valid);
-    assert!(result
-        .errors
-        .iter()
-        .any(|e| e.code == "BUILDER_REMOTE_REQUIRED" && e.path == "builder.remote"));
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
 }
 
 #[test]
@@ -499,6 +491,34 @@ services:
         .expect("expected an INVALID_BUILDER_REMOTE error");
     assert_eq!(err.path, "builder.remote");
     assert!(err.message.contains("password"));
+}
+
+#[test]
+fn registry_credentials_without_server_are_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder:
+  engine: podman
+  registry:
+    username: demo
+    password: REGISTRY_PASSWORD
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    let error = result
+        .errors
+        .iter()
+        .find(|error| error.code == "REGISTRY_CREDENTIALS_REQUIRE_SERVER")
+        .expect("expected registry credentials without a server to be rejected");
+    assert_eq!(error.path, "builder.registry.server");
 }
 
 #[test]

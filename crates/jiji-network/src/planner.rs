@@ -154,13 +154,15 @@ impl NetworkPlanner {
 
     pub fn plan(&self, config: &Config) -> Result<NetworkPlan, NetworkPlanError> {
         let network = config.network.as_ref();
+        let (default_management_cidr, default_container_cidr) =
+            naming::project_cidrs(&config.project);
         let management_cidr = network
-            .map(|value| value.management_cidr())
-            .unwrap_or(jiji_core::DEFAULT_MANAGEMENT_CIDR)
+            .and_then(|value| value.management_cidr.as_deref())
+            .unwrap_or(&default_management_cidr)
             .parse::<Ipv4Cidr>()?;
         let container_cidr = network
-            .map(|value| value.container_cidr())
-            .unwrap_or(jiji_core::DEFAULT_CONTAINER_CIDR)
+            .and_then(|value| value.container_cidr.as_deref())
+            .unwrap_or(&default_container_cidr)
             .parse::<Ipv4Cidr>()?;
         if management_cidr.overlaps(container_cidr) {
             return Err(NetworkPlanError::OverlappingAddressSpaces {
@@ -513,7 +515,7 @@ network:
     }
 
     #[test]
-    fn defaults_use_disjoint_shared_address_ranges() {
+    fn defaults_use_disjoint_project_specific_address_ranges() {
         let config = config(
             r#"
 project: demo
@@ -523,12 +525,13 @@ services: {}
 "#,
         );
         let plan = NetworkPlanner::new().plan(&config).unwrap();
-        assert_eq!(plan.management_cidr.to_string(), "198.18.0.0/16");
-        assert_eq!(plan.container_cidr.to_string(), "100.64.0.0/10");
+        let (management, container) = naming::project_cidrs("demo");
+        assert_eq!(plan.management_cidr.to_string(), management);
+        assert_eq!(plan.container_cidr.to_string(), container);
         assert!(!plan.management_cidr.overlaps(plan.container_cidr));
         assert_eq!(
             plan.container_cidr.subnet_count(CONTAINER_SERVER_PREFIX),
-            Some(2_048)
+            Some(32)
         );
     }
 
@@ -797,10 +800,7 @@ network:
     }
 
     #[test]
-    fn two_projects_with_identical_default_cidrs_usually_produce_different_server_subnets() {
-        // Not a guarantee (see the project's network-isolation design notes for the real,
-        // acknowledged collision odds) -- this is a spot check that the widened bucket key
-        // actually varies the result per project, not a proof of collision-freedom.
+    fn two_projects_usually_derive_different_default_cidrs() {
         let a = config(
             r#"
 project: project-a
@@ -821,6 +821,7 @@ services: {}
         );
         let plan_a = NetworkPlanner::new().plan(&a).unwrap();
         let plan_b = NetworkPlanner::new().plan(&b).unwrap();
+        assert_ne!(plan_a.container_cidr, plan_b.container_cidr);
         assert_ne!(
             plan_a.servers["app"].container_subnet,
             plan_b.servers["app"].container_subnet
