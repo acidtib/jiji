@@ -317,8 +317,14 @@ fn podman_static_configuration_command() -> &'static str {
 /// `reconcile_managed_podman_static_configuration` on every `ensure_engine` call, exactly like the
 /// `99-jiji-static.conf` containers.conf.d drop-in, so an already-provisioned host self-heals onto
 /// native overlay the next time `jiji server setup` runs rather than needing a manual fix.
+///
+/// `mountopt` is deliberately just `nodev`, not `nodev,fsync=0`: `fsync=0` is not a real kernel
+/// overlayfs mount option (the kernel-level equivalent is `volatile`), and passing it through
+/// verbatim to the `mount(2)` syscall is rejected outright with `EINVAL` ("invalid argument") on a
+/// modern kernel/containers-storage pairing -- confirmed live on stock Ubuntu 24.04 droplets
+/// (kernel 6.8), where it broke every single container mount, `jiji-proxy`'s own included.
 fn podman_static_storage_configuration_command() -> &'static str {
-    "mkdir -p /etc/containers; printf '%s\\n' '[storage]' 'driver = \"overlay\"' 'runroot = \"/var/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' '' '[storage.options.overlay]' 'ignore_chown_errors = \"true\"' 'mountopt = \"nodev,fsync=0\"' > /etc/containers/storage.conf"
+    "mkdir -p /etc/containers; printf '%s\\n' '[storage]' 'driver = \"overlay\"' 'runroot = \"/var/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' '' '[storage.options.overlay]' 'ignore_chown_errors = \"true\"' 'mountopt = \"nodev\"' > /etc/containers/storage.conf"
 }
 
 #[cfg(test)]

@@ -899,6 +899,7 @@ async fn deploy_applies_cron_specs_after_catalog_activation() {
         success(""),
     );
     responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    responses.insert("pwd".to_string(), success("/root"));
     responses.insert(
         agent_request_command("cron-spec-apply"),
         cron_spec_applied_response(),
@@ -950,6 +951,7 @@ async fn deploy_reports_a_partial_failure_when_cron_installation_fails_without_u
         success(""),
     );
     responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    responses.insert("pwd".to_string(), success("/root"));
     responses.insert(agent_request_command("cron-spec-apply"), failure());
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;

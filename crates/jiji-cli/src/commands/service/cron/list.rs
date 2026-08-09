@@ -1,11 +1,19 @@
-use jiji_config::validate_config;
+use std::collections::{BTreeMap, BTreeSet};
+
+use jiji_agent::api::{RequestBody, ResponseBody};
+use jiji_config::{validate_config, Config, Service};
+use jiji_network::{NetworkPlan, NetworkPlanner};
 use jiji_tui::Ui;
 
 use super::select_cron_services;
+use crate::{container_runtime, mounts};
 
-/// Reads purely from local configuration: no agent has an installed spec to compare against yet
-/// (`jiji deploy` cron installation is a later phase), so every configured job is honestly
-/// reported as `not deployed` rather than guessed at.
+/// Reads local configuration for the job list itself, then connects to each selected service's
+/// current owner (`cron_reconcile::find_owner`) to determine installation state: `not-deployed`
+/// (no matching spec installed there), `installed` (installed spec's canonical hash matches what
+/// re-applying the current config would produce), or `drifted` (it doesn't -- the plan's
+/// "Configuration Reconciliation" section: `list` is what surfaces a schedule/command/etc. change
+/// that hasn't been picked up by a deploy yet).
 pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
@@ -38,15 +46,129 @@ pub async fn run(
         Ui::say("No cron jobs are configured for the selected services.", 1);
         return Ok(());
     }
-    for (service_name, cron, cron_name) in rows {
+
+    let ssh = config.ssh.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No `ssh:` section configured in {}. Add at least `ssh.user:` before running service cron list.",
+            path.display()
+        )
+    })?;
+    let plan = NetworkPlanner::new()
+        .plan(&config)
+        .map_err(|error| anyhow::anyhow!("Could not build the private network plan: {error}"))?;
+
+    let service_names: BTreeSet<&str> = rows
+        .iter()
+        .map(|(service_name, _, _)| *service_name)
+        .collect();
+    for service_name in service_names {
+        let service = &config.services[service_name];
+        list_service_crons(&ssh, &config, &plan, service_name, service).await;
+    }
+    Ok(())
+}
+
+async fn list_service_crons(
+    ssh: &jiji_config::Ssh,
+    config: &Config,
+    plan: &NetworkPlan,
+    service_name: &str,
+    service: &Service,
+) {
+    let (owner, resolved, newly_opened) = match crate::cron_reconcile::find_owner(
+        ssh,
+        config,
+        service_name,
+        service,
+        &BTreeMap::new(),
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(error) => {
+            for cron_name in service.crons.keys() {
+                Ui::say(
+                        &format!(
+                            "{service_name} {cron_name}: state=not-deployed (owner unavailable: {error})"
+                        ),
+                        1,
+                    );
+            }
+            return;
+        }
+    };
+
+    let installed_specs = match crate::agent_client::call(
+        &owner.session,
+        &config.project,
+        None,
+        RequestBody::CronSpecList,
+    )
+    .await
+    {
+        Ok(ResponseBody::CronSpecs { specs }) => specs,
+        Ok(_) | Err(_) => Vec::new(),
+    };
+
+    let mount_args =
+        mounts::build_all_mount_args(service, &config.project, service_name).unwrap_or_default();
+    let resource_args = container_runtime::render_resource_options(service);
+    let env_file_path = crate::cron_reconcile::owner_env_file_path(
+        &config.project,
+        service_name,
+        &owner.server_name,
+    );
+    let server = plan.servers.get(&owner.server_name);
+
+    for (cron_name, cron) in &service.crons {
+        let installed = installed_specs
+            .iter()
+            .find(|spec| spec.service == service_name && spec.cron_name == *cron_name);
+        let state = match (installed, server) {
+            (None, _) => "not-deployed".to_string(),
+            (Some(_), None) => {
+                format!(
+                    "installed (drift unknown: '{}' is not in the current network plan)",
+                    owner.server_name
+                )
+            }
+            (Some(installed), Some(server)) => {
+                let expected = crate::cron_reconcile::render_apply_request(
+                    service_name,
+                    cron_name,
+                    cron,
+                    &owner.record.image,
+                    &mount_args,
+                    &resource_args,
+                    &env_file_path,
+                    &owner.record.deployment_id,
+                    &owner.assignment.replica_id,
+                    &server.bridge_name,
+                    server.dns_address,
+                    owner.record.revision,
+                );
+                let RequestBody::CronSpecApply {
+                    canonical_hash: expected_hash,
+                    ..
+                } = expected
+                else {
+                    unreachable!("render_apply_request always returns CronSpecApply")
+                };
+                if expected_hash == installed.canonical_hash {
+                    "installed".to_string()
+                } else {
+                    "drifted".to_string()
+                }
+            }
+        };
         Ui::say(
             &format!(
-                "{service_name} {cron_name}: schedule=\"{schedule}\" timezone={timezone} state=not-deployed",
-                schedule = cron.schedule,
-                timezone = cron.timezone,
+                "{service_name} {cron_name}: schedule=\"{}\" timezone={} owner={} state={state}",
+                cron.schedule, cron.timezone, owner.server_name
             ),
             1,
         );
     }
-    Ok(())
+
+    crate::cron_reconcile::close_newly_opened(&resolved, &newly_opened).await;
 }

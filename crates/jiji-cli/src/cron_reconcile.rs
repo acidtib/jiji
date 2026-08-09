@@ -67,16 +67,139 @@ pub(crate) fn select_cron_owner<'a>(
         .min_by_key(|(assignment, _)| assignment.ordinal)
 }
 
+/// Connects to `service`'s eligible servers (reusing anything already in `sessions`) and resolves
+/// its current cron owner: the same lookup `reconcile_service_crons` does before installing, now
+/// shared with the read-only `jiji service cron list/status/run/logs` commands (Phase 6). Returns
+/// the owner's server name, a session to it, its catalog record, and its placement assignment.
+/// `find_owner`'s result: the resolved session map is included so the caller can keep using it
+/// for further calls (e.g. `list`/`status` looping over several services) and is responsible for
+/// closing `newly_opened` when it's done with all of them (`close_newly_opened`).
+pub(crate) struct CronOwner {
+    pub server_name: String,
+    pub session: Arc<SshSession>,
+    pub record: CatalogRecord,
+    pub assignment: ReplicaAssignment,
+}
+
+pub(crate) async fn find_owner(
+    ssh: &Ssh,
+    config: &Config,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> anyhow::Result<(CronOwner, BTreeMap<String, Arc<SshSession>>, Vec<String>)> {
+    let (resolved, newly_opened) =
+        resolve_sessions(ssh, config, &service.servers, sessions).await?;
+
+    let result = find_owner_in(config, service_name, service, &resolved).await;
+    match result {
+        Ok(owner) => Ok((owner, resolved, newly_opened)),
+        Err(error) => {
+            close_newly_opened(&resolved, &newly_opened).await;
+            Err(error)
+        }
+    }
+}
+
+async fn find_owner_in(
+    config: &Config,
+    service_name: &str,
+    service: &Service,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> anyhow::Result<CronOwner> {
+    let seed = service
+        .servers
+        .iter()
+        .find_map(|name| sessions.get(name))
+        .ok_or_else(|| anyhow::anyhow!("service '{service_name}': no reachable server"))?;
+    let catalog = crate::agent_client::catalog(seed, &config.project)
+        .await
+        .with_context(|| {
+            format!("service '{service_name}': could not read the service catalog to determine cron ownership")
+        })?;
+    let assignments = crate::placement::place(
+        &config.project,
+        service_name,
+        service.replicas,
+        &service.servers,
+        service.placement,
+    );
+    let Some((owner_assignment, owner_record)) = select_cron_owner(&assignments, &catalog) else {
+        anyhow::bail!(
+            "service '{service_name}': no active, healthy replica; it has no cron owner right now"
+        );
+    };
+    let server_name = owner_record.owner_node_id.clone();
+    let session = sessions.get(&server_name).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "service '{service_name}': could not reach '{server_name}', the owning host for its cron jobs"
+        )
+    })?;
+    Ok(CronOwner {
+        server_name,
+        session,
+        record: owner_record.clone(),
+        assignment: owner_assignment.clone(),
+    })
+}
+
 /// `.jiji/{project}/env/{service}-{server}.env`, matching `env_resolution::stage_env_file`'s own
 /// formula exactly: since the owner replica is Active/Healthy, its own most recent deploy already
 /// staged this file at this deterministic, service-scoped (not deployment-id-scoped) path, so a
 /// cron run can reuse it verbatim without re-staging or needing `ResolvedEnvironment` at all.
-fn owner_env_file_path(project: &str, service_name: &str, owner_server: &str) -> String {
+///
+/// Relative to the SSH login's home directory, same as `stage_env_file`/`mounts::remote_mount_base`
+/// -- callers that hand this (or `mounts::build_all_mount_args`'s bind-mount sources) to
+/// `jiji-agent` must run it through `absolutize`/`absolutize_mount_args` first (see their doc
+/// comments for why).
+pub(crate) fn owner_env_file_path(project: &str, service_name: &str, owner_server: &str) -> String {
     format!(".jiji/{project}/env/{service_name}-{owner_server}.env")
 }
 
+/// `jiji-agent` spawns cron containers directly via `tokio::process::Command`, never over SSH, so
+/// it has no notion of the SSH login's home directory that `stage_env_file`'s and
+/// `mounts::remote_mount_base`'s `.jiji/...`-relative paths implicitly resolve against (confirmed
+/// live: a scheduled cron run failed with "no such file or directory" against jiji-agent's own `/`
+/// working directory). A cron spec sent to the agent must therefore carry an absolute path.
+async fn remote_home_dir(session: &SshSession) -> anyhow::Result<String> {
+    let result = session.execute("pwd").await.with_context(|| {
+        format!(
+            "could not determine the home directory on {}",
+            session.host()
+        )
+    })?;
+    let home = result.stdout.trim();
+    if !result.success || !home.starts_with('/') {
+        anyhow::bail!(
+            "unexpected `pwd` output on {}: {:?}",
+            session.host(),
+            result.stderr.trim()
+        );
+    }
+    Ok(home.to_string())
+}
+
+fn absolutize(home: &str, relative: &str) -> String {
+    format!("{home}/{relative}")
+}
+
+/// Only `.jiji/...`-relative bind-mount sources (from `files:`/`directories:`) need rewriting --
+/// named volumes and already-absolute host bind mounts (`mounts::build_all_mount_args`'s other two
+/// kinds of `-v` argument) pass through unchanged.
+fn absolutize_mount_args(home: &str, args: Vec<String>) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| {
+            if arg.starts_with(".jiji/") {
+                absolutize(home, &arg)
+            } else {
+                arg
+            }
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
-fn render_apply_request(
+pub(crate) fn render_apply_request(
     service_name: &str,
     cron_name: &str,
     cron: &CronConfig,
@@ -156,7 +279,7 @@ fn render_apply_request(
 /// close exactly those when done -- `sessions` itself is never mutated (this module never holds
 /// a long-lived `&mut` on the caller's session pool, since callers invoke this from inside a
 /// closure that's often already borrowing it immutably for lock management).
-async fn resolve_sessions(
+pub(crate) async fn resolve_sessions(
     ssh: &Ssh,
     config: &Config,
     servers: &[String],
@@ -182,7 +305,10 @@ async fn resolve_sessions(
     Ok((resolved, newly_opened))
 }
 
-async fn close_newly_opened(sessions: &BTreeMap<String, Arc<SshSession>>, newly_opened: &[String]) {
+pub(crate) async fn close_newly_opened(
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    newly_opened: &[String],
+) {
     for name in newly_opened {
         if let Some(session) = sessions.get(name) {
             session.close().await;
@@ -286,8 +412,18 @@ async fn reconcile_service_crons_inner(
         return problems;
     };
 
+    let owner_home = match remote_home_dir(&owner_session).await {
+        Ok(home) => home,
+        Err(error) => {
+            problems.push(format!(
+                "service '{service_name}': could not determine the cron owner's home directory on '{owner_server_name}': {error}. {redeploy_hint}"
+            ));
+            return problems;
+        }
+    };
+
     let mount_args = match mounts::build_all_mount_args(service, &config.project, service_name) {
-        Ok(args) => args,
+        Ok(args) => absolutize_mount_args(&owner_home, args),
         Err(error) => {
             problems.push(format!(
                 "service '{service_name}': could not render mount arguments for its cron jobs: {error}. {redeploy_hint}"
@@ -296,7 +432,10 @@ async fn reconcile_service_crons_inner(
         }
     };
     let resource_args = container_runtime::render_resource_options(service);
-    let env_file_path = owner_env_file_path(&config.project, service_name, &owner_server_name);
+    let env_file_path = absolutize(
+        &owner_home,
+        &owner_env_file_path(&config.project, service_name, &owner_server_name),
+    );
 
     for (cron_name, cron) in &service.crons {
         let request = render_apply_request(
@@ -662,6 +801,37 @@ timeout: 30m
         assert_eq!(
             owner_env_file_path("demo", "twitch", "app-1"),
             ".jiji/demo/env/twitch-app-1.env"
+        );
+    }
+
+    #[test]
+    fn absolutize_prefixes_the_home_directory() {
+        assert_eq!(
+            absolutize("/root", ".jiji/demo/env/twitch-app-1.env"),
+            "/root/.jiji/demo/env/twitch-app-1.env"
+        );
+    }
+
+    #[test]
+    fn absolutize_mount_args_rewrites_only_jiji_relative_bind_sources() {
+        let args = vec![
+            "-v".to_string(),
+            ".jiji/demo/files/twitch/config.yml:/app/config.yml".to_string(),
+            "-v".to_string(),
+            "twitch-data:/data".to_string(),
+            "-v".to_string(),
+            "/host/absolute:/mnt".to_string(),
+        ];
+        assert_eq!(
+            absolutize_mount_args("/root", args),
+            vec![
+                "-v".to_string(),
+                "/root/.jiji/demo/files/twitch/config.yml:/app/config.yml".to_string(),
+                "-v".to_string(),
+                "twitch-data:/data".to_string(),
+                "-v".to_string(),
+                "/host/absolute:/mnt".to_string(),
+            ]
         );
     }
 }

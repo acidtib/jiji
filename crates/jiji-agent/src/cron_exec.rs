@@ -217,9 +217,13 @@ pub fn lease_and_spawn(
         mesh_config.dns_bind_address,
         mesh_config.local_runtime.proxy_address,
     ];
+    // `container_cidr` is the whole-mesh reserved range (every project, every server); the
+    // actual per-server bridge subnet a container can be leased an address from is
+    // `container_subnet` (confirmed live: a lease from `container_cidr` handed out an address
+    // outside this host's bridge network, and podman rejected the container start outright).
     let lease = AddressAllocator::new(
         locked_store,
-        mesh_config.local_runtime.container_cidr,
+        mesh_config.local_runtime.container_subnet,
         reserved,
     )
     .allocate(

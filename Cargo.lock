@@ -2197,6 +2197,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "ignore",
+ "jiff",
  "jiji-agent",
  "jiji-config",
  "jiji-core",

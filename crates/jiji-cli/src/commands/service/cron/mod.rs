@@ -82,3 +82,15 @@ pub(crate) fn select_single_cron<'a>(
         ),
     }
 }
+
+/// A UTC second as an ISO-8601 string for display, `"-"` when absent. Persisted cron timestamps
+/// are always UTC seconds (the plan's "Scheduler Rules" section); a malformed value (should never
+/// happen) falls back to the raw number rather than hiding it.
+pub(crate) fn format_epoch(seconds: Option<u64>) -> String {
+    match seconds {
+        None => "-".to_string(),
+        Some(seconds) => jiff::Timestamp::from_second(seconds as i64)
+            .map(|timestamp| timestamp.to_string())
+            .unwrap_or_else(|_| seconds.to_string()),
+    }
+}
