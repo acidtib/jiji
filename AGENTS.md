@@ -402,7 +402,7 @@ free-text commit/PR content.
 `jiji-cli`'s and `jiji-network`'s `build.rs` each read a sibling crate's
 version at compile time (`jiji-agent` → `AGENT_BUILD_VERSION`, `jiji-proxy`
 → `PROXY_VERSION`/`image()`) via a shared `sibling_crate_version()` helper,
-`include!`-ed from `build-support/sibling_crate_version.rs`, needed
+`include!`-ed from `lib/build-support/sibling_crate_version.rs`, needed
 because a fresh `jiji server setup` can no longer assume the agent/proxy
 build to install/pull is "the same version as me".
 

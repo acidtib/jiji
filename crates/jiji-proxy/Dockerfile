@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY lib ./lib
 RUN cargo build --release -p jiji-proxy
 
 FROM debian:bookworm-slim AS runtime
