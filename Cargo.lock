@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-agent"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-cli"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.2...jiji-agent-v0.6.3) (2026-08-10)
+
+
+### Bug Fixes
+
+* **jiji-agent:** release inherited proxy lease ([23ce8ec](https://github.com/acidtib/jiji/commit/23ce8ec73735dee8e5f73b78c44684c00302d8ec))
+
 ## [0.6.2](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.1...jiji-agent-v0.6.2) (2026-08-10)
 
 
