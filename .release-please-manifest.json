@@ -1,6 +1,6 @@
 {
-  "crates/jiji-cli": "0.7.2",
-  "crates/jiji-agent": "0.6.2",
+  "crates/jiji-cli": "0.7.3",
+  "crates/jiji-agent": "0.6.3",
   "crates/jiji-proxy": "0.6.1",
   "crates/jiji-core": "0.7.0",
   "crates/jiji-tui": "0.6.1",
