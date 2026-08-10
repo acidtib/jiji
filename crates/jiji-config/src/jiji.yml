@@ -100,6 +100,7 @@ builder:
 # Each server must have:
 # - Unique name (DNS-safe: alphanumeric + hyphens, no start/end hyphen, max 63 chars)
 # - Unique hostname/IP address (no duplicate hosts across servers)
+# - An ALL_CAPS host value resolves from the selected .env file or host environment
 #
 # Per-server SSH overrides (all optional, inherit from global ssh section if not specified):
 # - user: SSH username for this specific server

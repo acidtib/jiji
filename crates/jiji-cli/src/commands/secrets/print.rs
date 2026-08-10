@@ -199,7 +199,7 @@ fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<Secret
     for name in server_names {
         let server = &config.servers[name];
         let source = format!("servers.{name}.host");
-        push_if_env_ref(&mut refs, Some(server.host.as_str()), &source, false);
+        push_if_env_ref(&mut refs, Some(server.host.as_str()), &source, true);
 
         let source = format!("servers.{name}.ssh");
         for entry in server.keys.iter().flatten() {
@@ -456,9 +456,9 @@ mod tests {
         );
         let refs = collect_secret_refs(&config, &[]);
         assert_eq!(refs.len(), 2);
-        assert!(refs
-            .iter()
-            .any(|r| r.name == "APP1_HOST" && r.source == "servers.app1.host"));
+        assert!(refs.iter().any(|r| r.name == "APP1_HOST"
+            && r.source == "servers.app1.host"
+            && r.runtime_resolved));
         assert!(refs
             .iter()
             .any(|r| r.name == "APP1_PASSPHRASE" && r.source == "servers.app1.ssh"));
