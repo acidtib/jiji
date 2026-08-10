@@ -20,7 +20,14 @@ pub async fn generation_is_current(
     plan: &NetworkPlan,
 ) -> anyhow::Result<bool> {
     let path = mesh_generation_path(&plan.project);
-    let command = format!("cat {path} 2>/dev/null || true");
+    let current = crate::commands::network::setup::network_current(
+        &jiji_network::systemd_unit_slug(&plan.project),
+    );
+    // The generation marker is valid only while `current` is the atomic symlink installed by
+    // network activation. A failed rollback can leave the separate marker behind. Trusting that
+    // marker alone skips prerequisite repair and can make a later write create `current` as a
+    // real directory, after which activation cannot replace it with a symlink.
+    let command = format!("if test -L {current}; then cat {path} 2>/dev/null || true; fi");
     let result = session.execute(&command).await?;
     if result.stdout.trim().is_empty() {
         let legacy_path = legacy_generation_path(&plan.project);

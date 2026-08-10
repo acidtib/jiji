@@ -397,6 +397,11 @@ commands pass `--no-session` to avoid a PAM session for every health probe or
 proxy command. Network bootstrap enables linger for the SSH user so systemd
 does not terminate rootful containers when the SSH session closes.
 
+Ubuntu 26.04 confines `wg` and `wg-quick` with AppArmor. Network bootstrap
+adds idempotent local rules for Jiji's private key and immutable WireGuard
+configuration. These rules keep Jiji's project-scoped, root-only state layout.
+Systems without the packaged profiles take a no-op path.
+
 Sources:
 
 - `crates/jiji-cli/src/engine.rs`

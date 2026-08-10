@@ -502,6 +502,7 @@ async fn apply_connected(
         .iter()
         .filter(|host| target_names.contains(&host.name))
     {
+        ensure_wg_apparmor_compatibility(&host.session).await?;
         if mesh_current[&host.name] {
             Ui::say(
                 &format!("{}: existing mesh prerequisites retained", host.name),
@@ -1090,10 +1091,42 @@ else \
   echo 'Unsupported package manager. Install wireguard-tools, DNS query tools, iptables, and nftables manually.' >&2; exit 1; \
 fi; \
 install -d -m 0700 /etc/jiji/network; install -d -m 0700 {project_dir}; install -d -m 0700 /etc/wireguard; \
-{}"
-    , enable_linger_command());
+{}",
+        enable_linger_command()
+    );
     let result = session.execute(&command).await?;
     ensure_success(session, &command, &result)
+}
+
+async fn ensure_wg_apparmor_compatibility(session: &SshSession) -> anyhow::Result<()> {
+    let command = wg_apparmor_compatibility_command();
+    let result = session.execute(command).await?;
+    ensure_success(session, command, &result)
+}
+
+/// Ubuntu 26.04 ships AppArmor profiles for `wg` and `wg-quick`. Jiji keeps each project's key
+/// and generated config below its root-only project state directory, so add narrow local rules
+/// for those two managed files. Older Ubuntu versions and other distributions have no profiles
+/// and take the no-op branches. The packaged profiles own the optional local includes, so package
+/// upgrades preserve these overrides.
+fn wg_apparmor_compatibility_command() -> &'static str {
+    "if test -r /sys/module/apparmor/parameters/enabled && \
+        grep -q '^Y' /sys/module/apparmor/parameters/enabled && \
+        command -v apparmor_parser >/dev/null 2>&1; then \
+       install -d -m 0755 /etc/apparmor.d/local; \
+       if test -f /etc/apparmor.d/wg && grep -Fq 'include if exists <local/wg>' /etc/apparmor.d/wg; then \
+         touch /etc/apparmor.d/local/wg; chmod 0644 /etc/apparmor.d/local/wg; \
+         rule='  /etc/jiji/network/*/private.key r,'; \
+         grep -Fqx \"$rule\" /etc/apparmor.d/local/wg || printf '%s\\n' \"$rule\" >> /etc/apparmor.d/local/wg; \
+         apparmor_parser -r /etc/apparmor.d/wg; \
+       fi; \
+       if test -f /etc/apparmor.d/wg-quick && grep -Fq 'include if exists <local/wg-quick>' /etc/apparmor.d/wg-quick; then \
+         touch /etc/apparmor.d/local/wg-quick; chmod 0644 /etc/apparmor.d/local/wg-quick; \
+         rule='  /etc/jiji/network/*/generations/*/wireguard.conf r,'; \
+         grep -Fqx \"$rule\" /etc/apparmor.d/local/wg-quick || printf '%s\\n' \"$rule\" >> /etc/apparmor.d/local/wg-quick; \
+         apparmor_parser -r /etc/apparmor.d/wg-quick; \
+       fi; \
+     fi"
 }
 
 /// Without this, a rootful container (jiji-proxy, or any jiji-managed service container) started
@@ -1367,12 +1400,14 @@ fn render_activation_command(
     let network_dir = network_dir(slug);
     let wireguard_config_path = wireguard_config_path(iface);
     let private_key_path = private_key_path(slug);
+    let wireguard_sync = render_wireguard_sync_command(iface, &wireguard_config_path);
     let mesh_activation = if activate_mesh {
         format!(
             "sysctl --system >/dev/null; \
              test -s {network_generation}/wireguard.conf; \
              test -x {network_generation}/restore.sh; \
              test \"$(cat {network_generation}/mesh-generation)\" = '{mesh_generation}'; \
+             if test -e {network_current} && ! test -L {network_current}; then rm -rf {network_current}; fi; \
              ln -sfn {network_generation} {network_current}.new; \
              mv -Tf {network_current}.new {network_current}; \
              ln -sfn {network_current}/wireguard.conf {wireguard_config_path}.new; \
@@ -1385,7 +1420,7 @@ fn render_activation_command(
              wg set {iface} private-key {private_key_path} listen-port {wireguard_port}; \
              ip address replace {management}/32 dev {iface}; \
              ip link set {iface} up; \
-             bash -c 'wg syncconf {iface} <(wg-quick strip {wireguard_config_path})'; \
+             {wireguard_sync}; \
              {route_sync}; \
              sh {network_dir}/restore.sh;",
             management = server.management_address,
@@ -1399,6 +1434,19 @@ fn render_activation_command(
         "set -eu; \
          systemctl daemon-reload; \
          {mesh_activation}"
+    )
+}
+
+/// Do not use process substitution here. A failure in `wg-quick strip` runs asynchronously and
+/// can be hidden by a successful `wg syncconf` against an empty stream, which clears ListenPort
+/// and makes WireGuard choose a random port. The temporary config stays root-only and the trap
+/// removes it on both success and failure.
+fn render_wireguard_sync_command(interface: &str, config_path: &str) -> String {
+    let sync_path = format!("/etc/wireguard/{interface}.syncconf");
+    format!(
+        "sh -c 'set -eu; sync_path=\"$1\"; trap '\"'\"'rm -f \"$sync_path\"'\"'\"' EXIT; \
+         install -m 0600 /dev/null \"$sync_path\"; wg-quick strip \"$2\" > \"$sync_path\"; \
+         wg syncconf \"$3\" \"$sync_path\"' sh {sync_path} {config_path} {interface}"
     )
 }
 
@@ -1550,7 +1598,7 @@ fn render_rollback_command(
     let network = if domains.mesh {
         match &state.network {
             Some(path) => format!(
-            "ln -sfn {path} {network_current}.new; \
+                "ln -sfn {path} {network_current}.new; \
              mv -Tf {network_current}.new {network_current}; \
              ln -sfn {network_current}/wireguard.conf {wireguard_config_path}.new; \
              mv -Tf {wireguard_config_path}.new {wireguard_config_path}; \
@@ -1563,8 +1611,9 @@ fn render_rollback_command(
             // far) is the only thing that could have created the interface -- tear it down rather
             // than leave a stray link with no compiled state pointing at it.
             None => format!(
-            "ip link delete {wireguard_interface} 2>/dev/null || true; \
-             rm -f {network_current} {wireguard_config_path} {network_dir}/restore.sh {network_dir}/mesh-generation"
+                "ip link delete {wireguard_interface} 2>/dev/null || true; \
+             rm -rf {network_current}; \
+             rm -f {wireguard_config_path} {network_dir}/restore.sh {network_dir}/mesh-generation"
             ),
         }
     } else {
@@ -1576,9 +1625,10 @@ fn render_rollback_command(
         // generations (never regenerated once bootstrapped), so only the peer set and routes --
         // both generation-dependent -- need resyncing against the just-restored `wireguard.conf`.
         format!(
-            "bash -c 'wg syncconf {wireguard_interface} <(wg-quick strip {wireguard_config_path})'; \
+            "{}; \
              {route_sync}; \
              sh {network_dir}/restore.sh",
+            render_wireguard_sync_command(wireguard_interface, &wireguard_config_path),
             route_sync = render_route_sync(server),
         )
     } else {
@@ -1851,6 +1901,37 @@ services:
             true,
         );
         assert!(!command.contains("; ;"), "command: {command}");
+        assert!(command.contains(&format!(
+            "if test -e {} && ! test -L {}; then rm -rf {}",
+            network_current(&slug),
+            network_current(&slug),
+            network_current(&slug)
+        )));
+    }
+
+    #[test]
+    fn wg_apparmor_compatibility_is_narrow_idempotent_and_optional() {
+        let command = wg_apparmor_compatibility_command();
+        assert!(command.contains("test -f /etc/apparmor.d/wg"));
+        assert!(command.contains("include if exists <local/wg>"));
+        assert!(command.contains("/etc/jiji/network/*/private.key r,"));
+        assert!(command.contains("grep -Fqx"));
+        assert!(command.contains("apparmor_parser -r /etc/apparmor.d/wg"));
+        assert!(command.contains("test -f /etc/apparmor.d/wg-quick"));
+        assert!(command.contains("/etc/jiji/network/*/generations/*/wireguard.conf r,"));
+        assert!(command.contains("apparmor_parser -r /etc/apparmor.d/wg-quick"));
+        assert!(!command.contains("/etc/jiji/network/** r,"));
+    }
+
+    #[test]
+    fn wireguard_sync_propagates_strip_failure_and_cleans_up_private_material() {
+        let command = render_wireguard_sync_command("jiji123", "/etc/wireguard/jiji123.conf");
+        assert!(command.contains("set -eu"));
+        assert!(command.contains("install -m 0600 /dev/null"));
+        assert!(command.contains("trap"));
+        assert!(command.contains("wg-quick strip"));
+        assert!(command.contains("wg syncconf"));
+        assert!(!command.contains("<("));
     }
 
     #[test]
@@ -1910,9 +1991,9 @@ services:
             ActivationDomains { mesh: true },
         );
         assert!(command.contains(&format!("ip link delete {wireguard_interface}")));
+        assert!(command.contains(&format!("rm -rf {}", network_current(&slug))));
         assert!(command.contains(&format!(
-            "rm -f {} {} {}/restore.sh {}/mesh-generation",
-            network_current(&slug),
+            "rm -f {} {}/restore.sh {}/mesh-generation",
             wireguard_config_path(wireguard_interface),
             network_dir(&slug),
             network_dir(&slug),

@@ -461,6 +461,11 @@ enable-linger` for the SSH user, otherwise a rootful container started over
 SSH gets silently killed once that SSH session's systemd scope is cleaned
 up.
 
+Ubuntu 26.04 adds AppArmor profiles for `wg` and `wg-quick`. They otherwise
+deny Jiji's root-only private key and immutable WireGuard configuration. Mesh
+bootstrap must add narrow rules through the profiles' local includes and
+reload both profiles. Systems without these profiles must take the no-op path.
+
 Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
 
 ## Command Reference
