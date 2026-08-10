@@ -2,8 +2,9 @@
 //! static cert-file listener: every terminated host gets its own entry here,
 //! looked up by SNI at handshake time via Pingora's `TlsAccept` hook
 //! (`certificate_callback`), populated either by a static file pair an
-//! operator drops into `cert_dir` (`{host}.crt`/`{host}.key`, loaded once at
-//! startup and never touched again) or by `acme.rs`'s issuance/renewal loop.
+//! operator drops into `cert_dir` (`{host}.crt`/`{host}.key`, loaded at
+//! startup or reloaded through the admin API) or by `acme.rs`'s
+//! issuance/renewal loop.
 //! A static file always wins: `acme.rs` only ever issues/renews hosts whose
 //! current entry is missing or itself ACME-sourced. See "TLS certificates"
 //! in `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`.
@@ -64,8 +65,21 @@ impl CertStore {
                 tracing::warn!(host, cert = %path.display(), "found a .crt with no matching .key; skipping");
                 continue;
             }
-            let cert = X509::from_pem(&std::fs::read(&path)?)?;
-            let key = PKey::private_key_from_pem(&std::fs::read(&key_path)?)?;
+            let pair = (|| -> anyhow::Result<(X509, PKey<Private>)> {
+                let cert = X509::from_pem(&std::fs::read(&path)?)?;
+                let key = PKey::private_key_from_pem(&std::fs::read(&key_path)?)?;
+                if !cert.public_key()?.public_eq(&key) {
+                    anyhow::bail!("certificate and private key do not match");
+                }
+                Ok((cert, key))
+            })();
+            let (cert, key) = match pair {
+                Ok(pair) => pair,
+                Err(error) => {
+                    tracing::warn!(%error, host, "could not load static certificate; skipping");
+                    continue;
+                }
+            };
             tracing::info!(host, "loaded static certificate");
             entries.insert(
                 host.to_string(),
@@ -136,6 +150,31 @@ impl CertStore {
                     cert,
                     key,
                     source: CertSource::Acme,
+                }),
+            );
+        Ok(())
+    }
+
+    /// Loads one static certificate pair from disk and atomically replaces
+    /// the in-memory entry. The old entry remains active if parsing or key
+    /// validation fails.
+    pub fn reload_static(&self, host: &str) -> anyhow::Result<()> {
+        let cert_path = self.dir.join(format!("{host}.crt"));
+        let key_path = self.dir.join(format!("{host}.key"));
+        let cert = X509::from_pem(&std::fs::read(&cert_path)?)?;
+        let key = PKey::private_key_from_pem(&std::fs::read(&key_path)?)?;
+        if !cert.public_key()?.public_eq(&key) {
+            anyhow::bail!("certificate and private key do not match for host '{host}'");
+        }
+        self.entries
+            .write()
+            .expect("cert store lock poisoned")
+            .insert(
+                host.to_string(),
+                Arc::new(CertEntry {
+                    cert,
+                    key,
+                    source: CertSource::Static,
                 }),
             );
         Ok(())
@@ -239,5 +278,45 @@ mod tests {
 
         let store = CertStore::load(dir.path().to_path_buf()).expect("load cert store");
         assert!(store.get("api.example.com").is_some());
+    }
+
+    #[test]
+    fn reload_static_loads_a_pair_written_after_startup() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let store = CertStore::load(dir.path().to_path_buf()).expect("load cert store");
+        assert!(store.get("new.example.com").is_none());
+
+        std::fs::write(dir.path().join("new.example.com.crt"), TEST_CERT).unwrap();
+        std::fs::write(dir.path().join("new.example.com.key"), TEST_KEY).unwrap();
+        store.reload_static("new.example.com").unwrap();
+
+        let entry = store.get("new.example.com").expect("reloaded entry");
+        assert_eq!(entry.source, CertSource::Static);
+    }
+
+    #[test]
+    fn reload_static_keeps_the_old_entry_when_the_new_key_is_invalid() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir.path().join("api.example.com.crt"), TEST_CERT).unwrap();
+        std::fs::write(dir.path().join("api.example.com.key"), TEST_KEY).unwrap();
+        let store = CertStore::load(dir.path().to_path_buf()).expect("load cert store");
+        let old = store.get("api.example.com").unwrap();
+
+        std::fs::write(dir.path().join("api.example.com.key"), "not a key").unwrap();
+        assert!(store.reload_static("api.example.com").is_err());
+
+        let current = store.get("api.example.com").unwrap();
+        assert!(Arc::ptr_eq(&old, &current));
+    }
+
+    #[test]
+    fn startup_skips_an_invalid_pair_instead_of_failing_the_proxy() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir.path().join("broken.example.com.crt"), "CERT").unwrap();
+        std::fs::write(dir.path().join("broken.example.com.key"), "KEY").unwrap();
+
+        let store = CertStore::load(dir.path().to_path_buf()).expect("load cert store");
+
+        assert!(store.get("broken.example.com").is_none());
     }
 }

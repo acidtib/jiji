@@ -23,6 +23,41 @@ use crate::lock::{LockRequest, LockScope};
 use crate::proxy::{self, ProxyStatus};
 use crate::ssh_adapter;
 
+const SSH_REFUSAL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(31);
+
+fn ssh_refusal_cooldown() -> std::time::Duration {
+    if cfg!(debug_assertions) {
+        if let Ok(milliseconds) = std::env::var("JIJI_TEST_SSH_REFUSAL_COOLDOWN_MS") {
+            if let Ok(milliseconds) = milliseconds.parse() {
+                return std::time::Duration::from_millis(milliseconds);
+            }
+        }
+    }
+    SSH_REFUSAL_COOLDOWN
+}
+
+/// UFW's `limit ssh` rule rejects a source after several connections in a 30-second window. A
+/// teardown followed immediately by setup can reach that limit even when each command avoids
+/// redundant sessions. Do not retry during the window because each rejected SYN refreshes it.
+async fn connect_for_setup(
+    options: &jiji_ssh::ConnectOptions,
+) -> Result<SshSession, jiji_ssh::SshError> {
+    match SshSession::connect(options).await {
+        Err(error) if error.is_connection_refused() => {
+            Ui::say(
+                &format!(
+                    "{}: SSH connection refused; waiting 31s before one retry",
+                    options.host
+                ),
+                1,
+            );
+            tokio::time::sleep(ssh_refusal_cooldown()).await;
+            SshSession::connect(options).await
+        }
+        result => result,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     environment: Option<&str>,
@@ -148,7 +183,7 @@ pub async fn run(
     }
     let operations: Vec<_> = lock_connect_operations
         .into_iter()
-        .map(|options| move || async move { SshSession::connect(&options).await })
+        .map(|options| move || async move { connect_for_setup(&options).await })
         .collect();
     let connections = lock_pool.execute_concurrent(operations).await;
     let mut lock_sessions: BTreeMap<String, Arc<SshSession>> = BTreeMap::new();
@@ -204,7 +239,7 @@ pub async fn run(
             Ui::section("Connecting:");
             let operations: Vec<_> = connect_operations
                 .into_iter()
-                .map(|options| move || async move { SshSession::connect(&options).await })
+                .map(|options| move || async move { connect_for_setup(&options).await })
                 .collect();
             let connections = pool.execute_concurrent(operations).await;
 
@@ -269,7 +304,16 @@ pub async fn run(
             )
                 })?;
 
-            setup_agents(&config, &path, &network_plan, &servers, &ssh, yes).await?;
+            setup_agents(
+                &config,
+                &path,
+                &network_plan,
+                &servers,
+                &ssh,
+                yes,
+                &lock_sessions,
+            )
+            .await?;
 
             if import {
                 perform_import(&config, &servers, &network_plan, &ssh, import_dry_run, yes).await?;
@@ -327,7 +371,7 @@ async fn force_rotate_keys(
     }
     let operations: Vec<_> = connect_operations
         .into_iter()
-        .map(|options| move || async move { SshSession::connect(&options).await })
+        .map(|options| move || async move { connect_for_setup(&options).await })
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 
@@ -387,7 +431,7 @@ async fn perform_import(
     }
     let operations: Vec<_> = connect_operations
         .into_iter()
-        .map(|options| move || async move { SshSession::connect(&options).await })
+        .map(|options| move || async move { connect_for_setup(&options).await })
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 
@@ -429,6 +473,7 @@ async fn setup_agents(
     servers: &[(String, NamedServer)],
     ssh: &Ssh,
     yes: bool,
+    lock_sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> anyhow::Result<()> {
     // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
     // sibling binary) still wins; otherwise fall back to a host-side install script that
@@ -452,6 +497,24 @@ async fn setup_agents(
             AgentBinarySource::Managed(download)
         }
     };
+    let target_names: BTreeSet<String> = servers.iter().map(|(name, _)| name.clone()).collect();
+    // Read target membership through the connection already holding each host lock. This avoids
+    // another SSH handshake (and stays below common `ufw limit ssh` thresholds) without changing
+    // the command sequence on the dedicated agent-install sessions.
+    let mut gathered_membership = Vec::new();
+    for (name, session) in lock_sessions {
+        if !target_names.contains(name) {
+            continue;
+        }
+        if let Ok(records) =
+            crate::commands::network::membership::pull_membership(session, &config.project).await
+        {
+            gathered_membership.extend(records);
+        }
+    }
+    gathered_membership.extend(
+        crate::commands::network::membership::gather_membership(config, ssh, &target_names).await,
+    );
     let remote_install_script = match &binary_source {
         AgentBinarySource::Managed(download) => {
             let paths = jiji_agent::AgentPaths::default_for_project(&config.project);
@@ -478,14 +541,14 @@ async fn setup_agents(
     }
     let operations: Vec<_> = connect_operations
         .into_iter()
-        .map(|options| move || async move { SshSession::connect(&options).await })
+        .map(|options| move || async move { connect_for_setup(&options).await })
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 
     let recovery_epoch = crate::recovery_epoch::read(config_path)?;
     let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
     let mut view = MembershipView::default();
-    for record in crate::commands::network::membership::gather_membership(config, ssh).await {
+    for record in gathered_membership {
         // A stale/superseded record from a lagging peer is expected and harmless; only a
         // structural problem (wrong project, collision) is worth surfacing here.
         if let Err(error) = view.apply(record, &scope) {
@@ -686,7 +749,7 @@ async fn setup_agents(
                 None
             }
         };
-        match agent_install::ensure_agent(
+        let agent_ready = match agent_install::ensure_agent(
             &session,
             config.builder.engine,
             &config.project,
@@ -698,14 +761,30 @@ async fn setup_agents(
         {
             Ok(agent_install::AgentStatus::AlreadyRunning) => {
                 Ui::say(&format!("{name}: jiji agent already running"), 1);
+                true
             }
             Ok(agent_install::AgentStatus::Installed) => {
                 Ui::say(&format!("{name}: jiji agent installed and running"), 1);
+                true
             }
             Ok(agent_install::AgentStatus::Upgraded) => {
                 Ui::say(&format!("{name}: jiji agent binary upgraded"), 1);
+                true
             }
             Err(error) => {
+                Ui::error(&format!("{name}: {error}"));
+                failures.push((name.clone(), error.to_string()));
+                false
+            }
+        };
+        if agent_ready {
+            if let Err(error) = crate::commands::network::membership::push_membership(
+                &session,
+                &config.project,
+                &records,
+            )
+            .await
+            {
                 Ui::error(&format!("{name}: {error}"));
                 failures.push((name.clone(), error.to_string()));
             }
@@ -723,14 +802,19 @@ async fn setup_agents(
         );
     }
 
-    // Newly enrolled/updated membership must also reach any already-set-up server outside this
+    // Each target received `records` through its still-open install session above. Membership
+    // must also reach any already-set-up server outside this
     // run's target set, or its own WireGuard reconciliation would never learn about the change --
     // there is no peer-to-peer membership relay to paper over the gap (see
     // `jiji_agent::membership`). Best-effort: an unreachable host just catches up next time any
     // command reaches it.
-    let push_outcome =
-        crate::commands::network::membership::push_membership_everywhere(config, ssh, &records)
-            .await?;
+    let push_outcome = crate::commands::network::membership::push_membership_everywhere(
+        config,
+        ssh,
+        &records,
+        &target_names,
+    )
+    .await?;
     for (name, error) in &push_outcome.unreachable {
         Ui::say(&format!("{name}: membership not yet current ({error})"), 1);
     }
@@ -757,7 +841,7 @@ async fn setup_proxies(
     }
     let operations: Vec<_> = connect_operations
         .into_iter()
-        .map(|options| move || async move { SshSession::connect(&options).await })
+        .map(|options| move || async move { connect_for_setup(&options).await })
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 

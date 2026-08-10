@@ -99,3 +99,40 @@ pub enum SshError {
     #[error(transparent)]
     Protocol(#[from] russh::Error),
 }
+
+impl SshError {
+    /// True only when the operating system rejected the initial TCP connection. Callers can use
+    /// this to distinguish a temporary firewall rate limit from authentication or SSH protocol
+    /// errors, which must not be retried as transport failures.
+    pub fn is_connection_refused(&self) -> bool {
+        matches!(
+            self,
+            Self::Connect {
+                source: russh::Error::IO(error),
+                ..
+            } if error.kind() == std::io::ErrorKind::ConnectionRefused
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_refusal_is_distinct_from_other_connect_errors() {
+        let refused = SshError::Connect {
+            host: "127.0.0.1".into(),
+            port: 22,
+            source: russh::Error::IO(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
+        };
+        assert!(refused.is_connection_refused());
+
+        let timed_out = SshError::Connect {
+            host: "127.0.0.1".into(),
+            port: 22,
+            source: russh::Error::IO(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+        };
+        assert!(!timed_out.is_connection_refused());
+    }
+}

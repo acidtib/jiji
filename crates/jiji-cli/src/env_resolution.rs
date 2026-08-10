@@ -138,6 +138,10 @@ pub fn merge_environment(shared: &Environment, service: &Environment) -> Environ
 pub struct ResolvedEnvironment {
     pub values: BTreeMap<String, String>,
     pub secret_keys: BTreeSet<String>,
+    /// Secrets used by Jiji itself, such as TLS certificate material. These
+    /// remain available to deployment orchestration but are not injected
+    /// into the service container.
+    pub control_keys: BTreeSet<String>,
 }
 
 /// `clear` values are used as-is; `secrets` are resolved from `loaded` (the parsed `.env` map),
@@ -174,6 +178,7 @@ pub fn resolve_environment(
     Ok(ResolvedEnvironment {
         values,
         secret_keys,
+        control_keys: BTreeSet::new(),
     })
 }
 
@@ -265,6 +270,9 @@ pub async fn stage_env_file(
 ) -> anyhow::Result<String> {
     let mut content = String::new();
     for (key, value) in &resolved.values {
+        if resolved.control_keys.contains(key) {
+            continue;
+        }
         if value.contains('\n') {
             anyhow::bail!(
                 "Environment variable '{key}' for service '{service}' contains a newline, which the container engine's --env-file format cannot represent. Remove the newline from that value and retry."

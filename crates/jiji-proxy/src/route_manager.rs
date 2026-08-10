@@ -101,16 +101,45 @@ pub struct RouteManager {
     tcp_routes: Arc<RwLock<HashMap<u16, Arc<TcpRouteEntry>>>>,
     pub socket_path: Arc<PathBuf>,
     tick_interval: Duration,
+    cert_store: Option<crate::cert_store::CertStore>,
 }
 
 impl RouteManager {
     pub fn new(socket_path: PathBuf) -> Self {
+        Self::new_with_cert_store(socket_path, None)
+    }
+
+    pub fn new_with_cert_store(
+        socket_path: PathBuf,
+        cert_store: Option<crate::cert_store::CertStore>,
+    ) -> Self {
         Self {
             routes: Arc::new(RwLock::new(HashMap::new())),
             tcp_routes: Arc::new(RwLock::new(HashMap::new())),
             socket_path: Arc::new(socket_path),
             tick_interval: Duration::from_secs(1),
+            cert_store,
         }
+    }
+
+    pub fn reload_static_certificate(&self, host: &str) -> anyhow::Result<()> {
+        self.cert_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HTTPS is not enabled in jiji-proxy"))?
+            .reload_static(host)
+    }
+
+    pub fn route_tls(&self, host: &str, path_prefix: Option<&str>) -> Option<bool> {
+        self.routes
+            .read()
+            .expect("route table lock poisoned")
+            .get(host)
+            .and_then(|routes| {
+                routes
+                    .iter()
+                    .find(|route| route.path_prefix.as_deref() == path_prefix)
+            })
+            .map(|route| route.tls)
     }
 
     /// Backend load balancer currently assigned to `listen_port`, if any --

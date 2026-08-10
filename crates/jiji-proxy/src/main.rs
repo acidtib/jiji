@@ -78,6 +78,13 @@ enum RouteCommand {
         /// Serve/maintain a TLS certificate for this host (see acme.rs).
         #[arg(long)]
         tls: bool,
+        /// Reload the static certificate pair for this host before applying
+        /// the route.
+        #[arg(long)]
+        reload_certificate: bool,
+        /// Preserve TLS state when this route already exists.
+        #[arg(long)]
+        preserve_existing_tls: bool,
         /// Enables active health-checking against this HTTP path; omit
         /// `--health-check-path` (but pass this flag) for a TCP-only check,
         /// or omit the whole group to rely on DNS-driven eviction only.
@@ -209,7 +216,13 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let mut server = Server::new(None).map_err(|error| anyhow::anyhow!("{error}"))?;
     server.bootstrap();
 
-    let manager = RouteManager::new(config.admin_socket.clone());
+    let cert_store = if config.https_listen.is_some() {
+        Some(CertStore::load(config.cert_dir.clone())?)
+    } else {
+        None
+    };
+    let manager =
+        RouteManager::new_with_cert_store(config.admin_socket.clone(), cert_store.clone());
     let challenges = PendingChallenges::default();
 
     // A single tokio runtime, scoped to this call, applies the config's seed
@@ -245,12 +258,6 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
         tracing::info!(listen_port = route.listen_port, name = %route.discovery.name, "seed tcp route applied");
     }
     drop(seed_runtime);
-
-    let cert_store = if config.https_listen.is_some() {
-        Some(CertStore::load(config.cert_dir.clone())?)
-    } else {
-        None
-    };
 
     server.add_service(background_service("route-manager", manager.clone()));
 
@@ -313,6 +320,8 @@ fn route_command(command: RouteCommand) -> anyhow::Result<()> {
                 port,
                 refresh_interval_secs,
                 tls,
+                reload_certificate,
+                preserve_existing_tls,
                 health_check,
                 health_check_path,
                 health_check_interval_secs,
@@ -329,6 +338,8 @@ fn route_command(command: RouteCommand) -> anyhow::Result<()> {
                     port,
                     refresh_interval_secs,
                     tls,
+                    reload_certificate,
+                    preserve_existing_tls,
                     health_check: health_check.then_some(HealthCheckRequest {
                         path: health_check_path,
                         interval_secs: health_check_interval_secs,

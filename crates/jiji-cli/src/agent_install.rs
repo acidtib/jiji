@@ -207,7 +207,7 @@ async fn write_remote_bytes(
     path: &Path,
     content: &[u8],
 ) -> anyhow::Result<()> {
-    let command = format!("install -m {mode} /dev/stdin {}", path.display());
+    let command = format!("install -D -m {mode} /dev/stdin {}", path.display());
     let result = session.execute_with_input(&command, content).await?;
     if !result.success {
         anyhow::bail!(

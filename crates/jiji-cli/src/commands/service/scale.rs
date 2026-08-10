@@ -380,11 +380,13 @@ pub async fn run(
     let project_root = env_resolution::project_root_from_config_path(&path);
     let (loaded_env, _) =
         env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
-    let merged = env_resolution::merge_environment(
+    let mut merged = env_resolution::merge_environment(
         &config.environment.clone().unwrap_or_default(),
         &service.environment,
     );
-    let resolved_env = env_resolution::resolve_environment(&merged, &loaded_env, host_env)?;
+    crate::proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
+    let mut resolved_env = env_resolution::resolve_environment(&merged, &loaded_env, host_env)?;
+    crate::proxy_routes::mark_tls_control_secrets(service.proxy.as_ref(), &mut resolved_env);
     let image = if let Some(image) = &service.image {
         container_runtime::resolve_image_reference(image, None)?
     } else {
@@ -469,6 +471,7 @@ pub async fn run(
                     &config.project,
                     config.builder.engine,
                     &BTreeMap::from([(service_name.clone(), proxy.clone())]),
+                    &BTreeMap::from([(service_name.clone(), resolved_env.clone())]),
                 )
                 .await?;
             }

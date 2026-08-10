@@ -407,14 +407,16 @@ pub async fn run(
             .services
             .get(&endpoint.service)
             .expect("checked above");
-        let merged = env_resolution::merge_environment(&shared_env, &service.environment);
-        let resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
+        let mut merged = env_resolution::merge_environment(&shared_env, &service.environment);
+        proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
+        let mut resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
             .with_context(|| {
                 format!(
                     "Could not resolve environment for service '{}'",
                     endpoint.service
                 )
             })?;
+        proxy_routes::mark_tls_control_secrets(service.proxy.as_ref(), &mut resolved);
         tracing::debug!(
             "{}: environment: {}",
             endpoint.service,
@@ -681,6 +683,7 @@ pub async fn run(
             &plan.project,
             config.builder.engine,
             &proxy_services,
+            &resolved_envs,
         )
         .await
         .err()

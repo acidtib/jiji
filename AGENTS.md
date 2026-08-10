@@ -296,6 +296,14 @@ Full detail: `docs/architecture-notes.md#teardown-ordering`.
 `crates/jiji-cli/src/ssh_adapter.rs` adapts `jiji_config::{NamedServer, Ssh}`
 into `jiji_ssh::ConnectOptions`.
 
+`jiji server setup` reads target membership through the sessions that hold
+the `HostRuntime` locks. It pushes membership through the agent-install
+sessions. Do not add separate target connections for these steps. The extra
+connections can trigger common SSH firewall rate limits such as `ufw limit
+ssh`. If a setup connection is refused, wait 31 seconds before one retry. Do
+not retry during the wait because each rejected connection can refresh the
+firewall limit.
+
 Gotcha: a remote command killed by a signal never sends
 `ChannelMsg::ExitStatus` (SSH sends `exit-signal` instead). `Option<u32>`
 exit codes must treat `None` the same as a nonzero exit, never as success.
@@ -540,11 +548,11 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   (standalone primitive, no CLI command uses it yet), pooled concurrent
   execution.
 - `jiji secrets print`: non-fatal `.env`/host-env resolution status
-  (`[SET]`/`[MISSING]`, `--show-values`, `-S` filter). Only
-  `environment.secrets` and `builder.registry.password` are actually
-  resolved from `.env`/host-env; other secret-shaped fields (SSH key
-  passphrase, proxy certs, build args, `${VAR}` interpolation) are
-  visibility-only, flagged as such in the output.
+  (`[SET]`/`[MISSING]`, `--show-values`, `-S` filter).
+  `environment.secrets`, `builder.registry.password`, and proxy SSL
+  certificate references resolve from `.env`/host-env. Other secret-shaped
+  fields (SSH key passphrases, build arguments, and `${VAR}` interpolation)
+  are visibility-only.
 - `jiji proxy restart` / `jiji proxy logs`: unconditionally re-pull and
   recreate the shared per-host jiji-proxy container, or read its logs
   (`--follow` requires exactly one host).

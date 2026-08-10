@@ -497,14 +497,14 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
     );
     assert!(
         commands.contains(&format!(
-            "install -m 0755 /dev/stdin {}",
+            "install -D -m 0755 /dev/stdin {}",
             paths.binary_path.display()
         )),
         "expected the agent binary to be uploaded: {commands:?}"
     );
     assert!(
         commands.contains(&format!(
-            "install -m 0644 /dev/stdin {}",
+            "install -D -m 0644 /dev/stdin {}",
             paths.unit_path.display()
         )),
         "expected the agent systemd unit to be written: {commands:?}"
@@ -587,7 +587,7 @@ async fn missing_agent_binary_falls_back_to_remote_release_download() {
     assert!(
         !commands
             .iter()
-            .any(|c| c.starts_with("install -m 0755 /dev/stdin")),
+            .any(|c| c.starts_with("install -D -m 0755 /dev/stdin")),
         "remote mode must install the binary from the release, not upload it: {commands:?}"
     );
     assert!(
@@ -1021,7 +1021,14 @@ async fn reports_a_connection_failure_without_touching_the_engine() {
     };
 
     let config_path = write_config(dir.path(), addr, &key_path);
-    let output = run_jiji_server_setup(&config_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env("JIJI_TEST_SSH_REFUSAL_COOLDOWN_MS", "1")
+        .output()
+        .expect("run jiji server setup");
 
     assert!(!output.status.success(), "expected a non-zero exit code");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1068,7 +1075,7 @@ fn membership_export_command(project: &str) -> String {
 fn membership_update_stdin_command(project: &str) -> String {
     let paths = AgentPaths::default_for_project(project);
     format!(
-        "install -m 0600 /dev/stdin {}",
+        "install -D -m 0600 /dev/stdin {}",
         paths.project_dir.join("membership-update.json").display()
     )
 }

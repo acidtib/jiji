@@ -336,12 +336,13 @@ async fn deploy_dynamic_endpoint(
     );
 
     let dns_server = std::net::SocketAddr::new(ctx.server.dns_address.into(), 53);
-    let targets = proxy_routes::targets_for_service(
+    let mut targets = proxy_routes::targets_for_service(
         project,
         ctx.service_name,
         ctx.service.proxy.as_ref(),
         dns_server,
     )?;
+    proxy_routes::resolve_tls_secrets(&mut targets, ctx.resolved_env)?;
     let tcp_targets = proxy_routes::tcp_targets_for_service(
         project,
         ctx.service_name,

@@ -72,8 +72,12 @@ pub fn run(
         }
     }
 
-    let unique_names: BTreeSet<&str> = refs.iter().map(|r| r.name.as_str()).collect();
-    let missing_count = unique_names
+    let required_names: BTreeSet<&str> = refs
+        .iter()
+        .filter(|secret_ref| secret_ref.runtime_resolved)
+        .map(|secret_ref| secret_ref.name.as_str())
+        .collect();
+    let missing_count = required_names
         .iter()
         .filter(|name| env_resolution::resolve_secret_name(name, &loaded_env, host_env).is_none())
         .count();
@@ -96,10 +100,8 @@ pub fn run(
     if informational_only {
         println!();
         Ui::say(
-            "Note: ssh key_passphrase, proxy SSL certs, build args, and command \
-             interpolation are reported for visibility only -- unlike environment.secrets and \
-             builder.registry.password, they are used as literal config values today and are not \
-             actually substituted from .env/host env at runtime.",
+            "Note: SSH key passphrases, build arguments, and command interpolation are for \
+             visibility only. Jiji uses these values as literal configuration values.",
             0,
         );
     }
@@ -133,9 +135,9 @@ struct SecretRef {
     name: String,
     source: String,
     /// Whether this config field is actually resolved from `.env`/host-env by any runtime code
-    /// path today (`environment.secrets`, `builder.registry.password`), versus reported here only
-    /// for visibility because it looks like a secret reference but is currently used literally
-    /// (ssh key_passphrase, proxy SSL certs, build args, command interpolation).
+    /// path today (`environment.secrets`, `builder.registry.password`, proxy SSL certificates),
+    /// versus reported here only for visibility because it looks like a secret reference but is
+    /// currently used literally (SSH key passphrases, build arguments, command interpolation).
     runtime_resolved: bool,
 }
 
@@ -162,8 +164,8 @@ fn push_ssl_ref(refs: &mut Vec<SecretRef>, ssl: Option<&SslValue>, source: &str)
         private_key_pem,
     }) = ssl
     {
-        push_if_env_ref(refs, Some(certificate_pem), source, false);
-        push_if_env_ref(refs, Some(private_key_pem), source, false);
+        push_if_env_ref(refs, Some(certificate_pem), source, true);
+        push_if_env_ref(refs, Some(private_key_pem), source, true);
     }
 }
 
@@ -501,7 +503,7 @@ mod tests {
         assert!(names.contains(&"KEY_PEM"));
         assert!(names.contains(&"CERT_PEM_2"));
         assert!(names.contains(&"KEY_PEM_2"));
-        assert!(refs.iter().all(|r| !r.runtime_resolved));
+        assert!(refs.iter().all(|r| r.runtime_resolved));
     }
 
     #[test]

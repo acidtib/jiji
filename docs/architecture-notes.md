@@ -334,6 +334,14 @@ sessions across command work and lock operations. ProxyJump uses a
 stream-backed nested session. Registry forwarding binds the remote listener
 to `127.0.0.1`, so `GatewayPorts` is not required.
 
+During server setup, Jiji reads target membership through the SSH sessions
+that hold host-runtime locks. Jiji pushes membership through the agent-install
+sessions. It opens new membership sessions only for non-target hosts. This
+connection reuse reduces pressure on SSH firewall rate limits. If a setup
+connection is refused, Jiji waits 31 seconds and retries once. The wait covers
+the 30-second window of `ufw limit ssh`. Jiji does not retry during this
+window because each rejected connection can refresh the limit.
+
 SSH can report a signal without an exit status. An absent exit status must be
 treated as failure, never as success. Interactive stdin uses a dedicated
 reader thread because cancelling a Tokio blocking stdin read does not cancel
@@ -396,6 +404,9 @@ The managed static Podman configuration uses crun and cgroupfs. Podman exec
 commands pass `--no-session` to avoid a PAM session for every health probe or
 proxy command. Network bootstrap enables linger for the SSH user so systemd
 does not terminate rootful containers when the SSH session closes.
+
+Agent file writes use `install -D`. This command creates a missing destination
+directory before it writes the file.
 
 Ubuntu 26.04 confines `wg` and `wg-quick` with AppArmor. Network bootstrap
 adds idempotent local rules for Jiji's private key and immutable WireGuard

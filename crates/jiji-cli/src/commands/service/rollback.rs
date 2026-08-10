@@ -245,11 +245,18 @@ pub async fn run(
                 BTreeMap::new();
             for service_name in &selected_service_names {
                 let service = config.services.get(service_name).expect("checked above");
-                let merged = env_resolution::merge_environment(&shared_env, &service.environment);
-                let resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
-                    .with_context(|| {
-                        format!("Could not resolve environment for service '{service_name}'")
-                    })?;
+                let mut merged =
+                    env_resolution::merge_environment(&shared_env, &service.environment);
+                crate::proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
+                let mut resolved =
+                    env_resolution::resolve_environment(&merged, &loaded_env, host_env)
+                        .with_context(|| {
+                            format!("Could not resolve environment for service '{service_name}'")
+                        })?;
+                crate::proxy_routes::mark_tls_control_secrets(
+                    service.proxy.as_ref(),
+                    &mut resolved,
+                );
                 resolved_envs.insert(service_name.clone(), resolved);
             }
 

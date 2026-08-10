@@ -81,17 +81,23 @@ pub(crate) struct MembershipPushOutcome {
     pub unreachable: Vec<(String, String)>,
 }
 
-/// Pushes the complete given membership set to every configured server concurrently
+/// Pushes the complete given membership set to every configured server except `excluded`
+/// concurrently
 /// (bounded by `ssh.max_concurrent_starts`, same as every other multi-host fan-out in this
 /// codebase), best-effort. Used both by this module's own commands and by `jiji server setup`
-/// (which additionally needs newly enrolled servers to learn about every existing peer, and vice
-/// versa).
+/// after the setup targets already received the same records through their open install sessions.
 pub(crate) async fn push_membership_everywhere(
     config: &Config,
     ssh: &Ssh,
     records: &[MembershipRecord],
+    excluded: &BTreeSet<String>,
 ) -> anyhow::Result<MembershipPushOutcome> {
-    let mut names: Vec<String> = config.servers.keys().cloned().collect();
+    let mut names: Vec<String> = config
+        .servers
+        .keys()
+        .filter(|name| !excluded.contains(*name))
+        .cloned()
+        .collect();
     names.sort();
     let mut connect_options = Vec::with_capacity(names.len());
     for name in &names {
@@ -137,12 +143,16 @@ pub(crate) async fn push_membership(
     let update_path = paths.project_dir.join("membership-update.json");
     let write = session
         .execute_with_input(
-            &format!("install -m 0600 /dev/stdin {}", update_path.display()),
+            &format!("install -D -m 0600 /dev/stdin {}", update_path.display()),
             &serde_json::to_vec(records)?,
         )
         .await?;
     if !write.success {
-        anyhow::bail!("could not stage membership update on {}", session.host());
+        anyhow::bail!(
+            "could not stage membership update on {}: {}",
+            session.host(),
+            write.stderr.trim()
+        );
     }
     let apply = session
         .execute(&format!(
@@ -164,14 +174,19 @@ pub(crate) async fn push_membership(
     Ok(())
 }
 
-/// Best-effort, concurrent collection of whatever membership every configured server currently
-/// knows. A server that's unreachable, or that has never been enrolled yet, is silently skipped
-/// -- the caller resolves conflicts (freshest revision wins) by replaying everything through a
-/// `MembershipView`.
-pub(crate) async fn gather_membership(config: &Config, ssh: &Ssh) -> Vec<MembershipRecord> {
+/// Best-effort, concurrent collection of whatever membership every non-excluded configured server
+/// currently knows. A server that's unreachable, or that has never been enrolled yet, is silently
+/// skipped -- the caller resolves conflicts (freshest revision wins) by replaying everything
+/// through a `MembershipView`. Setup reads excluded targets through its already-open sessions.
+pub(crate) async fn gather_membership(
+    config: &Config,
+    ssh: &Ssh,
+    excluded: &BTreeSet<String>,
+) -> Vec<MembershipRecord> {
     let connect_options: Vec<_> = config
         .servers
         .iter()
+        .filter(|(name, _)| !excluded.contains(*name))
         .filter_map(|(name, server)| ssh_adapter::connect_options(name, server, ssh).ok())
         .collect();
     let project = config.project.clone();

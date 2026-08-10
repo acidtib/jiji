@@ -41,6 +41,15 @@ pub enum AdminRequest {
         /// targets, not TLS-terminated hosts in their own right.
         #[serde(default)]
         tls: bool,
+        /// Reload `{host}.crt`/`{host}.key` before activating this route.
+        /// Used after jiji-cli atomically uploads user-provided static PEMs.
+        #[serde(default)]
+        reload_certificate: bool,
+        /// Keep the current route's TLS state when it already exists. The
+        /// agent uses this while repairing routes from setup-time defaults,
+        /// so it cannot overwrite a newer deploy-time policy.
+        #[serde(default)]
+        preserve_existing_tls: bool,
         /// Active health-checking (see route_manager.rs). Omitted means
         /// backends are only ever evicted by DNS re-resolution, not by
         /// jiji-proxy's own probing.
@@ -257,25 +266,43 @@ async fn handle_request(
             port,
             refresh_interval_secs,
             tls,
+            reload_certificate,
+            preserve_existing_tls,
             health_check,
-        } => match manager
-            .apply(
-                host,
-                path_prefix,
-                dns_server,
-                name,
-                port,
-                refresh_interval_secs,
-                tls,
-                health_check.map(HealthCheckSpec::from),
-            )
-            .await
-        {
-            Ok(()) => AdminResponse::Ok,
-            Err(error) => AdminResponse::Error {
-                message: error.to_string(),
-            },
-        },
+        } => {
+            if reload_certificate {
+                if let Err(error) = manager.reload_static_certificate(&host) {
+                    return AdminResponse::Error {
+                        message: format!("could not reload certificate for '{host}': {error}"),
+                    };
+                }
+            }
+            let tls = if preserve_existing_tls {
+                manager
+                    .route_tls(&host, path_prefix.as_deref())
+                    .unwrap_or(tls)
+            } else {
+                tls
+            };
+            match manager
+                .apply(
+                    host,
+                    path_prefix,
+                    dns_server,
+                    name,
+                    port,
+                    refresh_interval_secs,
+                    tls,
+                    health_check.map(HealthCheckSpec::from),
+                )
+                .await
+            {
+                Ok(()) => AdminResponse::Ok,
+                Err(error) => AdminResponse::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
         AdminRequest::RouteRemove { host, path_prefix } => {
             manager.remove(&host, path_prefix.as_deref());
             AdminResponse::Ok

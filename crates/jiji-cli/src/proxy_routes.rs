@@ -3,11 +3,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jiji_config::{ContainerEngine, HealthcheckConfig, ProxyConfig, SslValue};
+use jiji_config::{ContainerEngine, Environment, HealthcheckConfig, ProxyConfig, SslValue};
 use jiji_ssh::SshSession;
 use serde::Deserialize;
 
 use crate::container_runtime::exec_prefix;
+use crate::env_resolution::ResolvedEnvironment;
 use crate::health_check;
 
 /// Placeholder passed to `targets_for_service` when computing
@@ -45,6 +46,102 @@ impl RouteTarget {
             Some(SslValue::Enabled(true)) | Some(SslValue::Certs { .. })
         )
     }
+}
+
+fn is_pem(value: &str) -> bool {
+    value.trim_start().starts_with("-----BEGIN ")
+}
+
+/// Adds certificate/key environment references to the service's required
+/// secrets. Literal PEM values remain supported, but the normal config form
+/// names variables from the selected `.env` file.
+pub fn add_tls_secret_refs(proxy: Option<&ProxyConfig>, environment: &mut Environment) {
+    let mut add = |value: &str| {
+        if !is_pem(value) && !environment.secrets.iter().any(|name| name == value) {
+            environment.secrets.push(value.to_string());
+        }
+    };
+    let mut inspect = |ssl: Option<&SslValue>| {
+        if let Some(SslValue::Certs {
+            certificate_pem,
+            private_key_pem,
+        }) = ssl
+        {
+            add(certificate_pem);
+            add(private_key_pem);
+        }
+    };
+    if let Some(proxy) = proxy {
+        inspect(proxy.ssl.as_ref());
+        if let Some(targets) = &proxy.targets {
+            for target in targets {
+                inspect(target.ssl.as_ref());
+            }
+        }
+    }
+}
+
+/// Marks TLS environment references as Jiji control-plane inputs so they
+/// are never written into the application container's environment file.
+pub fn mark_tls_control_secrets(
+    proxy: Option<&ProxyConfig>,
+    environment: &mut ResolvedEnvironment,
+) {
+    let mut mark = |ssl: Option<&SslValue>| {
+        if let Some(SslValue::Certs {
+            certificate_pem,
+            private_key_pem,
+        }) = ssl
+        {
+            for value in [certificate_pem, private_key_pem] {
+                if !is_pem(value) {
+                    environment.control_keys.insert(value.clone());
+                }
+            }
+        }
+    };
+    if let Some(proxy) = proxy {
+        mark(proxy.ssl.as_ref());
+        if let Some(targets) = &proxy.targets {
+            for target in targets {
+                mark(target.ssl.as_ref());
+            }
+        }
+    }
+}
+
+/// Replaces certificate/key environment references with their resolved PEM
+/// contents before anything is uploaded to a server.
+pub fn resolve_tls_secrets(
+    targets: &mut [RouteTarget],
+    environment: &ResolvedEnvironment,
+) -> anyhow::Result<()> {
+    for target in targets {
+        let Some(SslValue::Certs {
+            certificate_pem,
+            private_key_pem,
+        }) = &mut target.ssl
+        else {
+            continue;
+        };
+        for (kind, value) in [
+            ("certificate", certificate_pem),
+            ("private key", private_key_pem),
+        ] {
+            if !is_pem(value) {
+                *value = environment.values.get(value).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "TLS {kind} variable '{value}' for host '{}' was not resolved",
+                        target.host
+                    )
+                })?;
+            }
+            if !is_pem(value) {
+                anyhow::bail!("TLS {kind} for host '{}' is not PEM data", target.host);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Every route a proxy-enabled `service` would register on a host whose
@@ -184,6 +281,9 @@ fn render_apply_args(target: &RouteTarget) -> Vec<String> {
         args.push(format!("--path-prefix={prefix}"));
     }
     args.extend(policy_args(target));
+    if matches!(target.ssl, Some(SslValue::Certs { .. })) {
+        args.push("--reload-certificate".to_string());
+    }
     args
 }
 
@@ -210,7 +310,11 @@ pub fn runtime_specs_for_service(
                 path_prefix: target.path_prefix.clone(),
                 name: target.name.clone(),
                 port: target.port,
-                apply_args: policy_args(&target),
+                apply_args: {
+                    let mut args = policy_args(&target);
+                    args.push("--preserve-existing-tls".to_string());
+                    args
+                },
             })
             .collect(),
     )
@@ -476,11 +580,10 @@ struct TcpRouteStatus {
 }
 
 /// Static PEM certs (`ssl: { certificate_pem, private_key_pem }`) are written
-/// straight into jiji-proxy's `cert_dir` before the route is applied, so
-/// `CertStore` picks them up as a `Static` entry (see `cert_store.rs`) --
-/// present before the route ever requests TLS, and never touched by ACME
-/// afterward. A no-op for `ssl: true`/absent, where ACME (if configured on
-/// jiji-proxy's own host-global daemon config) is the cert source instead.
+/// into jiji-proxy's `cert_dir` before the route is applied. The apply
+/// request reloads them as a `Static` entry (see `cert_store.rs`) before the
+/// route requests TLS. ACME never replaces a static entry. This is a no-op
+/// for `ssl: true`/absent, where ACME is the certificate source.
 async fn upload_static_certs_if_configured(
     session: &SshSession,
     target: &RouteTarget,
@@ -861,6 +964,7 @@ pub async fn reconcile_catalog_routes(
     project: &str,
     engine: ContainerEngine,
     services: &BTreeMap<String, ProxyConfig>,
+    resolved_envs: &BTreeMap<String, ResolvedEnvironment>,
 ) -> anyhow::Result<()> {
     if services.is_empty() || sessions.is_empty() {
         return Ok(());
@@ -870,7 +974,12 @@ pub async fn reconcile_catalog_routes(
             anyhow::bail!("no DNS server address known for server '{host}'");
         };
         for (service, proxy) in services {
-            for target in targets_for_service(project, service, Some(proxy), dns_server)? {
+            let mut targets = targets_for_service(project, service, Some(proxy), dns_server)?;
+            let resolved = resolved_envs.get(service).ok_or_else(|| {
+                anyhow::anyhow!("no resolved environment available for service '{service}'")
+            })?;
+            resolve_tls_secrets(&mut targets, resolved)?;
+            for target in targets {
                 deploy_route(session, engine, &target).await?;
                 verify_route(session, engine, &target.host, target.path_prefix.as_deref()).await?;
             }
@@ -901,6 +1010,42 @@ mod tests {
         assert_eq!(targets[0].name, "demo-web.jiji");
         assert_eq!(targets[0].port, 3000);
         assert!(targets[0].tls());
+    }
+
+    #[test]
+    fn static_tls_refs_are_required_and_resolved_to_pem() {
+        let proxy: ProxyConfig = serde_yaml::from_str(
+            "port: 3000\nhosts: [example.com]\nssl: { certificate_pem: CERT, private_key_pem: KEY }\n",
+        )
+        .unwrap();
+        let mut environment = Environment::default();
+        add_tls_secret_refs(Some(&proxy), &mut environment);
+        assert_eq!(environment.secrets, vec!["CERT", "KEY"]);
+
+        let mut resolved = ResolvedEnvironment::default();
+        resolved.values.insert(
+            "CERT".to_string(),
+            "-----BEGIN CERTIFICATE-----\ndata\n-----END CERTIFICATE-----".to_string(),
+        );
+        resolved.values.insert(
+            "KEY".to_string(),
+            "-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----".to_string(),
+        );
+        let mut targets = targets_for_service("demo", "web", Some(&proxy), dns_server()).unwrap();
+        resolve_tls_secrets(&mut targets, &resolved).unwrap();
+
+        let Some(SslValue::Certs {
+            certificate_pem,
+            private_key_pem,
+        }) = &targets[0].ssl
+        else {
+            panic!("expected static TLS");
+        };
+        assert!(certificate_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(private_key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(render_apply_args(&targets[0])
+            .iter()
+            .any(|arg| arg == "--reload-certificate"));
     }
 
     #[test]
