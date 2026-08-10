@@ -928,13 +928,15 @@ async fn proxy_restart_forces_pull_remove_and_recreate() {
     // round-trips) so it can never race jiji-agent's own reconcile loop creating the same
     // container concurrently -- see `proxy.rs::recreate`'s own doc comment.
     assert!(
-        commands.iter().any(|command| command.contains("flock")
-            && command.contains(jiji_agent::host_lease::DEFAULT_PATH)
-            && command.contains("docker container rm -f jiji-proxy")
-            && command.contains(&format!(
-                "docker run --name jiji-proxy --network {} --ip {} ",
-                server_plan.bridge_name, server_plan.proxy_address
-            ))),
+        commands
+            .iter()
+            .any(|command| command.contains("flock --close --timeout 60")
+                && command.contains(jiji_agent::host_lease::DEFAULT_PATH)
+                && command.contains("docker container rm -f jiji-proxy")
+                && command.contains(&format!(
+                    "docker run --name jiji-proxy --network {} --ip {} ",
+                    server_plan.bridge_name, server_plan.proxy_address
+                ))),
         "expected one flock-wrapped rm+run command: {commands:?}"
     );
     assert!(

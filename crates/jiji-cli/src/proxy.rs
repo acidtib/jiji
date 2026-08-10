@@ -184,7 +184,7 @@ async fn recreate(
     // here (`|| true`) rather than checked against `is_missing_container_error`, since a real
     // removal problem still surfaces as a `run` failure right after.
     let combined = format!(
-        "mkdir -p $(dirname {lock_path}); flock --timeout 60 {lock_path} -c 'set -eu; {engine} container rm -f {CONTAINER_NAME} >/dev/null 2>&1 || true; {run_command}'",
+        "mkdir -p $(dirname {lock_path}); flock --close --timeout 60 {lock_path} -c 'set -eu; {engine} container rm -f {CONTAINER_NAME} >/dev/null 2>&1 || true; {run_command}'",
         lock_path = jiji_agent::host_lease::DEFAULT_PATH,
     );
     let result = session.execute(&combined).await?;

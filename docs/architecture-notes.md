@@ -222,6 +222,8 @@ through the host-global lease in `host_lease.rs`.
 
 The lease guard explicitly unlocks before it closes its descriptor. This
 prevents Podman helpers from retaining an inherited flock after proxy creation.
+The CLI also uses `flock --close` so the proxy command never receives its lock
+descriptor.
 During an upgrade from an older agent, a helper can already hold the old lock.
 The agent replaces that lock inode only when every other process with the inode
 open is a known container helper. It never replaces a lock held by an agent,

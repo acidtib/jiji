@@ -35,20 +35,23 @@ pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String
     upload_daemon_config()?;
 
     let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
-    if !is_current_and_running(engine, &fingerprint).await? {
-        match host_lease::try_acquire(Path::new(host_lease::DEFAULT_PATH))
-            .map_err(|error| format!("could not acquire the host proxy lease: {error}"))?
-        {
-            Some(_guard) => {
-                // Re-check now that the lease is held: another project's agent may have already
-                // created/recreated it between the check above and acquiring the lease.
-                if !is_current_and_running(engine, &fingerprint).await? {
-                    recreate(engine, &fingerprint, config).await?;
-                }
-            }
-            None => return Ok(()), // another project's agent is already handling it this tick
+    let is_current = is_current_and_running(engine, &fingerprint).await?;
+    // Attempt the lease even when the proxy is current. This lets an upgraded agent recover an
+    // old lock inode retained by a Podman helper after a CLI-driven restart. A healthy proxy would
+    // otherwise never enter the replacement branch, so the stale lease would remain indefinitely.
+    let lease = host_lease::try_acquire(Path::new(host_lease::DEFAULT_PATH))
+        .map_err(|error| format!("could not acquire the host proxy lease: {error}"))?;
+    if !is_current {
+        let Some(_guard) = lease.as_ref() else {
+            return Ok(()); // another project's agent is already handling it this tick
+        };
+        // Re-check now that the lease is held: another project's agent may have already
+        // created/recreated it between the check above and acquiring the lease.
+        if !is_current_and_running(engine, &fingerprint).await? {
+            recreate(engine, &fingerprint, config).await?;
         }
     }
+    drop(lease);
     ensure_attached(engine, config).await?;
     // The desired listen_port set, not a live query against jiji-proxy's own route table:
     // `local_reconcile::reconcile_tcp_routes` (run every tick, same as this function) keeps
