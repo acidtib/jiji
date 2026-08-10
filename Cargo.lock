@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-proxy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-ssh"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rand 0.10.2",
  "russh",
