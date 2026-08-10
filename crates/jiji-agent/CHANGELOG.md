@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.4](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.3...jiji-agent-v0.6.4) (2026-08-10)
+
+
+### Bug Fixes
+
+* **jiji-agent:** repair legacy upgrade state ([a271e7c](https://github.com/acidtib/jiji/commit/a271e7c0c86bf6f81494aaa75287fd903a676f03))
+* prevent proxy restart lock inheritance ([a98b4a4](https://github.com/acidtib/jiji/commit/a98b4a4c245a3bc5d894a4b12c398bfd2606dfe6))
+
 ## [0.6.3](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.2...jiji-agent-v0.6.3) (2026-08-10)
 
 
