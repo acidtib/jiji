@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/acidtib/jiji/compare/v0.7.0...v0.7.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* harden server setup and static TLS deployment ([2ad8220](https://github.com/acidtib/jiji/commit/2ad8220135106579f17b488759da256a1af6c66b))
+* **jiji-cli:** support Ubuntu WireGuard confinement ([2c02196](https://github.com/acidtib/jiji/commit/2c02196bf24802f32406fefb57c11bc9977171a2))
+
 ## [0.7.0](https://github.com/acidtib/jiji/compare/v0.6.0...v0.7.0) (2026-08-09)
 
 

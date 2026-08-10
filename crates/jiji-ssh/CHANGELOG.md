@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.6.0...jiji-ssh-v0.6.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* harden server setup and static TLS deployment ([2ad8220](https://github.com/acidtib/jiji/commit/2ad8220135106579f17b488759da256a1af6c66b))
+
 ## [0.6.0](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.5.0...jiji-ssh-v0.6.0) (2026-08-08)
 
 
