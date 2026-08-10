@@ -281,6 +281,46 @@ const MIGRATIONS: &[Migration] = &[
                   PRIMARY KEY (service, cron_name)
               );",
     },
+    Migration {
+        version: 9,
+        // Schema versions 2, 3, 5, and 6 originally created these operation logs with required
+        // `signer_id` and `signature` columns. Membership signatures and the shared signature
+        // wrapper for catalog/desired records were later removed from the runtime. Editing those
+        // already-applied migrations only fixed fresh databases: an upgraded database kept the
+        // old NOT NULL columns and rejected every new operation. Rebuild all affected logs from
+        // their common columns so this migration works for both legacy and fresh version-8 stores.
+        sql: "ALTER TABLE membership_operations RENAME TO membership_operations_v8;
+              CREATE TABLE membership_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  record_json TEXT NOT NULL,
+                  applied_at TEXT NOT NULL
+              );
+              INSERT INTO membership_operations (operation_id, record_json, applied_at)
+                  SELECT operation_id, record_json, applied_at FROM membership_operations_v8;
+              DROP TABLE membership_operations_v8;
+
+              ALTER TABLE catalog_operations RENAME TO catalog_operations_v8;
+              CREATE TABLE catalog_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  record_json TEXT NOT NULL,
+                  applied_at TEXT NOT NULL
+              );
+              INSERT INTO catalog_operations (operation_id, record_json, applied_at)
+                  SELECT operation_id, record_json, applied_at FROM catalog_operations_v8;
+              DROP TABLE catalog_operations_v8;
+
+              ALTER TABLE desired_operations RENAME TO desired_operations_v8;
+              CREATE TABLE desired_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  service TEXT NOT NULL,
+                  record_json TEXT NOT NULL,
+                  applied_at TEXT NOT NULL
+              );
+              INSERT INTO desired_operations (operation_id, service, record_json, applied_at)
+                  SELECT operation_id, service, record_json, applied_at
+                  FROM desired_operations_v8;
+              DROP TABLE desired_operations_v8;",
+    },
 ];
 
 fn current_schema_version() -> i64 {
@@ -1966,6 +2006,126 @@ mod tests {
             state: MembershipState::Active,
         };
         (scope, record)
+    }
+
+    #[test]
+    fn version_nine_removes_legacy_signature_columns_and_preserves_operations() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.sqlite3");
+        let (scope, first) = member_record("node-a", 1);
+        {
+            let store = AgentStore::open(&db_path).unwrap();
+            store.apply_membership(first.clone(), &scope).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO catalog_operations
+                         (operation_id, record_json, applied_at)
+                     VALUES ('legacy-catalog', '{}', '1')",
+                    [],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO desired_operations
+                         (operation_id, service, record_json, applied_at)
+                     VALUES ('legacy-desired', 'web', '{}', '1')",
+                    [],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute_batch(
+                    "ALTER TABLE membership_operations RENAME TO membership_operations_current;
+                     CREATE TABLE membership_operations (
+                         operation_id TEXT PRIMARY KEY,
+                         record_json TEXT NOT NULL,
+                         signer_id TEXT NOT NULL,
+                         signature BLOB NOT NULL,
+                         applied_at TEXT NOT NULL
+                     );
+                     INSERT INTO membership_operations
+                         (operation_id, record_json, signer_id, signature, applied_at)
+                         SELECT operation_id, record_json, 'legacy', X'00', applied_at
+                         FROM membership_operations_current;
+                     DROP TABLE membership_operations_current;
+
+                     ALTER TABLE catalog_operations RENAME TO catalog_operations_current;
+                     CREATE TABLE catalog_operations (
+                         operation_id TEXT PRIMARY KEY,
+                         record_json TEXT NOT NULL,
+                         signer_id TEXT NOT NULL,
+                         signature BLOB NOT NULL,
+                         applied_at TEXT NOT NULL
+                     );
+                     INSERT INTO catalog_operations
+                         (operation_id, record_json, signer_id, signature, applied_at)
+                         SELECT operation_id, record_json, 'legacy', X'00', applied_at
+                         FROM catalog_operations_current;
+                     DROP TABLE catalog_operations_current;
+
+                     ALTER TABLE desired_operations RENAME TO desired_operations_current;
+                     CREATE TABLE desired_operations (
+                         operation_id TEXT PRIMARY KEY,
+                         service TEXT NOT NULL,
+                         record_json TEXT NOT NULL,
+                         signer_id TEXT NOT NULL,
+                         signature BLOB NOT NULL,
+                         applied_at TEXT NOT NULL
+                     );
+                     INSERT INTO desired_operations
+                         (operation_id, service, record_json, signer_id, signature, applied_at)
+                         SELECT operation_id, service, record_json, 'legacy', X'00', applied_at
+                         FROM desired_operations_current;
+                     DROP TABLE desired_operations_current;
+                     DELETE FROM schema_migrations WHERE version = 9;",
+                )
+                .unwrap();
+        }
+
+        let store = AgentStore::open(&db_path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.membership_operations().unwrap(), vec![first]);
+
+        for table in [
+            "membership_operations",
+            "catalog_operations",
+            "desired_operations",
+        ] {
+            let mut statement = store
+                .conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(!columns.contains(&"signer_id".to_string()));
+            assert!(!columns.contains(&"signature".to_string()));
+        }
+
+        let catalog_count: u64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM catalog_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let desired_count: u64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM desired_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(catalog_count, 1);
+        assert_eq!(desired_count, 1);
+
+        let (_, second) = member_record("node-a", 2);
+        assert_eq!(
+            store.apply_membership(second, &scope).unwrap(),
+            MembershipApply::Applied
+        );
     }
 
     #[test]

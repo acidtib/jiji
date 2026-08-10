@@ -36,6 +36,94 @@ Sources:
 - `crates/jiji-agent/src/scheduler.rs`
 - `crates/jiji-cli/src/audit.rs`
 
+### Add a command to update the local Jiji binary
+
+Add `jiji update` to detect and install a newer Jiji CLI release. The command
+must provide the same result as the published `install.sh` installer.
+
+The new command must:
+
+- Show the installed version and the latest available version.
+- Exit successfully without changing files when the installed version is current.
+- Detect the local operating system and architecture.
+- Download the matching release artifact and its SHA-256 sidecar.
+- Reject an artifact when its checksum does not match.
+- Install the new binary atomically at the path of the current executable.
+- Preserve the executable permissions and avoid a partially written binary.
+- Report an actionable error when the executable path is not writable.
+- Support a check-only option that never changes the installed binary.
+- Support a specific version for rollback and reproducible installation.
+- Refuse an unsupported operating system or architecture before downloading.
+- Keep temporary files out of the project directory and remove them after use.
+- Print the installed version after a successful update.
+- Tell the user to run `jiji server upgrade` for each environment configuration.
+- Never upgrade remote agents or the shared proxy as an implicit side effect.
+- Add tests for current, newer, missing, invalid, and checksum-mismatch releases.
+
+Share release detection, artifact naming, and checksum verification with
+`install.sh`. Do not maintain two independent implementations of this logic.
+
+Sources:
+
+- `README.md`
+- `.github/workflows/binary-release.yml`
+- `crates/jiji-cli/src/cli.rs`
+- `crates/jiji-cli/src/lib.rs`
+- `crates/jiji-cli/src/commands/`
+
+### Add one command to upgrade server components
+
+After a local Jiji update, users must run separate commands to upgrade the
+project agent and the shared proxy. Add `jiji server upgrade` to detect and
+upgrade outdated server components.
+
+The current manual sequence is:
+
+```bash
+# Show the updated local Jiji version.
+jiji version
+
+# Upgrade the project agent and refresh its configuration.
+jiji server setup -e production --yes
+
+# Run this command only when jiji-proxy changed.
+jiji proxy restart -e production
+
+# Show the health of the project network.
+jiji network diagnostics -e production
+```
+
+Users must repeat `jiji server setup` for each environment configuration.
+
+The new command must:
+
+- Read the agent version and proxy version on each selected server.
+- Compare them with the component versions required by the local Jiji binary.
+- Upgrade the project agent only when its required version differs.
+- Recreate the shared proxy only when its required version differs.
+- Refresh the agent configuration when the binary version is current.
+- Preserve the existing server and proxy lock order.
+- Avoid proxy interruption when the proxy version is current.
+- Report the previous version, required version, and result for each component.
+- Support `-e`, `-H`, `--yes`, and non-interactive execution.
+- Run project diagnostics after the upgrade, or print the exact diagnostics command.
+- Tell users to repeat the command for each environment configuration.
+- Record each component upgrade in the audit trail.
+- Add tests for current, outdated, unavailable, and partially failed components.
+
+Define the behavior for a remote component that is newer than the version
+required by the local Jiji binary. The command must not silently downgrade it.
+
+Sources:
+
+- `crates/jiji-cli/src/commands/server/setup.rs`
+- `crates/jiji-cli/src/commands/proxy/restart.rs`
+- `crates/jiji-cli/src/agent_install.rs`
+- `crates/jiji-cli/src/proxy.rs`
+- `crates/jiji-cli/src/version_requirements.rs`
+- `crates/jiji-cli/build.rs`
+- `crates/jiji-network/build.rs`
+
 ### Complete audit coverage
 
 The CLI describes the audit trail as a record of every state-changing command,
