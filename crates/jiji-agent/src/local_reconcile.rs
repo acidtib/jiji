@@ -165,21 +165,33 @@ pub async fn reconcile_once(
     outcomes
 }
 
-/// Ensures every route jiji-cli computed for this host at `server setup`
-/// time (`config.local_runtime.proxy_routes`) is applied to this host's own
-/// jiji-proxy. Unlike kamal-proxy's route model, this never reads the
-/// catalog at all: jiji-proxy resolves and load-balances `route.name`'s
-/// backends itself, continuously, against this agent's own `.jiji`
-/// resolver (`config.dns_bind_address:53`), so re-applying the same static
-/// route definition on every tick is a cheap, harmless no-op upsert, not a
-/// per-deployment address push racing catalog replication the way
-/// kamal-proxy's route model did (see
-/// `docs/architecture-notes.md#private-networking-wireguard-mesh--agent-served-dns`).
+/// Repairs routes that are absent from jiji-proxy. The setup-time config is a fallback, not the
+/// authority for an existing route: deploy can change its backend port or policy after setup.
+/// Reapplying the stale fallback on every tick would overwrite that newer deploy-time route.
 async fn reconcile_proxy_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
     for route in &config.local_runtime.proxy_routes {
-        deploy_proxy_route(engine, config, route).await?;
+        if !proxy_route_exists(engine, route).await? {
+            deploy_proxy_route(engine, config, route).await?;
+        }
     }
     Ok(())
+}
+
+async fn proxy_route_exists(
+    engine: Engine,
+    route: &crate::runtime::ProxyRouteSpec,
+) -> Result<bool, String> {
+    let mut args = vec![
+        "route".to_string(),
+        "status".to_string(),
+        format!("--host={}", route.host),
+    ];
+    if let Some(prefix) = &route.path_prefix {
+        args.push(format!("--path-prefix={prefix}"));
+    }
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = proxy_exec(engine, &borrowed, Duration::from_secs(30)).await?;
+    parse_route_exists(&output)
 }
 
 async fn deploy_proxy_route(
@@ -204,16 +216,38 @@ async fn deploy_proxy_route(
     Ok(())
 }
 
-/// Mirrors `reconcile_proxy_routes` for raw TCP routes -- see
-/// `crate::runtime::TcpRouteSpec`. Same idempotent-reapply-every-tick
-/// reasoning applies: jiji-proxy resolves and load-balances `route.name`'s
-/// backends itself, continuously, so re-applying the same static route
-/// definition is a cheap no-op upsert, not a per-deployment push.
+/// Mirrors `reconcile_proxy_routes` for raw TCP routes. An existing route can contain newer
+/// deploy-time config, so the setup-time fallback repairs only an absent route.
 async fn reconcile_tcp_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
     for route in &config.local_runtime.tcp_routes {
-        deploy_tcp_route(engine, config, route).await?;
+        if !tcp_route_exists(engine, route.listen_port).await? {
+            deploy_tcp_route(engine, config, route).await?;
+        }
     }
     Ok(())
+}
+
+async fn tcp_route_exists(engine: Engine, listen_port: u16) -> Result<bool, String> {
+    let output = proxy_exec(
+        engine,
+        &[
+            "tcp-route",
+            "status",
+            &format!("--listen-port={listen_port}"),
+        ],
+        Duration::from_secs(30),
+    )
+    .await?;
+    parse_route_exists(&output)
+}
+
+fn parse_route_exists(output: &str) -> Result<bool, String> {
+    let value: Value = serde_json::from_str(output)
+        .map_err(|error| format!("could not parse jiji-proxy route status: {error}"))?;
+    value
+        .get("route_exists")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "jiji-proxy route status has no boolean 'route_exists' field".to_string())
 }
 
 async fn deploy_tcp_route(
@@ -689,6 +723,18 @@ mod tests {
             })
             .to_string(),
         }
+    }
+
+    #[test]
+    fn route_status_parser_distinguishes_present_and_missing_routes() {
+        assert!(parse_route_exists(r#"{"route_exists":true,"backends":[]}"#).unwrap());
+        assert!(!parse_route_exists(r#"{"route_exists":false,"backends":[]}"#).unwrap());
+    }
+
+    #[test]
+    fn route_status_parser_rejects_an_invalid_response() {
+        let error = parse_route_exists(r#"{"backends":[]}"#).expect_err("missing status");
+        assert!(error.contains("route_exists"));
     }
 
     fn catalog(state: DeploymentState) -> CatalogRecord {

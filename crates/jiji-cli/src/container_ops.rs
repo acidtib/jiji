@@ -1,6 +1,9 @@
 use jiji_config::ContainerEngine;
 use jiji_network::NetworkedContainerRun;
-use jiji_ssh::{CommandResult, SshSession};
+use jiji_ssh::{CommandResult, SshSession, StreamChunk};
+use std::time::Duration;
+
+const IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub async fn image_exists(
     session: &SshSession,
@@ -29,6 +32,18 @@ pub async fn pull_image(
     engine: ContainerEngine,
     image: &str,
 ) -> anyhow::Result<()> {
+    pull_image_with_progress(session, engine, image, |_| {}).await
+}
+
+/// Pulls an image while reporting each non-empty stdout/stderr update. Image pulls can take
+/// several minutes, especially through the local-registry SSH tunnel, so deploy uses these
+/// updates to show that the transfer is still active instead of presenting a blank section.
+pub async fn pull_image_with_progress(
+    session: &SshSession,
+    engine: ContainerEngine,
+    image: &str,
+    mut progress: impl FnMut(&str),
+) -> anyhow::Result<()> {
     // The local registry is always plain HTTP on loopback (`localhost:<port>/...`, see
     // registry::full_image_name). Docker treats loopback registries as insecure automatically;
     // Podman does not and refuses plain HTTP without this flag.
@@ -38,8 +53,41 @@ pub async fn pull_image(
         ""
     };
     let command = format!("{engine} pull{tls_verify_flag} {image}");
-    let result = session.execute(&command).await?;
+    let mut receiver = session
+        .execute_streaming_with_timeout(&command, IMAGE_PULL_TIMEOUT)
+        .await?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut code = None;
+
+    while let Some(item) = receiver.recv().await {
+        match item? {
+            StreamChunk::Stdout(data) => {
+                report_pull_progress(&data, &mut progress);
+                stdout.extend(data);
+            }
+            StreamChunk::Stderr(data) => {
+                report_pull_progress(&data, &mut progress);
+                stderr.extend(data);
+            }
+            StreamChunk::Exit(exit_code) => code = Some(exit_code),
+        }
+    }
+
+    let result = CommandResult {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        success: code == Some(0),
+        code,
+    };
     ensure_success(session, &command, &result)
+}
+
+fn report_pull_progress(data: &[u8], progress: &mut impl FnMut(&str)) {
+    let text = String::from_utf8_lossy(data);
+    if let Some(line) = text.lines().rev().find(|line| !line.trim().is_empty()) {
+        progress(line.trim());
+    }
 }
 
 /// `None` covers every way `{engine} inspect` can fail (container absent, daemon unreachable,

@@ -100,7 +100,7 @@ pub fn run(
     if informational_only {
         println!();
         Ui::say(
-            "Note: SSH key passphrases, build arguments, and command interpolation are for \
+            "Note: SSH key passphrases and command interpolation are for \
              visibility only. Jiji uses these values as literal configuration values.",
             0,
         );
@@ -135,9 +135,9 @@ struct SecretRef {
     name: String,
     source: String,
     /// Whether this config field is actually resolved from `.env`/host-env by any runtime code
-    /// path today (`environment.secrets`, `builder.registry.password`, proxy SSL certificates),
+    /// path today (`environment.secrets`, build arguments, `builder.registry.password`, proxy SSL certificates),
     /// versus reported here only for visibility because it looks like a secret reference but is
-    /// currently used literally (SSH key passphrases, build arguments, command interpolation).
+    /// currently used literally (SSH key passphrases and command interpolation).
     runtime_resolved: bool,
 }
 
@@ -270,7 +270,7 @@ fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<Secret
                     &mut refs,
                     Some(value.as_str()),
                     &format!("{prefix}.build.args.{key}"),
-                    false,
+                    true,
                 );
             }
         }
@@ -528,6 +528,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "DB_PASSWORD_SECRET");
         assert_eq!(refs[0].source, "services.web.build.args.DB_PASSWORD");
+        assert!(refs[0].runtime_resolved);
     }
 
     #[test]

@@ -30,14 +30,17 @@ pub async fn run(
         }
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
     }
+    let project_root = env_resolution::project_root_from_config_path(&path);
+    let (loaded_env, loaded_from) =
+        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
+    if let Some(loaded_from) = &loaded_from {
+        Ui::say(
+            &format!("Environment loaded from: {}", loaded_from.display()),
+            1,
+        );
+    }
     if config.builder.remote.is_some() {
-        let project_root = env_resolution::project_root_from_config_path(&path);
-        let (loaded, _) = env_resolution::load_env_file(
-            &project_root,
-            environment,
-            config.secrets_path.as_deref(),
-        )?;
-        crate::ssh_adapter::resolve_key_references(&mut config, &loaded, host_env).await?;
+        crate::ssh_adapter::resolve_key_references(&mut config, &loaded_env, host_env).await?;
     }
 
     let filters: Vec<String> = services
@@ -61,7 +64,8 @@ pub async fn run(
         Ui::warn(&warning);
     }
     version_tag::validate_or_bail(&version)?;
-    let plan = build_plan::compute_plan(&config, &config.project, &services, &version)?;
+    let mut plan = build_plan::compute_plan(&config, &config.project, &services, &version)?;
+    build_plan::resolve_build_arg_references(&config, &mut plan, &loaded_env, host_env)?;
     Ui::say(&format!("Executor: {executor_identity}"), 1);
     Ui::say(&build_plan::render_plan_summary(&plan), 1);
 
@@ -72,7 +76,6 @@ pub async fn run(
         }
     }
 
-    let project_root = env_resolution::project_root_from_config_path(&path);
     let mut resolved_password = None;
     if push {
         if config.builder.registry.is_local() {
@@ -80,21 +83,13 @@ pub async fn run(
             registry::ensure_local_registry(config.builder.engine, &config.builder.registry)
                 .await?;
         } else {
-            let (loaded, loaded_from) = env_resolution::load_env_file(
-                &project_root,
-                environment,
-                config.secrets_path.as_deref(),
-            )?;
-            if let Some(path) = loaded_from {
-                Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
-            }
             match (
                     config.builder.registry.username.as_deref(),
                     config.builder.registry.password.as_deref(),
                 ) {
                     (Some(_), Some(raw)) => {
                         resolved_password =
-                            Some(registry::resolve_registry_password(raw, &loaded, host_env).await?);
+                            Some(registry::resolve_registry_password(raw, &loaded_env, host_env).await?);
                     }
                     _ => Ui::warn(
                         "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",

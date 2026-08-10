@@ -105,6 +105,55 @@ fn single_arch_no_push_build_renders_the_expected_local_docker_command() {
 }
 
 #[test]
+fn build_arg_references_use_the_merged_service_environment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("deploy.yml");
+    std::fs::write(
+        &config,
+        r#"
+project: demo
+builder: { engine: docker }
+environment:
+  clear:
+    NEXT_PUBLIC_DOMAIN: shared.example.com
+servers:
+  app: { host: 127.0.0.1 }
+services:
+  web:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_DOMAIN: NEXT_PUBLIC_DOMAIN
+    servers: [app]
+    environment:
+      clear:
+        NEXT_PUBLIC_DOMAIN: service.example.com
+"#,
+    )
+    .expect("write config");
+    let bin = write_fake_docker(dir.path());
+    let log = dir.path().join("log.txt");
+    std::fs::write(&log, "").expect("create log");
+
+    let output = run_build(&config, &bin, &log, &["--version", "v1", "--no-push"]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let logged = std::fs::read_to_string(&log).expect("read log");
+    let build_line = logged
+        .lines()
+        .find(|line| line.starts_with("build "))
+        .expect("build command");
+    assert!(
+        build_line.contains("--build-arg NEXT_PUBLIC_DOMAIN=service.example.com"),
+        "log: {logged}"
+    );
+}
+
+#[test]
 fn single_arch_push_build_renders_build_then_push() {
     // A remote registry (rather than local) avoids `ensure_local_registry`'s real TCP
     // readiness wait, which a fake `docker` script can't meaningfully satisfy -- this still

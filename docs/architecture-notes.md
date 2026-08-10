@@ -182,6 +182,10 @@ route resolves the aggregate service DNS name and load-balances across healthy
 backends mesh-wide. Reapplying a route forces immediate resolution during a
 deployment; the proxy also refreshes and health-checks backends continuously.
 
+The agent uses setup-time route specs only to repair missing routes. It does
+not overwrite an existing route because a later deploy can change its port or
+policy. The deploy-time configuration is authoritative for an existing route.
+
 ### HTTP and HTTPS routes
 
 HTTP routes are keyed by `(host, path_prefix)`. Exact hosts take precedence

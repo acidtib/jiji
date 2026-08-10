@@ -506,7 +506,9 @@ services:
   #                                       #   Docker Compose -- context: ./api + this needs
   #                                       #   no ./api prefix; defaults to "Dockerfile")
   #     target: production               # Build target for multi-stage Dockerfiles
-  #     args:                            # Build arguments for this service
+  #     args:                            # Build arguments. An ALL_CAPS value reads the matching
+  #                                      # merged environment value, .env value, or host value
+  #                                      # (the host value requires --host-env).
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: BUILD_DATE

@@ -657,6 +657,33 @@ async fn execute_streaming_reports_command_timeout_through_the_channel() {
 }
 
 #[tokio::test]
+async fn execute_streaming_timeout_override_applies_to_only_that_command() {
+    let client_key = generate_client_key();
+    let addr = spawn_test_server(client_key.public_key().clone()).await;
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = write_key_file(&dir, &client_key);
+    let mut options = base_options(addr);
+    options.keys = vec![key_path.into()];
+    options.keys_only = true;
+    options.command_timeout = Duration::from_millis(1);
+    let session = SshSession::connect(&options).await.expect("connect");
+
+    let mut receiver = session
+        .execute_streaming_with_timeout("multi-chunk", Duration::from_secs(1))
+        .await
+        .expect("start streaming command");
+    let mut exit_code = None;
+    while let Some(item) = receiver.recv().await {
+        if let StreamChunk::Exit(code) = item.expect("override should prevent a timeout") {
+            exit_code = Some(code);
+        }
+    }
+
+    assert_eq!(exit_code, Some(0));
+    session.close().await;
+}
+
+#[tokio::test]
 async fn connects_and_executes_through_a_proxy_command() {
     // Requires `socat` on PATH to relay the ProxyCommand's stdio to the mock server's TCP
     // socket. Not a hard dependency of the crate itself (ProxyCommand can be any command a user

@@ -82,6 +82,29 @@ Sources:
 - `crates/jiji-cli/src/commands/secrets/print.rs`
 - `crates/jiji-cli/src/registry.rs`
 
+### Add mounted build secrets
+
+Jiji resolves build arguments, but build arguments are not safe for secret
+values. Docker and Podman support temporary secret mounts for build steps.
+
+- Add `services.<name>.build.secrets` to the configuration schema.
+- Resolve each secret from the selected `.env` file or the host environment.
+- Pass each value with the engine's `--secret` option.
+- Keep secret values out of command arguments, logs, errors, and image metadata.
+- Support local builders, remote builders, and multi-architecture builds.
+- Remove staged secret files after success, failure, cancellation, and timeout.
+- Document the required Dockerfile `RUN --mount=type=secret` syntax.
+- Add tests for Docker, Podman, missing values, redaction, and cleanup.
+
+Sources:
+
+- `crates/jiji-config/src/schema.rs`
+- `crates/jiji-config/src/jiji.yml`
+- `crates/jiji-cli/src/build_engine.rs`
+- `crates/jiji-cli/src/build_executor.rs`
+- `crates/jiji-cli/src/remote_build.rs`
+- `crates/jiji-cli/src/env_resolution.rs`
+
 ### Enforce image retention automatically
 
 `service.retain` is only enforced by `jiji service prune`. Old images can

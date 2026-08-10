@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context;
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::ConnectOptions;
 
-use crate::{build_engine, registry, ssh_adapter};
+use crate::{build_engine, env_resolution, registry, ssh_adapter};
 
 pub struct BuildPlanEntry {
     pub service_name: String,
@@ -127,6 +128,42 @@ pub fn compute_plan(
             })
         })
         .collect()
+}
+
+/// Resolves explicit ALL_CAPS build-argument references. A service's merged clear environment
+/// takes precedence over the selected `.env` file and the optional host environment.
+pub fn resolve_build_arg_references(
+    config: &Config,
+    plan: &mut [BuildPlanEntry],
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> anyhow::Result<()> {
+    let shared = config.environment.clone().unwrap_or_default();
+    for entry in plan {
+        let service = &config.services[&entry.service_name];
+        let merged = env_resolution::merge_environment(&shared, &service.environment);
+        for (key, value) in &mut entry.build.args {
+            if !env_resolution::is_bare_all_caps_name(value) {
+                continue;
+            }
+            let reference = value.clone();
+            let resolved = merged
+                .clear
+                .get(&reference)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    env_resolution::resolve_secret_name(&reference, loaded, allow_host_env)
+                })
+                .with_context(|| {
+                    format!(
+                        "Build argument 'services.{}.build.args.{key}' references '{reference}', but that environment value is missing. Define it in environment.clear or the selected .env file. To use the host environment, pass --host-env.",
+                        entry.service_name
+                    )
+                })?;
+            *value = resolved;
+        }
+    }
+    Ok(())
 }
 
 pub fn render_plan_summary(plan: &[BuildPlanEntry]) -> String {
@@ -266,5 +303,71 @@ ssh:
         );
         let target = select_executor(&config).expect("resolve without connecting");
         assert_eq!(target.identity(), "build@203.0.113.1:22");
+    }
+
+    #[test]
+    fn build_args_resolve_from_merged_clear_environment_and_env_file() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: podman }
+environment:
+  clear:
+    PUBLIC_URL: https://shared.example.com
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      args:
+        PUBLIC_URL: PUBLIC_URL
+        BUILD_SHA: BUILD_SHA
+        MODE: production
+    servers: [web]
+    environment:
+      clear:
+        PUBLIC_URL: https://service.example.com
+"#,
+        );
+        let mut plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
+        let loaded = BTreeMap::from([("BUILD_SHA".into(), "abc123".into())]);
+
+        resolve_build_arg_references(&config, &mut plan, &loaded, false).expect("resolve");
+
+        assert_eq!(
+            plan[0].build.args["PUBLIC_URL"],
+            "https://service.example.com"
+        );
+        assert_eq!(plan[0].build.args["BUILD_SHA"], "abc123");
+        assert_eq!(plan[0].build.args["MODE"], "production");
+    }
+
+    #[test]
+    fn missing_build_arg_reference_is_actionable() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      args: { API_URL: MISSING_API_URL }
+    servers: [web]
+"#,
+        );
+        let mut plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
+
+        let error = resolve_build_arg_references(&config, &mut plan, &BTreeMap::new(), false)
+            .expect_err("missing reference must fail");
+
+        assert!(error
+            .to_string()
+            .contains("services.app.build.args.API_URL"));
+        assert!(error.to_string().contains("MISSING_API_URL"));
+        assert!(error.to_string().contains("--host-env"));
     }
 }

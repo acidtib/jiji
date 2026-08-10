@@ -270,8 +270,14 @@ pub async fn run(
         }
         version_tag::validate_or_bail(&build_version)?;
         let build_services: Vec<String> = services_to_build.iter().cloned().collect();
-        let build_plan =
+        let mut build_plan =
             build_plan::compute_plan(&config, &config.project, &build_services, &build_version)?;
+        build_plan::resolve_build_arg_references(
+            &config,
+            &mut build_plan,
+            &loaded_env,
+            host_env,
+        )?;
         for entry in &build_plan {
             if let Some(error) = build_engine::multi_arch_requires_push(&entry.platforms, true) {
                 anyhow::bail!("Service '{}': {error}", entry.service_name);
@@ -492,9 +498,18 @@ pub async fn run(
             }
             let session = sessions.get(&endpoint.server).expect("connected above");
             let image = images.get(&endpoint.service).expect("built above");
-            if let Err(error) =
-                crate::container_ops::pull_image(session, config.builder.engine, image).await
-            {
+            let spinner = Ui::spinner(&format!("{}: pulling {image}", endpoint.server));
+            let spinner_handle = spinner.handle();
+            let server_name = endpoint.server.clone();
+            let pull_result = crate::container_ops::pull_image_with_progress(
+                session,
+                config.builder.engine,
+                image,
+                |status| spinner_handle.set_message(&format!("{server_name}: {status}")),
+            )
+            .await;
+            drop(spinner);
+            if let Err(error) = pull_result {
                 cancel_forwards(&sessions, &registry_forwards).await;
                 return Err(error.context(format!(
                     "Could not pull newly built image for service '{}' on deploy host '{}'",

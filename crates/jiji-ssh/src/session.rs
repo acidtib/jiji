@@ -382,7 +382,19 @@ impl SshSession {
         &self,
         command: &str,
     ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
-        self.execute_streaming_inner(command, None).await
+        self.execute_streaming_inner(command, None, self.command_timeout)
+            .await
+    }
+
+    /// Like `execute_streaming`, but permits a caller with a known long-running operation to
+    /// replace the session's general command timeout for this command only.
+    pub async fn execute_streaming_with_timeout(
+        &self,
+        command: &str,
+        command_timeout: Duration,
+    ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
+        self.execute_streaming_inner(command, None, command_timeout)
+            .await
     }
 
     pub async fn execute_streaming_with_input(
@@ -390,13 +402,15 @@ impl SshSession {
         command: &str,
         input: &[u8],
     ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
-        self.execute_streaming_inner(command, Some(input)).await
+        self.execute_streaming_inner(command, Some(input), self.command_timeout)
+            .await
     }
 
     async fn execute_streaming_inner(
         &self,
         command: &str,
         input: Option<&[u8]>,
+        command_timeout: Duration,
     ) -> Result<mpsc::Receiver<Result<StreamChunk, SshError>>, SshError> {
         let mut channel = self.handle.channel_open_session().await?;
         channel.exec(true, command).await?;
@@ -406,7 +420,6 @@ impl SshSession {
         channel.eof().await?;
 
         let (tx, rx) = mpsc::channel(16);
-        let command_timeout = self.command_timeout;
         let host = self.host.clone();
         let command = command.to_string();
 

@@ -549,10 +549,11 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   execution.
 - `jiji secrets print`: non-fatal `.env`/host-env resolution status
   (`[SET]`/`[MISSING]`, `--show-values`, `-S` filter).
-  Server host references, `environment.secrets`, `builder.registry.password`,
-  and proxy SSL certificate references resolve from `.env`/host-env. Other
-  secret-shaped fields (SSH key passphrases, build arguments, and `${VAR}`
-  interpolation) are visibility-only.
+  Server host references, build arguments, `environment.secrets`,
+  `builder.registry.password`, and proxy SSL certificate references resolve
+  from `.env`/host-env. Build arguments first read the merged service
+  `environment.clear` map. Other secret-shaped fields (SSH key passphrases and
+  `${VAR}` interpolation) are visibility-only.
 - `jiji proxy restart` / `jiji proxy logs`: unconditionally re-pull and
   recreate the shared per-host jiji-proxy container, or read its logs
   (`--follow` requires exactly one host).
