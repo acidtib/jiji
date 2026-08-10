@@ -105,6 +105,45 @@ Sources:
 - `crates/jiji-cli/src/remote_build.rs`
 - `crates/jiji-cli/src/env_resolution.rs`
 
+### Default the build context to the project root
+
+The detailed `build:` form currently requires `context`. Configuration loading
+fails before any command can inspect a service when this field is absent.
+
+This configuration must be valid:
+
+```yaml
+services:
+  site:
+    build:
+      dockerfile: Dockerfile
+```
+
+It must behave like this explicit configuration:
+
+```yaml
+services:
+  site:
+    build:
+      context: .
+      dockerfile: Dockerfile
+```
+
+- Default `BuildConfig.context` to `.` during deserialization.
+- Keep an explicit `context` value unchanged.
+- Apply the same path rules to local and remote builders.
+- Update the configuration reference with the optional field and its default.
+- Add parsing, validation, build-plan, and CLI regression tests.
+- Make sure that `jiji secrets print` accepts the shorthand configuration.
+
+Sources:
+
+- `crates/jiji-config/src/schema.rs`
+- `crates/jiji-config/src/jiji.yml`
+- `crates/jiji-cli/src/build_engine.rs`
+- `crates/jiji-cli/src/build_context.rs`
+- `crates/jiji-cli/src/commands/secrets/print.rs`
+
 ### Enforce image retention automatically
 
 `service.retain` is only enforced by `jiji service prune`. Old images can

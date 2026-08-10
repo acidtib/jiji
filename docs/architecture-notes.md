@@ -220,6 +220,9 @@ the destination port. Port-only rules can capture unrelated host traffic or
 cross-host mesh traffic. One co-resident agent owns ingress reconciliation
 through the host-global lease in `host_lease.rs`.
 
+The lease guard explicitly unlocks before it closes its descriptor. This
+prevents Podman helpers from retaining an inherited flock after proxy creation.
+
 Sources:
 
 - `crates/jiji-cli/src/proxy_routes.rs`

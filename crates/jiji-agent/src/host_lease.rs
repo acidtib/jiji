@@ -18,6 +18,18 @@ pub struct HostLeaseGuard {
     _file: File,
 }
 
+impl Drop for HostLeaseGuard {
+    fn drop(&mut self) {
+        // Closing this process's descriptor is insufficient when Podman starts a helper while the
+        // lease is held: a helper such as aardvark-dns can inherit a duplicate descriptor and keep
+        // the flock alive forever. LOCK_UN releases the shared open-file-description lock before
+        // this descriptor closes, including across any inherited duplicate.
+        unsafe {
+            libc::flock(self._file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
 /// Non-blocking: `Ok(None)` means another project's agent currently holds the lease -- expected,
 /// routine contention, not an error. Only I/O failures (can't create the lock file's directory,
 /// can't open it) are `Err`.
@@ -65,5 +77,27 @@ mod tests {
             third.is_some(),
             "lease should be free again once the holder is dropped"
         );
+    }
+
+    #[test]
+    fn dropping_the_guard_unlocks_an_inherited_descriptor() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("agent.lock");
+        let guard = try_acquire(&path)
+            .expect("acquire lease")
+            .expect("lease must be available");
+        let inherited_fd = unsafe { libc::dup(guard._file.as_raw_fd()) };
+        assert!(inherited_fd >= 0, "duplicate lease descriptor");
+
+        drop(guard);
+        let reacquired = try_acquire(&path).expect("reacquire lease after guard drop");
+
+        assert!(
+            reacquired.is_some(),
+            "an inherited descriptor must not retain the lease"
+        );
+        unsafe {
+            libc::close(inherited_fd);
+        }
     }
 }
