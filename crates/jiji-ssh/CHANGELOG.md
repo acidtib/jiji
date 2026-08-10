@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.6.1...jiji-ssh-v0.6.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* stabilize builds and proxy route updates ([4547010](https://github.com/acidtib/jiji/commit/4547010b822ac7d2be1795e5b432750f458468dc))
+
 ## [0.6.1](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.6.0...jiji-ssh-v0.6.1) (2026-08-10)
 
 

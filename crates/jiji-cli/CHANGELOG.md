@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/acidtib/jiji/compare/v0.7.1...v0.7.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* **jiji-cli:** resolve server hosts from environment ([a9c2f9f](https://github.com/acidtib/jiji/commit/a9c2f9fb901444c80f967557a9c3e64e6f40569c))
+* stabilize builds and proxy route updates ([4547010](https://github.com/acidtib/jiji/commit/4547010b822ac7d2be1795e5b432750f458468dc))
+
 ## [0.7.1](https://github.com/acidtib/jiji/compare/v0.7.0...v0.7.1) (2026-08-10)
 
 
