@@ -4,9 +4,15 @@
 
 # Jiji
 
-Deploy containers across Linux servers you control. Jiji provides health-gated
-rollouts, private networking, service discovery, and ingress without requiring
-a managed platform.
+**Your apps. Your infrastructure. Anywhere.**
+
+Jiji makes it simple to deploy and run containerized applications across the
+Linux servers you control.
+
+Cloud VMs, bare metal, dedicated servers, or your own hardware. Docker or
+Podman. One workflow for health-gated deployments, automatic HTTPS, private
+networking, and service discovery without locking your infrastructure to a
+platform.
 
 ## Features
 
