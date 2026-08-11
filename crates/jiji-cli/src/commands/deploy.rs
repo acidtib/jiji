@@ -97,8 +97,12 @@ pub async fn run(
     let seed_session = Arc::new(
         SshSession::connect(&seed_options)
             .await
-            .with_context(|| format!("Could not read desired placement from '{seed_server}'"))?,
+            .with_context(|| format!("Could not connect to seed server '{seed_server}'"))?,
     );
+    // Checked before the first real agent RPC (reading desired placement, right below): an
+    // uninstalled/pre-agent host otherwise fails that raw remote command instead of surfacing
+    // the actionable "run `jiji server setup`" hint `check_version` gives.
+    crate::agent_client::check_version(&seed_session, &config.project, seed_server).await?;
     let seed_sessions = BTreeMap::from([(seed_server.clone(), Arc::clone(&seed_session))]);
     let (mut selected, mut replica_ids, ingress_hosts) = select_effective_replica_endpoints(
         &config,

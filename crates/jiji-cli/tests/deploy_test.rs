@@ -803,10 +803,12 @@ async fn without_yes_and_no_terminal_deploy_refuses_to_hang_on_a_prompt() {
         "stderr: {stderr}"
     );
 
-    // Desired placement is one read-only lookup; no lock, build, or deployment mutation occurs.
+    // A seed-agent health check, then desired placement, are the only reads before the
+    // no-TTY/no-`--yes` bail; no lock, build, or deployment mutation occurs.
     let received = harness.received.lock().unwrap();
-    assert_eq!(received.len(), 1, "{received:?}");
-    assert!(received[0].contains("# jiji-request:desired-read"));
+    assert_eq!(received.len(), 2, "{received:?}");
+    assert!(received[0].contains("# jiji-request:health"));
+    assert!(received[1].contains("# jiji-request:desired-read"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1342,10 +1344,20 @@ fn atomic_lock_command() -> String {
 async fn deploy_gives_an_actionable_hint_when_no_agent_is_installed() {
     let (dir, key_path, client_key) = setup_test_dir();
     // Simulates a host that has never run `jiji server setup` (or predates jiji-agent
-    // entirely): the remote `jiji-agent` binary/socket doesn't exist, so the request itself
-    // fails at the SSH-command level rather than returning a parseable health response.
+    // entirely): the remote `jiji-agent` binary itself doesn't exist, so *every* agent
+    // request fails at the SSH-command level (a shell "No such file or directory"), not just
+    // the health check -- matching what a real host with no agent installed actually does.
     let mut responses = HashMap::new();
-    responses.insert(agent_request_command("health"), failure());
+    responses.insert(
+        "PREFIX:/etc/jiji/agent/demo-354b6884/bin/jiji-agent".to_string(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "bash: line 1: /etc/jiji/agent/demo-354b6884/bin/jiji-agent: \
+                      No such file or directory"
+                .to_string(),
+        },
+    );
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
@@ -1357,6 +1369,10 @@ async fn deploy_gives_an_actionable_hint_when_no_agent_is_installed() {
     assert!(
         stderr.contains("Could not reach jiji-agent") && stderr.contains("jiji server setup"),
         "stderr should give an actionable hint instead of the raw remote-command error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("No such file or directory"),
+        "the raw shell error should never reach the user: {stderr}"
     );
 
     let received = harness.received.lock().unwrap().clone();
