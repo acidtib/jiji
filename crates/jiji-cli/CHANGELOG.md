@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/acidtib/jiji/compare/v0.7.4...v0.7.5) (2026-08-11)
+
+
+### Bug Fixes
+
+* **jiji-cli:** surface actionable setup hint when jiji-agent is missing during deploy ([78382b7](https://github.com/acidtib/jiji/commit/78382b713ee6c856b1fdb516271ddd39d563bd79))
+
 ## [0.7.4](https://github.com/acidtib/jiji/compare/v0.7.3...v0.7.4) (2026-08-10)
 
 
