@@ -379,6 +379,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn omitted_context_resolves_the_same_as_an_explicit_project_root() {
+        let yaml = r#"
+project: demo
+builder:
+  engine: podman
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+    build:
+      dockerfile: Dockerfile
+"#;
+        let config: jiji_config::Config =
+            serde_yaml::from_str(yaml).expect("config with context omitted should parse");
+        let build = config.services["app"]
+            .build
+            .as_ref()
+            .expect("build config present");
+        let resolved = resolve_build_config(build);
+        let expected = resolve_build_config(&BuildValue::Context(".".into()));
+        assert_eq!(resolved.context, expected.context);
+        assert_eq!(resolved.dockerfile, expected.dockerfile);
+    }
+
     fn build() -> ResolvedBuildConfig {
         ResolvedBuildConfig {
             context: ".".into(),

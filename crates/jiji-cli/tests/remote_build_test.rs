@@ -384,6 +384,54 @@ ssh:
     config_path
 }
 
+/// Same shape as `write_project`, except the service's `build:` uses the detailed form with
+/// `context:` omitted -- proving the schema-level default (`BuildConfig.context` -> `.`) reaches
+/// the remote packaging path, not just the bare-string `build: .` shorthand every other test in
+/// this file uses.
+fn write_project_with_context_omitted(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").expect("write Dockerfile");
+
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: testproject
+builder:
+  engine: docker
+  local: false
+  remote: ssh://tester@{ip}:{port}
+  registry:
+    type: remote
+    server: registry.example.com
+servers:
+  app:
+    host: 10.0.0.1
+services:
+  web:
+    build:
+      dockerfile: Dockerfile
+    servers: [app]
+ssh:
+  user: tester
+  keys_only: true
+  keys: [{key_path}]
+"#,
+            ip = addr.ip(),
+            port = addr.port(),
+            key_path = key_path.display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
 /// Two servers of different architectures, so `required_arches` yields `[linux/amd64,
 /// linux/arm64]` and the build takes the `MultiArch` path.
 fn write_multi_arch_project(
@@ -762,6 +810,37 @@ async fn staging_upload_build_and_push_happen_in_order() {
     assert!(build < push1, "{received:?}");
     assert!(push1 < push2, "{received:?}");
     assert!(push2 < cleanup, "{received:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn detailed_build_with_context_omitted_packages_and_builds_the_project_root() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(staging_root_command(), staging_root_response("abc123"));
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_project_with_context_omitted(dir.path(), harness.addr, &key_path);
+
+    let output = run_build(&config_path, &["--version", "v1"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let staging_root = ".jiji/testproject/builds/run.abc123";
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c == &context_upload_command(staging_root)),
+        "expected the project root to be uploaded as the build context: {received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|c| c == &build_command(staging_root, &[TAG_V1, TAG_LATEST])),
+        "expected the remote build to run against the project-root context: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

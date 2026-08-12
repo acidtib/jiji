@@ -40,7 +40,10 @@ locally without overwriting an installed `jiji`).
 # Build / run (via mise, or plain cargo)
 mise build              # cargo build
 mise run                # cargo run --
-mise test               # cargo test
+mise test               # cargo nextest run --workspace (falls back to cargo test if nextest isn't installed)
+mise test-cli           # same, scoped to -p jiji-cli
+mise test-agent         # same, scoped to -p jiji-agent
+mise test-verbose       # mise test with --no-capture / -- --nocapture
 mise fmt                # cargo fmt
 mise lint               # cargo clippy --all-targets --all-features && cargo fmt --check
 mise check              # cargo check

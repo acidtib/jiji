@@ -501,7 +501,8 @@ services:
   # Example: API service using custom build with single-target proxy
   # api-backend:
   #   build:
-  #     context: ./api                    # Build context (relative to project root)
+  #     context: ./api                    # Build context (relative to project root); optional,
+  #                                       #   defaults to the project root, "."
   #     dockerfile: Dockerfile            # Dockerfile path (relative to context, matching
   #                                       #   Docker Compose -- context: ./api + this needs
   #                                       #   no ./api prefix; defaults to "Dockerfile")

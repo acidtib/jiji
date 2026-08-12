@@ -309,6 +309,45 @@ mod tests {
     }
 
     #[test]
+    fn packages_a_project_root_context_defaulted_from_config() {
+        // Proves the schema-level default (BuildConfig.context omitted -> ".") reaches the
+        // remote packaging path, not just a hand-constructed "." in a test fixture.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        fs::write(dir.path().join("app.txt"), "hi").unwrap();
+
+        let yaml = r#"
+project: demo
+builder:
+  engine: podman
+servers:
+  web:
+    host: 10.0.0.1
+services:
+  app:
+    image: nginx:latest
+    servers: [web]
+    build:
+      dockerfile: Dockerfile
+"#;
+        let config: jiji_config::Config =
+            serde_yaml::from_str(yaml).expect("config with context omitted should parse");
+        let build_value = config.services["app"]
+            .build
+            .as_ref()
+            .expect("build config present");
+        let build = crate::build_engine::resolve_build_config(build_value);
+        assert_eq!(build.context, ".");
+
+        let package =
+            package_context(dir.path(), &build, ContainerEngine::Docker, 1024 * 1024).unwrap();
+        assert_eq!(package.dockerfile_rel, "Dockerfile");
+        let entries = archive_entries(&package.archive);
+        assert!(entries.iter().any(|(p, _)| p == "Dockerfile"));
+        assert!(entries.iter().any(|(p, _)| p == "app.txt"));
+    }
+
+    #[test]
     fn dockerignore_excludes_matching_files() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").unwrap();

@@ -536,6 +536,36 @@ mod tests {
     }
 
     #[test]
+    fn build_args_are_scanned_when_context_is_omitted_from_a_parsed_config() {
+        // Proves the full parse-then-scan pipeline `jiji secrets print` actually runs: before the
+        // `BuildConfig.context` schema default, this exact YAML failed to parse at all (missing
+        // field `context`), which blocked this command identically to every other one -- this
+        // isn't specific to secret scanning, `collect_secret_refs` never touched `context`.
+        let yaml = r#"
+project: demo
+builder:
+  engine: docker
+servers:
+  app:
+    host: 10.0.0.1
+services:
+  web:
+    servers: [app]
+    build:
+      dockerfile: Dockerfile
+      args:
+        DB_PASSWORD: DB_PASSWORD_SECRET
+"#;
+        let config: Config =
+            serde_yaml::from_str(yaml).expect("config with context omitted should parse");
+        let refs = collect_secret_refs(&config, &[]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "DB_PASSWORD_SECRET");
+        assert_eq!(refs[0].source, "services.web.build.args.DB_PASSWORD");
+        assert!(refs[0].runtime_resolved);
+    }
+
+    #[test]
     fn command_interpolation_refs_are_extracted() {
         let mut config = base_config();
         config.services.insert(

@@ -228,6 +228,7 @@ pub struct Environment {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BuildConfig {
+    #[serde(default = "default_build_context")]
     pub context: String,
     #[serde(default)]
     pub dockerfile: Option<String>,
@@ -557,4 +558,8 @@ fn default_replicas() -> u32 {
 
 fn default_network_mode() -> String {
     "bridge".to_string()
+}
+
+fn default_build_context() -> String {
+    ".".to_string()
 }

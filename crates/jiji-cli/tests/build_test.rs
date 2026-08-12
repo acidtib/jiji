@@ -105,6 +105,47 @@ fn single_arch_no_push_build_renders_the_expected_local_docker_command() {
 }
 
 #[test]
+fn context_omitted_from_detailed_build_defaults_to_project_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("deploy.yml");
+    std::fs::write(
+        &config,
+        r#"
+project: demo
+builder: { engine: docker }
+servers:
+  app: { host: 127.0.0.1 }
+services:
+  web:
+    build:
+      dockerfile: Dockerfile
+    servers: [app]
+"#,
+    )
+    .expect("write config");
+    let bin = write_fake_docker(dir.path());
+    let log = dir.path().join("log.txt");
+    std::fs::write(&log, "").expect("create log");
+
+    let output = run_build(&config, &bin, &log, &["--version", "v1", "--no-push"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let logged = std::fs::read_to_string(&log).expect("read log");
+    let build_line = logged
+        .lines()
+        .find(|line| line.starts_with("build "))
+        .expect("expected a logged `docker build` invocation");
+    assert!(
+        build_line.ends_with(" ."),
+        "expected the context-omitted build to default to the project root, log: {logged}"
+    );
+}
+
+#[test]
 fn build_arg_references_use_the_merged_service_environment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("deploy.yml");
