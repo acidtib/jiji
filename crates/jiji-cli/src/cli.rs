@@ -79,6 +79,20 @@ pub enum Commands {
     Init,
     #[command(about = "Show jiji version")]
     Version,
+    #[command(about = "Update the local jiji binary to the latest (or a specific) release")]
+    Update {
+        #[arg(
+            long,
+            help = "Only report the installed and latest versions; never change the binary"
+        )]
+        check: bool,
+        #[arg(
+            long,
+            value_name = "VERSION",
+            help = "Install this specific jiji release instead of latest (e.g. v0.7.2); the global --version flag is unrelated (app version, not jiji's own)"
+        )]
+        release: Option<String>,
+    },
     #[command(about = "Deploy configured services across their target servers")]
     Deploy {
         #[arg(long, help = "Build images before deploying")]

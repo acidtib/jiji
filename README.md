@@ -38,7 +38,8 @@ curl -fsSL https://get.jiji.run/install.sh | sh
 
 Installs the latest release to `~/.local/bin/jiji` (Linux/macOS,
 x86_64/arm64). Pin a version with `VERSION=v1.2.3`. To build from source
-instead, see Development below.
+instead, see Development below. To update an existing install, run
+`jiji update`.
 
 ## Quick Start
 

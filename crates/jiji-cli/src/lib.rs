@@ -33,6 +33,7 @@ mod proxy_teardown;
 mod recovery_epoch;
 mod registry;
 mod remote_build;
+mod self_update;
 mod ssh_adapter;
 mod teardown_plan;
 mod version_requirements;
@@ -88,6 +89,13 @@ pub async fn run() {
         }
         Some(Commands::Version) => {
             commands::version::run();
+        }
+        Some(Commands::Update { check, release }) => {
+            if let Err(err) = commands::update::run(*check, release.as_deref()).await {
+                println!();
+                jiji_tui::Ui::error(&format!("Update failed: {err}"));
+                std::process::exit(1);
+            }
         }
         Some(Commands::Deploy {
             build,

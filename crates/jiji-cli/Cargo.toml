@@ -43,11 +43,12 @@ scrypt.workspace = true
 getrandom.workspace = true
 nix = { version = "0.31", features = ["term"] }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tempfile.workspace = true
 
 [build-dependencies]
 toml = "0.8"
 
 [dev-dependencies]
-tempfile.workspace = true
 russh.workspace = true
 rand = "0.10"

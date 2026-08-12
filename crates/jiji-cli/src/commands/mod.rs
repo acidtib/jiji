@@ -9,4 +9,5 @@ pub mod registry;
 pub mod secrets;
 pub mod server;
 pub mod service;
+pub mod update;
 pub mod version;

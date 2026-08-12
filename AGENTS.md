@@ -482,6 +482,20 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
 ## Command Reference
 
 - `jiji version`: prints the running binary's version and git SHA.
+- `jiji update [--check] [--release VERSION]`: detects and installs a newer
+  `jiji` binary release, config-free like `init`/`version`. Resolves "latest"
+  from the GitHub release API (`--release` skips that call entirely and
+  always proceeds, even to an older release -- the rollback path); downloads
+  the matching platform artifact and its `.sha256` sidecar and rejects a
+  mismatch; installs atomically (temp file on the same filesystem, then
+  rename) preserving the existing binary's permissions; `--check` reports
+  versions without changing anything. Never touches remote servers,
+  `jiji-agent`, or `jiji-proxy` -- prints the manual `jiji server setup`/
+  `jiji proxy restart`/`jiji network diagnostics` sequence for that. Shares
+  the release repo, artifact-naming grammar, and checksum algorithm with
+  `bin/install.sh` (which now also verifies `.sha256` after download), not
+  literal source code. `self_update.rs` has the pure/network logic;
+  `commands/update.rs` is the thin orchestration.
 - `jiji init`: scaffolds `.jiji/deploy.yml`, including project-directory-derived
   `/24` management and `/16` container CIDRs.
 - `jiji server setup [-y/--yes] [--rotate-key] [--import] [--import-dry-run]`:

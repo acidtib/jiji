@@ -20,7 +20,7 @@ jobs:
       tag_prefix: "v"
       bin_name: jiji
       changelog_crate: jiji-cli
-      checksum: false
+      checksum: true
       install_instructions: true
       notify_website: true
       refresh_changelog_script: ${{ inputs.tag != '' }}

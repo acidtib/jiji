@@ -84,6 +84,34 @@ if ! curl -fsSL "$BINARY_URL" -o "${TMP_DIR}/${BINARY_NAME}"; then
 fi
 echo "Download complete."
 
+# Download and verify the checksum sidecar.
+CHECKSUM_URL="${BINARY_URL}.sha256"
+if ! curl -fsSL "$CHECKSUM_URL" -o "${TMP_DIR}/${BINARY_NAME}.sha256"; then
+    echo "Failed to download checksum ${CHECKSUM_URL}"
+    print_manual_install
+    exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SHA256=$(sha256sum "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_SHA256=$(shasum -a 256 "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
+else
+    echo "Neither sha256sum nor shasum is available to verify the download."
+    rm -f "${TMP_DIR}/${BINARY_NAME}"
+    print_manual_install
+    exit 1
+fi
+EXPECTED_SHA256=$(awk '{print $1}' "${TMP_DIR}/${BINARY_NAME}.sha256")
+
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "Checksum verification failed for ${BINARY_NAME} (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256})."
+    rm -f "${TMP_DIR}/${BINARY_NAME}"
+    print_manual_install
+    exit 1
+fi
+echo "Checksum verified."
+
 # Make the binary executable.
 chmod +x "${TMP_DIR}/${BINARY_NAME}"
 
