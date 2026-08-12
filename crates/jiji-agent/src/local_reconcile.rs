@@ -151,6 +151,10 @@ pub async fn reconcile_once(
         result: reconcile_containers(store, engine, config, startup_candidates).await,
     });
     outcomes.push(RepairOutcome {
+        component: "image_retention",
+        result: reconcile_image_retention(store, engine).await,
+    });
+    outcomes.push(RepairOutcome {
         component: "deployment_recovery",
         result: recover_startup_candidates(store, engine, config, startup_candidates).await,
     });
@@ -622,6 +626,45 @@ async fn reconcile_containers(
     Ok(())
 }
 
+type RetentionPruneResult = Result<Vec<(String, crate::image_retention::PruneOutcome)>, String>;
+
+/// Prunes every installed image-retention spec's repo against this host's own local image cache
+/// (see `image_retention.rs`). A per-repo failure (e.g. the engine briefly unavailable) is folded
+/// into one component-level error string, same granularity every other `reconcile_once` component
+/// already reports at, without stopping the other repos in the same tick.
+async fn reconcile_image_retention(
+    store: &Arc<Mutex<AgentStore>>,
+    engine: Engine,
+) -> Result<(), String> {
+    let specs = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .image_retention_specs()
+        .map_err(|error| error.to_string())?;
+    let mut results = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let outcome =
+            crate::image_retention::prune_repo(engine, &spec.repo, spec.retain as usize).await;
+        results.push((spec.service, outcome));
+    }
+    fold_retention_problems(results)
+}
+
+/// Pure fold, kept separate from the async per-repo `prune_repo` calls above so it's testable
+/// with fixed inputs and no real engine, mirroring `restart_candidates`'s split from
+/// `reconcile_containers`.
+fn fold_retention_problems(results: Vec<(String, RetentionPruneResult)>) -> Result<(), String> {
+    let problems: Vec<String> = results
+        .into_iter()
+        .filter_map(|(service, result)| result.err().map(|error| format!("{service}: {error}")))
+        .collect();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
 pub fn restart_candidates(
     local_node_id: &str,
     observations: &[Observation],
@@ -817,5 +860,36 @@ mod tests {
         }
         assert_eq!(backoff.success(), MIN_BACKOFF);
         assert_eq!(backoff.failure(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn fold_retention_problems_is_ok_when_every_repo_succeeds() {
+        let results = vec![
+            ("web".to_string(), Ok(vec![])),
+            ("worker".to_string(), Ok(vec![])),
+        ];
+        assert_eq!(fold_retention_problems(results), Ok(()));
+    }
+
+    #[test]
+    fn fold_retention_problems_reports_a_failing_repo_without_dropping_the_others() {
+        let results = vec![
+            ("web".to_string(), Ok(vec![])),
+            ("worker".to_string(), Err("engine unavailable".to_string())),
+        ];
+        let error = fold_retention_problems(results).unwrap_err();
+        assert!(error.contains("worker: engine unavailable"));
+        assert!(!error.contains("web:"));
+    }
+
+    #[test]
+    fn fold_retention_problems_joins_every_failing_repo() {
+        let results = vec![
+            ("web".to_string(), Err("timeout".to_string())),
+            ("worker".to_string(), Err("engine unavailable".to_string())),
+        ];
+        let error = fold_retention_problems(results).unwrap_err();
+        assert!(error.contains("web: timeout"));
+        assert!(error.contains("worker: engine unavailable"));
     }
 }

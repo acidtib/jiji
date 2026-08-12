@@ -402,6 +402,11 @@ pub async fn run(
                 &ssh, &config, &plan, &sessions, &selected, &results,
             )
             .await;
+            let image_retention_problems =
+                crate::image_retention_reconcile::reconcile_after_deploy(
+                    &ssh, &config, &selected, &results, &sessions,
+                )
+                .await;
 
             let server_by_identity: BTreeMap<String, String> = selected
                 .iter()
@@ -462,6 +467,10 @@ pub async fn run(
 
             for problem in &cron_problems {
                 Ui::result_error("cron:", problem);
+                failures += 1;
+            }
+            for problem in &image_retention_problems {
+                Ui::result_error("image-retention:", problem);
                 failures += 1;
             }
 

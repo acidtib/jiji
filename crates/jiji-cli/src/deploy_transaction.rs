@@ -223,8 +223,10 @@ async fn deploy_shared_endpoint(
             ctx.service_name,
             &previous.deployment_id,
         );
+        let orphaned_image = capture_orphaned_static_image(ctx, ctx.service, &old_name).await;
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
         container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await?;
+        finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
         // No lease was ever allocated for a dependent, so there is nothing to release here --
         // only its catalog record needs to settle to Tombstoned.
         commit_catalog(
@@ -460,6 +462,7 @@ async fn deploy_dynamic_endpoint(
             ctx.service_name,
             &previous.deployment_id,
         );
+        let orphaned_image = capture_orphaned_static_image(ctx, ctx.service, &old_name).await;
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
         if let Err(error) =
             container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
@@ -485,6 +488,7 @@ async fn deploy_dynamic_endpoint(
             sweep_stuck_draining_records(ctx, ctx.service_name).await;
             return Ok((deployment_id, address));
         }
+        finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
         let _ = crate::agent_client::call(
             ctx.session,
             project,
@@ -535,6 +539,13 @@ async fn sweep_stuck_draining_records(ctx: &EndpointDeploymentContext<'_>, servi
     for record in stuck {
         let old_name =
             container_runtime::dynamic_container_name(project, service_name, &record.deployment_id);
+        // No orphaned-static-image cleanup here (unlike the two normal cutover paths): this sweep
+        // can run for a *different* service than `ctx.service` (called for an upstream's stuck
+        // records from a dependent's own redeploy), and `EndpointDeploymentContext` has no `Config`
+        // to look `service_name`'s own `build:` setting up correctly here. Narrow gap in a narrow,
+        // already-rare path (only reached when a `network_mode:service` dependent blocked normal
+        // removal): that replica's own next normal redeploy goes through `deploy_dynamic_endpoint`
+        // and cleans up whatever is running at that point via the check that function does have.
         if let Err(error) =
             container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
         {
@@ -669,6 +680,51 @@ async fn restore_stop_first(ctx: &EndpointDeploymentContext<'_>, previous: Optio
             &previous.deployment_id,
         );
         let _ = container_ops::start(ctx.session, ctx.engine, &name).await;
+    }
+}
+
+/// For a static `image:` service (no `build:` configured), an old container's image has no
+/// rollback value once its container is gone -- there is no tag an operator could ever ask to
+/// roll back to (unlike a build-configured service's versioned tags, which `retain:`-based
+/// pruning keeps the last N of, see `image_retention_reconcile.rs`). Left alone, a moving tag
+/// like `:latest` orphans a new, permanently untagged local image on every redeploy: nothing else
+/// in this codebase ever removes it (`image_teardown.rs` only removes an image by its current tag
+/// reference, which by then already points at the *new* content). Call before removing `old_name`
+/// -- `.Config.Image` (what `inspect_image` reads) is the reference string, identical across every
+/// pull of a moving tag; `.Image` (`inspect_image_id`) is the actual resolved digest, the only way
+/// to identify precisely which local image entry this removal is about to orphan.
+async fn capture_orphaned_static_image(
+    ctx: &EndpointDeploymentContext<'_>,
+    service: &Service,
+    old_name: &str,
+) -> Option<String> {
+    if service.build.is_some() {
+        return None;
+    }
+    container_ops::inspect_image_id(ctx.session, ctx.engine, old_name)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Removes the image ID `capture_orphaned_static_image` captured, but only once the old
+/// container is actually gone and only if nothing else on the host still references it (a
+/// same-digest redeploy, or an unrelated container sharing the base layers, must not be torn
+/// down). Best-effort: a failure here must never fail the deploy that already succeeded.
+async fn finish_orphaned_static_image_cleanup(
+    ctx: &EndpointDeploymentContext<'_>,
+    orphaned_image_id: Option<String>,
+) {
+    let Some(image_id) = orphaned_image_id else {
+        return;
+    };
+    let referenced =
+        match container_ops::image_referenced_elsewhere(ctx.session, ctx.engine, &image_id).await {
+            Ok(referenced) => referenced,
+            Err(_) => return,
+        };
+    if referenced.is_empty() {
+        let _ = container_ops::remove_image_if_present(ctx.session, ctx.engine, &image_id).await;
     }
 }
 

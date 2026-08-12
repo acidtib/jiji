@@ -544,10 +544,21 @@ pub async fn run(
                 cron_services.insert(endpoint.service.as_str());
             }
             let mut cron_problems = Vec::new();
+            let mut image_retention_problems = Vec::new();
             for service_name in cron_services {
                 let service = &config.services[service_name];
                 cron_problems.extend(
                     crate::cron_reconcile::remove_all_cron_specs(
+                        &ssh,
+                        &config,
+                        service_name,
+                        service,
+                        &sessions,
+                    )
+                    .await,
+                );
+                image_retention_problems.extend(
+                    crate::image_retention_reconcile::remove_all_retention_specs(
                         &ssh,
                         &config,
                         service_name,
@@ -585,6 +596,10 @@ pub async fn run(
 
             for problem in &cron_problems {
                 Ui::error(&format!("cron: {problem}"));
+                failures += 1;
+            }
+            for problem in &image_retention_problems {
+                Ui::error(&format!("image-retention: {problem}"));
                 failures += 1;
             }
 

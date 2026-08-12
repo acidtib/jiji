@@ -44,6 +44,10 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"address_released","released":true}}"#
     } else if command.contains("# jiji-request:cron-spec-list") {
         r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
+    } else if command.contains("# jiji-request:image-retention-apply") {
+        r#"{"Ok":{"type":"image_retention_applied","spec":{"service":"web","repo":"localhost:31270/demo-web","retain":3,"revision":1}}}"#
+    } else if command.contains("# jiji-request:image-retention-remove") {
+        r#"{"Ok":{"type":"image_retention_removed","removed":true}}"#
     } else {
         ""
     };

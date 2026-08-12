@@ -17,6 +17,7 @@ use crate::cron::{
     CronSchedulerState, CronSpecApplyOutcome,
 };
 use crate::desired::{DesiredApply, DesiredError, DesiredStateRecord, DesiredStateView};
+use crate::image_retention::{ImageRetentionApplyOutcome, ImageRetentionSpec};
 use crate::membership::{
     MembershipApply, MembershipError, MembershipRecord, MembershipScope, MembershipState,
     MembershipView, RecordProvenance,
@@ -320,6 +321,20 @@ const MIGRATIONS: &[Migration] = &[
                   SELECT operation_id, service, record_json, applied_at
                   FROM desired_operations_v8;
               DROP TABLE desired_operations_v8;",
+    },
+    Migration {
+        version: 10,
+        // Local-only, one row per build-configured service (see `image_retention.rs`'s module
+        // doc comment): mirrors `cron_job_specs`' shape, but keyed by `service` alone since
+        // retention is pushed identically to every host in a service's eligible `servers:` set,
+        // not owned by a single node the way a cron job is.
+        sql: "CREATE TABLE image_retention_specs (
+                  service TEXT PRIMARY KEY,
+                  repo TEXT NOT NULL,
+                  retain INTEGER NOT NULL,
+                  revision INTEGER NOT NULL,
+                  updated_at TEXT NOT NULL
+              );",
     },
 ];
 
@@ -1479,6 +1494,71 @@ impl AgentStore {
             .collect::<Result<_, StoreError>>()
     }
 
+    /// Idempotent upsert keyed by `service`, comparing `repo`/`retain` against whatever is
+    /// already installed -- there's no `canonical_hash` here (unlike `apply_cron_spec`) since
+    /// `ImageRetentionSpec` has only these two content fields to compare.
+    pub fn apply_image_retention_spec(
+        &self,
+        spec: &ImageRetentionSpec,
+    ) -> Result<ImageRetentionApplyOutcome, StoreError> {
+        let existing: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT repo, retain FROM image_retention_specs WHERE service = ?1",
+                params![spec.service],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let unchanged = existing
+            .as_ref()
+            .is_some_and(|(repo, retain)| *repo == spec.repo && *retain == spec.retain as i64);
+        self.conn.execute(
+            "INSERT INTO image_retention_specs (service, repo, retain, revision, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(service) DO UPDATE SET
+               repo = excluded.repo,
+               retain = excluded.retain,
+               revision = excluded.revision,
+               updated_at = excluded.updated_at",
+            params![
+                spec.service,
+                spec.repo,
+                spec.retain as i64,
+                spec.revision as i64,
+                now(),
+            ],
+        )?;
+        Ok(if unchanged {
+            ImageRetentionApplyOutcome::Unchanged(spec.clone())
+        } else if existing.is_some() {
+            ImageRetentionApplyOutcome::Updated(spec.clone())
+        } else {
+            ImageRetentionApplyOutcome::Installed(spec.clone())
+        })
+    }
+
+    pub fn remove_image_retention_spec(&self, service: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.execute(
+            "DELETE FROM image_retention_specs WHERE service = ?1",
+            params![service],
+        )? == 1)
+    }
+
+    pub fn image_retention_specs(&self) -> Result<Vec<ImageRetentionSpec>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT service, repo, retain, revision FROM image_retention_specs ORDER BY service",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(ImageRetentionSpec {
+                service: row.get(0)?,
+                repo: row.get(1)?,
+                retain: row.get::<_, i64>(2)? as u32,
+                revision: row.get::<_, i64>(3)? as u64,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(StoreError::from)
+    }
+
     /// Transactionally claims a due (scheduled) or requested (manual) cron run (see the plan's
     /// "Scheduler Rules" section). Checks an exact repeat of the same `(service, cron_name,
     /// scheduled_at)` first -- unconditionally returning the existing run, regardless of its own
@@ -2010,6 +2090,11 @@ mod tests {
 
     #[test]
     fn version_nine_removes_legacy_signature_columns_and_preserves_operations() {
+        // Pending migrations are computed from `MAX(version)` in `schema_migrations`, not from
+        // which individual rows are present -- so forcing migration 9 to re-run means rolling
+        // back every later migration's row (and undoing its effect) too, or `MAX` never drops
+        // back below 9 and nothing re-applies. Update the `DROP TABLE`/`version >=` cutoff here
+        // whenever a new migration lands after this one.
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("agent.sqlite3");
         let (scope, first) = member_record("node-a", 1);
@@ -2079,13 +2164,14 @@ mod tests {
                          SELECT operation_id, service, record_json, 'legacy', X'00', applied_at
                          FROM desired_operations_current;
                      DROP TABLE desired_operations_current;
-                     DELETE FROM schema_migrations WHERE version = 9;",
+                     DROP TABLE image_retention_specs;
+                     DELETE FROM schema_migrations WHERE version >= 9;",
                 )
                 .unwrap();
         }
 
         let store = AgentStore::open(&db_path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 9);
+        assert_eq!(store.schema_version().unwrap(), current_schema_version());
         assert_eq!(store.membership_operations().unwrap(), vec![first]);
 
         for table in [
@@ -2456,6 +2542,71 @@ mod cron_tests {
         assert!(store.remove_cron_spec("twitch", "sync-twitch").unwrap());
         assert!(store.cron_spec("twitch", "sync-twitch").unwrap().is_none());
         assert!(!store.remove_cron_spec("twitch", "sync-twitch").unwrap());
+    }
+
+    fn retention_spec(service: &str, repo: &str, retain: u32, revision: u64) -> ImageRetentionSpec {
+        ImageRetentionSpec {
+            service: service.into(),
+            repo: repo.into(),
+            retain,
+            revision,
+        }
+    }
+
+    #[test]
+    fn apply_image_retention_spec_reports_installed_then_unchanged_then_updated() {
+        let store = store();
+        let spec = retention_spec("web", "ghcr.io/example/demo-web", 3, 1);
+
+        assert_eq!(
+            store.apply_image_retention_spec(&spec).unwrap(),
+            ImageRetentionApplyOutcome::Installed(spec.clone())
+        );
+        assert_eq!(
+            store.apply_image_retention_spec(&spec).unwrap(),
+            ImageRetentionApplyOutcome::Unchanged(spec.clone())
+        );
+
+        let changed = retention_spec("web", "ghcr.io/example/demo-web", 5, 2);
+        assert_eq!(
+            store.apply_image_retention_spec(&changed).unwrap(),
+            ImageRetentionApplyOutcome::Updated(changed.clone())
+        );
+        assert_eq!(store.image_retention_specs().unwrap(), vec![changed]);
+    }
+
+    #[test]
+    fn image_retention_specs_lists_every_installed_spec_sorted() {
+        let store = store();
+        store
+            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3, 1))
+            .unwrap();
+        store
+            .apply_image_retention_spec(&retention_spec(
+                "backend",
+                "ghcr.io/example/demo-backend",
+                3,
+                1,
+            ))
+            .unwrap();
+        let names: Vec<String> = store
+            .image_retention_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.service)
+            .collect();
+        assert_eq!(names, vec!["backend".to_string(), "web".to_string()]);
+    }
+
+    #[test]
+    fn remove_image_retention_spec_deletes_an_installed_spec_and_is_idempotent() {
+        let store = store();
+        store
+            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3, 1))
+            .unwrap();
+        assert!(store.remove_image_retention_spec("web").unwrap());
+        assert!(store.image_retention_specs().unwrap().is_empty());
+        assert!(!store.remove_image_retention_spec("web").unwrap());
     }
 
     #[test]

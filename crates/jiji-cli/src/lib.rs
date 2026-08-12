@@ -18,6 +18,7 @@ mod deploy_transaction;
 mod engine;
 mod env_resolution;
 mod health_check;
+mod image_retention_reconcile;
 mod image_teardown;
 mod local_exec;
 mod lock;

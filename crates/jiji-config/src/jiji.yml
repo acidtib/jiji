@@ -403,8 +403,10 @@ environment:
 #
 # Image Retention Configuration:
 # =============================
-# Jiji automatically prunes old Docker/Podman images after deployment to save disk space
-# while keeping recent versions for rollbacks. Configure retention per service:
+# For any service with `build:` configured, jiji-agent continuously prunes old
+# Docker/Podman image tags on each server (not just right after a deploy) to save
+# disk space while keeping recent versions for rollbacks. Configure retention per
+# service:
 #
 # retain: <number>   # Number of recent images to keep (default: 3)
 #
@@ -414,8 +416,8 @@ environment:
 # - retain: 1        # Keep only the latest image for non-critical services
 #
 # Manual Pruning:
-# Run 'jiji service prune' to manually clean up images outside of deployment
-# Use 'jiji service prune --retain 5' to override the default retention setting
+# Run 'jiji service prune' to prune immediately instead of waiting for the next
+# reconcile tick, or to override the default retention setting with --retain
 #
 services:
   # Example: Web frontend service using pre-built image

@@ -57,6 +57,10 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"address_released","released":true}}"#
     } else if command.contains("# jiji-request:cron-spec-list") {
         r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
+    } else if command.contains("# jiji-request:image-retention-apply") {
+        r#"{"Ok":{"type":"image_retention_applied","spec":{"service":"web","repo":"localhost:31270/demo-web","retain":3,"revision":1}}}"#
+    } else if command.contains("# jiji-request:image-retention-remove") {
+        r#"{"Ok":{"type":"image_retention_removed","removed":true}}"#
     } else if command.contains("# jiji-request:health") {
         return success(&format!(
             r#"{{"Ok":{{"type":"health","schema_version":1,"observation_count":0,"version":"{}"}}}}"#,
@@ -342,6 +346,49 @@ fn write_config_with_cron(
     config_path
 }
 
+/// `config_yaml` plus `build: .` on "web", for image-retention deployment-integration tests.
+/// Keeps `image:` too (deploy without `--build` requires it -- `build:` alone with no `--build`
+/// flag is rejected) so this only adds `services.web.build.is_some()`, matching the condition
+/// `image_retention_reconcile::services_to_reconcile` actually checks.
+fn config_yaml_with_build(addr: SocketAddr, key_path: &std::path::Path, engine: &str) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: {engine} }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    build: .
+    servers: [app]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        engine = engine,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn write_config_with_build(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(&config_path, config_yaml_with_build(addr, key_path, engine))
+        .expect("write test deploy.yml");
+    config_path
+}
+
 /// Two servers: "app" hosts the only service and is reachable; "peer" is configured but
 /// unreachable (port 1, nothing listens there), so `--wait-for-peers` has exactly one
 /// unreachable peer to report as offline.
@@ -519,6 +566,14 @@ fn readiness_health_command(engine: &str, name: &str) -> String {
 
 fn image_inspect_command(engine: &str, image: &str) -> String {
     format!("{engine} image inspect {image} >/dev/null 2>&1")
+}
+
+fn inspect_image_id_command(engine: &str, name: &str) -> String {
+    format!("{engine} inspect {name} --format '{{{{.Image}}}}' 2>/dev/null || true")
+}
+
+fn referenced_elsewhere_command(engine: &str, image: &str) -> String {
+    format!("{engine} ps -a --filter ancestor={image} --format '{{{{.Names}}}}'")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -865,6 +920,127 @@ async fn replacement_removes_the_old_container_only_after_health_and_commit_succ
     );
 }
 
+/// A moving tag like `:latest` leaves its previous digest permanently dangling once the old
+/// container that ran it is removed -- nothing else in this codebase prunes it (retention/
+/// `jiji service prune` are build-only). `deploy_transaction.rs`'s cutover captures the old
+/// container's actual resolved image ID (not its `.Config.Image` reference, which is identical
+/// across every pull) before removing it, then removes that specific image if nothing else on the
+/// host still references it.
+#[tokio::test(flavor = "multi_thread")]
+async fn replacement_removes_the_old_containers_now_orphaned_image() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let old_name = "demo-web-olddeploymen";
+    let old_image_id = "sha256:oldimageid000000000000000000000000000000000000000000000000000";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    responses.insert(
+        inspect_image_id_command("docker", old_name),
+        success(&format!("{old_image_id}\n")),
+    );
+    responses.insert(
+        referenced_elsewhere_command("docker", old_image_id),
+        success(""),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let remove_container_index = received
+        .iter()
+        .position(|c| c.contains(&format!("rm -f {old_name}")))
+        .expect("old container should have been removed");
+    let remove_image_index = received
+        .iter()
+        .position(|c| c == &format!("docker rmi {old_image_id}"))
+        .expect("the old container's now-orphaned image should have been removed");
+    assert!(
+        remove_container_index < remove_image_index,
+        "the image must only be removed after the container using it is gone: {received:?}"
+    );
+}
+
+/// The mirror image of `replacement_removes_the_old_containers_now_orphaned_image`: a
+/// build-configured service's old image is a distinct, rollback-addressable version managed by
+/// `retain:` (see `image_retention_reconcile.rs`), not something the cutover itself should ever
+/// eagerly delete.
+#[tokio::test(flavor = "multi_thread")]
+async fn replacement_never_eagerly_removes_a_build_configured_services_old_image() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let old_name = "demo-web-olddeploymen";
+    let old_image_id = "sha256:oldimageid000000000000000000000000000000000000000000000000000";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_owned_by_app(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    // Would prove the bug if this were ever queried and acted on: a build-configured service
+    // must never even ask for the old container's image ID in the first place.
+    responses.insert(
+        inspect_image_id_command("docker", old_name),
+        success(&format!("{old_image_id}\n")),
+    );
+    responses.insert(
+        referenced_elsewhere_command("docker", old_image_id),
+        success(""),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_build(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received
+            .iter()
+            .any(|c| c == &format!("docker rmi {old_image_id}")),
+        "a build-configured service's old image must be left for `retain:` to manage, not \
+         eagerly removed at cutover: {received:?}"
+    );
+}
+
 /// Like `active_catalog_response`, but `owner_node_id` is the real configured server name
 /// ("app"), not the unrelated placeholder "node-test": cron reconciliation looks up the owner's
 /// session by that name, so it must match this file's single-server test topology.
@@ -931,6 +1107,95 @@ async fn deploy_applies_cron_specs_after_catalog_activation() {
     assert!(
         run_index < apply_index,
         "cron spec application must happen after the candidate is created/activated: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_applies_an_image_retention_spec_after_catalog_activation() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_owned_by_app(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_build(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let apply_index = received
+        .iter()
+        .position(|c| c.contains("# jiji-request:image-retention-apply"))
+        .expect("an image-retention spec should have been pushed after deploy");
+    let run_index = received
+        .iter()
+        .position(|c| c.contains("docker run --name demo-web-"))
+        .expect("candidate should have been created");
+    assert!(
+        run_index < apply_index,
+        "image-retention spec application must happen after the candidate is created/activated: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_does_not_push_an_image_retention_spec_for_a_static_image_service() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    // `write_config`, not `write_config_with_build`: "web" has no `build:` configured here.
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("# jiji-request:image-retention-apply")),
+        "a static `image:` service must never get an image-retention spec: {received:?}"
     );
 }
 

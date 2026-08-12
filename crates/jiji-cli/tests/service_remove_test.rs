@@ -40,6 +40,8 @@ fn default_response(command: &str) -> CannedResponse {
         r#"{"Ok":{"type":"address_released","released":true}}"#
     } else if command.contains("# jiji-request:cron-spec-list") {
         r#"{"Ok":{"type":"cron_specs","specs":[]}}"#
+    } else if command.contains("# jiji-request:image-retention-remove") {
+        r#"{"Ok":{"type":"image_retention_removed","removed":true}}"#
     } else {
         ""
     };
@@ -289,6 +291,11 @@ async fn remove_retires_catalog_deployment_and_removes_the_route() {
     assert!(received
         .iter()
         .any(|command| command.contains("# jiji-request:release-address")));
+    // Unconditional, even though "web" has no `build:` configured here and so never had a spec
+    // installed -- `remove_all_retention_specs` sweeps every eligible server regardless.
+    assert!(received
+        .iter()
+        .any(|command| command.contains("# jiji-request:image-retention-remove")));
     assert!(received.contains(
         &"docker exec jiji-proxy jiji-proxy route remove --host=example.com".to_string()
     ));

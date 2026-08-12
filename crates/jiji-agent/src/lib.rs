@@ -19,6 +19,7 @@ pub mod discovery;
 pub mod dns;
 pub mod engine;
 pub mod host_lease;
+pub mod image_retention;
 pub mod leases;
 pub mod local_reconcile;
 pub mod membership;

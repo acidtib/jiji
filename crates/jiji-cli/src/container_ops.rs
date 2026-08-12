@@ -143,6 +143,27 @@ pub async fn inspect_image(
     }
 }
 
+/// The actual resolved image ID (`.Image`, a content digest) a container was started from --
+/// unlike `inspect_image`'s `.Config.Image` (the reference string passed at creation time, e.g.
+/// `ghcr.io/x/y:latest`, identical across every pull of a moving tag), this changes every time
+/// the tag resolves to different content. It's the only way to identify precisely which local
+/// image entry a specific container's removal is about to orphan. `None` on the same terms as
+/// `inspect_image`/`inspect_ip_address`.
+pub async fn inspect_image_id(
+    session: &SshSession,
+    engine: ContainerEngine,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    let command = format!("{engine} inspect {name} --format '{{{{.Image}}}}' 2>/dev/null || true");
+    let result = session.execute(&command).await?;
+    let trimmed = result.stdout.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
 pub async fn create_and_start(
     session: &SshSession,
     run: &NetworkedContainerRun,

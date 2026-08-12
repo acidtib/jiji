@@ -25,6 +25,7 @@ use crate::cron::{
 use crate::desired::{
     DesiredStateRecord, ReplicaAssignment, DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION,
 };
+use crate::image_retention::ImageRetentionSpec;
 use crate::leases::{AddressAllocator, DEFAULT_QUARANTINE_SECONDS};
 use crate::membership::{MembershipView, NodeIdentity, RecordProvenance};
 use crate::store::{AgentStore, ComponentStatus, OperationCounts, PeerSyncStatus};
@@ -150,6 +151,21 @@ pub enum RequestBody {
         since: Option<u64>,
         limit: Option<u32>,
     },
+    /// Idempotent upsert by `(service, repo, retain)`; pushed identically to every host in a
+    /// service's eligible `servers:` set after a successful deploy (see
+    /// `image_retention_reconcile.rs` in `jiji-cli`), unlike `CronSpecApply` there is no single
+    /// owner to derive here.
+    ImageRetentionApply {
+        service: String,
+        repo: String,
+        retain: u32,
+        revision: u64,
+    },
+    ImageRetentionRemove {
+        service: String,
+    },
+    /// Every image-retention spec installed on this agent.
+    ImageRetentionList,
 }
 
 // See `RequestBody`'s doc comment on the identical `large_enum_variant` allow.
@@ -238,6 +254,15 @@ pub enum ResponseBody {
     },
     CronRuns {
         runs: Vec<CronRun>,
+    },
+    ImageRetentionApplied {
+        spec: ImageRetentionSpec,
+    },
+    ImageRetentionRemoved {
+        removed: bool,
+    },
+    ImageRetentionSpecs {
+        specs: Vec<ImageRetentionSpec>,
     },
 }
 
@@ -796,6 +821,36 @@ impl AgentApi {
                     .map_err(|error| internal(&error))?;
                 Ok(ResponseBody::CronRuns { runs })
             }
+            RequestBody::ImageRetentionApply {
+                service,
+                repo,
+                retain,
+                revision,
+            } => {
+                let spec = ImageRetentionSpec {
+                    service,
+                    repo,
+                    retain,
+                    revision,
+                };
+                let outcome = store
+                    .apply_image_retention_spec(&spec)
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::ImageRetentionApplied {
+                    spec: outcome.spec().clone(),
+                })
+            }
+            RequestBody::ImageRetentionRemove { service } => {
+                let removed = store
+                    .remove_image_retention_spec(&service)
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::ImageRetentionRemoved { removed })
+            }
+            RequestBody::ImageRetentionList => Ok(ResponseBody::ImageRetentionSpecs {
+                specs: store
+                    .image_retention_specs()
+                    .map_err(|error| internal(&error))?,
+            }),
         }
     }
 
@@ -1389,6 +1444,85 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.unwrap_err().code, ErrorCode::Invalid);
+    }
+
+    #[tokio::test]
+    async fn image_retention_apply_is_idempotent_and_list_remove_round_trip() {
+        let dir = tempdir().unwrap();
+        let socket_path = spawn_server(dir.path()).await;
+
+        let apply_request =
+            |repo: &str, retain: u32, revision: u64| RequestBody::ImageRetentionApply {
+                service: "web".into(),
+                repo: repo.into(),
+                retain,
+                revision,
+            };
+
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: apply_request("ghcr.io/example/demo-web", 3, 1),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::ImageRetentionApplied { spec } = response else {
+            panic!("expected ImageRetentionApplied");
+        };
+        assert_eq!(spec.service, "web");
+        assert_eq!(spec.repo, "ghcr.io/example/demo-web");
+        assert_eq!(spec.retain, 3);
+
+        // Re-applying the identical spec still reports the same content back.
+        let response = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: apply_request("ghcr.io/example/demo-web", 3, 1),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            response,
+            ResponseBody::ImageRetentionApplied { .. }
+        ));
+
+        let list = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::ImageRetentionList,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ResponseBody::ImageRetentionSpecs { specs } = list else {
+            panic!("expected ImageRetentionSpecs");
+        };
+        assert_eq!(specs.len(), 1);
+
+        let removed = call(
+            &socket_path,
+            &Request {
+                idempotency_key: None,
+                body: RequestBody::ImageRetentionRemove {
+                    service: "web".into(),
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            removed,
+            ResponseBody::ImageRetentionRemoved { removed: true }
+        );
     }
 
     #[tokio::test]
