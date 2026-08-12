@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/acidtib/jiji/compare/v0.7.5...v0.8.0) (2026-08-12)
+
+
+### Features
+
+* **jiji-tui:** add live multi-endpoint progress dashboards ([c9a4aae](https://github.com/acidtib/jiji/commit/c9a4aae6fccc1574a5bfe816c37c40a56dcb47e0))
+
 ## [0.7.5](https://github.com/acidtib/jiji/compare/v0.7.4...v0.7.5) (2026-08-11)
 
 

@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-cli"
-version = "0.7.5"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-tui"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "dialoguer",
  "indicatif",
