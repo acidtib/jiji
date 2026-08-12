@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use jiji_config::{ContainerEngine, HealthcheckConfig};
-use jiji_ssh::SshSession;
+use jiji_ssh::{CommandResult, SshSession};
 use thiserror::Error;
 
 use crate::container_ops;
@@ -105,20 +105,29 @@ pub enum HealthCheckError {
 
 /// Polls `plan.command` every `plan.interval` until it succeeds or `plan.deploy_timeout` elapses.
 /// On failure, captures the candidate's recent logs so the caller can present an actionable
-/// error.
+/// error. `on_attempt` is called with a one-line summary of each failed attempt, but only when
+/// that summary changes from the last one reported -- a command that keeps failing identically
+/// stays silent after the first report, matching `DeployProgressHandle::set_status`'s
+/// one-line-per-state-transition invariant for non-TTY output.
 pub async fn wait_until_healthy(
     session: &SshSession,
     engine: ContainerEngine,
     container_name: &str,
     plan: &HealthCheckPlan,
+    on_attempt: impl Fn(&str),
 ) -> Result<(), HealthCheckError> {
     let start = Instant::now();
+    let mut last_reported: Option<String> = None;
     let last_error = loop {
         let attempt_error = match session.execute(&plan.command).await {
             Ok(result) if result.success => return Ok(()),
-            Ok(result) => result.stderr.trim().to_string(),
+            Ok(result) => summarize_attempt(&result),
             Err(error) => error.to_string(),
         };
+        if last_reported.as_deref() != Some(attempt_error.as_str()) {
+            on_attempt(&attempt_error);
+            last_reported = Some(attempt_error.clone());
+        }
         if start.elapsed() >= plan.deploy_timeout {
             break attempt_error;
         }
@@ -135,6 +144,29 @@ pub async fn wait_until_healthy(
         last_error,
         logs,
     })
+}
+
+/// Prefers `stderr` (last non-empty line, to avoid a large body/script output flooding one
+/// progress row), falls back to `stdout` the same way, falls back to the exit status if both are
+/// empty.
+fn summarize_attempt(result: &CommandResult) -> String {
+    if let Some(line) = last_nonempty_line(&result.stderr) {
+        return line.to_string();
+    }
+    if let Some(line) = last_nonempty_line(&result.stdout) {
+        return line.to_string();
+    }
+    match result.code {
+        Some(code) => format!("exited with status {code}"),
+        None => "no exit status (killed by signal)".to_string(),
+    }
+}
+
+fn last_nonempty_line(text: &str) -> Option<&str> {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
 }
 
 #[cfg(test)]
@@ -195,5 +227,44 @@ mod tests {
         );
         assert!(plan.command.contains("inspect demo-web-a"));
         assert!(plan.command.contains("grep -qx running"));
+    }
+
+    fn result(stdout: &str, stderr: &str, code: Option<u32>) -> CommandResult {
+        CommandResult {
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            success: false,
+            code,
+        }
+    }
+
+    #[test]
+    fn summarize_attempt_prefers_stderr() {
+        let summary = summarize_attempt(&result("some stdout", "boom", Some(1)));
+        assert_eq!(summary, "boom");
+    }
+
+    #[test]
+    fn summarize_attempt_falls_back_to_stdout_when_stderr_is_empty() {
+        let summary = summarize_attempt(&result("still starting", "", Some(1)));
+        assert_eq!(summary, "still starting");
+    }
+
+    #[test]
+    fn summarize_attempt_falls_back_to_exit_status_when_both_are_empty() {
+        assert_eq!(
+            summarize_attempt(&result("", "", Some(7))),
+            "exited with status 7"
+        );
+        assert_eq!(
+            summarize_attempt(&result("", "", None)),
+            "no exit status (killed by signal)"
+        );
+    }
+
+    #[test]
+    fn summarize_attempt_keeps_only_the_last_nonempty_line_of_multiline_output() {
+        let summary = summarize_attempt(&result("", "line one\n\nline two\n", Some(1)));
+        assert_eq!(summary, "line two");
     }
 }

@@ -8,7 +8,7 @@ use jiji_config::{ContainerEngine, Service};
 use jiji_network::{NetworkPlan, ServerPlan, ServiceEndpointPlan};
 use jiji_ssh::SshSession;
 
-use crate::env_resolution::ResolvedEnvironment;
+use crate::env_resolution::{redact_secrets, ResolvedEnvironment};
 use crate::proxy_routes::{RouteTarget, TcpRouteTarget};
 use crate::{container_ops, container_runtime, health_check, mounts, proxy_routes};
 
@@ -181,9 +181,19 @@ async fn deploy_shared_endpoint(
         ctx,
         &health_check_progress_detail(health_plan.deploy_timeout),
     );
-    if let Err(error) =
-        health_check::wait_until_healthy(ctx.session, ctx.engine, &candidate_name, &health_plan)
-            .await
+    if let Err(error) = health_check::wait_until_healthy(
+        ctx.session,
+        ctx.engine,
+        &candidate_name,
+        &health_plan,
+        |line| {
+            report_progress(
+                ctx,
+                &format!("health check: {}", redact_secrets(line, ctx.resolved_env)),
+            );
+        },
+    )
+    .await
     {
         release_candidate(
             ctx,
@@ -193,7 +203,8 @@ async fn deploy_shared_endpoint(
             &candidate_name,
         )
         .await;
-        return Err(error.into());
+        let message = redact_secrets(&error.to_string(), ctx.resolved_env);
+        return Err(anyhow::anyhow!(message));
     }
 
     commit_catalog(
@@ -395,13 +406,24 @@ async fn deploy_dynamic_endpoint(
         ctx,
         &health_check_progress_detail(health_plan.deploy_timeout),
     );
-    if let Err(error) =
-        health_check::wait_until_healthy(ctx.session, ctx.engine, &candidate_name, &health_plan)
-            .await
+    if let Err(error) = health_check::wait_until_healthy(
+        ctx.session,
+        ctx.engine,
+        &candidate_name,
+        &health_plan,
+        |line| {
+            report_progress(
+                ctx,
+                &format!("health check: {}", redact_secrets(line, ctx.resolved_env)),
+            );
+        },
+    )
+    .await
     {
         release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
         restore_stop_first(ctx, previous.as_ref()).await;
-        return Err(error.into());
+        let message = redact_secrets(&error.to_string(), ctx.resolved_env);
+        return Err(anyhow::anyhow!(message));
     }
 
     // Commit Active/Healthy before touching jiji-proxy at all: jiji-agent's DNS resolver answers

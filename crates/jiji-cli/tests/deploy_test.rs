@@ -389,6 +389,93 @@ fn write_config_with_build(
     config_path
 }
 
+/// `config_yaml` plus an HTTP `proxy.healthcheck` on "web" (so `wait_until_healthy` polls a
+/// deterministic `curl` command -- see `healthcheck_command` -- instead of a container-readiness
+/// check keyed on a random deployment ID), for health-check-progress integration tests. `secrets`
+/// becomes `environment.secrets`, resolved from the host environment (`--host-env`) rather than an
+/// `.env` file, since `project_root_from_config_path` resolves two levels above the config path
+/// and every other test in this file writes `deploy.yml` directly under the temp dir.
+fn config_yaml_with_healthcheck(
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+    interval: &str,
+    deploy_timeout: &str,
+    secrets: &[&str],
+) -> String {
+    let secrets_yaml = if secrets.is_empty() {
+        String::new()
+    } else {
+        let list = secrets
+            .iter()
+            .map(|name| format!("        - {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("    environment:\n      secrets:\n{list}\n")
+    };
+    format!(
+        r#"
+project: demo
+builder: {{ engine: {engine} }}
+servers:
+  app:
+    host: {ip}
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: example/web:latest
+    servers: [app]
+    proxy:
+      hosts: [web.test]
+      port: 3000
+      healthcheck:
+        path: /health
+        interval: "{interval}"
+        deploy_timeout: "{deploy_timeout}"
+        timeout: "1s"
+{secrets_yaml}ssh:
+  user: tester
+  keys_only: true
+"#,
+        engine = engine,
+        ip = addr.ip(),
+        port = addr.port(),
+        key_path = key_path.display(),
+        interval = interval,
+        deploy_timeout = deploy_timeout,
+        secrets_yaml = secrets_yaml,
+    )
+}
+
+fn write_config_with_healthcheck(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+    interval: &str,
+    deploy_timeout: &str,
+    secrets: &[&str],
+) -> std::path::PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        config_yaml_with_healthcheck(addr, key_path, engine, interval, deploy_timeout, secrets),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// The exact `curl` command `health_check::plan_for_candidate` renders for
+/// `config_yaml_with_healthcheck`'s `proxy.healthcheck` -- deterministic because the mock agent's
+/// default `# jiji-request:allocate-address` response always leases `100.64.0.10` (see
+/// `default_response`), so, unlike a container-readiness check, this command never embeds the
+/// random per-deployment container name.
+fn healthcheck_command() -> String {
+    "curl -fsS --max-time 1 http://100.64.0.10:3000/health".to_string()
+}
+
 /// Two servers: "app" hosts the only service and is reachable; "peer" is configured but
 /// unreachable (port 1, nothing listens there), so `--wait-for-peers` has exactly one
 /// unreachable peer to report as offline.
@@ -1343,6 +1430,254 @@ async fn health_check_failure_removes_only_the_candidate_and_keeps_old_container
             .iter()
             .any(|c| c.contains("# jiji-request:release-address")),
         "the unhealthy candidate lease should be released: {received:?}"
+    );
+}
+
+/// Base canned-response set for a successful `config_yaml_with_healthcheck` deploy, minus the
+/// health-check command's own responses (each test registers those itself).
+fn base_healthcheck_deploy_responses() -> HashMap<String, CannedResponse> {
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(active_slots_path(), success(""));
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("hc001"));
+    responses
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_progress_captures_stdout_from_a_failed_attempt() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let command = healthcheck_command();
+
+    let mut responses = base_healthcheck_deploy_responses();
+    responses.insert(
+        format!("{command}#1"),
+        CannedResponse {
+            success: false,
+            stdout: "still starting up".to_string(),
+            stderr: String::new(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_healthcheck(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "1s",
+        "5s",
+        &[],
+    );
+
+    let output = run_jiji_deploy(&config_path, &["--skip-proxy"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("health check: still starting up"),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_progress_prefers_stderr_over_stdout() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let command = healthcheck_command();
+
+    let mut responses = base_healthcheck_deploy_responses();
+    responses.insert(
+        format!("{command}#1"),
+        CannedResponse {
+            success: false,
+            stdout: "stdout noise".to_string(),
+            stderr: "connection refused".to_string(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_healthcheck(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "1s",
+        "5s",
+        &[],
+    );
+
+    let output = run_jiji_deploy(&config_path, &["--skip-proxy"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("health check: connection refused"),
+        "stdout: {stdout}"
+    );
+    assert!(!stdout.contains("stdout noise"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_progress_dedups_identical_attempts_but_reports_a_genuine_change() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let command = healthcheck_command();
+
+    let mut responses = base_healthcheck_deploy_responses();
+    for occurrence in [1, 2] {
+        responses.insert(
+            format!("{command}#{occurrence}"),
+            CannedResponse {
+                success: false,
+                stdout: String::new(),
+                stderr: "message A".to_string(),
+            },
+        );
+    }
+    responses.insert(
+        format!("{command}#3"),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "message B".to_string(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_healthcheck(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "1s",
+        "10s",
+        &[],
+    );
+
+    let output = run_jiji_deploy(&config_path, &["--skip-proxy"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.matches("health check: message A").count(),
+        1,
+        "an identical repeat should be deduped, stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("health check: message B").count(),
+        1,
+        "a genuinely changed attempt should still be reported, stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_timeout_reports_the_failure_text_and_the_log_tail() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let command = healthcheck_command();
+
+    let mut responses = base_healthcheck_deploy_responses();
+    responses.insert(
+        command,
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "backend unreachable".to_string(),
+        },
+    );
+    responses.insert(
+        "PREFIX:docker logs --tail 50 demo-web-".to_string(),
+        success("panic: crash on boot\n"),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_healthcheck(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "1s",
+        "2s",
+        &[],
+    );
+
+    let output = run_jiji_deploy(&config_path, &["--skip-proxy"]);
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("backend unreachable"), "stderr: {stderr}");
+    assert!(stderr.contains("panic: crash on boot"), "stderr: {stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_progress_never_prints_a_secret_value() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let command = healthcheck_command();
+
+    let mut responses = base_healthcheck_deploy_responses();
+    responses.insert(
+        format!("{command}#1"),
+        CannedResponse {
+            success: false,
+            stdout: "auth failed with token correct-horse-battery-staple".to_string(),
+            stderr: String::new(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_healthcheck(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "1s",
+        "5s",
+        &["SECRET_TOKEN"],
+    );
+
+    let mut jiji_command = Command::new(env!("CARGO_BIN_EXE_jiji"));
+    jiji_command
+        .arg("deploy")
+        .arg("-c")
+        .arg(&config_path)
+        .arg("--yes")
+        .arg("--skip-proxy")
+        .arg("--host-env")
+        .env("SECRET_TOKEN", "correct-horse-battery-staple");
+    let output = jiji_command.output().expect("run jiji deploy");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("health check: auth failed with token <redacted>"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("correct-horse-battery-staple"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("correct-horse-battery-staple"),
+        "stderr: {stderr}"
     );
 }
 

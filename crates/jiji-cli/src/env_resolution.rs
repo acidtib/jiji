@@ -247,6 +247,25 @@ pub fn redacted_summary(resolved: &ResolvedEnvironment) -> Vec<String> {
         .collect()
 }
 
+/// Replaces every known secret/control value with `<redacted>` wherever it appears in `text` --
+/// safe to print in live progress output or bubble up in an error message, mirroring
+/// `redacted_summary`'s guarantee for the `KEY=VALUE` debug listing.
+pub fn redact_secrets(text: &str, resolved: &ResolvedEnvironment) -> String {
+    let mut redacted = text.to_string();
+    for key in resolved
+        .secret_keys
+        .iter()
+        .chain(resolved.control_keys.iter())
+    {
+        if let Some(value) = resolved.values.get(key) {
+            if !value.is_empty() {
+                redacted = redacted.replace(value.as_str(), "<redacted>");
+            }
+        }
+    }
+    redacted
+}
+
 /// Root of the per-project host-side staging tree (`env/`, and `mounts.rs`'s `files/`/
 /// `directories/`). Intentionally a *relative* path: it resolves against the SSH login's default
 /// working directory (its home directory), matching `stage_env_file` and
@@ -415,6 +434,48 @@ mod tests {
         assert!(summary.contains("PLAIN=visible"));
         assert!(summary.contains("SECRET=<redacted>"));
         assert!(!summary.contains("top-secret"));
+    }
+
+    #[test]
+    fn redact_secrets_replaces_every_occurrence_of_a_secret_or_control_value() {
+        let mut resolved = ResolvedEnvironment::default();
+        resolved
+            .values
+            .insert("SECRET".to_string(), "top-secret".to_string());
+        resolved.secret_keys.insert("SECRET".to_string());
+        resolved
+            .values
+            .insert("TLS_CERT".to_string(), "cert-material".to_string());
+        resolved.control_keys.insert("TLS_CERT".to_string());
+
+        let text = "attempt failed: top-secret appears twice: top-secret, and cert-material too";
+        let redacted = redact_secrets(text, &resolved);
+        assert!(!redacted.contains("top-secret"));
+        assert!(!redacted.contains("cert-material"));
+        assert_eq!(
+            redacted,
+            "attempt failed: <redacted> appears twice: <redacted>, and <redacted> too"
+        );
+    }
+
+    #[test]
+    fn redact_secrets_leaves_non_secret_text_untouched() {
+        let mut resolved = ResolvedEnvironment::default();
+        resolved
+            .values
+            .insert("SECRET".to_string(), "top-secret".to_string());
+        resolved.secret_keys.insert("SECRET".to_string());
+
+        assert_eq!(
+            redact_secrets("nothing sensitive here", &resolved),
+            "nothing sensitive here"
+        );
+    }
+
+    #[test]
+    fn redact_secrets_is_a_no_op_on_empty_input() {
+        let resolved = ResolvedEnvironment::default();
+        assert_eq!(redact_secrets("", &resolved), "");
     }
 
     #[test]
