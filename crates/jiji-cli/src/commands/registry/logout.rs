@@ -85,22 +85,33 @@ pub async fn run(
         outcomes.append(&mut connect_failures);
 
         Ui::section("Registry Logout:");
+        let hosts: Vec<String> = sessions.keys().cloned().collect();
+        let progress =
+            jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Logging out".to_string());
+        let handle = progress.handle();
         for (name, session) in &sessions {
+            handle.set_status(name, "logging out");
             match registry::logout_remote(session, config.builder.engine, &config.builder.registry)
                 .await
             {
                 Ok(registry::AuthOutcome::LoggedOut) => {
+                    handle.mark_success(name, "logged out");
                     outcomes.push(TargetOutcome::Success(TargetKind::Remote(name.clone())))
                 }
                 Ok(registry::AuthOutcome::AlreadyLoggedOut) => {
+                    handle.mark_success(name, "already logged out");
                     outcomes.push(TargetOutcome::AlreadyDone(TargetKind::Remote(name.clone())))
                 }
-                Err(error) => outcomes.push(TargetOutcome::Failed(
-                    TargetKind::Remote(name.clone()),
-                    error.to_string(),
-                )),
+                Err(error) => {
+                    handle.mark_failed(name, &error.to_string());
+                    outcomes.push(TargetOutcome::Failed(
+                        TargetKind::Remote(name.clone()),
+                        error.to_string(),
+                    ))
+                }
             }
         }
+        progress.finish();
         shared::close_all(&sessions).await;
     }
 

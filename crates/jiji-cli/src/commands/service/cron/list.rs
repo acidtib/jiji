@@ -140,17 +140,23 @@ async fn list_service_crons(
         let installed = installed_specs
             .iter()
             .find(|spec| spec.service == service_name && spec.cron_name == *cron_name);
-        let state = match installed {
-            None => "not-deployed".to_string(),
+        let (state, ok) = match installed {
+            None => ("not-deployed".to_string(), false),
             Some(installed) => match server {
-                None => format!(
-                    "installed (drift unknown: '{}' is not in the current network plan)",
-                    owner.server_name
+                None => (
+                    format!(
+                        "installed (drift unknown: '{}' is not in the current network plan)",
+                        owner.server_name
+                    ),
+                    true,
                 ),
                 Some(server) => match (&mount_args, &env_file_path) {
-                    (None, _) | (_, None) => format!(
-                        "installed (drift unknown: could not determine the cron owner's home directory on '{}')",
-                        owner.server_name
+                    (None, _) | (_, None) => (
+                        format!(
+                            "installed (drift unknown: could not determine the cron owner's home directory on '{}')",
+                            owner.server_name
+                        ),
+                        true,
                     ),
                     (Some(mount_args), Some(env_file_path)) => {
                         let expected = crate::cron_reconcile::render_apply_request(
@@ -175,21 +181,28 @@ async fn list_service_crons(
                             unreachable!("render_apply_request always returns CronSpecApply")
                         };
                         if expected_hash == installed.canonical_hash {
-                            "installed".to_string()
+                            ("installed".to_string(), true)
                         } else {
-                            "drifted".to_string()
+                            ("drifted".to_string(), false)
                         }
                     }
                 },
             },
         };
-        Ui::say(
-            &format!(
-                "{service_name} {cron_name}: schedule=\"{}\" timezone={} owner={} state={state}",
-                cron.schedule, cron.timezone, owner.server_name
-            ),
-            1,
+        let detail = format!(
+            "{service_name} {cron_name}: schedule=\"{}\" timezone={} owner={} state={state}",
+            cron.schedule, cron.timezone, owner.server_name
         );
+        if ok {
+            Ui::result_ok(
+                &format!("{service_name}/{cron_name}"),
+                &format!("{state} owner={}", owner.server_name),
+            );
+            Ui::say(&detail, 2);
+        } else {
+            Ui::result_warn(&format!("{service_name}/{cron_name}"), &state);
+            Ui::say(&detail, 2);
+        }
     }
 
     crate::cron_reconcile::close_newly_opened(&resolved, &newly_opened).await;

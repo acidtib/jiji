@@ -560,7 +560,13 @@ pub async fn run(
         }
     }
 
-    let deploy_spinner = Ui::spinner(&format!("Deploying {} endpoint(s)", selected.len()));
+    Ui::section("Deploying:");
+    let endpoint_identities: Vec<(String, String)> = selected
+        .iter()
+        .map(|e| (e.identity.clone(), e.server.clone()))
+        .collect();
+    let deploy_progress = Ui::deploy_progress_with_servers(endpoint_identities);
+    let deploy_handle = deploy_progress.handle();
     let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> = BTreeMap::new();
     for endpoint in &selected {
         endpoints_by_service
@@ -600,7 +606,7 @@ pub async fn run(
                 let replica_ids = replica_ids.clone();
                 let engine = config.builder.engine;
                 let project_root = project_root.clone();
-                let progress = deploy_spinner.handle();
+                let progress = Some(deploy_handle.clone());
                 // An upstream with a dependent in the second wave must not activate its own proxy
                 // route inline: that happens before this function returns, well before the
                 // dependent (whose port the route may target) has redeployed. Deferred instead to
@@ -631,7 +637,6 @@ pub async fn run(
                         endpoints,
                         progress,
                         presumed_failed,
-                        "Deploying",
                     )
                 }
             })
@@ -663,7 +668,7 @@ pub async fn run(
         .chain(wave_two_tagged)
         .map(|(_service_name, outcomes)| outcomes)
         .collect();
-    drop(deploy_spinner);
+    deploy_progress.finish();
     cancel_forwards(&sessions, &registry_forwards).await;
     // Runs regardless of `skip_proxy`/ingress outcome below: a service's own endpoints already
     // succeeded or failed by this point, and cron reconciliation is independent of proxy routing.

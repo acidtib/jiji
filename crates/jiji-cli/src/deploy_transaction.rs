@@ -158,7 +158,7 @@ async fn deploy_shared_endpoint(
     )
     .await?;
 
-    report_progress(ctx, "starting candidate");
+    report_progress(ctx, "starting container");
     if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
         release_candidate(
             ctx,
@@ -290,6 +290,7 @@ async fn deploy_dynamic_endpoint(
         ResponseBody::AddressLease { address, .. } => address.parse()?,
         response => anyhow::bail!("Agent returned unexpected lease response: {response:?}"),
     };
+    report_progress(ctx, &format!("leased {address}"));
 
     if ctx.service.stop_first {
         if let Some(previous) = &previous {
@@ -365,7 +366,7 @@ async fn deploy_dynamic_endpoint(
     )
     .await?;
 
-    report_progress(ctx, "starting candidate");
+    report_progress(ctx, "starting container");
     if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
         release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
         restore_stop_first(ctx, previous.as_ref()).await;
@@ -678,7 +679,7 @@ fn report_progress(ctx: &EndpointDeploymentContext<'_>, detail: &str) {
 }
 
 fn health_check_progress_detail(timeout: std::time::Duration) -> String {
-    format!("waiting for health check (up to {}s)", timeout.as_secs())
+    format!("health check ({}s)", timeout.as_secs())
 }
 
 fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {
@@ -689,11 +690,8 @@ fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {
         .filter_map(health_check::parse_duration)
         .max();
     match timeout {
-        Some(timeout) => format!(
-            "configuring proxy route (health timeout {}s)",
-            timeout.as_secs()
-        ),
-        None => "configuring proxy route".to_string(),
+        Some(timeout) => format!("proxy route ({}s)", timeout.as_secs()),
+        None => "proxy route".to_string(),
     }
 }
 
@@ -770,7 +768,7 @@ mod tests {
     fn health_check_progress_includes_the_configured_timeout() {
         assert_eq!(
             health_check_progress_detail(Duration::from_secs(90)),
-            "waiting for health check (up to 90s)"
+            "health check (90s)"
         );
     }
 
@@ -790,7 +788,7 @@ mod tests {
 
         assert_eq!(
             proxy_activation_progress_detail(&targets),
-            "configuring proxy route (health timeout 60s)"
+            "proxy route (60s)"
         );
     }
 }

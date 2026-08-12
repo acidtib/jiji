@@ -102,6 +102,10 @@ pub async fn run(
         return result;
     }
 
+    let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+    let progress =
+        jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Fetching logs".to_string());
+    let handle = progress.handle();
     let mut operations = Vec::with_capacity(selected.len());
     for target in selected {
         let name = target.name.clone();
@@ -110,19 +114,33 @@ pub async fn run(
         })?;
         let options = ssh_adapter::connect_options(&name, named_server, &ssh)?;
         let command = command.clone();
-        operations.push(move || async move {
-            let result = async {
-                let session = SshSession::connect(&options).await?;
-                let outcome = session.execute(&command).await;
-                session.close().await;
-                outcome
+        let h = handle.clone();
+        let n = name.clone();
+        h.set_status(&n, "fetching");
+        operations.push(move || {
+            let h = h.clone();
+            let n = n.clone();
+            async move {
+                h.set_status(&n, "fetching");
+                let result = async {
+                    let session = SshSession::connect(&options).await?;
+                    let outcome = session.execute(&command).await;
+                    session.close().await;
+                    outcome
+                }
+                .await;
+                match &result {
+                    Ok(r) if r.success => h.mark_success(&n, "fetched"),
+                    Ok(r) => h.mark_failed(&n, r.stderr.lines().next().unwrap_or("failed").trim()),
+                    Err(e) => h.mark_failed(&n, &e.to_string()),
+                }
+                (name, result)
             }
-            .await;
-            (name, result)
         });
     }
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let outcomes = pool.execute_concurrent(operations).await;
+    progress.finish();
     let mut failures = Vec::new();
     for (name, outcome) in outcomes {
         match outcome {

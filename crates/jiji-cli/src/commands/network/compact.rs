@@ -51,13 +51,20 @@ pub async fn run(
         "jiji network compact".to_string(),
         move || async move {
             Ui::section("Compacting Control Plane:");
+            let started = std::time::Instant::now();
+            let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+            let progress =
+                jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Compacting".to_string());
+            let handle = progress.handle();
             let mut failures = Vec::new();
             for server_plan in &selected {
+                handle.set_status(&server_plan.name, "compacting");
                 let name = &server_plan.name;
                 let options = ssh_adapter::connect_options(name, &config.servers[name], ssh)?;
                 let session = match SshSession::connect(&options).await {
                     Ok(session) => session,
                     Err(error) => {
+                        handle.mark_failed(name, &error.to_string());
                         failures.push(format!("{name}: {error}"));
                         continue;
                     }
@@ -75,24 +82,42 @@ pub async fn run(
                         membership_removed,
                         catalog_removed,
                         desired_removed,
-                    }) => Ui::result_ok(
-                        name,
-                        &format!(
+                    }) => {
+                        handle.mark_success(name, &format!("{catalog_removed} removed"));
+                        Ui::result_ok(
+                            name,
+                            &format!(
                             "removed {membership_removed} membership, {catalog_removed} catalog, \
                      {desired_removed} desired operation(s)"
                         ),
-                    ),
-                    Ok(other) => failures.push(format!("{name}: unexpected response {other:?}")),
-                    Err(error) => failures.push(format!("{name}: {error}")),
+                        )
+                    }
+                    Ok(other) => {
+                        handle.mark_failed(name, "unexpected response");
+                        failures.push(format!("{name}: unexpected response {other:?}"))
+                    }
+                    Err(error) => {
+                        handle.mark_failed(name, &error.to_string());
+                        failures.push(format!("{name}: {error}"))
+                    }
                 }
             }
+            progress.finish();
+            Ui::say(
+                &format!(
+                    "Compacted {} host(s) in {}",
+                    hosts.len(),
+                    jiji_tui::format_duration(started.elapsed())
+                ),
+                1,
+            );
             for failure in &failures {
                 Ui::result_warn("unavailable", failure);
             }
             if !failures.is_empty() {
                 anyhow::bail!("Compaction failed on {} server(s)", failures.len());
             }
-            Ui::success("Control-plane compaction completed.");
+            Ui::success_elapsed("Control-plane compaction completed.", started.elapsed());
             Ok(())
         },
     )

@@ -164,10 +164,16 @@ pub async fn run(
         "jiji network backup".to_string(),
         move || async move {
             Ui::section("Exporting Control Plane:");
+            let export_started = std::time::Instant::now();
+            let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+            let progress =
+                jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Exporting".to_string());
+            let handle = progress.handle();
             let paths = AgentPaths::default_for_project(&config.project);
             let mut snapshots = Vec::new();
             let mut failures = Vec::new();
             for server_plan in &selected {
+                handle.set_status(&server_plan.name, "exporting");
                 let name = server_plan.name.clone();
                 let server = config
                     .servers
@@ -177,15 +183,26 @@ pub async fn run(
                 match fetch_snapshot(&options, &paths, &config.project).await {
                     Ok(snapshot) => {
                         snapshot.validate_identity(&config.project, recovery_epoch)?;
+                        handle.mark_success(&name, "exported");
                         Ui::result_ok(&name, "catalog/desired state and local claims exported");
                         snapshots.push(snapshot);
                     }
                     Err(error) => {
+                        handle.mark_failed(&name, &error.to_string());
                         Ui::result_warn(&name, &format!("unavailable: {error}"));
                         failures.push(name);
                     }
                 }
             }
+            progress.finish();
+            Ui::say(
+                &format!(
+                    "Exported from {} host(s) in {}",
+                    hosts.len(),
+                    jiji_tui::format_duration(export_started.elapsed())
+                ),
+                1,
+            );
             if snapshots.is_empty() {
                 anyhow::bail!("No agent could export state; no backup was written");
             }
@@ -207,10 +224,13 @@ pub async fn run(
                     failures.join(", ")
                 ));
             }
-            Ui::success(&format!(
-                "Encrypted control-plane backup written to {}.",
-                output.display()
-            ));
+            Ui::success_elapsed(
+                &format!(
+                    "Encrypted control-plane backup written to {}.",
+                    output.display()
+                ),
+                export_started.elapsed(),
+            );
             Ok(())
         },
     )
@@ -404,8 +424,14 @@ pub async fn restore(
         move || async move {
             let paths = AgentPaths::default_for_project(&config.project);
             Ui::section("Restoring Control Plane:");
+            let restore_started = std::time::Instant::now();
+            let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+            let progress =
+                jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Restoring".to_string());
+            let handle = progress.handle();
             let mut failures = Vec::new();
             for server_plan in &selected {
+                handle.set_status(&server_plan.name, "restoring");
                 let name = &server_plan.name;
                 let exact_snapshot = backup
                     .agents
@@ -425,6 +451,7 @@ pub async fn restore(
                 let session = match SshSession::connect(&options).await {
                     Ok(session) => session,
                     Err(error) => {
+                        handle.mark_failed(name, &error.to_string());
                         failures.push(format!("{name}: {error}"));
                         continue;
                     }
@@ -446,19 +473,35 @@ pub async fn restore(
                 session.close().await;
                 match result {
                     Ok(result) if result.success => {
+                        handle.mark_success(name, "restored");
                         Ui::result_ok(name, "same-epoch state restored")
                     }
-                    Ok(result) => failures.push(format!("{name}: {}", result.stderr.trim())),
-                    Err(error) => failures.push(format!("{name}: {error}")),
+                    Ok(result) => {
+                        handle.mark_failed(name, result.stderr.trim());
+                        failures.push(format!("{name}: {}", result.stderr.trim()))
+                    }
+                    Err(error) => {
+                        handle.mark_failed(name, &error.to_string());
+                        failures.push(format!("{name}: {error}"))
+                    }
                 }
             }
+            progress.finish();
+            Ui::say(
+                &format!(
+                    "Restored to {} host(s) in {}",
+                    hosts.len(),
+                    jiji_tui::format_duration(restore_started.elapsed())
+                ),
+                1,
+            );
             for failure in &failures {
                 Ui::result_warn("restore", failure);
             }
             if !failures.is_empty() {
                 anyhow::bail!("Restore failed on {} server(s)", failures.len());
             }
-            Ui::success("Control-plane state restored.");
+            Ui::success_elapsed("Control-plane state restored.", restore_started.elapsed());
             Ok(())
         },
     )

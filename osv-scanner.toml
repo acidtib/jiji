@@ -13,3 +13,7 @@ reason = "Informational unmaintained advisory for derivative, a compile-time pro
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0437"
 reason = "Protobuf stack-overflow advisory affects the CodedInputStream::skip_group parsing path, but prometheus 0.13.4 (the only protobuf consumer, pulled by pingora-core) only ever encodes metrics via write_length_delimited_to_writer and never parses protobuf input; jiji-proxy mounts no prometheus endpoint and the vulnerable function is unreachable. Upgrading protobuf to 3.x would break prometheus 0.13's API and requires an upstream pingora change."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0253"
+reason = "lru 0.16.4 LruCache::pop() use-after-free requires a key whose Drop panics and that panic is caught via catch_unwind before detach, leaving a dangling list pointer dereferenced on next eviction. pingora-cache uses u64 keys and pingora-pool uses integer IDs / ConnectionMeta (none have panicking Drop), and jiji-proxy never wraps cache/pool operations in catch_unwind, so the detach-skipping path and subsequent dangling-pointer dereference are unreachable. Upgrading to 0.18.2 is blocked on pingora 0.8.1, whose Cargo.toml requires lru ^0.16.3 and has no newer release."

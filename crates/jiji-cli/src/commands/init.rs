@@ -7,14 +7,20 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub fn run(environment: Option<&str>) -> anyhow::Result<()> {
-    Ui::section("Configuration Initialization:");
+    let started = std::time::Instant::now();
+    Ui::section("Init:");
 
     let config_path = build_config_path(environment);
     Ui::say(&format!("Target: {}", config_path.display()), 1);
 
     let existing = get_available_configs(Path::new("."));
     if !existing.is_empty() {
-        Ui::say(&format!("Existing configurations ({}):", existing.len()), 1);
+        // Keep compact — one line summary plus indented list, matches previous
+        // behaviour but uses dimmed styling in TTY via Ui::say hierarchy.
+        Ui::say(
+            &format!("Existing: {} file(s) in .jiji/", existing.len()),
+            1,
+        );
         for cfg in &existing {
             Ui::say(&cfg.display().to_string(), 2);
         }
@@ -33,25 +39,25 @@ pub fn run(environment: Option<&str>) -> anyhow::Result<()> {
             false,
         )?;
         if !overwrite {
-            Ui::say("Init command cancelled by user", 0);
+            Ui::say("Init cancelled — existing file kept.", 0);
             return Ok(());
         }
-        Ui::say("Existing configuration will be replaced.", 1);
+        Ui::say("Overwriting existing configuration.", 1);
     }
 
-    Ui::section("Creating Configuration:");
-    Ui::say("Loading default configuration template", 1);
+    // Single concise "Creating" block — the template is embedded, so there is no
+    // real loading time to report step-by-step.
     let template = render_template();
-
-    Ui::say("Writing configuration file", 1);
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&config_path, &template)?;
-    Ui::say(&format!("Created: {}", config_path.display()), 1);
+    Ui::result_ok(
+        &config_path.display().to_string(),
+        &format!("created ({} bytes)", template.len()),
+    );
 
     Ui::section("Validation:");
-    Ui::say("Validating configuration", 1);
     let raw: serde_yaml::Value =
         serde_yaml::from_str(&template).map_err(|source| ConfigError::Load {
             path: config_path.display().to_string(),
@@ -59,11 +65,11 @@ pub fn run(environment: Option<&str>) -> anyhow::Result<()> {
         })?;
     let result = validate_yaml(&raw);
     if result.valid {
-        Ui::say("Configuration is valid", 1);
+        // Keep exact phrase for test compatibility, but surface as a structured result.
+        Ui::result_ok("configuration", "valid — Configuration is valid");
         if !result.warnings.is_empty() {
-            Ui::say(&format!("Warnings ({}):", result.warnings.len()), 1);
             for w in &result.warnings {
-                Ui::say(&format!("{}: {}", w.path, w.message), 2);
+                Ui::result_warn(&w.path, &w.message);
             }
         }
     } else {
@@ -72,7 +78,7 @@ pub fn run(environment: Option<&str>) -> anyhow::Result<()> {
             result.errors.len()
         ));
         for e in &result.errors {
-            Ui::say(&format!("{}: {}", e.path, e.message), 1);
+            Ui::result_error(&e.path, &e.message);
         }
         let joined = result
             .errors
@@ -84,28 +90,47 @@ pub fn run(environment: Option<&str>) -> anyhow::Result<()> {
     }
 
     if let Some(engine) = template_engine() {
-        Ui::say(&format!("Checking {engine} availability"), 1);
         if engine_available(engine) {
-            Ui::say(&format!("{engine} is available"), 1);
+            Ui::result_ok("engine", &format!("{engine} available"));
         } else {
-            Ui::warn(&format!("{engine} is not available on this system"));
+            Ui::result_warn("engine", &format!("{engine} not found"));
             Ui::say(
-                &format!("Install {engine}, or select another engine in the configuration."),
+                &format!(
+                    "Install {engine} or change builder.engine in {}",
+                    config_path.display()
+                ),
                 1,
             );
         }
     }
 
-    Ui::section("Next Steps:");
-    Ui::say("1. Review the generated configuration.", 1);
-    Ui::say("2. Configure services, servers, and secrets.", 1);
-    Ui::say("3. Run `jiji server setup` to prepare the servers.", 1);
-    Ui::say("4. Run `jiji deploy`.", 1);
+    Ui::section("Next steps:");
+    // Keep numbered steps but with tighter phrasing; indentation matches Ui::say hierarchy.
+    Ui::say(
+        "1. Review .jiji/deploy.yml — set project, servers, and services.",
+        1,
+    );
+    Ui::say(
+        "2. Add secrets to .env / host env as referenced by the template.",
+        1,
+    );
+    Ui::say(
+        "3. Run `jiji server setup` to bootstrap the WireGuard mesh and jiji-agent.",
+        1,
+    );
+    Ui::say("4. Run `jiji deploy` to ship the first deployment.", 1);
+    Ui::say(
+        &format!(
+            "Template: {} (edit before deploying)",
+            config_path.display()
+        ),
+        1,
+    );
 
-    Ui::success(&format!(
-        "\nConfiguration file created: {}",
-        config_path.display()
-    ));
+    Ui::success_elapsed(
+        &format!("Configuration file created: {}", config_path.display()),
+        started.elapsed(),
+    );
 
     Ok(())
 }

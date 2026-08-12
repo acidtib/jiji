@@ -63,12 +63,16 @@ pub fn run(
             informational_only |= !secret_ref.runtime_resolved;
             let resolved =
                 env_resolution::resolve_secret_name(&secret_ref.name, &loaded_env, host_env);
-            let status = match (&resolved, show_values) {
-                (Some(value), true) => value.clone(),
-                (Some(_), false) => "[SET]".to_string(),
-                (None, _) => "[MISSING]".to_string(),
+            let (status, is_ok) = match (&resolved, show_values) {
+                (Some(value), true) => (value.clone(), true),
+                (Some(_), false) => ("[SET]".to_string(), true),
+                (None, _) => ("[MISSING]".to_string(), false),
             };
-            Ui::say(&format!("{}: {}", secret_ref.name, status), 1);
+            if is_ok {
+                Ui::result_ok(&secret_ref.name, &status);
+            } else {
+                Ui::result_error(&secret_ref.name, &status);
+            }
         }
     }
 

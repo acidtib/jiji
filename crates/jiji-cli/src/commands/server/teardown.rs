@@ -236,7 +236,14 @@ pub async fn run(
         },
         || async {
             Ui::section("Tearing Down:");
+            let hosts: Vec<String> = plans.keys().cloned().collect();
+            let teardown_progress = jiji_tui::ServerSetupProgress::with_title(
+                hosts.clone(),
+                "Tearing down".to_string(),
+            );
+            let tp_handle = teardown_progress.handle();
             for (name, plan) in &plans {
+                tp_handle.set_status(name, "tearing down");
                 let session = sessions.get(name).expect("connected above");
                 Ui::say(&format!("{name}:"), 1);
                 let steps = execute_host_teardown(
@@ -288,8 +295,18 @@ pub async fn run(
                     Some(started_at.elapsed()),
                 )
                 .await;
+                if failed {
+                    tp_handle.mark_failed(name, "teardown failed");
+                } else {
+                    let removed = steps
+                        .iter()
+                        .filter(|(_, r)| matches!(r, TeardownStepResult::Removed))
+                        .count();
+                    tp_handle.mark_success(name, &format!("{removed} removed"));
+                }
                 outcomes.insert(name.clone(), HostTeardownOutcome::Completed { steps });
             }
+            teardown_progress.finish();
 
             print_summary_and_exit(&outcomes)
         },

@@ -16,26 +16,35 @@ pub async fn run(
     let statuses = discover_all(&targets).await?;
     close_all(&targets.sessions).await;
 
+    let started = std::time::Instant::now();
     Ui::section("Hosts:");
     for (name, locks) in &statuses {
-        Ui::say(&format!("{name}:"), 1);
         if locks.is_empty() {
-            Ui::say("Status: UNLOCKED", 2);
-            Ui::say("Available", 2);
+            Ui::result_ok(name, "UNLOCKED — Available");
             continue;
         }
+        Ui::say(&format!("{name}:"), 1);
         for (scope, info) in locks {
-            Ui::say(&format!("Scope: {scope}"), 2);
-            Ui::say("Status: LOCKED", 3);
-            Ui::say(&format!("Message: {}", info.message), 3);
-            Ui::say(&format!("Acquired by: {}", info.acquired_by), 3);
-            Ui::say(
-                &format!("Acquired: {} ago", lock::format_age(info.age_seconds())),
-                3,
+            Ui::result_warn(
+                &format!("{name} [{scope}]"),
+                &format!(
+                    "LOCKED \"{}\" by {} ({} ago, pid {})",
+                    info.message,
+                    info.acquired_by,
+                    lock::format_age(info.age_seconds()),
+                    info.pid
+                ),
             );
-            Ui::say(&format!("Process ID: {}", info.pid), 3);
         }
     }
+    Ui::say(
+        &format!(
+            "Inspected {} host(s) in {}",
+            statuses.len(),
+            jiji_tui::format_duration(started.elapsed())
+        ),
+        1,
+    );
 
     Ok(())
 }

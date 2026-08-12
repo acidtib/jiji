@@ -10,6 +10,7 @@ pub async fn run(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     Ui::section("Registry Teardown:");
+    let started = std::time::Instant::now();
     let start = std::env::current_dir()?;
     let (config, _) = load_config(environment, config_file.map(std::path::Path::new), &start)?;
     let validation = validate_config(&config);
@@ -38,11 +39,12 @@ pub async fn run(
     let state =
         registry::local_registry_state(config.builder.engine, config.builder.registry.port).await?;
     if state.is_none() {
-        Ui::success("Local registry is already absent.");
+        Ui::result_ok("Local registry", "already absent");
         return Ok(());
     }
     if dry_run {
-        Ui::success("Dry run completed. No container was removed.");
+        Ui::say("Dry run: no changes were made.", 1);
+        Ui::result_ok("Local registry", "dry-run, still present");
         return Ok(());
     }
     if !yes
@@ -54,7 +56,10 @@ pub async fn run(
         anyhow::bail!("Registry teardown cancelled; no container was removed.");
     }
 
+    let spin = Ui::spinner("Removing local registry");
     registry::remove_local_registry(config.builder.engine, config.builder.registry.port).await?;
-    Ui::success("Local registry container removed.");
+    drop(spin);
+    Ui::result_ok("Local registry", "removed");
+    Ui::success_elapsed("Local registry container removed.", started.elapsed());
     Ok(())
 }

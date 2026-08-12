@@ -34,13 +34,33 @@ pub async fn run(
     if !json {
         Ui::section("Control-Plane Diagnostics:");
     }
+    let diag_started = std::time::Instant::now();
+    let diag_hosts: Vec<String> = if !json {
+        selected.iter().map(|s| s.name.clone()).collect()
+    } else {
+        Vec::new()
+    };
+    let diag_progress = if !json && !diag_hosts.is_empty() {
+        let p =
+            jiji_tui::ServerSetupProgress::with_title(diag_hosts.clone(), "Checking".to_string());
+        Some(p)
+    } else {
+        None
+    };
+    let diag_handle = diag_progress.as_ref().map(|p| p.handle());
     let mut failures = Vec::new();
     for server_plan in selected {
+        if let Some(h) = &diag_handle {
+            h.set_status(&server_plan.name, "checking");
+        }
         let name = &server_plan.name;
         let options = ssh_adapter::connect_options(name, &config.servers[name], ssh)?;
         let session = match SshSession::connect(&options).await {
             Ok(session) => session,
             Err(error) => {
+                if let Some(h) = &diag_handle {
+                    h.mark_failed(name, &error.to_string());
+                }
                 failures.push(format!("{name}: {error}"));
                 continue;
             }
@@ -149,9 +169,46 @@ pub async fn run(
                     );
                 }
             }
-            Ok(other) => failures.push(format!("{name}: unexpected response {other:?}")),
-            Err(error) => failures.push(format!("{name}: {error}")),
+            Ok(other) => {
+                if let Some(h) = &diag_handle {
+                    h.mark_failed(name, "unexpected response");
+                }
+                failures.push(format!("{name}: unexpected response {other:?}"))
+            }
+            Err(error) => {
+                if let Some(h) = &diag_handle {
+                    h.mark_failed(name, &error.to_string());
+                }
+                failures.push(format!("{name}: {error}"))
+            }
         }
+        // For the ok path, also mark dashboard: success/warn based on unhealthy already rendered.
+        // We re-derive quickly: if we reached the Ok(ResponseBody::Diagnostics) branch with result_ok,
+        // that already implied success path; we mark there via side effect above.
+        // To keep it simple, mark success if not already failed and not json.
+        if !json {
+            if let Some(h) = &diag_handle {
+                // avoid double-mark: check if bar already finished? we use set logic: only mark if not yet marked failed
+                // we track via failures length: if no new failure added for this host, mark success
+                if !failures.iter().any(|f| f.starts_with(&format!("{name}:"))) {
+                    // unhealthy still counts as warn but dashboard success keeps green check; result_warn line already printed
+                    h.mark_success(name, "checked");
+                }
+            }
+        }
+    }
+    if let Some(p) = diag_progress {
+        p.finish();
+    }
+    if !json && !diag_hosts.is_empty() {
+        Ui::say(
+            &format!(
+                "Checked {} host(s) in {}",
+                diag_hosts.len(),
+                jiji_tui::format_duration(diag_started.elapsed())
+            ),
+            1,
+        );
     }
     for failure in &failures {
         Ui::result_warn("unavailable", failure);

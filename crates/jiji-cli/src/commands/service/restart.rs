@@ -324,8 +324,13 @@ pub async fn run(
             }
 
             let engine = config.builder.engine;
-            let restart_spinner =
-                Ui::spinner(&format!("Restarting {} endpoint(s)", selected.len()));
+            Ui::section("Restarting:");
+            let endpoint_identities: Vec<(String, String)> = selected
+                .iter()
+                .map(|e| (e.identity.clone(), e.server.clone()))
+                .collect();
+            let restart_progress = Ui::deploy_progress_with_servers(endpoint_identities);
+            let restart_handle = restart_progress.handle();
             let mut endpoints_by_service: BTreeMap<String, Vec<ServiceEndpointPlan>> =
                 BTreeMap::new();
             for endpoint in &selected {
@@ -360,7 +365,7 @@ pub async fn run(
                             let images = images.clone();
                             let replica_ids = replica_ids.clone();
                             let project_root = project_root.clone();
-                            let progress = restart_spinner.handle();
+                            let progress = Some(restart_handle.clone());
                             let force_skip_proxy = dependents_of.contains_key(&service_name);
                             let presumed_failed = presumed_failed
                                 .get(
@@ -386,7 +391,6 @@ pub async fn run(
                                     endpoints,
                                     progress,
                                     presumed_failed,
-                                    "Restarting",
                                 )
                             }
                         })
@@ -421,7 +425,7 @@ pub async fn run(
                 .chain(wave_two_tagged)
                 .map(|(_service_name, outcomes)| outcomes)
                 .collect();
-            drop(restart_spinner);
+            restart_progress.finish();
 
             let cron_problems = crate::cron_reconcile::reconcile_after_deploy(
                 &ssh, &config, &plan, &sessions, &selected, &results,

@@ -97,8 +97,20 @@ pub async fn run(
         );
     }
 
+    let connecting_started = std::time::Instant::now();
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let names: Vec<String> = connect_options.keys().cloned().collect();
+    let audit_progress = if !json {
+        let p = jiji_tui::ServerSetupProgress::with_title(names.clone(), "Connecting".to_string());
+        let h = p.handle();
+        for n in &names {
+            h.set_status(n, "connecting");
+        }
+        Ui::section("Connecting:");
+        Some((p, h))
+    } else {
+        None
+    };
     let operations: Vec<_> = names
         .iter()
         .map(|name| connect_options.get(name).expect("inserted above").clone())
@@ -111,10 +123,33 @@ pub async fn run(
     for (name, connection) in names.iter().zip(connections) {
         match connection {
             Ok(session) => {
+                if let Some((_, h)) = &audit_progress {
+                    h.mark_success(name, "connected");
+                }
+                if !json {
+                    Ui::say(&format!("{name}: connected"), 1);
+                }
                 sessions.insert(name.clone(), Arc::new(session));
             }
-            Err(error) => failures.push(format!("{name}: {error}")),
+            Err(error) => {
+                if let Some((_, h)) = &audit_progress {
+                    h.mark_failed(name, &error.to_string());
+                }
+                failures.push(format!("{name}: {error}"))
+            }
         }
+    }
+    if let Some((p, _)) = audit_progress {
+        p.finish();
+    }
+    if !json {
+        Ui::say(
+            &format!(
+                "Connected in {}",
+                jiji_tui::format_duration(connecting_started.elapsed())
+            ),
+            1,
+        );
     }
     if !failures.is_empty() {
         close_all(&sessions).await;

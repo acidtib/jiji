@@ -200,12 +200,47 @@ async fn run_multi_host(
         });
     }
 
+    let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+    let progress =
+        jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Executing".to_string());
+    let handle = progress.handle();
+    for h in &hosts {
+        handle.set_status(h, "queued");
+    }
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+    // Instrument each operation to update live dashboard while preserving original result type.
+    let wrapped_ops: Vec<_> = operations
+        .into_iter()
+        .map(|op| {
+            let h = handle.clone();
+            move || {
+                let h = h.clone();
+                async move {
+                    let (name, result) = op().await;
+                    // Update dashboard per-host as soon as the SSH op completes.
+                    let display_name = name.clone();
+                    match &result {
+                        Ok(r) if r.success => h.mark_success(&display_name, "done"),
+                        Ok(r) => {
+                            let err = format!(
+                                "failed ({})",
+                                r.stderr.lines().next().unwrap_or("").trim()
+                            );
+                            h.mark_failed(&display_name, &err);
+                        }
+                        Err(e) => h.mark_failed(&display_name, &e.to_string()),
+                    }
+                    (name, result)
+                }
+            }
+        })
+        .collect();
     let outcomes = if sequential {
-        pool.execute_batched(operations, Some(1)).await
+        pool.execute_batched(wrapped_ops, Some(1)).await
     } else {
-        pool.execute_concurrent(operations).await
+        pool.execute_concurrent(wrapped_ops).await
     };
+    progress.finish();
 
     let mut failures = Vec::new();
     for (name, outcome) in outcomes {

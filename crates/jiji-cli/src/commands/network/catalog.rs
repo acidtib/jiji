@@ -43,23 +43,42 @@ pub async fn run(
     }
 
     Ui::section("Service Catalog:");
+    let started = std::time::Instant::now();
+    let hosts: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+    let progress =
+        jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Fetching catalog".to_string());
+    let handle = progress.handle();
     let paths = AgentPaths::default_for_project(&config.project);
     let mut failures = Vec::new();
-    for server_plan in selected {
+    for server_plan in &selected {
         let name = server_plan.name.clone();
+        handle.set_status(&name, "fetching");
         let named_server = config.servers.get(&name).cloned().ok_or_else(|| {
             anyhow::anyhow!("Server '{name}' selected by the network plan is not configured")
         })?;
         let options = ssh_adapter::connect_options(&name, &named_server, ssh)?;
         let result = fetch_catalog(&options, &paths).await;
         match result {
-            Ok(records) => print_records(&name, &records),
+            Ok(records) => {
+                handle.mark_success(&name, &format!("{} record(s)", records.len()));
+                print_records(&name, &records)
+            }
             Err(error) => {
+                handle.mark_failed(&name, &error.to_string());
                 Ui::say(&format!("{name}: {error}"), 1);
                 failures.push((name, error.to_string()));
             }
         }
     }
+    progress.finish();
+    Ui::say(
+        &format!(
+            "Fetched from {} host(s) in {}",
+            hosts.len(),
+            jiji_tui::format_duration(started.elapsed())
+        ),
+        1,
+    );
     if !failures.is_empty() {
         anyhow::bail!(
             "Could not read the catalog from {} server(s). Fix the reported hosts and retry.",

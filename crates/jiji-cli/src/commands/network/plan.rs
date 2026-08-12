@@ -44,7 +44,10 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
 
     Ui::section("Servers:");
     for server in plan.servers.values() {
-        Ui::say(&format!("{} ({})", server.name, server.public_host), 1);
+        Ui::result_ok(
+            &format!("{} ({})", server.name, server.public_host),
+            "planned",
+        );
         Ui::say(&format!("management: {}", server.management_address), 2);
         Ui::say(&format!("subnet:     {}", server.container_subnet), 2);
         Ui::say(&format!("gateway:    {}", server.bridge_gateway), 2);
@@ -54,9 +57,14 @@ pub fn run(environment: Option<&str>, config_file: Option<&str>) -> anyhow::Resu
 
     Ui::section("Endpoints:");
     for endpoint in plan.endpoints.values() {
-        Ui::say(&endpoint.identity, 1);
+        Ui::result_ok(&endpoint.identity, "dynamic lease");
         Ui::say("address:    dynamically leased by the owner agent", 2);
     }
+    Ui::success(&format!(
+        "Plan covers {} server(s), {} endpoint(s).",
+        plan.servers.len(),
+        plan.endpoints.len()
+    ));
 
     Ok(())
 }

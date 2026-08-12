@@ -137,7 +137,12 @@ pub async fn run(
         );
     }
 
-    let prune_spinner = Ui::spinner(&format!("Pruning {} endpoint(s)", prunable.len()));
+    let ops: Vec<(String, String)> = prunable
+        .iter()
+        .map(|e| (e.identity.clone(), e.server.clone()))
+        .collect();
+    let progress = jiji_tui::DeployProgress::with_servers_and_title(ops, "Pruning".to_string());
+    let handles = progress.handle();
     let engine = config.builder.engine;
     let registry_config = config.builder.registry.clone();
     let project = config.project.clone();
@@ -157,20 +162,57 @@ pub async fn run(
         let retain_n = retain_override.unwrap_or(service.retain) as usize;
         let repo = registry::repo_reference(&registry_config, &project, &service_name);
 
-        operations.push(move || async move {
-            let repo = match repo {
-                Ok(repo) => repo,
-                Err(error) => return (identity, Err(error.to_string())),
-            };
-            match prune_service_images(&session, engine, &repo, retain_n).await {
-                Ok(steps) => (identity, Ok(steps)),
-                Err(error) => (identity, Err(error.to_string())),
+        let h = handles.clone();
+        let id_clone = identity.clone();
+        operations.push(move || {
+            let h = h.clone();
+            let id_clone = id_clone.clone();
+            async move {
+                h.set_status(&id_clone, "pruning");
+                let repo = match repo {
+                    Ok(repo) => repo,
+                    Err(error) => {
+                        let msg = error.to_string();
+                        h.mark_failed(&id_clone, &msg);
+                        return (identity, Err(msg));
+                    }
+                };
+                let outcome = match prune_service_images(&session, engine, &repo, retain_n).await {
+                    Ok(steps) => {
+                        let has_failed = steps
+                            .iter()
+                            .any(|(_, r)| matches!(r, PruneStepResult::Failed { .. }));
+                        let removed = steps
+                            .iter()
+                            .filter(|(_, r)| matches!(r, PruneStepResult::Removed))
+                            .count();
+                        if has_failed {
+                            let err = steps
+                                .iter()
+                                .find_map(|(_, r)| match r {
+                                    PruneStepResult::Failed { error } => Some(error.as_str()),
+                                    _ => None,
+                                })
+                                .unwrap_or("prune failed");
+                            h.mark_failed(&id_clone, err);
+                        } else {
+                            h.mark_success(&id_clone, &format!("{removed} removed"));
+                        }
+                        (identity, Ok(steps))
+                    }
+                    Err(error) => {
+                        let msg = error.to_string();
+                        h.mark_failed(&id_clone, &msg);
+                        (identity, Err(msg))
+                    }
+                };
+                outcome
             }
         });
     }
 
     let results = pool.execute_concurrent(operations).await;
-    drop(prune_spinner);
+    progress.finish();
 
     let server_by_identity: BTreeMap<String, String> = prunable
         .iter()

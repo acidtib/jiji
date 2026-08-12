@@ -152,9 +152,17 @@ pub async fn run(
 
     if run_result.is_ok() {
         Ui::section("Building:");
+        let service_names: Vec<String> = plan.iter().map(|e| e.service_name.clone()).collect();
+        let progress =
+            jiji_tui::DeployProgress::with_title(service_names.clone(), "Building".to_string());
+        let handle = progress.handle();
+        // Keep the existing plain `Building:` section header for test-compat piped logs;
+        // the dashboard's `Building N endpoint(s):` header adds value on TTY without
+        // removing the stable section marker.
         for entry in &plan {
+            handle.set_status(&entry.service_name, "building");
             Ui::say(&entry.service_name, 1);
-            run_result = build_plan::build_one(
+            let result = build_plan::build_one(
                 entry,
                 &executor,
                 config.builder.engine,
@@ -166,10 +174,34 @@ pub async fn run(
             )
             .await
             .with_context(|| format!("Build failed for service '{}'", entry.service_name));
-            if run_result.is_err() {
-                break;
+            match result {
+                Ok(()) => {
+                    handle.mark_success(
+                        &entry.service_name,
+                        &format!("built ({})", entry.version_ref),
+                    );
+                }
+                Err(err) => {
+                    // Preserve the short error for the live line; full context stays in final error.
+                    let msg = err.to_string();
+                    let short = msg.lines().next().unwrap_or(&msg).to_string();
+                    handle.mark_failed(&entry.service_name, &short);
+                    // Mark any remaining queued services as skipped so the overall bar completes.
+                    for remaining in plan
+                        .iter()
+                        .skip_while(|e| e.service_name != entry.service_name)
+                        .skip(1)
+                    {
+                        handle.mark_skipped(&remaining.service_name);
+                    }
+                    run_result = Err(err);
+                    break;
+                }
             }
         }
+        // Fill skipped for the non-error early-exit path where we never marked remaining?
+        // (all Ok path already marked success, so this is a no-op then)
+        progress.finish();
     }
     build_executor::combine_with_cleanup_error(run_result, executor.finish().await)?;
 

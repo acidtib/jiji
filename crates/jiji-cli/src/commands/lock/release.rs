@@ -65,6 +65,12 @@ pub async fn run(
     Ui::section("Removing Lock Files:");
     Ui::say(&format!("Scope: {target_scope}"), 1);
     let names: Vec<String> = targets.sessions.keys().cloned().collect();
+    let rel_progress =
+        jiji_tui::ServerSetupProgress::with_title(names.clone(), "Releasing".to_string());
+    let rel_handle = rel_progress.handle();
+    for h in &names {
+        rel_handle.set_status(h, "releasing");
+    }
     let operations: Vec<_> = names
         .iter()
         .map(|name| targets.sessions.get(name).expect("connected above").clone())
@@ -79,7 +85,8 @@ pub async fn run(
     for (name, result) in names.iter().zip(results) {
         match result {
             Ok(()) => {
-                Ui::say(&format!("{name}: lock released"), 1);
+                rel_handle.mark_success(name, "released");
+                Ui::result_ok(name, "lock released");
                 let session = targets.sessions.get(name).expect("connected above");
                 audit::record(
                     session,
@@ -94,11 +101,13 @@ pub async fn run(
                 .await;
             }
             Err(error) => {
-                Ui::error(&format!("{name}: {error}"));
+                rel_handle.mark_failed(name, &error.to_string());
+                Ui::result_error(name, &error.to_string());
                 failures.push(name.clone());
             }
         }
     }
+    rel_progress.finish();
     close_all(&targets.sessions).await;
 
     if !failures.is_empty() {

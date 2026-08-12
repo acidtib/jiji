@@ -103,6 +103,13 @@ pub async fn connect_all(
     }
 
     Ui::section("Connecting:");
+    let hosts: Vec<String> = servers.iter().map(|(name, _)| name.clone()).collect();
+    let progress =
+        jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Connecting".to_string());
+    let handle = progress.handle();
+    for h in &hosts {
+        handle.set_status(h, "connecting");
+    }
     let operations: Vec<_> = connect_options
         .into_iter()
         .map(|options| move || async move { SshSession::connect(&options).await })
@@ -115,10 +122,12 @@ pub async fn connect_all(
         match connection {
             Ok(session) => {
                 Ui::say(&format!("{name} ({}): connected", server.host), 1);
+                handle.mark_success(name, "connected");
                 sessions.insert(name.clone(), Arc::new(session));
             }
             Err(error) => {
                 Ui::error(&format!("{name} ({}): {error}", server.host));
+                handle.mark_failed(name, &error.to_string());
                 outcomes.push(TargetOutcome::Failed(
                     TargetKind::Remote(name.clone()),
                     error.to_string(),
@@ -126,6 +135,7 @@ pub async fn connect_all(
             }
         }
     }
+    progress.finish();
     Ok((sessions, outcomes))
 }
 
@@ -148,24 +158,23 @@ pub fn report(
     for outcome in &outcomes {
         match outcome {
             TargetOutcome::Success(kind) => {
-                Ui::say(&format!("{}: {done_word}", kind.label()), 1);
+                Ui::result_ok(kind.label(), done_word);
                 attempted += 1;
             }
             TargetOutcome::AlreadyDone(kind) => {
-                Ui::say(&format!("{}: {idempotent_word}", kind.label()), 1);
+                Ui::result_ok(kind.label(), idempotent_word);
                 attempted += 1;
             }
             TargetOutcome::Skipped(kind) => {
                 Ui::say(&format!("{}: skipped", kind.label()), 1);
             }
             TargetOutcome::Failed(kind, error) => {
-                Ui::error(&format!("{}: {error}", kind.label()));
+                Ui::result_error(kind.label(), error);
                 attempted += 1;
                 failures += 1;
             }
         }
     }
-    println!();
     if failures > 0 {
         anyhow::bail!(
             "{command} failed on {failures} of {attempted} target(s); see the per-target errors above."

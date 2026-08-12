@@ -405,7 +405,18 @@ pub async fn run(
             })?
     };
 
+    let add_progress = if !additions.is_empty() {
+        let ids: Vec<String> = additions.iter().map(|a| a.replica_id.clone()).collect();
+        let p = jiji_tui::DeployProgress::with_title(ids.clone(), "Scaling up".to_string());
+        Some(p)
+    } else {
+        None
+    };
+    let add_handle = add_progress.as_ref().map(|p| p.handle());
     for assignment in additions {
+        if let Some(h) = &add_handle {
+            h.set_status(&assignment.replica_id, &format!("deploying on {}", assignment.server));
+        }
         let endpoint = endpoint_for_assignment(&plan, service_name, assignment)?;
         let session = &sessions[&assignment.server];
         let server = &plan.servers[&assignment.server];
@@ -426,11 +437,23 @@ pub async fn run(
             progress: None,
         };
         match deploy_endpoint(&ctx).await {
-            EndpointOutcome::Deployed { deployment_id, .. } => Ui::result_ok(
-                &assignment.replica_id,
-                &format!("active on {} ({})", assignment.server, &deployment_id[..12]),
-            ),
+            EndpointOutcome::Deployed { deployment_id, .. } => {
+                if let Some(h) = &add_handle {
+                    let short = &deployment_id[..12.min(deployment_id.len())];
+                    h.mark_success(&assignment.replica_id, &format!("deployed ({short})"));
+                }
+                Ui::result_ok(
+                    &assignment.replica_id,
+                    &format!("active on {} ({})", assignment.server, &deployment_id[..12]),
+                )
+            }
             EndpointOutcome::Failed { error } => {
+                if let Some(h) = &add_handle {
+                    h.mark_failed(&assignment.replica_id, &error);
+                }
+                if let Some(p) = &add_progress {
+                    p.finish();
+                }
                 anyhow::bail!(
                     "Scale-up failed for '{}' on '{}': {error}. Retry the same scale command to resume.",
                     assignment.replica_id,
@@ -440,20 +463,40 @@ pub async fn run(
             EndpointOutcome::SkippedAfterSiblingFailure => unreachable!(),
         }
     }
+    if let Some(p) = &add_progress {
+        p.finish();
+    }
 
+            let rm_progress = if !removals.is_empty() {
+                let ids: Vec<String> = removals.iter().map(|a| a.replica_id.clone()).collect();
+                let p = jiji_tui::DeployProgress::with_title(ids.clone(), "Scaling down".to_string());
+                Some(p)
+            } else {
+                None
+            };
+            let rm_handle = rm_progress.as_ref().map(|p| p.handle());
             for assignment in removals {
-        retire_replica(
-            &sessions[&assignment.server],
-            &config.project,
-            service_name,
-            &assignment.replica_id,
-            config.builder.engine,
-        )
-        .await?;
-        Ui::result_ok(
-            &assignment.replica_id,
-            &format!("retired from {}", assignment.server),
+                if let Some(h) = &rm_handle {
+                    h.set_status(&assignment.replica_id, &format!("retiring from {}", assignment.server));
+                }
+                retire_replica(
+                    &sessions[&assignment.server],
+                    &config.project,
+                    service_name,
+                    &assignment.replica_id,
+                    config.builder.engine,
+                )
+                .await?;
+                if let Some(h) = &rm_handle {
+                    h.mark_success(&assignment.replica_id, "retired");
+                }
+                Ui::result_ok(
+                    &assignment.replica_id,
+                    &format!("retired from {}", assignment.server),
                 );
+            }
+            if let Some(p) = &rm_progress {
+                p.finish();
             }
             if let Some(proxy) = &service.proxy {
                 let dns_servers: BTreeMap<String, std::net::SocketAddr> = sessions

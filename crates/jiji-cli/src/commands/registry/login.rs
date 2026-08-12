@@ -101,7 +101,12 @@ pub async fn run(
         outcomes.append(&mut connect_failures);
 
         Ui::section("Registry Login:");
+        let hosts: Vec<String> = sessions.keys().cloned().collect();
+        let progress =
+            jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Logging in".to_string());
+        let handle = progress.handle();
         for (name, session) in &sessions {
+            handle.set_status(name, "logging in");
             match registry::login_remote(
                 session,
                 config.builder.engine,
@@ -110,13 +115,20 @@ pub async fn run(
             )
             .await
             {
-                Ok(()) => outcomes.push(TargetOutcome::Success(TargetKind::Remote(name.clone()))),
-                Err(error) => outcomes.push(TargetOutcome::Failed(
-                    TargetKind::Remote(name.clone()),
-                    error.to_string(),
-                )),
+                Ok(()) => {
+                    handle.mark_success(name, "authenticated");
+                    outcomes.push(TargetOutcome::Success(TargetKind::Remote(name.clone())))
+                }
+                Err(error) => {
+                    handle.mark_failed(name, &error.to_string());
+                    outcomes.push(TargetOutcome::Failed(
+                        TargetKind::Remote(name.clone()),
+                        error.to_string(),
+                    ))
+                }
             }
         }
+        progress.finish();
         shared::close_all(&sessions).await;
     }
 

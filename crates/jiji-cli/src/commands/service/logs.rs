@@ -127,9 +127,18 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
 
     // Catalog state is cached per server: every local agent exposes the converged project view,
     // and several selected replicas commonly share one SSH session.
+    let logs_started = std::time::Instant::now();
+    let ids: Vec<(String, String)> = selected
+        .iter()
+        .map(|e| (e.identity.clone(), e.server.clone()))
+        .collect();
+    let logs_progress =
+        jiji_tui::DeployProgress::with_servers_and_title(ids, "Fetching logs".to_string());
+    let logs_handle = logs_progress.handle();
     let mut catalog_cache: BTreeMap<String, Vec<CatalogRecord>> = BTreeMap::new();
     let mut failures = Vec::new();
     for endpoint in &selected {
+        logs_handle.set_status(&endpoint.identity, "fetching");
         let session = sessions.get(&endpoint.server).expect("connected above");
         if !catalog_cache.contains_key(&endpoint.server) {
             match crate::agent_client::catalog(session, &plan.project).await {
@@ -185,6 +194,7 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
         );
         match session.execute(&command).await {
             Ok(result) if result.success => {
+                logs_handle.mark_success(&endpoint.identity, "fetched");
                 Ui::say(&format!("{}:", endpoint.identity), 1);
                 if !result.stdout.is_empty() {
                     print!("{}", result.stdout);
@@ -194,6 +204,14 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
                 }
             }
             Ok(result) => {
+                let err = result
+                    .stderr
+                    .lines()
+                    .next()
+                    .unwrap_or("failed")
+                    .trim()
+                    .to_string();
+                logs_handle.mark_failed(&endpoint.identity, &err);
                 let error = format!(
                     "remote logs command failed with status {:?}: {}",
                     result.code,
@@ -203,11 +221,21 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
                 failures.push(endpoint.identity.clone());
             }
             Err(error) => {
+                logs_handle.mark_failed(&endpoint.identity, &error.to_string());
                 Ui::error(&format!("{}: {error}", endpoint.identity));
                 failures.push(endpoint.identity.clone());
             }
         }
     }
+    logs_progress.finish();
+    Ui::say(
+        &format!(
+            "Fetched {} log(s) in {}",
+            selected.len(),
+            jiji_tui::format_duration(logs_started.elapsed())
+        ),
+        1,
+    );
     close_all(&sessions).await;
     if !failures.is_empty() {
         anyhow::bail!(

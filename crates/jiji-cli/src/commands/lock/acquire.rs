@@ -69,6 +69,13 @@ pub async fn run(
     }
 
     Ui::section("Creating Lock Files:");
+    let lock_hosts: Vec<String> = targets.sessions.keys().cloned().collect();
+    let lk_progress =
+        jiji_tui::ServerSetupProgress::with_title(lock_hosts.clone(), "Locking".to_string());
+    let lk_handle = lk_progress.handle();
+    for h in &lock_hosts {
+        lk_handle.set_status(h, "locking");
+    }
     if force {
         let operations: Vec<_> = targets
             .sessions
@@ -108,28 +115,30 @@ pub async fn run(
     for (name, result) in names.iter().zip(results) {
         match result {
             Ok(lock::AcquireResult::Acquired) => {
-                Ui::say(&format!("{name}: lock acquired"), 1);
+                lk_handle.mark_success(name, "acquired");
+                Ui::result_ok(name, "lock acquired");
                 acquired.push(name.clone());
             }
             Ok(lock::AcquireResult::Held(info)) => {
+                lk_handle.mark_failed(name, "held");
                 if let Some(info) = info {
-                    Ui::error(&format!(
-                        "{name}: lock is held by {} (\"{}\")",
-                        info.acquired_by, info.message
-                    ));
+                    Ui::result_error(
+                        name,
+                        &format!("held by {} (\"{}\")", info.acquired_by, info.message),
+                    );
                 } else {
-                    Ui::error(&format!(
-                        "{name}: lock is held but its metadata is incomplete"
-                    ));
+                    Ui::result_error(name, "held but metadata incomplete");
                 }
                 failures.push(name.clone());
             }
             Err(error) => {
-                Ui::error(&format!("{name}: {error}"));
+                lk_handle.mark_failed(name, &error.to_string());
+                Ui::result_error(name, &error.to_string());
                 failures.push(name.clone());
             }
         }
     }
+    lk_progress.finish();
 
     if !failures.is_empty() {
         Ui::section("Rolling Back Partial Locks:");

@@ -73,19 +73,19 @@ pub async fn run(
         .filter(|(_, locks)| !locks.is_empty())
         .collect();
     if locked.is_empty() {
-        Ui::say("No active locks.", 1);
+        Ui::result_ok("locks", "none active");
     } else {
         Ui::say(&format!("{} host(s) locked:", locked.len()), 1);
         for (name, locks) in &locked {
             for (scope, info) in locks {
-                Ui::say(
+                Ui::result_warn(
+                    name,
                     &format!(
-                        "{name} [{scope}]: \"{}\" by {} ({} ago)",
+                        "[{scope}]: \"{}\" by {} ({} ago)",
                         info.message,
                         info.acquired_by,
                         lock::format_age(info.age_seconds())
                     ),
-                    2,
                 );
             }
         }

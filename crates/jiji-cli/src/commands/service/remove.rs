@@ -260,6 +260,13 @@ pub async fn run(
         },
         || async {
             Ui::section("Removing:");
+            let ops: Vec<(String, String)> = selected
+                .iter()
+                .map(|e| (e.identity.clone(), e.server.clone()))
+                .collect();
+            let progress =
+                jiji_tui::DeployProgress::with_servers_and_title(ops, "Removing".to_string());
+            let handle = progress.handle();
             let engine = config.builder.engine;
             let mut operations = Vec::with_capacity(selected.len());
             for endpoint in &selected {
@@ -285,187 +292,216 @@ pub async fn run(
                     Vec::new()
                 };
 
-                operations.push(move || async move {
-                    let mut steps = Vec::new();
-                    let mut retired_deployment_ids: Vec<String> = Vec::new();
+                let h = handle.clone();
+                let id_for_status = identity.clone();
+                operations.push(move || {
+                    let h = h.clone();
+                    let id_for_status = id_for_status.clone();
+                    async move {
+                        h.set_status(&id_for_status, "removing");
+                        let mut steps = Vec::new();
+                        let mut retired_deployment_ids: Vec<String> = Vec::new();
 
-                    let records = match crate::agent_client::catalog(&session, &project).await {
-                        Ok(records) => records,
-                        Err(error) => {
-                            steps.push((
-                                "service catalog".to_string(),
-                                RemoveStepResult::Failed {
-                                    error: error.to_string(),
-                                },
-                            ));
-                            return (identity, steps, retired_deployment_ids);
-                        }
-                    };
-                    let owned = records
-                        .into_iter()
-                        .filter(|record| {
-                            record.service == endpoint.service
-                                && record.owner_node_id == endpoint.server
-                                && !matches!(
-                                    record.state,
-                                    DeploymentState::Stopped | DeploymentState::Tombstoned
-                                )
-                        })
-                        .collect::<Vec<_>>();
-                    if owned.is_empty() {
-                        steps.push((
-                            "catalog deployments".to_string(),
-                            RemoveStepResult::AlreadyAbsent,
-                        ));
-                    }
-                    for record in owned {
-                        let name = container_runtime::dynamic_container_name(
-                            &project,
-                            &endpoint.service,
-                            &record.deployment_id,
-                        );
-                        let result = remove_container(&session, engine, &name).await;
-                        let removed = !matches!(result, RemoveStepResult::Failed { .. });
-                        steps.push((format!("container '{name}'"), result));
-                        if removed {
-                            let retire_result =
-                                retire_deployment(&session, &project, &record).await;
-                            if matches!(retire_result, RemoveStepResult::Removed) {
-                                retired_deployment_ids.push(record.deployment_id.clone());
-                            }
-                            steps.push((
-                                format!("catalog deployment '{}'", record.deployment_id),
-                                retire_result,
-                            ));
-                        }
-                    }
-
-                    let route_targets = proxy_routes::targets_for_service(
-                        &project,
-                        &endpoint.service,
-                        service.proxy.as_ref(),
-                        dns_server,
-                    );
-                    match route_targets {
-                        Ok(route_targets) => {
-                            for route in route_targets {
-                                let label = match &route.path_prefix {
-                                    Some(prefix) => format!("{}{prefix}", route.host),
-                                    None => route.host.clone(),
-                                };
-                                let result = match proxy_routes::remove_route(
-                                    &session,
-                                    engine,
-                                    &route.host,
-                                    route.path_prefix.as_deref(),
-                                )
-                                .await
-                                {
-                                    Ok(()) => RemoveStepResult::Removed,
-                                    Err(error) => RemoveStepResult::Failed {
-                                        error: error.to_string(),
-                                    },
-                                };
-                                steps.push((format!("proxy route '{label}'"), result));
-                            }
-                        }
-                        Err(error) => {
-                            steps.push((
-                                "proxy routes".to_string(),
-                                RemoveStepResult::Failed {
-                                    error: error.to_string(),
-                                },
-                            ));
-                        }
-                    }
-
-                    let tcp_route_targets = proxy_routes::tcp_targets_for_service(
-                        &project,
-                        &endpoint.service,
-                        service.proxy.as_ref(),
-                        dns_server,
-                    );
-                    match tcp_route_targets {
-                        Ok(tcp_route_targets) => {
-                            for route in tcp_route_targets {
-                                let result = match proxy_routes::remove_tcp_route(
-                                    &session,
-                                    engine,
-                                    route.listen_port,
-                                )
-                                .await
-                                {
-                                    Ok(()) => RemoveStepResult::Removed,
-                                    Err(error) => RemoveStepResult::Failed {
-                                        error: error.to_string(),
-                                    },
-                                };
+                        let records = match crate::agent_client::catalog(&session, &project).await {
+                            Ok(records) => records,
+                            Err(error) => {
+                                h.mark_failed(&id_for_status, &error.to_string());
                                 steps.push((
-                                    format!("proxy route 'tcp:{}'", route.listen_port),
-                                    result,
+                                    "service catalog".to_string(),
+                                    RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                ));
+                                return (identity, steps, retired_deployment_ids);
+                            }
+                        };
+                        let owned = records
+                            .into_iter()
+                            .filter(|record| {
+                                record.service == endpoint.service
+                                    && record.owner_node_id == endpoint.server
+                                    && !matches!(
+                                        record.state,
+                                        DeploymentState::Stopped | DeploymentState::Tombstoned
+                                    )
+                            })
+                            .collect::<Vec<_>>();
+                        if owned.is_empty() {
+                            steps.push((
+                                "catalog deployments".to_string(),
+                                RemoveStepResult::AlreadyAbsent,
+                            ));
+                        }
+                        for record in owned {
+                            let name = container_runtime::dynamic_container_name(
+                                &project,
+                                &endpoint.service,
+                                &record.deployment_id,
+                            );
+                            let result = remove_container(&session, engine, &name).await;
+                            let removed = !matches!(result, RemoveStepResult::Failed { .. });
+                            steps.push((format!("container '{name}'"), result));
+                            if removed {
+                                let retire_result =
+                                    retire_deployment(&session, &project, &record).await;
+                                if matches!(retire_result, RemoveStepResult::Removed) {
+                                    retired_deployment_ids.push(record.deployment_id.clone());
+                                }
+                                steps.push((
+                                    format!("catalog deployment '{}'", record.deployment_id),
+                                    retire_result,
                                 ));
                             }
                         }
-                        Err(error) => {
-                            steps.push((
-                                "tcp proxy routes".to_string(),
-                                RemoveStepResult::Failed {
-                                    error: error.to_string(),
-                                },
-                            ));
-                        }
-                    }
 
-                    if !volume_candidates.is_empty() {
-                        match volume_teardown::discover(
-                            &session,
-                            engine,
-                            &volume_candidates,
+                        let route_targets = proxy_routes::targets_for_service(
                             &project,
-                        )
-                        .await
-                        {
-                            Ok(discovered) => {
-                                match volume_teardown::remove(&session, engine, &discovered).await {
-                                    Ok(results) => {
-                                        for (name, removed) in results {
-                                            let matching =
-                                                discovered.iter().find(|v| v.name == name);
-                                            let result = if removed {
-                                                RemoveStepResult::Removed
-                                            } else {
-                                                match matching.and_then(|v| v.blocked_by.clone()) {
-                                                    Some(reason) => {
-                                                        RemoveStepResult::Retained { reason }
-                                                    }
-                                                    None => RemoveStepResult::AlreadyAbsent,
-                                                }
-                                            };
-                                            steps.push((format!("volume '{name}'"), result));
-                                        }
-                                    }
-                                    Err(error) => steps.push((
-                                        "volumes".to_string(),
-                                        RemoveStepResult::Failed {
+                            &endpoint.service,
+                            service.proxy.as_ref(),
+                            dns_server,
+                        );
+                        match route_targets {
+                            Ok(route_targets) => {
+                                for route in route_targets {
+                                    let label = match &route.path_prefix {
+                                        Some(prefix) => format!("{}{prefix}", route.host),
+                                        None => route.host.clone(),
+                                    };
+                                    let result = match proxy_routes::remove_route(
+                                        &session,
+                                        engine,
+                                        &route.host,
+                                        route.path_prefix.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => RemoveStepResult::Removed,
+                                        Err(error) => RemoveStepResult::Failed {
                                             error: error.to_string(),
                                         },
-                                    )),
+                                    };
+                                    steps.push((format!("proxy route '{label}'"), result));
                                 }
                             }
-                            Err(error) => steps.push((
-                                "volumes".to_string(),
-                                RemoveStepResult::Failed {
-                                    error: error.to_string(),
-                                },
-                            )),
+                            Err(error) => {
+                                steps.push((
+                                    "proxy routes".to_string(),
+                                    RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                ));
+                            }
                         }
-                    }
 
-                    (identity, steps, retired_deployment_ids)
+                        let tcp_route_targets = proxy_routes::tcp_targets_for_service(
+                            &project,
+                            &endpoint.service,
+                            service.proxy.as_ref(),
+                            dns_server,
+                        );
+                        match tcp_route_targets {
+                            Ok(tcp_route_targets) => {
+                                for route in tcp_route_targets {
+                                    let result = match proxy_routes::remove_tcp_route(
+                                        &session,
+                                        engine,
+                                        route.listen_port,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => RemoveStepResult::Removed,
+                                        Err(error) => RemoveStepResult::Failed {
+                                            error: error.to_string(),
+                                        },
+                                    };
+                                    steps.push((
+                                        format!("proxy route 'tcp:{}'", route.listen_port),
+                                        result,
+                                    ));
+                                }
+                            }
+                            Err(error) => {
+                                steps.push((
+                                    "tcp proxy routes".to_string(),
+                                    RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                ));
+                            }
+                        }
+
+                        if !volume_candidates.is_empty() {
+                            match volume_teardown::discover(
+                                &session,
+                                engine,
+                                &volume_candidates,
+                                &project,
+                            )
+                            .await
+                            {
+                                Ok(discovered) => {
+                                    match volume_teardown::remove(&session, engine, &discovered)
+                                        .await
+                                    {
+                                        Ok(results) => {
+                                            for (name, removed) in results {
+                                                let matching =
+                                                    discovered.iter().find(|v| v.name == name);
+                                                let result = if removed {
+                                                    RemoveStepResult::Removed
+                                                } else {
+                                                    match matching
+                                                        .and_then(|v| v.blocked_by.clone())
+                                                    {
+                                                        Some(reason) => {
+                                                            RemoveStepResult::Retained { reason }
+                                                        }
+                                                        None => RemoveStepResult::AlreadyAbsent,
+                                                    }
+                                                };
+                                                steps.push((format!("volume '{name}'"), result));
+                                            }
+                                        }
+                                        Err(error) => steps.push((
+                                            "volumes".to_string(),
+                                            RemoveStepResult::Failed {
+                                                error: error.to_string(),
+                                            },
+                                        )),
+                                    }
+                                }
+                                Err(error) => steps.push((
+                                    "volumes".to_string(),
+                                    RemoveStepResult::Failed {
+                                        error: error.to_string(),
+                                    },
+                                )),
+                            }
+                        }
+
+                        let _is_ok = !steps
+                            .iter()
+                            .any(|(_, r)| matches!(r, RemoveStepResult::Failed { .. }));
+                        // Live dashboard: one line per endpoint, with timing; keep detail short.
+                        if _is_ok {
+                            h.mark_success(&id_for_status, "removed");
+                        } else {
+                            let first_err = steps
+                                .iter()
+                                .find_map(|(_, r)| match r {
+                                    RemoveStepResult::Failed { error } => Some(error.as_str()),
+                                    _ => None,
+                                })
+                                .unwrap_or("failed");
+                            h.mark_failed(&id_for_status, first_err);
+                        }
+                        (identity, steps, retired_deployment_ids)
+                    }
                 });
             }
 
             let results = pool.execute_concurrent(operations).await;
+            progress.finish();
 
             let server_by_identity: BTreeMap<String, String> = selected
                 .iter()

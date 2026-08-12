@@ -54,6 +54,24 @@ pub async fn run(
          runs `jiji deploy`/`jiji server setup`/`jiji proxy restart`, but its routes are \
          unreachable until then.",
     );
+
+    let host_names: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
+    Ui::say(
+        &format!(
+            "Targeting {} server(s): {}",
+            host_names.len(),
+            host_names.join(", ")
+        ),
+        1,
+    );
+
+    let started_at = std::time::Instant::now();
+    let progress = Ui::proxy_restart_progress(host_names.clone());
+    let handle = progress.handle();
+    for name in &host_names {
+        handle.set_status(name, "queued");
+    }
+
     let mut operations = Vec::with_capacity(selected.len());
     for server_plan in selected {
         let name = server_plan.name.clone();
@@ -73,26 +91,39 @@ pub async fn run(
         } else {
             None
         };
+        let handle = handle.clone();
         operations.push(move || async move {
+            handle.set_status(&name, "connecting");
             let result = async {
                 let session = SshSession::connect(&options).await?;
+                handle.set_status(&name, "restarting");
                 let outcome = proxy::ensure_proxy(&session, engine, network, true).await;
                 session.close().await;
                 outcome
             }
             .await;
+            match &result {
+                Ok(_) => handle.mark_success(&name, "restarted"),
+                Err(e) => handle.mark_failed(&name, &e.to_string()),
+            }
             (name, result)
         });
     }
 
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let outcomes = pool.execute_concurrent(operations).await;
+    progress.finish();
+
     let mut failures = Vec::new();
+    let mut successes = 0usize;
     for (name, outcome) in outcomes {
         match outcome {
-            Ok(_) => Ui::say(&format!("{name}: jiji-proxy restarted"), 1),
+            Ok(_) => {
+                Ui::result_ok(&name, "jiji-proxy restarted");
+                successes += 1;
+            }
             Err(error) => {
-                Ui::error(&format!("{name}: {error}"));
+                Ui::result_error(&name, &error.to_string());
                 failures.push((name, error.to_string()));
             }
         }
@@ -103,6 +134,10 @@ pub async fn run(
             failures.len()
         );
     }
+    Ui::success_elapsed(
+        &format!("Restarted jiji-proxy on {successes} server(s)."),
+        started_at.elapsed(),
+    );
     Ok(())
 }
 

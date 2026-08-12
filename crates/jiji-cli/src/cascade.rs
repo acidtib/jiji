@@ -145,17 +145,23 @@ pub(crate) async fn deploy_service_endpoints(
     engine: jiji_config::ContainerEngine,
     skip_proxy: bool,
     endpoints: Vec<ServiceEndpointPlan>,
-    progress: jiji_tui::SpinnerHandle,
+    progress: Option<jiji_tui::DeployProgressHandle>,
     presumed_failed: bool,
-    activity: &'static str,
 ) -> (String, Vec<(String, EndpointOutcome)>) {
-    let progress: EndpointProgress = Arc::new(move |identity, detail| {
-        progress.set_message(&format!("{activity} {identity}: {detail}"));
+    let endpoint_progress: Option<EndpointProgress> = progress.as_ref().map(|handle| {
+        let handle = handle.clone();
+        Arc::new(move |identity: &str, detail: &str| {
+            handle.set_status(identity, detail);
+        }) as EndpointProgress
     });
     let mut outcomes = Vec::new();
     let mut sibling_failed = presumed_failed;
     for endpoint in &endpoints {
         if sibling_failed {
+            if let Some(handle) = &progress {
+                handle.set_status(&endpoint.identity, "skipped — sibling failed");
+                handle.mark_skipped(&endpoint.identity);
+            }
             outcomes.push((
                 endpoint.identity.clone(),
                 EndpointOutcome::SkippedAfterSiblingFailure,
@@ -184,9 +190,23 @@ pub(crate) async fn deploy_service_endpoints(
             project_root: &project_root,
             skip_proxy,
             max_dir_upload_bytes: crate::commands::deploy::DEFAULT_MAX_DIR_UPLOAD_BYTES,
-            progress: Some(progress.clone()),
+            progress: endpoint_progress.clone(),
         };
         let outcome = deploy_endpoint(&ctx).await;
+        if let Some(handle) = &progress {
+            match &outcome {
+                EndpointOutcome::Deployed { deployment_id } => {
+                    let short = &deployment_id[..12.min(deployment_id.len())];
+                    handle.mark_success(&endpoint.identity, &format!("deployed ({short})"));
+                }
+                EndpointOutcome::Failed { error } => {
+                    handle.mark_failed(&endpoint.identity, error);
+                }
+                EndpointOutcome::SkippedAfterSiblingFailure => {
+                    handle.mark_skipped(&endpoint.identity);
+                }
+            }
+        }
         if !matches!(outcome, EndpointOutcome::Deployed { .. }) {
             sibling_failed = true;
         }

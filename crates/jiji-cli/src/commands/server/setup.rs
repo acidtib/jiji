@@ -146,6 +146,12 @@ pub async fn run(
         1,
     );
 
+    // Live per-host dashboard — one overall bar + one row per host (TTY: MultiProgress,
+    // non-TTY: plain lines). Stays alive through the whole locked section.
+    let host_names: Vec<String> = servers.iter().map(|(name, _)| name.clone()).collect();
+    let setup_progress = Ui::server_setup_progress(host_names);
+    let setup_handle = setup_progress.handle();
+
     if rotate_key {
         Ui::warn(&format!(
             "--rotate-key will force a fresh WireGuard keypair on: {}",
@@ -212,6 +218,8 @@ pub async fn run(
         .map(|(name, _)| LockRequest::new(LockScope::HostRuntime, name.clone()))
         .collect();
 
+    // Clone handle for the locked section — `with_locks` takes `Fn` so we clone inside.
+    let setup_handle_for_locks = setup_handle.clone();
     let setup_result = crate::commands::lock::with_locks(
         &lock_pool,
         &lock_sessions,
@@ -229,115 +237,177 @@ pub async fn run(
             timeout: 300,
             force: false,
         },
-        || async {
-            let pool = SshPool::new(ssh.max_concurrent_starts as usize);
-            let mut connect_operations = Vec::with_capacity(servers.len());
-            for (name, server) in &servers {
-                connect_operations.push(ssh_adapter::connect_options(name, server, &ssh)?);
-            }
+        || {
+            let setup_handle = setup_handle_for_locks.clone();
+            let servers = servers.clone();
+            let ssh = ssh.clone();
+            let config = config.clone();
+            let network_plan = network_plan.clone();
+            let target_names = target_names.clone();
+            let path = path.clone();
+            let lock_sessions = lock_sessions.clone();
+            async move {
+                let pool = SshPool::new(ssh.max_concurrent_starts as usize);
+                let mut connect_operations = Vec::with_capacity(servers.len());
+                for (name, server) in &servers {
+                    connect_operations.push(ssh_adapter::connect_options(name, server, &ssh)?);
+                }
 
-            Ui::section("Connecting:");
-            let operations: Vec<_> = connect_operations
-                .into_iter()
-                .map(|options| move || async move { connect_for_setup(&options).await })
-                .collect();
-            let connections = pool.execute_concurrent(operations).await;
+                Ui::section("Connecting:");
+                for (name, _) in &servers {
+                    setup_handle.set_status(name, "connecting");
+                }
+                let operations: Vec<_> = connect_operations
+                    .into_iter()
+                    .map(|options| move || async move { connect_for_setup(&options).await })
+                    .collect();
+                let connections = pool.execute_concurrent(operations).await;
 
-            let mut failures: Vec<(String, String)> = Vec::new();
-            let mut sessions: Vec<(String, SshSession)> = Vec::new();
-            for ((name, server), connection) in servers.iter().zip(connections) {
-                match connection {
-                    Ok(session) => {
-                        Ui::say(&format!("{name} ({}): connected", server.host), 1);
-                        sessions.push((name.clone(), session));
-                    }
-                    Err(err) => {
-                        Ui::error(&format!("{name} ({}): {err}", server.host));
-                        failures.push((name.clone(), err.to_string()));
+                let mut failures: Vec<(String, String)> = Vec::new();
+                let mut sessions: Vec<(String, SshSession)> = Vec::new();
+                for ((name, server), connection) in servers.iter().zip(connections) {
+                    match connection {
+                        Ok(session) => {
+                            Ui::say(&format!("{name} ({}): connected", server.host), 1);
+                            setup_handle.set_status(name, "connected");
+                            sessions.push((name.clone(), session));
+                        }
+                        Err(err) => {
+                            Ui::error(&format!("{name} ({}): {err}", server.host));
+                            setup_handle.set_status(name, &format!("failed: {err}"));
+                            failures.push((name.clone(), err.to_string()));
+                        }
                     }
                 }
-            }
 
-            if sessions.is_empty() {
-                anyhow::bail!("Could not connect to any server; see the errors above");
-            }
+                if sessions.is_empty() {
+                    anyhow::bail!("Could not connect to any server; see the errors above");
+                }
 
-            Ui::section("Installing Container Engine:");
-            let engine = config.builder.engine;
-            for (name, session) in &sessions {
-                Ui::say(&format!("{name} ({}):", session.host()), 1);
-                match engine::ensure_engine(session, engine).await {
-                    Ok(EngineStatus::AlreadyInstalled(version)) => {
-                        Ui::say(&format!("{engine} already installed ({version})"), 2);
+                Ui::section("Installing Container Engine:");
+                let engine = config.builder.engine;
+                for (name, session) in &sessions {
+                    Ui::say(&format!("{name} ({}):", session.host()), 1);
+                    setup_handle.set_status(name, &format!("engine: checking {engine}"));
+                    match engine::ensure_engine(session, engine).await {
+                        Ok(EngineStatus::AlreadyInstalled(version)) => {
+                            Ui::say(&format!("{engine} already installed ({version})"), 2);
+                            setup_handle
+                                .set_status(name, &format!("engine: {engine} already installed"));
+                        }
+                        Ok(EngineStatus::Installed(version)) => {
+                            Ui::say(&format!("{engine} installed ({version})"), 2);
+                            setup_handle.set_status(name, &format!("engine: {engine} installed"));
+                        }
+                        Ok(EngineStatus::Upgraded { from, to }) => {
+                            Ui::say(&format!("{engine} upgraded ({from} -> {to})"), 2);
+                            setup_handle.set_status(name, &format!("engine: {engine} upgraded"));
+                        }
+                        Err(err) => {
+                            Ui::error(&format!("  {err}"));
+                            setup_handle.set_status(name, &format!("engine failed: {err}"));
+                            failures.push((name.clone(), err.to_string()));
+                        }
                     }
-                    Ok(EngineStatus::Installed(version)) => {
-                        Ui::say(&format!("{engine} installed ({version})"), 2);
+                    session.close().await;
+                }
+
+                if !failures.is_empty() {
+                    Ui::error(&format!("\n{} server(s) failed:", failures.len()));
+                    for (name, message) in &failures {
+                        Ui::say(&format!("{name}: {message}"), 1);
+                        setup_handle.mark_failed(name, message);
                     }
-                    Ok(EngineStatus::Upgraded { from, to }) => {
-                        Ui::say(&format!("{engine} upgraded ({from} -> {to})"), 2);
+                    anyhow::bail!("Server setup failed for {} server(s)", failures.len());
+                }
+
+                if rotate_key {
+                    for (name, _) in &servers {
+                        setup_handle.set_status(name, "rotating WireGuard keys");
                     }
-                    Err(err) => {
-                        Ui::error(&format!("  {err}"));
-                        failures.push((name.clone(), err.to_string()));
+                    force_rotate_keys(&servers, &config, &ssh).await?;
+                    for (name, _) in &servers {
+                        setup_handle.set_status(name, "keys rotated");
                     }
                 }
-                session.close().await;
-            }
 
-            if !failures.is_empty() {
-                Ui::error(&format!("\n{} server(s) failed:", failures.len()));
-                for (name, message) in &failures {
-                    Ui::say(&format!("{name}: {message}"), 1);
+                for (name, _) in &servers {
+                    setup_handle.set_status(name, "network: reconciling");
                 }
-                anyhow::bail!("Server setup failed for {} server(s)", failures.len());
-            }
-
-            if rotate_key {
-                force_rotate_keys(&servers, &config, &ssh).await?;
-            }
-
-            network::setup::reconcile_for_server_setup(&config, &network_plan, &target_names)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
+                network::setup::reconcile_for_server_setup(&config, &network_plan, &target_names)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
                 "Container engine setup succeeded, but complete network setup failed: {error}"
             )
-                })?;
+                    })?;
+                for (name, _) in &servers {
+                    setup_handle.set_status(name, "network: ready");
+                }
 
-            setup_agents(
-                &config,
-                &path,
-                &network_plan,
-                &servers,
-                &ssh,
-                yes,
-                &lock_sessions,
-            )
-            .await?;
+                for (name, _) in &servers {
+                    setup_handle.set_status(name, "agent: installing");
+                }
+                setup_agents(
+                    &config,
+                    &path,
+                    &network_plan,
+                    &servers,
+                    &ssh,
+                    yes,
+                    &lock_sessions,
+                    Some(setup_handle.clone()),
+                )
+                .await?;
+                for (name, _) in &servers {
+                    // Agent phase done — proxy is next; keep dashboard moving.
+                    setup_handle.set_status(name, "agent: ready");
+                }
 
-            if import {
-                perform_import(&config, &servers, &network_plan, &ssh, import_dry_run, yes).await?;
-            }
+                if import {
+                    for (name, _) in &servers {
+                        setup_handle.set_status(name, "import: checking");
+                    }
+                    perform_import(&config, &servers, &network_plan, &ssh, import_dry_run, yes)
+                        .await?;
+                    for (name, _) in &servers {
+                        setup_handle.set_status(name, "import: done");
+                    }
+                }
 
-            setup_proxies(&config, &servers, &ssh, started_at).await?;
-            let replayed = crate::commands::network::backup::replay_recovery_desired_state(
-                &path, &config, &servers, &ssh,
-            )
-            .await?;
-            if replayed > 0 {
-                Ui::result_ok(
-                    "recovery",
-                    &format!(
+                for (name, _) in &servers {
+                    setup_handle.set_status(name, "proxy: configuring");
+                }
+                setup_proxies(
+                    &config,
+                    &servers,
+                    &ssh,
+                    started_at,
+                    Some(setup_handle.clone()),
+                )
+                .await?;
+                let replayed = crate::commands::network::backup::replay_recovery_desired_state(
+                    &path, &config, &servers, &ssh,
+                )
+                .await?;
+                if replayed > 0 {
+                    Ui::result_ok(
+                        "recovery",
+                        &format!(
                         "restored desired placement for {replayed} service(s) into the new epoch"
                     ),
-                );
-            }
+                    );
+                }
 
-            Ok(())
+                Ok(())
+            }
         },
     )
     .await;
     close_all(&lock_sessions).await;
+    // Always finish dashboard before returning — even on error, so the live bars
+    // don't interleave with the final error output.
+    setup_progress.finish();
     setup_result?;
 
     Ui::success_elapsed("All servers are ready.", started_at.elapsed());
@@ -466,6 +536,7 @@ async fn perform_import(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn setup_agents(
     config: &Config,
     config_path: &std::path::Path,
@@ -474,6 +545,7 @@ async fn setup_agents(
     ssh: &Ssh,
     yes: bool,
     lock_sessions: &BTreeMap<String, Arc<SshSession>>,
+    progress: Option<jiji_tui::ServerSetupProgressHandle>,
 ) -> anyhow::Result<()> {
     // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
     // sibling binary) still wins; otherwise fall back to a host-side install script that
@@ -749,6 +821,9 @@ async fn setup_agents(
                 None
             }
         };
+        if let Some(handle) = &progress {
+            handle.set_status(&name, "agent: installing");
+        }
         let agent_ready = match agent_install::ensure_agent(
             &session,
             config.builder.engine,
@@ -761,18 +836,30 @@ async fn setup_agents(
         {
             Ok(agent_install::AgentStatus::AlreadyRunning) => {
                 Ui::say(&format!("{name}: jiji agent already running"), 1);
+                if let Some(handle) = &progress {
+                    handle.set_status(&name, "agent: already running");
+                }
                 true
             }
             Ok(agent_install::AgentStatus::Installed) => {
                 Ui::say(&format!("{name}: jiji agent installed and running"), 1);
+                if let Some(handle) = &progress {
+                    handle.set_status(&name, "agent: installed");
+                }
                 true
             }
             Ok(agent_install::AgentStatus::Upgraded) => {
                 Ui::say(&format!("{name}: jiji agent binary upgraded"), 1);
+                if let Some(handle) = &progress {
+                    handle.set_status(&name, "agent: upgraded");
+                }
                 true
             }
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
+                if let Some(handle) = &progress {
+                    handle.set_status(&name, &format!("agent failed: {error}"));
+                }
                 failures.push((name.clone(), error.to_string()));
                 false
             }
@@ -786,7 +873,12 @@ async fn setup_agents(
             .await
             {
                 Ui::error(&format!("{name}: {error}"));
+                if let Some(handle) = &progress {
+                    handle.set_status(&name, &format!("membership failed: {error}"));
+                }
                 failures.push((name.clone(), error.to_string()));
+            } else if let Some(handle) = &progress {
+                handle.set_status(&name, "agent: membership pushed");
             }
         }
         session.close().await;
@@ -795,6 +887,9 @@ async fn setup_agents(
     if !failures.is_empty() {
         for (name, error) in &failures {
             Ui::say(&format!("{name}: {error}"), 1);
+            if let Some(handle) = &progress {
+                handle.mark_failed(name, error);
+            }
         }
         anyhow::bail!(
             "Jiji agent install failed for {} server(s). Fix the reported hosts and retry `jiji server setup`.",
@@ -822,11 +917,13 @@ async fn setup_agents(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn setup_proxies(
     config: &Config,
     servers: &[(String, NamedServer)],
     ssh: &Ssh,
     started_at: std::time::Instant,
+    progress: Option<jiji_tui::ServerSetupProgressHandle>,
 ) -> anyhow::Result<()> {
     let plan = NetworkPlanner::new()
         .plan(config)
@@ -850,10 +947,17 @@ async fn setup_proxies(
         let session = match connection {
             Ok(session) => session,
             Err(error) => {
+                if let Some(handle) = &progress {
+                    handle.set_status(name, &format!("proxy failed: {error}"));
+                    handle.mark_failed(name, &error.to_string());
+                }
                 failures.push((name.clone(), error.to_string()));
                 continue;
             }
         };
+        if let Some(handle) = &progress {
+            handle.set_status(name, "proxy: configuring");
+        }
         let server_plan = &plan.servers[name];
         let network = if dns_enabled {
             Some(proxy::ProxyNetwork {
@@ -882,6 +986,9 @@ async fn setup_proxies(
                     &format!("{name}: jiji-proxy already configured and running"),
                     1,
                 );
+                if let Some(handle) = &progress {
+                    handle.mark_success(name, "proxy already running");
+                }
                 audit::record(
                     &session,
                     &config.project,
@@ -896,6 +1003,9 @@ async fn setup_proxies(
             }
             Ok(ProxyStatus::Started) => {
                 Ui::say(&format!("{name}: jiji-proxy configured and running"), 1);
+                if let Some(handle) = &progress {
+                    handle.mark_success(name, "proxy configured");
+                }
                 audit::record(
                     &session,
                     &config.project,
@@ -910,6 +1020,9 @@ async fn setup_proxies(
             }
             Err(error) => {
                 Ui::error(&format!("{name}: {error}"));
+                if let Some(handle) = &progress {
+                    handle.mark_failed(name, &error.to_string());
+                }
                 audit::record(
                     &session,
                     &config.project,
