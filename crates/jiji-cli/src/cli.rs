@@ -509,6 +509,13 @@ pub enum ServerCommands {
         )]
         sequential: bool,
     },
+    #[command(
+        about = "Upgrade jiji-agent and jiji-proxy on selected servers to the versions this jiji binary requires"
+    )]
+    Upgrade {
+        #[arg(short = 'y', long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]

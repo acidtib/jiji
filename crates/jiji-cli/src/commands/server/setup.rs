@@ -39,7 +39,7 @@ fn ssh_refusal_cooldown() -> std::time::Duration {
 /// UFW's `limit ssh` rule rejects a source after several connections in a 30-second window. A
 /// teardown followed immediately by setup can reach that limit even when each command avoids
 /// redundant sessions. Do not retry during the window because each rejected SYN refreshes it.
-async fn connect_for_setup(
+pub(crate) async fn connect_for_setup(
     options: &jiji_ssh::ConnectOptions,
 ) -> Result<SshSession, jiji_ssh::SshError> {
     match SshSession::connect(options).await {
@@ -536,43 +536,20 @@ async fn perform_import(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn setup_agents(
+/// Gathers this project's replicated membership -- once through each of `lock_sessions`'
+/// already-open connections (no extra SSH handshake, and stays below common `ufw limit ssh`
+/// thresholds), once via `membership::gather_membership` against the full configured set -- and
+/// folds every record into a fresh `MembershipView`. Shared by `server setup` (which may then
+/// tombstone decommissioned servers against this same view before enrolling -- see
+/// `setup_agents`) and `server upgrade` (`upgrade::upgrade_agents`, which never decommissions
+/// anything, so it uses this view as-is).
+pub(crate) async fn gather_membership_view(
     config: &Config,
-    config_path: &std::path::Path,
-    network_plan: &NetworkPlan,
-    servers: &[(String, NamedServer)],
     ssh: &Ssh,
-    yes: bool,
     lock_sessions: &BTreeMap<String, Arc<SshSession>>,
-    progress: Option<jiji_tui::ServerSetupProgressHandle>,
-) -> anyhow::Result<()> {
-    // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
-    // sibling binary) still wins; otherwise fall back to a host-side install script that
-    // downloads the matching-version agent from the GitHub release, verified by sha256, on
-    // each remote host being set up.
-    let binary_source = match agent_install::find_local_agent_binary() {
-        agent_install::LocalAgentBinary::Found(path) => AgentBinarySource::Local(path),
-        agent_install::LocalAgentBinary::ExplicitOverrideInvalid(message) => {
-            anyhow::bail!("Phase 3 requires the authoritative jiji agent: {message}");
-        }
-        agent_install::LocalAgentBinary::NotConfigured => {
-            let download = agent_distribution::managed_download_config();
-            Ui::say(
-                &format!(
-                    "No local jiji-agent binary found; installing jiji-agent v{} from the \
-                     release on each server.",
-                    download.version
-                ),
-                1,
-            );
-            AgentBinarySource::Managed(download)
-        }
-    };
-    let target_names: BTreeSet<String> = servers.iter().map(|(name, _)| name.clone()).collect();
-    // Read target membership through the connection already holding each host lock. This avoids
-    // another SSH handshake (and stays below common `ufw limit ssh` thresholds) without changing
-    // the command sequence on the dedicated agent-install sessions.
+    target_names: &BTreeSet<String>,
+    scope: &MembershipScope,
+) -> MembershipView {
     let mut gathered_membership = Vec::new();
     for (name, session) in lock_sessions {
         if !target_names.contains(name) {
@@ -585,27 +562,44 @@ async fn setup_agents(
         }
     }
     gathered_membership.extend(
-        crate::commands::network::membership::gather_membership(config, ssh, &target_names).await,
+        crate::commands::network::membership::gather_membership(config, ssh, target_names).await,
     );
-    let remote_install_script = match &binary_source {
-        AgentBinarySource::Managed(download) => {
-            let paths = jiji_agent::AgentPaths::default_for_project(&config.project);
-            let bin_dir = paths
-                .binary_path
-                .parent()
-                .expect("binary path always has a parent directory");
-            Some(agent_distribution::remote_install_script(
-                &download.base_url,
-                &download.version,
-                &paths.project_dir,
-                bin_dir,
-                &paths.state_dir,
-                &paths.binary_path,
-            ))
+
+    let mut view = MembershipView::default();
+    for record in gathered_membership {
+        // A stale/superseded record from a lagging peer is expected and harmless; only a
+        // structural problem (wrong project, collision) is worth surfacing here.
+        if let Err(error) = view.apply(record, scope) {
+            Ui::warn(&format!(
+                "Ignoring an inconsistent gathered membership record: {error}"
+            ));
         }
-        AgentBinarySource::Local(_) => None,
-    };
-    Ui::section("Installing Jiji Agent:");
+    }
+    view
+}
+
+/// Pass 1 of agent enrollment, shared by `server setup` and `server upgrade`: connects to every
+/// target, reads its own WireGuard public key, reconciles a fresh candidate record into `view`,
+/// and builds its `MeshConfig` -- everything `agent_install::ensure_agent` needs. Returns each
+/// target's still-open session (so the caller can install without reconnecting, i.e. "Pass 2"),
+/// the final `records` set (every target's own record plus everything already in `view` -- what
+/// each enrolled host bootstraps with, so a freshly enrolled host and every existing peer agree
+/// from the start, with no gossip left to converge them afterward), and any per-host failures
+/// (connect refused, missing WireGuard key, an inconsistent reconciled record).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn enroll_agent_targets(
+    config: &Config,
+    network_plan: &NetworkPlan,
+    servers: &[(String, NamedServer)],
+    ssh: &Ssh,
+    recovery_epoch: u64,
+    scope: &MembershipScope,
+    mut view: MembershipView,
+) -> anyhow::Result<(
+    Vec<(String, SshSession, MeshConfig)>,
+    Vec<MembershipRecord>,
+    Vec<(String, String)>,
+)> {
     let pool = SshPool::new(ssh.max_concurrent_starts as usize);
     let mut connect_operations = Vec::with_capacity(servers.len());
     for (name, server) in servers {
@@ -617,59 +611,7 @@ async fn setup_agents(
         .collect();
     let connections = pool.execute_concurrent(operations).await;
 
-    let recovery_epoch = crate::recovery_epoch::read(config_path)?;
-    let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
-    let mut view = MembershipView::default();
-    for record in gathered_membership {
-        // A stale/superseded record from a lagging peer is expected and harmless; only a
-        // structural problem (wrong project, collision) is worth surfacing here.
-        if let Err(error) = view.apply(record, &scope) {
-            Ui::warn(&format!(
-                "Ignoring an inconsistent gathered membership record: {error}"
-            ));
-        }
-    }
-
-    // A server still Active in the gathered mesh view but no longer present in `servers:` was
-    // deliberately removed from config -- tombstone it. Driven off the full configured set, not
-    // this run's `-H`-filtered targets, so a server that's merely offline or unselected this run
-    // is never mistaken for one that was actually removed.
-    let configured: BTreeSet<String> = config.servers.keys().cloned().collect();
-    let decommissions =
-        crate::commands::network::membership::compute_decommissions(&configured, &view);
-    if !decommissions.is_empty() {
-        let names: Vec<&str> = decommissions
-            .iter()
-            .map(|record| record.server_name.as_str())
-            .collect();
-        Ui::warn(&format!(
-            "The following server(s) are no longer in `servers:` and will be permanently removed \
-             from the mesh: {}",
-            names.join(", ")
-        ));
-        if !yes {
-            if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
-                anyhow::bail!(
-                    "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm decommissioning these hosts when running non-interactively (e.g. CI/CD)."
-                );
-            }
-            let confirmed = Ui::confirm("Permanently remove these servers from the mesh?", false)?;
-            if !confirmed {
-                anyhow::bail!("Server setup cancelled: decommissioning was not confirmed.");
-            }
-        }
-        for record in decommissions {
-            if let Err(error) = view.apply(record, &scope) {
-                Ui::warn(&format!(
-                    "Ignoring an inconsistent decommission record: {error}"
-                ));
-            }
-        }
-    }
-
     let mut failures = Vec::new();
-    // Pass 1: connect, learn each target's WireGuard key, and fold every target's own record into
-    // the shared view -- the sessions stay open so pass 2 can install without reconnecting.
     let mut prepared = Vec::new();
     for ((name, _), connection) in servers.iter().zip(connections) {
         let session = match connection {
@@ -722,7 +664,7 @@ async fn setup_agents(
         let reconciled =
             crate::commands::network::membership::reconcile_record(view.get(name), candidate);
         if let Some(record) = reconciled {
-            if let Err(error) = view.apply(record, &scope) {
+            if let Err(error) = view.apply(record, scope) {
                 failures.push((
                     name.clone(),
                     format!("could not enroll membership: {error}"),
@@ -797,6 +739,115 @@ async fn setup_agents(
     // peers) is what each host bootstraps with, so a freshly enrolled host and every existing peer
     // agree from the start -- there is no gossip left to converge them afterward.
     let records: Vec<MembershipRecord> = view.all().cloned().collect();
+
+    Ok((prepared, records, failures))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn setup_agents(
+    config: &Config,
+    config_path: &std::path::Path,
+    network_plan: &NetworkPlan,
+    servers: &[(String, NamedServer)],
+    ssh: &Ssh,
+    yes: bool,
+    lock_sessions: &BTreeMap<String, Arc<SshSession>>,
+    progress: Option<jiji_tui::ServerSetupProgressHandle>,
+) -> anyhow::Result<()> {
+    // Spike: the agent no longer has to sit next to the CLI. Local discovery (env override,
+    // sibling binary) still wins; otherwise fall back to a host-side install script that
+    // downloads the matching-version agent from the GitHub release, verified by sha256, on
+    // each remote host being set up.
+    let binary_source = match agent_install::find_local_agent_binary() {
+        agent_install::LocalAgentBinary::Found(path) => AgentBinarySource::Local(path),
+        agent_install::LocalAgentBinary::ExplicitOverrideInvalid(message) => {
+            anyhow::bail!("Phase 3 requires the authoritative jiji agent: {message}");
+        }
+        agent_install::LocalAgentBinary::NotConfigured => {
+            let download = agent_distribution::managed_download_config();
+            Ui::say(
+                &format!(
+                    "No local jiji-agent binary found; installing jiji-agent v{} from the \
+                     release on each server.",
+                    download.version
+                ),
+                1,
+            );
+            AgentBinarySource::Managed(download)
+        }
+    };
+    let target_names: BTreeSet<String> = servers.iter().map(|(name, _)| name.clone()).collect();
+    let remote_install_script = match &binary_source {
+        AgentBinarySource::Managed(download) => {
+            let paths = jiji_agent::AgentPaths::default_for_project(&config.project);
+            let bin_dir = paths
+                .binary_path
+                .parent()
+                .expect("binary path always has a parent directory");
+            Some(agent_distribution::remote_install_script(
+                &download.base_url,
+                &download.version,
+                &paths.project_dir,
+                bin_dir,
+                &paths.state_dir,
+                &paths.binary_path,
+            ))
+        }
+        AgentBinarySource::Local(_) => None,
+    };
+    Ui::section("Installing Jiji Agent:");
+
+    let recovery_epoch = crate::recovery_epoch::read(config_path)?;
+    let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
+    let mut view = gather_membership_view(config, ssh, lock_sessions, &target_names, &scope).await;
+
+    // A server still Active in the gathered mesh view but no longer present in `servers:` was
+    // deliberately removed from config -- tombstone it. Driven off the full configured set, not
+    // this run's `-H`-filtered targets, so a server that's merely offline or unselected this run
+    // is never mistaken for one that was actually removed.
+    let configured: BTreeSet<String> = config.servers.keys().cloned().collect();
+    let decommissions =
+        crate::commands::network::membership::compute_decommissions(&configured, &view);
+    if !decommissions.is_empty() {
+        let names: Vec<&str> = decommissions
+            .iter()
+            .map(|record| record.server_name.as_str())
+            .collect();
+        Ui::warn(&format!(
+            "The following server(s) are no longer in `servers:` and will be permanently removed \
+             from the mesh: {}",
+            names.join(", ")
+        ));
+        if !yes {
+            if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+                anyhow::bail!(
+                    "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm decommissioning these hosts when running non-interactively (e.g. CI/CD)."
+                );
+            }
+            let confirmed = Ui::confirm("Permanently remove these servers from the mesh?", false)?;
+            if !confirmed {
+                anyhow::bail!("Server setup cancelled: decommissioning was not confirmed.");
+            }
+        }
+        for record in decommissions {
+            if let Err(error) = view.apply(record, &scope) {
+                Ui::warn(&format!(
+                    "Ignoring an inconsistent decommission record: {error}"
+                ));
+            }
+        }
+    }
+
+    let (prepared, records, mut failures) = enroll_agent_targets(
+        config,
+        network_plan,
+        servers,
+        ssh,
+        recovery_epoch,
+        &scope,
+        view,
+    )
+    .await?;
 
     // Pass 2: install, now that every target's record is folded into `records`.
     for (name, session, mesh_config) in prepared {

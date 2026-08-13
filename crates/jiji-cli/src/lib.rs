@@ -240,6 +240,29 @@ pub async fn run() {
                     std::process::exit(1);
                 }
             }
+            ServerCommands::Upgrade { yes } => {
+                if let Err(err) = commands::server::upgrade::run(
+                    cli.environment.as_deref(),
+                    cli.config_file.as_deref(),
+                    cli.hosts.as_deref(),
+                    cli.services.as_deref(),
+                    *yes,
+                )
+                .await
+                {
+                    println!();
+                    jiji_tui::Ui::error(&format!("Server upgrade failed: {err}"));
+                    if err.downcast_ref::<jiji_config::ConfigError>().is_some() {
+                        jiji_tui::Ui::say(
+                            "Configuration validation failed. Please check your deploy config and try again.",
+                            1,
+                        );
+                    } else {
+                        jiji_tui::Ui::say("Please check the error above and try again", 1);
+                    }
+                    std::process::exit(1);
+                }
+            }
         },
         Some(Commands::Network { command }) => match command {
             NetworkCommands::Setup => {

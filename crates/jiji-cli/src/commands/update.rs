@@ -67,14 +67,8 @@ pub async fn run(check: bool, version: Option<&str>) -> anyhow::Result<()> {
 
     Ui::result_ok("Installed:", &target);
     Ui::say(
-        "To update your servers, run for each environment configuration:",
+        "Run `jiji server upgrade -e <environment>` for each environment configuration to update your servers.",
         1,
     );
-    Ui::say("jiji server setup -e <environment> --yes", 2);
-    Ui::say(
-        "jiji proxy restart -e <environment>  # only if jiji-proxy changed",
-        2,
-    );
-    Ui::say("jiji network diagnostics -e <environment>", 2);
     Ok(())
 }
