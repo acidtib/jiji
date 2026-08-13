@@ -25,6 +25,8 @@ platform.
 - **jiji-proxy** for HTTP, HTTPS, and raw TCP routing with mesh-wide load balancing
 - **Automatic TLS** for configured domains, plus custom certificate support
 - **Scheduled jobs** in isolated one-off service containers
+- **Automatic image retention** that continuously prunes old build tags, no separate command needed
+- **One-command upgrades** for the local CLI (`jiji update`) and remote agent/proxy components (`jiji server upgrade`)
 
 Rolling services keep the previous version active until its replacement passes
 health checks. Services using `stop_first` or direct host-port bindings use a
@@ -150,7 +152,7 @@ cargo build
 
 # Or via mise (wraps the same cargo commands)
 mise build
-mise test
+mise test    # runs via cargo-nextest if installed, else falls back to cargo test
 mise fmt
 mise lint
 mise check
