@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.5](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.4...jiji-agent-v0.6.5) (2026-08-13)
+
+
+### Bug Fixes
+
+* **cli:** prune orphaned images left by a moving image tag ([62793c4](https://github.com/acidtib/jiji/commit/62793c428882c84b50909ac5228f6e6937661f54))
+* harden update, server upgrade, and image retention ([af5f219](https://github.com/acidtib/jiji/commit/af5f21901f04f6273b19820ad78e93ad927cb446))
+
 ## [0.6.4](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.3...jiji-agent-v0.6.4) (2026-08-10)
 
 

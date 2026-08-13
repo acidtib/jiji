@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/acidtib/jiji/compare/v0.8.0...v0.9.0) (2026-08-13)
+
+
+### Features
+
+* **jiji-cli:** add jiji server upgrade command ([b342d8c](https://github.com/acidtib/jiji/commit/b342d8c3f8954a2d8690b7fcf5685853ec7ac2db))
+* **jiji-cli:** add jiji update command ([df2e456](https://github.com/acidtib/jiji/commit/df2e4568cfeb9b8e88028ebb7bd06d0f60f3d13a))
+* **jiji-cli:** stream health-check output during a deploy wait ([c382dd5](https://github.com/acidtib/jiji/commit/c382dd5bdfaeb378801c6117900361b54f0d2d75))
+
+
+### Bug Fixes
+
+* **cli:** prune orphaned images left by a moving image tag ([62793c4](https://github.com/acidtib/jiji/commit/62793c428882c84b50909ac5228f6e6937661f54))
+* **config:** default build context to project root ([409ab61](https://github.com/acidtib/jiji/commit/409ab61ead08e261ede0f9e77e16caf1606391b0))
+* harden update, server upgrade, and image retention ([af5f219](https://github.com/acidtib/jiji/commit/af5f21901f04f6273b19820ad78e93ad927cb446))
+
 ## [0.8.0](https://github.com/acidtib/jiji/compare/v0.7.5...v0.8.0) (2026-08-12)
 
 
