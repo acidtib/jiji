@@ -14,10 +14,6 @@ complete:
   networking. Implement or reject them as described below.
 - External `secrets:` adapters do not resolve values. Implement the adapter
   path described below.
-- `service.retain` does not prune images during deployment. Operators must run
-  `jiji service prune`.
-- Deploy progress does not show output from failed health-check attempts. It
-  shows the useful output only in the final error.
 - Cron jobs do not retry, transfer ownership during an outage, or run once per
   replica.
 - Audit coverage is not yet complete for every state-changing command. The
@@ -32,97 +28,8 @@ Sources:
 - `crates/jiji-config/src/jiji.yml`
 - `crates/jiji-cli/src/container_runtime.rs`
 - `crates/jiji-cli/src/commands/service/prune.rs`
-- `crates/jiji-cli/src/health_check.rs`
 - `crates/jiji-agent/src/scheduler.rs`
 - `crates/jiji-cli/src/audit.rs`
-
-### Add a command to update the local Jiji binary
-
-Add `jiji update` to detect and install a newer Jiji CLI release. The command
-must provide the same result as the published `install.sh` installer.
-
-The new command must:
-
-- Show the installed version and the latest available version.
-- Exit successfully without changing files when the installed version is current.
-- Detect the local operating system and architecture.
-- Download the matching release artifact and its SHA-256 sidecar.
-- Reject an artifact when its checksum does not match.
-- Install the new binary atomically at the path of the current executable.
-- Preserve the executable permissions and avoid a partially written binary.
-- Report an actionable error when the executable path is not writable.
-- Support a check-only option that never changes the installed binary.
-- Support a specific version for rollback and reproducible installation.
-- Refuse an unsupported operating system or architecture before downloading.
-- Keep temporary files out of the project directory and remove them after use.
-- Print the installed version after a successful update.
-- Tell the user to run `jiji server upgrade` for each environment configuration.
-- Never upgrade remote agents or the shared proxy as an implicit side effect.
-- Add tests for current, newer, missing, invalid, and checksum-mismatch releases.
-
-Share release detection, artifact naming, and checksum verification with
-`install.sh`. Do not maintain two independent implementations of this logic.
-
-Sources:
-
-- `README.md`
-- `.github/workflows/binary-release.yml`
-- `crates/jiji-cli/src/cli.rs`
-- `crates/jiji-cli/src/lib.rs`
-- `crates/jiji-cli/src/commands/`
-
-### Add one command to upgrade server components
-
-After a local Jiji update, users must run separate commands to upgrade the
-project agent and the shared proxy. Add `jiji server upgrade` to detect and
-upgrade outdated server components.
-
-The current manual sequence is:
-
-```bash
-# Show the updated local Jiji version.
-jiji version
-
-# Upgrade the project agent and refresh its configuration.
-jiji server setup -e production --yes
-
-# Run this command only when jiji-proxy changed.
-jiji proxy restart -e production
-
-# Show the health of the project network.
-jiji network diagnostics -e production
-```
-
-Users must repeat `jiji server setup` for each environment configuration.
-
-The new command must:
-
-- Read the agent version and proxy version on each selected server.
-- Compare them with the component versions required by the local Jiji binary.
-- Upgrade the project agent only when its required version differs.
-- Recreate the shared proxy only when its required version differs.
-- Refresh the agent configuration when the binary version is current.
-- Preserve the existing server and proxy lock order.
-- Avoid proxy interruption when the proxy version is current.
-- Report the previous version, required version, and result for each component.
-- Support `-e`, `-H`, `--yes`, and non-interactive execution.
-- Run project diagnostics after the upgrade, or print the exact diagnostics command.
-- Tell users to repeat the command for each environment configuration.
-- Record each component upgrade in the audit trail.
-- Add tests for current, outdated, unavailable, and partially failed components.
-
-Define the behavior for a remote component that is newer than the version
-required by the local Jiji binary. The command must not silently downgrade it.
-
-Sources:
-
-- `crates/jiji-cli/src/commands/server/setup.rs`
-- `crates/jiji-cli/src/commands/proxy/restart.rs`
-- `crates/jiji-cli/src/agent_install.rs`
-- `crates/jiji-cli/src/proxy.rs`
-- `crates/jiji-cli/src/version_requirements.rs`
-- `crates/jiji-cli/build.rs`
-- `crates/jiji-network/build.rs`
 
 ### Complete audit coverage
 
@@ -193,84 +100,6 @@ Sources:
 - `crates/jiji-cli/src/remote_build.rs`
 - `crates/jiji-cli/src/env_resolution.rs`
 
-### Default the build context to the project root
-
-The detailed `build:` form currently requires `context`. Configuration loading
-fails before any command can inspect a service when this field is absent.
-
-This configuration must be valid:
-
-```yaml
-services:
-  site:
-    build:
-      dockerfile: Dockerfile
-```
-
-It must behave like this explicit configuration:
-
-```yaml
-services:
-  site:
-    build:
-      context: .
-      dockerfile: Dockerfile
-```
-
-- Default `BuildConfig.context` to `.` during deserialization.
-- Keep an explicit `context` value unchanged.
-- Apply the same path rules to local and remote builders.
-- Update the configuration reference with the optional field and its default.
-- Add parsing, validation, build-plan, and CLI regression tests.
-- Make sure that `jiji secrets print` accepts the shorthand configuration.
-
-Sources:
-
-- `crates/jiji-config/src/schema.rs`
-- `crates/jiji-config/src/jiji.yml`
-- `crates/jiji-cli/src/build_engine.rs`
-- `crates/jiji-cli/src/build_context.rs`
-- `crates/jiji-cli/src/commands/secrets/print.rs`
-
-### Enforce image retention automatically
-
-`service.retain` is only enforced by `jiji service prune`. Old images can
-accumulate when an operator does not run this command. The configuration
-reference incorrectly says that deployment prunes images automatically.
-
-- Define how the agent receives each service image repository and retain
-  count.
-- Add safe pruning to the agent reconciliation loop.
-- Keep images that a container still references.
-- Decide whether `jiji service prune` remains as a manual override.
-- Correct the configuration reference when the runtime behavior is final.
-- Add tests for ordering, retained images, and images in use.
-
-Sources:
-
-- `crates/jiji-cli/src/commands/service/prune.rs`
-- `crates/jiji-agent/src/local_reconcile.rs`
-- `crates/jiji-agent/src/runtime.rs`
-- `crates/jiji-config/src/jiji.yml`
-
-### Show health-check failures while a deploy waits
-
-The deploy UI shows one static message until the health check succeeds or
-times out. Failed attempts discard stdout. Stderr appears only in the final
-error.
-
-- Capture stdout and stderr from every failed attempt.
-- Send the latest useful output through the existing deployment progress
-  callback.
-- Keep the final container-log tail in timeout errors.
-- Prevent secret values from appearing in progress output.
-- Add tests for stdout, stderr, repeated attempts, and timeout output.
-
-Sources:
-
-- `crates/jiji-cli/src/health_check.rs`
-- `crates/jiji-cli/src/deploy_transaction.rs`
-
 ### Implement or reject `network_mode: host` and `network_mode: none`
 
 The configuration reference documents both modes. The runtime currently
@@ -340,6 +169,35 @@ Sources:
 - `crates/jiji-agent/src/cron.rs`
 - `crates/jiji-agent/src/cron_exec.rs`
 - `crates/jiji-agent/src/scheduler.rs`
+
+## Documentation clarity
+
+### Clarify `replicas:` semantics to prevent a common misreading
+
+`servers: [a, b]` plus `replicas: 2` is easy to misread as "each assigned
+server gets its own instance plus a replica" (4 total, 2 per server).
+The actual behavior is that `replicas` is the total instance count spread
+across the eligible `servers:` set - 2 total, 1 per server under the
+default `placement: spread` (confirmed by `place()`'s balanced-load
+assignment and its `spread_is_balanced_and_input_order_independent` test).
+The website configuration reference already states this ("`servers:` is
+the eligible placement set, not 'one copy per server.' `replicas:` is the
+desired total count across that whole set."), but a reader can still form
+the wrong mental model from it.
+
+- Add a worked example to the configuration reference showing `servers:`,
+  `replicas:`, and the resulting per-server placement side by side (e.g. a
+  small table), not just prose.
+- Consider a preflight/dry-run output for `jiji deploy` that prints the
+  computed replica-to-server plan before applying it, so the mental model
+  gets checked against real output instead of only documentation.
+- Consider clarifying `replicas` in `jiji deploy --help` / service command
+  help text to make the "total, not per-server" meaning explicit there too.
+
+Sources:
+
+- `crates/jiji-cli/src/placement.rs`
+- Website: `app/docs/reference/configuration/page.mdx` (Replicas and placement section)
 
 ## Removed stale items
 

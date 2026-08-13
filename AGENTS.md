@@ -490,8 +490,8 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   mismatch; installs atomically (temp file on the same filesystem, then
   rename) preserving the existing binary's permissions; `--check` reports
   versions without changing anything. Never touches remote servers,
-  `jiji-agent`, or `jiji-proxy` -- prints the manual `jiji server setup`/
-  `jiji proxy restart`/`jiji network diagnostics` sequence for that. Shares
+  `jiji-agent`, or `jiji-proxy` -- prints `jiji server upgrade -e
+  <environment>` as the next step for that, once per environment. Shares
   the release repo, artifact-naming grammar, and checksum algorithm with
   `bin/install.sh` (which now also verifies `.sha256` after download), not
   literal source code. `self_update.rs` has the pure/network logic;
@@ -521,6 +521,20 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   without committing. No standalone assess, import, decommission,
   update-endpoint, rotate-key, or replace command exists: `server setup`
   absorbs all of it.
+- `jiji server upgrade [-y/--yes]`: reads each selected host's live
+  `jiji-agent` (its `Health` RPC) and `jiji-proxy` (`jiji-proxy version`)
+  and compares both against what this CLI was built against. Per host,
+  per component: outdated -> upgraded (agent binary replaced, proxy
+  recreated); current -> config/unit/membership refreshed without a
+  binary/container change; ahead of required -> never touched, reported
+  as such (never downgrades); unavailable -> skipped, reported, command
+  exits non-zero. Shares `server setup`'s enrollment machinery
+  (`gather_membership_view`/`enroll_agent_targets` in
+  `commands/server/setup.rs`, both `pub(crate)` for this reason) rather
+  than duplicating it. Runs `jiji network diagnostics` at the end;
+  `-S`/`--services` is rejected (host-level component, not per-service).
+  Replaces the old manual `server setup` + `proxy restart` +
+  `network diagnostics` sequence `jiji update` used to print.
 - `jiji network plan` / `jiji network setup`: print or transactionally apply
   the deterministic mesh-bootstrap plan (WireGuard peers, bridge, reserved
   addresses only, no service/deployment state). Setup also migrates an
@@ -638,6 +652,11 @@ Local (non-SSH) engine invocations are tested against a fake `docker`/
 for assertions (see `registry_teardown_test.rs`, `registry_auth_test.rs`).
 Use this instead of the SSH-mock pattern when the command never leaves the
 local machine.
+
+A command that talks to a plain HTTP service instead of SSH (`jiji update`
+against GitHub's release API) is tested the same "roll a real local server"
+way, but with a minimal in-process `TcpListener` HTTP/1.1 stand-in instead
+of an SSH server (see `update_test.rs`).
 
 `jiji-agent`'s own tests (`catalog_replication.rs`, `membership.rs`,
 `wireguard.rs`, `local_reconcile.rs`, etc.) don't go through SSH or the CLI
