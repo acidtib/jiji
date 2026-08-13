@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/jiji_logo.svg" alt="Jiji Logo" width="400">
+  <img src="lib/assets/jiji_logo.svg" alt="Jiji Logo" width="400">
 </p>
 
 # Jiji
