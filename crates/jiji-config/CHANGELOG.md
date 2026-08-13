@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/acidtib/jiji/compare/jiji-config-v0.8.1...jiji-config-v0.8.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **cli:** prune orphaned images left by a moving image tag ([62793c4](https://github.com/acidtib/jiji/commit/62793c428882c84b50909ac5228f6e6937661f54))
+* **config:** default build context to project root ([409ab61](https://github.com/acidtib/jiji/commit/409ab61ead08e261ede0f9e77e16caf1606391b0))
+
 ## [0.8.1](https://github.com/acidtib/jiji/compare/jiji-config-v0.8.0...jiji-config-v0.8.1) (2026-08-10)
 
 
