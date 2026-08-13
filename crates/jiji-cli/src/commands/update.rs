@@ -27,7 +27,13 @@ pub async fn run(check: bool, version: Option<&str>) -> anyhow::Result<()> {
     let arch = std::env::consts::ARCH;
     let asset = self_update::artifact_name(os, arch)?;
 
+    // Without a timeout, a hung GitHub connection (or a mock/mirror behind
+    // `JIJI_RELEASE_API_BASE_URL`/`JIJI_RELEASE_BASE_URL` that never responds) blocks `jiji
+    // update` indefinitely across up to three sequential requests (release list, sha256 sidecar,
+    // asset). 30s comfortably covers a large asset download over a slow connection while still
+    // failing actionably instead of hanging forever.
     let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|error| anyhow::anyhow!("could not build an HTTP client: {error}"))?;
     let api_base_url = self_update::release_api_base_url();

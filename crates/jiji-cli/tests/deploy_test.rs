@@ -1128,6 +1128,73 @@ async fn replacement_never_eagerly_removes_a_build_configured_services_old_image
     );
 }
 
+/// A service that just dropped `build:` from its config (now deploying with a static `image:`,
+/// via `write_config`) but whose *previous* container was still build-produced: an
+/// image-retention spec pushed by that earlier build-configured deploy is still installed on the
+/// host, since `image_retention_reconcile.rs`'s sweep that would remove it only runs after this
+/// same cutover. Regression test for the bug where the cutover decided whether to prune based on
+/// the *current* config's `build:` field rather than this live signal, deleting one of `retain:`'s
+/// already-tracked images out from under it.
+#[tokio::test(flavor = "multi_thread")]
+async fn replacement_leaves_an_image_still_tracked_by_a_stale_retention_spec_alone() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), "docker");
+
+    let old_deployment = "olddeployment1234567890";
+    let old_name = "demo-web-olddeploymen";
+    let old_image_id = "sha256:oldimageid000000000000000000000000000000000000000000000000000";
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation("docker"),
+    );
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response(old_deployment, "100.64.0.9"),
+    );
+    responses.insert(
+        agent_request_command("image-retention-list"),
+        success(
+            r#"{"Ok":{"type":"image_retention_specs","specs":[{"service":"web","repo":"localhost:31270/demo-web","retain":3}]}}"#,
+        ),
+    );
+    responses.insert(
+        image_inspect_command("docker", "docker.io/example/web:latest"),
+        success(""),
+    );
+    responses.insert(mktemp_command(), cutover_generation_path("def456"));
+    // Would prove the bug if this were ever queried and acted on: the still-tracked image must
+    // never even be looked up for removal in the first place.
+    responses.insert(
+        inspect_image_id_command("docker", old_name),
+        success(&format!("{old_image_id}\n")),
+    );
+    responses.insert(
+        referenced_elsewhere_command("docker", old_image_id),
+        success(""),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received
+            .iter()
+            .any(|c| c == &format!("docker rmi {old_image_id}")),
+        "an image still tracked by an installed retention spec must be left for `retain:` to \
+         manage, not eagerly removed just because the current config dropped `build:`: {received:?}"
+    );
+}
+
 /// Like `active_catalog_response`, but `owner_node_id` is the real configured server name
 /// ("app"), not the unrelated placeholder "node-test": cron reconciliation looks up the owner's
 /// session by that name, so it must match this file's single-server test topology.

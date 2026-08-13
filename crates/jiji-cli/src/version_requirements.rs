@@ -42,6 +42,14 @@ pub const AGENT_BUILD_VERSION: &str = env!("JIJI_AGENT_BUILD_VERSION");
 pub const MIN_AGENT_VERSION: &str = "0.4.9";
 pub const MIN_PROXY_VERSION: &str = "0.4.9";
 
+/// The oldest jiji-agent version that understands `ImageRetentionApply`/`Remove`/`List`.
+/// Deliberately a separate, higher floor from `MIN_AGENT_VERSION` rather than bumping that global
+/// gate: `MIN_AGENT_VERSION` blocks every RPC on every command, so raising it would refuse to
+/// deploy at all against an otherwise-perfectly-compatible older fleet just to gain image
+/// retention. `image_retention_reconcile.rs` checks this floor itself, per host, and skips
+/// pushing/sweeping retention there (never fails the deploy) when an agent is too old for it.
+pub const MIN_RETENTION_AGENT_VERSION: &str = "0.6.5";
+
 /// Fails open (`Ok(())`) on an unparseable `found`/`min`, matching
 /// `engine::check_min_version`'s own precedent: never block an operator
 /// over a version string this can't understand. `fix_hint` is the exact

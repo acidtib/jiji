@@ -17,7 +17,7 @@ use crate::cron::{
     CronSchedulerState, CronSpecApplyOutcome,
 };
 use crate::desired::{DesiredApply, DesiredError, DesiredStateRecord, DesiredStateView};
-use crate::image_retention::{ImageRetentionApplyOutcome, ImageRetentionSpec};
+use crate::image_retention::ImageRetentionSpec;
 use crate::membership::{
     MembershipApply, MembershipError, MembershipRecord, MembershipScope, MembershipState,
     MembershipView, RecordProvenance,
@@ -332,7 +332,6 @@ const MIGRATIONS: &[Migration] = &[
                   service TEXT PRIMARY KEY,
                   repo TEXT NOT NULL,
                   retain INTEGER NOT NULL,
-                  revision INTEGER NOT NULL,
                   updated_at TEXT NOT NULL
               );",
     },
@@ -1494,47 +1493,24 @@ impl AgentStore {
             .collect::<Result<_, StoreError>>()
     }
 
-    /// Idempotent upsert keyed by `service`, comparing `repo`/`retain` against whatever is
-    /// already installed -- there's no `canonical_hash` here (unlike `apply_cron_spec`) since
-    /// `ImageRetentionSpec` has only these two content fields to compare.
+    /// Idempotent upsert keyed by `service`, returning the stored spec. There's no
+    /// `canonical_hash` here (unlike `apply_cron_spec`) since `ImageRetentionSpec` has only two
+    /// content fields, and no install/update classification either: the sole caller only needs
+    /// the spec back for its response, and whether the row changed never alters what it does.
     pub fn apply_image_retention_spec(
         &self,
         spec: &ImageRetentionSpec,
-    ) -> Result<ImageRetentionApplyOutcome, StoreError> {
-        let existing: Option<(String, i64)> = self
-            .conn
-            .query_row(
-                "SELECT repo, retain FROM image_retention_specs WHERE service = ?1",
-                params![spec.service],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let unchanged = existing
-            .as_ref()
-            .is_some_and(|(repo, retain)| *repo == spec.repo && *retain == spec.retain as i64);
+    ) -> Result<ImageRetentionSpec, StoreError> {
         self.conn.execute(
-            "INSERT INTO image_retention_specs (service, repo, retain, revision, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO image_retention_specs (service, repo, retain, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(service) DO UPDATE SET
                repo = excluded.repo,
                retain = excluded.retain,
-               revision = excluded.revision,
                updated_at = excluded.updated_at",
-            params![
-                spec.service,
-                spec.repo,
-                spec.retain as i64,
-                spec.revision as i64,
-                now(),
-            ],
+            params![spec.service, spec.repo, spec.retain as i64, now()],
         )?;
-        Ok(if unchanged {
-            ImageRetentionApplyOutcome::Unchanged(spec.clone())
-        } else if existing.is_some() {
-            ImageRetentionApplyOutcome::Updated(spec.clone())
-        } else {
-            ImageRetentionApplyOutcome::Installed(spec.clone())
-        })
+        Ok(spec.clone())
     }
 
     pub fn remove_image_retention_spec(&self, service: &str) -> Result<bool, StoreError> {
@@ -1545,15 +1521,14 @@ impl AgentStore {
     }
 
     pub fn image_retention_specs(&self) -> Result<Vec<ImageRetentionSpec>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT service, repo, retain, revision FROM image_retention_specs ORDER BY service",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT service, repo, retain FROM image_retention_specs ORDER BY service")?;
         let rows = statement.query_map([], |row| {
             Ok(ImageRetentionSpec {
                 service: row.get(0)?,
                 repo: row.get(1)?,
                 retain: row.get::<_, i64>(2)? as u32,
-                revision: row.get::<_, i64>(3)? as u64,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(StoreError::from)
@@ -2544,34 +2519,24 @@ mod cron_tests {
         assert!(!store.remove_cron_spec("twitch", "sync-twitch").unwrap());
     }
 
-    fn retention_spec(service: &str, repo: &str, retain: u32, revision: u64) -> ImageRetentionSpec {
+    fn retention_spec(service: &str, repo: &str, retain: u32) -> ImageRetentionSpec {
         ImageRetentionSpec {
             service: service.into(),
             repo: repo.into(),
             retain,
-            revision,
         }
     }
 
     #[test]
-    fn apply_image_retention_spec_reports_installed_then_unchanged_then_updated() {
+    fn apply_image_retention_spec_upserts_idempotently() {
         let store = store();
-        let spec = retention_spec("web", "ghcr.io/example/demo-web", 3, 1);
+        let spec = retention_spec("web", "ghcr.io/example/demo-web", 3);
 
-        assert_eq!(
-            store.apply_image_retention_spec(&spec).unwrap(),
-            ImageRetentionApplyOutcome::Installed(spec.clone())
-        );
-        assert_eq!(
-            store.apply_image_retention_spec(&spec).unwrap(),
-            ImageRetentionApplyOutcome::Unchanged(spec.clone())
-        );
+        assert_eq!(store.apply_image_retention_spec(&spec).unwrap(), spec);
+        assert_eq!(store.apply_image_retention_spec(&spec).unwrap(), spec);
 
-        let changed = retention_spec("web", "ghcr.io/example/demo-web", 5, 2);
-        assert_eq!(
-            store.apply_image_retention_spec(&changed).unwrap(),
-            ImageRetentionApplyOutcome::Updated(changed.clone())
-        );
+        let changed = retention_spec("web", "ghcr.io/example/demo-web", 5);
+        assert_eq!(store.apply_image_retention_spec(&changed).unwrap(), changed);
         assert_eq!(store.image_retention_specs().unwrap(), vec![changed]);
     }
 
@@ -2579,14 +2544,13 @@ mod cron_tests {
     fn image_retention_specs_lists_every_installed_spec_sorted() {
         let store = store();
         store
-            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3, 1))
+            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3))
             .unwrap();
         store
             .apply_image_retention_spec(&retention_spec(
                 "backend",
                 "ghcr.io/example/demo-backend",
                 3,
-                1,
             ))
             .unwrap();
         let names: Vec<String> = store
@@ -2602,7 +2566,7 @@ mod cron_tests {
     fn remove_image_retention_spec_deletes_an_installed_spec_and_is_idempotent() {
         let store = store();
         store
-            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3, 1))
+            .apply_image_retention_spec(&retention_spec("web", "ghcr.io/example/demo-web", 3))
             .unwrap();
         assert!(store.remove_image_retention_spec("web").unwrap());
         assert!(store.image_retention_specs().unwrap().is_empty());

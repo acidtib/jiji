@@ -24,6 +24,7 @@ use jiji_agent::cron::CronJobSpec;
 use jiji_config::{CommandValue, Config, CronConfig, Service, Ssh};
 use jiji_network::{NetworkPlan, ServiceEndpointPlan};
 use jiji_ssh::SshSession;
+use tracing::warn;
 
 use crate::deploy_transaction::EndpointOutcome;
 use crate::placement::ReplicaAssignment;
@@ -92,7 +93,7 @@ pub(crate) async fn find_owner(
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> anyhow::Result<(CronOwner, BTreeMap<String, Arc<SshSession>>, Vec<String>)> {
     let (resolved, newly_opened) =
-        resolve_sessions(ssh, config, &service.servers, sessions).await?;
+        resolve_sessions(ssh, config, &service.servers, sessions, None).await?;
 
     let result = find_owner_in(config, service_name, service, &resolved).await;
     match result {
@@ -288,12 +289,20 @@ pub(crate) fn render_apply_request(
 /// close exactly those when done -- `sessions` itself is never mutated (this module never holds
 /// a long-lived `&mut` on the caller's session pool, since callers invoke this from inside a
 /// closure that's often already borrowing it immutably for lock management).
+///
+/// `lenient` selects the failure mode for servers outside the caller's already-connected set:
+/// `None` keeps the strict all-or-nothing behavior (an undefined server or failed connection
+/// aborts the whole resolve), `Some(subject)` logs and skips that server instead, so a host a
+/// `-H`-scoped command never targeted cannot fail it.
 pub(crate) async fn resolve_sessions(
     ssh: &Ssh,
     config: &Config,
     servers: &[String],
     sessions: &BTreeMap<String, Arc<SshSession>>,
+    lenient: Option<&str>,
 ) -> anyhow::Result<(BTreeMap<String, Arc<SshSession>>, Vec<String>)> {
+    let strict = lenient.is_none();
+    let subject = lenient.unwrap_or("");
     let mut resolved = BTreeMap::new();
     let mut newly_opened = Vec::new();
     for server_name in servers {
@@ -301,13 +310,45 @@ pub(crate) async fn resolve_sessions(
             resolved.insert(server_name.clone(), Arc::clone(session));
             continue;
         }
-        let named = config.servers.get(server_name).ok_or_else(|| {
-            anyhow::anyhow!("Server '{server_name}' referenced by cron reconciliation is not defined in configuration")
-        })?;
-        let options = ssh_adapter::connect_options(server_name, named, ssh)?;
-        let session = SshSession::connect(&options).await.with_context(|| {
-            format!("Could not connect to '{server_name}' to reconcile cron ownership")
-        })?;
+        let named = match config.servers.get(server_name) {
+            Some(named) => named,
+            None if !strict => {
+                warn!(
+                    server = %server_name,
+                    "{subject}: server is not defined in configuration, skipping it"
+                );
+                continue;
+            }
+            None => anyhow::bail!(
+                "Server '{server_name}' referenced by cron reconciliation is not defined in configuration"
+            ),
+        };
+        let options = match ssh_adapter::connect_options(server_name, named, ssh) {
+            Ok(options) => options,
+            Err(error) if !strict => {
+                warn!(
+                    server = %server_name, %error,
+                    "{subject}: could not prepare a connection outside this command's targets, skipping it"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let session = match SshSession::connect(&options).await {
+            Ok(session) => session,
+            Err(error) if !strict => {
+                warn!(
+                    server = %server_name, %error,
+                    "{subject}: could not reach a server outside this command's targets, skipping it without failing the command"
+                );
+                continue;
+            }
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "Could not connect to '{server_name}' to reconcile cron ownership"
+                )));
+            }
+        };
         resolved.insert(server_name.clone(), Arc::new(session));
         newly_opened.push(server_name.clone());
     }
@@ -347,8 +388,14 @@ pub(crate) async fn reconcile_service_crons(
     let mut problems = Vec::new();
     let redeploy_hint = "Run `jiji deploy` again to retry cron installation.";
 
-    let (sessions, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
-        .await
+    let (sessions, newly_opened) = match resolve_sessions(
+        ssh,
+        config,
+        &service.servers,
+        sessions,
+        None,
+    )
+    .await
     {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -602,19 +649,13 @@ async fn remove_specs_absent_from(
     problems
 }
 
-/// Reconciles cron specs for every service in `results` whose every selected endpoint deployed
-/// successfully -- the shared post-processing step `jiji deploy`, `jiji service restart`, and
-/// `jiji service rollback` all call after their own endpoint deployment completes (they share the
-/// same `deploy_service_endpoints` primitive, but each computes `selected`/`results` itself, so
-/// this takes them as parameters rather than assuming a single caller's exact variable shape).
-pub(crate) async fn reconcile_after_deploy(
-    ssh: &Ssh,
-    config: &Config,
-    plan: &NetworkPlan,
-    sessions: &BTreeMap<String, Arc<SshSession>>,
-    selected: &[ServiceEndpointPlan],
+/// Every service among `selected` whose every endpoint in `results` deployed successfully, as a
+/// name -> all-succeeded map. Shared by this module's and `image_retention_reconcile`'s
+/// `reconcile_after_deploy`, which both run after the same shared deployment primitive.
+pub(crate) fn fully_deployed_services<'a>(
+    selected: &'a [ServiceEndpointPlan],
     results: &[Vec<(String, EndpointOutcome)>],
-) -> Vec<String> {
+) -> BTreeMap<&'a str, bool> {
     let identity_to_service: BTreeMap<&str, &str> = selected
         .iter()
         .map(|endpoint| (endpoint.identity.as_str(), endpoint.service.as_str()))
@@ -632,9 +673,24 @@ pub(crate) async fn reconcile_after_deploy(
                 .or_insert(succeeded);
         }
     }
+    service_success
+}
 
+/// Reconciles cron specs for every service in `results` whose every selected endpoint deployed
+/// successfully -- the shared post-processing step `jiji deploy`, `jiji service restart`, and
+/// `jiji service rollback` all call after their own endpoint deployment completes (they share the
+/// same `deploy_service_endpoints` primitive, but each computes `selected`/`results` itself, so
+/// this takes them as parameters rather than assuming a single caller's exact variable shape).
+pub(crate) async fn reconcile_after_deploy(
+    ssh: &Ssh,
+    config: &Config,
+    plan: &NetworkPlan,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    selected: &[ServiceEndpointPlan],
+    results: &[Vec<(String, EndpointOutcome)>],
+) -> Vec<String> {
     let mut problems = Vec::new();
-    for (service_name, succeeded) in service_success {
+    for (service_name, succeeded) in fully_deployed_services(selected, results) {
         if !succeeded {
             continue;
         }
@@ -661,8 +717,14 @@ pub(crate) async fn remove_all_cron_specs(
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    let (sessions, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
-        .await
+    let (sessions, newly_opened) = match resolve_sessions(
+        ssh,
+        config,
+        &service.servers,
+        sessions,
+        None,
+    )
+    .await
     {
         Ok(resolved) => resolved,
         Err(error) => {

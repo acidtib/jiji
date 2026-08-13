@@ -626,7 +626,7 @@ async fn reconcile_containers(
     Ok(())
 }
 
-type RetentionPruneResult = Result<Vec<(String, crate::image_retention::PruneOutcome)>, String>;
+type RetentionPruneResult = Result<Vec<(String, String)>, String>;
 
 /// Prunes every installed image-retention spec's repo against this host's own local image cache
 /// (see `image_retention.rs`). A per-repo failure (e.g. the engine briefly unavailable) is folded
@@ -652,12 +652,26 @@ async fn reconcile_image_retention(
 
 /// Pure fold, kept separate from the async per-repo `prune_repo` calls above so it's testable
 /// with fixed inputs and no real engine, mirroring `restart_candidates`'s split from
-/// `reconcile_containers`.
+/// `reconcile_containers`. Reports both a whole-repo failure (the outer `Result`, e.g. the engine
+/// briefly unavailable) and a per-image removal failure inside an otherwise-successful listing
+/// (e.g. `rmi` refused because the tag is still referenced elsewhere): the latter used to be
+/// dropped entirely -- an `Ok(..)` at the outer level short-circuited the per-image inspection,
+/// so a stuck image silently stopped retention from ever making progress on that repo again, with
+/// no log line and no effect on this component's reported health.
 fn fold_retention_problems(results: Vec<(String, RetentionPruneResult)>) -> Result<(), String> {
-    let problems: Vec<String> = results
-        .into_iter()
-        .filter_map(|(service, result)| result.err().map(|error| format!("{service}: {error}")))
-        .collect();
+    let mut problems = Vec::new();
+    for (service, result) in results {
+        match result {
+            Err(error) => problems.push(format!("{service}: {error}")),
+            Ok(failures) => {
+                for (image_id, error) in failures {
+                    problems.push(format!(
+                        "{service}: could not remove image '{image_id}': {error}"
+                    ));
+                }
+            }
+        }
+    }
     if problems.is_empty() {
         Ok(())
     } else {
@@ -891,5 +905,20 @@ mod tests {
         let error = fold_retention_problems(results).unwrap_err();
         assert!(error.contains("web: timeout"));
         assert!(error.contains("worker: engine unavailable"));
+    }
+
+    #[test]
+    fn fold_retention_problems_reports_a_failed_image_inside_an_otherwise_ok_listing() {
+        let results = vec![(
+            "web".to_string(),
+            Ok(vec![(
+                "img2".to_string(),
+                "image is referenced in multiple repositories".to_string(),
+            )]),
+        )];
+        let error = fold_retention_problems(results).unwrap_err();
+        assert!(error.contains("web:"));
+        assert!(error.contains("img2"));
+        assert!(error.contains("image is referenced in multiple repositories"));
     }
 }

@@ -11,35 +11,26 @@
 //! resolution -- just `resolve_sessions`/`close_newly_opened`, reused from `cron_reconcile.rs`
 //! rather than duplicated.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use jiji_agent::api::RequestBody;
+use jiji_agent::api::{RequestBody, ResponseBody};
 use jiji_config::{Config, Service, Ssh};
 use jiji_network::ServiceEndpointPlan;
 use jiji_ssh::SshSession;
+use tracing::warn;
 
-use crate::cron_reconcile::{close_newly_opened, resolve_sessions};
+use crate::cron_reconcile::{close_newly_opened, fully_deployed_services, resolve_sessions};
 use crate::deploy_transaction::EndpointOutcome;
 use crate::registry;
-
-/// A plain wall-clock second count: unlike `CronJobSpec::revision` (taken from the catalog
-/// record's own revision counter), there is no equivalent per-deploy counter here to reuse, and
-/// `AgentStore::apply_image_retention_spec` never compares on `revision` for its idempotent-upsert
-/// decision (only `repo`/`retain`) -- see the plan's "RPC" section. A wall-clock value is
-/// monotonic enough for "last write wins" to stay well-defined without any extra state.
-fn current_revision() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+use crate::version_requirements::{check_min_version, MIN_RETENTION_AGENT_VERSION};
 
 /// Reconciles image-retention specs for every service in `results` whose every selected endpoint
 /// deployed successfully -- the shared post-processing step `jiji deploy`, `jiji service restart`,
 /// and `jiji service rollback` all call after their own endpoint deployment completes, alongside
-/// the equivalent `cron_reconcile::reconcile_after_deploy` call.
+/// the equivalent `cron_reconcile::reconcile_after_deploy` call. Also sweeps every server in the
+/// project for a stale spec left by a service that dropped `build:`, changed its `servers:` list,
+/// or was renamed/deleted outright (see `sweep_stale_retention_specs`).
 pub(crate) async fn reconcile_after_deploy(
     ssh: &Ssh,
     config: &Config,
@@ -48,40 +39,64 @@ pub(crate) async fn reconcile_after_deploy(
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    // The Health RPC behind agent_supports_retention is cached per host for the whole call:
+    // a host running several build services would otherwise be version-probed once per service.
+    let mut version_cache: BTreeMap<String, bool> = BTreeMap::new();
     for service_name in services_to_reconcile(config, selected, results) {
         let service = &config.services[service_name];
-        problems.extend(push_retention_spec(ssh, config, service_name, service, sessions).await);
+        problems.extend(
+            push_retention_spec(
+                ssh,
+                config,
+                service_name,
+                service,
+                sessions,
+                &mut version_cache,
+            )
+            .await,
+        );
     }
+    problems.extend(sweep_stale_retention_specs(ssh, config, sessions).await);
     problems
+}
+
+/// `true` once `session`'s agent reports a version at or above `MIN_RETENTION_AGENT_VERSION`.
+/// Fails open (`true`) on an unparseable/unreachable version, matching
+/// `version_requirements::check_min_version`'s own precedent -- the actual RPC attempt right
+/// after this call surfaces a real connectivity problem on its own terms, and this function's
+/// only job is to keep a known-too-old agent from being sent a request it cannot parse at all.
+async fn agent_supports_retention(session: &SshSession, project: &str, server_name: &str) -> bool {
+    let Ok(ResponseBody::Health { version, .. }) =
+        crate::agent_client::call(session, project, None, RequestBody::Health).await
+    else {
+        return true;
+    };
+    match check_min_version(
+        "jiji-agent",
+        server_name,
+        &version,
+        MIN_RETENTION_AGENT_VERSION,
+        "Run `jiji server upgrade` to enable it here.",
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(server = %server_name, %error, "image-retention reconcile: skipping this host");
+            false
+        }
+    }
 }
 
 /// Every service among `selected` whose every endpoint in `results` deployed successfully, and
 /// that has `build:` configured -- only jiji-built image tags are jiji's to prune, matching
 /// `jiji service prune`'s existing exclusion of a static `image:` service
-/// (`commands/service/prune.rs`).
+/// (`commands/service/prune.rs`). The success fold itself is `cron_reconcile`'s shared
+/// `fully_deployed_services`.
 fn services_to_reconcile<'a>(
     config: &'a Config,
     selected: &'a [ServiceEndpointPlan],
     results: &[Vec<(String, EndpointOutcome)>],
 ) -> Vec<&'a str> {
-    let identity_to_service: BTreeMap<&str, &str> = selected
-        .iter()
-        .map(|endpoint| (endpoint.identity.as_str(), endpoint.service.as_str()))
-        .collect();
-    let mut service_success: BTreeMap<&str, bool> = BTreeMap::new();
-    for outcomes in results {
-        for (identity, outcome) in outcomes {
-            let Some(service_name) = identity_to_service.get(identity.as_str()).copied() else {
-                continue;
-            };
-            let succeeded = matches!(outcome, EndpointOutcome::Deployed { .. });
-            service_success
-                .entry(service_name)
-                .and_modify(|ok| *ok &= succeeded)
-                .or_insert(succeeded);
-        }
-    }
-    service_success
+    fully_deployed_services(selected, results)
         .into_iter()
         .filter(|(_, succeeded)| *succeeded)
         .filter_map(|(service_name, _)| {
@@ -97,8 +112,13 @@ async fn push_retention_spec(
     service_name: &str,
     service: &Service,
     sessions: &BTreeMap<String, Arc<SshSession>>,
+    version_cache: &mut BTreeMap<String, bool>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    // An anonymous-pull-capable registry (no `builder.registry.username`) is a legal
+    // configuration for a namespaced host; failing to compute a repo string for retention's own
+    // sake must not turn an already-successful deploy into a reported failure. Skip retention for
+    // this service instead of erroring.
     let repo = match registry::repo_reference(
         &config.builder.registry,
         &config.project,
@@ -106,14 +126,24 @@ async fn push_retention_spec(
     ) {
         Ok(repo) => repo,
         Err(error) => {
-            problems.push(format!(
-                "service '{service_name}': could not compute its image repository for retention: {error}"
-            ));
+            warn!(
+                service = %service_name, %error,
+                "image-retention reconcile: could not compute image repository, skipping retention for this service"
+            );
             return problems;
         }
     };
-    let (resolved, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
-        .await
+    // Every server in the service's `servers:` set, reusing this command's own sessions and
+    // best-effort connecting to the rest: lenient mode so a host outside a `-H`-scoped
+    // command's targets that can't be reached is skipped with a log line, never a hard failure.
+    let (resolved, newly_opened) = match resolve_sessions(
+        ssh,
+        config,
+        &service.servers,
+        sessions,
+        Some("image-retention reconcile"),
+    )
+    .await
     {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -123,19 +153,158 @@ async fn push_retention_spec(
             return problems;
         }
     };
-    let revision = current_revision();
     for (server_name, session) in &resolved {
+        let supported = match version_cache.get(server_name) {
+            Some(supported) => *supported,
+            None => {
+                let supported =
+                    agent_supports_retention(session, &config.project, server_name).await;
+                version_cache.insert(server_name.clone(), supported);
+                supported
+            }
+        };
+        if !supported {
+            continue;
+        }
         let request = RequestBody::ImageRetentionApply {
             service: service_name.to_string(),
             repo: repo.clone(),
             retain: service.retain,
-            revision,
         };
+        // Always a reported problem, never downgraded to a warn for a host outside this
+        // command's own `sessions`: `resolve_sessions` above already turned "could not connect at
+        // all" into a lenient skip for such a host, and `agent_supports_retention` already turned
+        // "too old to understand this request" into a lenient skip too, so a failure reaching
+        // here means the host was actually connected to and did understand the request, yet the
+        // push still failed -- worth surfacing regardless of whether `-H` happened to target it.
         if let Err(error) = crate::agent_client::call(session, &config.project, None, request).await
         {
             problems.push(format!(
                 "service '{service_name}': could not push its image-retention spec to '{server_name}': {error}"
             ));
+        }
+    }
+    close_newly_opened(&resolved, &newly_opened).await;
+    problems
+}
+
+/// Every `(server, service)` pair that should currently have an installed retention spec,
+/// computed purely from `config`: any service with `build:` configured, for every server in its
+/// `servers:` list. Pure function so the drift logic in `sweep_stale_retention_specs` is testable
+/// without SSH.
+fn desired_retention_pairs(config: &Config) -> BTreeMap<&str, BTreeSet<&str>> {
+    let mut desired: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (service_name, service) in &config.services {
+        if service.build.is_none() {
+            continue;
+        }
+        for server_name in &service.servers {
+            desired
+                .entry(server_name.as_str())
+                .or_default()
+                .insert(service_name.as_str());
+        }
+    }
+    desired
+}
+
+/// Removes an installed spec from any server whose service no longer wants one there: `build:`
+/// was dropped, the host was removed from `servers:`, or the service was renamed or deleted
+/// outright (its old name is then simply absent from `config.services`, so it can never appear in
+/// `desired_retention_pairs`, and any spec still installed under that name is caught here).
+/// Reaches every server any *currently* build-configured service's `servers:` list references
+/// (`desired_retention_pairs`'s own keys), not just this command's `-H`-scoped `sessions`: a host
+/// dropped from `-H` targeting while still part of some other build-configured service's
+/// `servers:` would otherwise never be swept again, the same class of bug the cron sweep had
+/// before it was fixed (see `AGENTS.md`'s "Scheduled Cron Execution" section). Deliberately not
+/// widened to every server in the project the way `push_retention_spec`/`cron_reconcile.rs`
+/// widen to one service's own `servers:` list: a server no build-configured service's `servers:`
+/// currently references at all is genuinely unrelated to image retention, and dialing it
+/// unprompted is exactly what `service_restart_test.rs`'s
+/// `restart_without_hosts_filter_never_contacts_an_unrelated_server` guards against project-wide.
+/// Lenient: an unreachable server outside this command's own targets is skipped with a warning,
+/// never turned into a hard problem for the whole command. A `ImageRetentionList`/`Remove`
+/// failure is always a soft skip too, never a hard problem, on the assumption it's usually caused
+/// by the same too-old-agent case `agent_supports_retention` already tolerates for pushes -- an
+/// agent that understood the request well enough to answer `ImageRetentionList` but then
+/// genuinely failed to remove a stale entry is the one case this still surfaces as a problem.
+async fn sweep_stale_retention_specs(
+    ssh: &Ssh,
+    config: &Config,
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let desired = desired_retention_pairs(config);
+    let sweep_targets: Vec<String> = sessions
+        .keys()
+        .cloned()
+        .chain(desired.keys().map(|name| name.to_string()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let (resolved, newly_opened) = match resolve_sessions(
+        ssh,
+        config,
+        &sweep_targets,
+        sessions,
+        Some("image-retention sweep"),
+    )
+    .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            problems.push(format!(
+                "could not reach every server to sweep stale image-retention specs: {error}"
+            ));
+            return problems;
+        }
+    };
+    let empty = BTreeSet::new();
+    for (server_name, session) in &resolved {
+        let wanted = desired.get(server_name.as_str()).unwrap_or(&empty);
+        let installed = match crate::agent_client::call(
+            session,
+            &config.project,
+            None,
+            RequestBody::ImageRetentionList,
+        )
+        .await
+        {
+            Ok(ResponseBody::ImageRetentionSpecs { specs }) => specs,
+            Ok(response) => {
+                warn!(
+                    server = %server_name, ?response,
+                    "image-retention reconcile: agent returned an unexpected response while listing specs for sweep, skipping"
+                );
+                continue;
+            }
+            Err(error) => {
+                warn!(
+                    server = %server_name, %error,
+                    "image-retention reconcile: could not list installed specs for sweep, skipping"
+                );
+                continue;
+            }
+        };
+        for spec in installed {
+            if wanted.contains(spec.service.as_str()) {
+                continue;
+            }
+            if let Err(error) = crate::agent_client::call(
+                session,
+                &config.project,
+                None,
+                RequestBody::ImageRetentionRemove {
+                    service: spec.service.clone(),
+                },
+            )
+            .await
+            {
+                problems.push(format!(
+                    "'{server_name}': could not remove stale image-retention spec for service '{}': {error}",
+                    spec.service
+                ));
+            }
         }
     }
     close_newly_opened(&resolved, &newly_opened).await;
@@ -154,8 +323,14 @@ pub(crate) async fn remove_all_retention_specs(
     sessions: &BTreeMap<String, Arc<SshSession>>,
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    let (resolved, newly_opened) = match resolve_sessions(ssh, config, &service.servers, sessions)
-        .await
+    let (resolved, newly_opened) = match resolve_sessions(
+        ssh,
+        config,
+        &service.servers,
+        sessions,
+        None,
+    )
+    .await
     {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -220,13 +395,6 @@ services:
 "#,
         )
         .unwrap()
-    }
-
-    #[test]
-    fn current_revision_is_a_plausible_unix_timestamp() {
-        // Not a fixed-value assertion (it's wall-clock derived) -- just proves it's a real
-        // "recent" second count, not a placeholder like 0.
-        assert!(current_revision() > 1_700_000_000);
     }
 
     #[test]
@@ -295,5 +463,39 @@ services:
             services_to_reconcile(&config, &selected, &results),
             vec!["web"]
         );
+    }
+
+    #[test]
+    fn desired_retention_pairs_includes_only_build_configured_services() {
+        let config = config();
+        let desired = desired_retention_pairs(&config);
+        assert_eq!(
+            desired.get("app1").cloned().unwrap_or_default(),
+            BTreeSet::from(["web", "worker"])
+        );
+    }
+
+    #[test]
+    fn desired_retention_pairs_excludes_a_server_not_in_the_service_list() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+project: demo
+builder:
+  engine: docker
+servers:
+  app1:
+    host: 10.0.0.1
+  app2:
+    host: 10.0.0.2
+services:
+  web:
+    build: .
+    servers: [app1]
+"#,
+        )
+        .unwrap();
+        let desired = desired_retention_pairs(&config);
+        assert_eq!(desired.get("app1").cloned().unwrap_or_default().len(), 1);
+        assert!(!desired.contains_key("app2"));
     }
 }

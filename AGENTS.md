@@ -277,6 +277,30 @@ orderly exit).
 
 Full detail: `docs/architecture-notes.md#scheduled-jobs`.
 
+### Image Retention Reconciliation (`image_retention_reconcile.rs`)
+
+Rhymes with cron reconciliation above (reuses `resolve_sessions`/
+`close_newly_opened` from `cron_reconcile.rs`): a build-configured service's
+`retain: N` spec is pushed to every host in its `servers:` list after a
+successful deploy, and swept from any host whose service dropped `build:`,
+changed `servers:`, or was renamed/deleted.
+
+Two bugs found by code review, fixed and confirmed live on real hosts: the
+stale-spec sweep was scoped to the caller's own `-H`-targeted sessions
+instead of widened to every server any build-configured service still
+references -- the same class of bug the cron sweep had (a host dropped from
+`-H` targeting but still relevant elsewhere was never swept again).
+Separately, `deploy_transaction.rs`'s cutover decided whether to prune the
+*previous* deployment's image from the *current* config's `build:` field,
+not whether that deployment was actually build-produced -- switching a
+service from `build:` to a static `image:` deleted the most recently
+retained build image outright. Fixed by querying the agent's own installed
+retention spec live (`capture_orphaned_static_image`/
+`service_has_retention_spec`) instead of trusting config state: the spec's
+own removal only happens in the sweep *after* cutover in the same command,
+so it is still installed -- and correctly protects the image -- at the
+moment cutover checks it.
+
 ### `jiji server teardown` (inverse of `server setup`)
 
 Order matters: `jiji-agent` is removed **first**, unconditionally, before

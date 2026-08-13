@@ -5,6 +5,8 @@
 //! independent local image cache. Runs the engine binary directly with an explicit argv (never a
 //! shell string), mirroring `discovery.rs`'s stated injection-avoidance precedent.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -17,53 +19,27 @@ pub struct ImageRetentionSpec {
     pub service: String,
     pub repo: String,
     pub retain: u32,
-    /// Bumped by the CLI on every push; used with `repo`/`retain` for `ImageRetentionApply`'s
-    /// idempotent-upsert contract (see `AgentStore::apply_image_retention_spec`).
-    pub revision: u64,
 }
 
-/// Outcome of `AgentStore::apply_image_retention_spec`'s idempotent upsert.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ImageRetentionApplyOutcome {
-    Installed(ImageRetentionSpec),
-    /// An existing spec for this service had a different `repo` and/or `retain`; replaced.
-    Updated(ImageRetentionSpec),
-    /// An existing spec already matched both `repo` and `retain`; left untouched.
-    Unchanged(ImageRetentionSpec),
-}
-
-impl ImageRetentionApplyOutcome {
-    pub fn spec(&self) -> &ImageRetentionSpec {
-        match self {
-            ImageRetentionApplyOutcome::Installed(spec)
-            | ImageRetentionApplyOutcome::Updated(spec)
-            | ImageRetentionApplyOutcome::Unchanged(spec) => spec,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PruneOutcome {
-    Removed,
-    AlreadyAbsent,
-    Retained { by: Vec<String> },
-    Failed { error: String },
-}
-
-/// Lists image IDs for `repo` and removes every one after the first `retain_n`, skipping any
-/// still referenced by a container. Deliberately relies on the engine's own `images` listing
-/// order (newest first for both Docker and Podman) rather than parsing `CreatedAt` -- the same
-/// assumption `jiji-cli`'s `commands/service/prune.rs::prune_service_images` documents and relies
-/// on for the manual-override path. A freshly pulled candidate image is always the newest entry
-/// in that listing, so it stays inside the retained window purely by recency for any `retain_n >=
-/// 1` even in the narrow gap between "image pulled" and "candidate container created" where the
-/// reference check alone wouldn't yet protect it; only `retain_n == 0` loses this property, which
-/// already carries the same risk today via manual `jiji service prune --retain 0`.
+/// Lists image `(id, repo:tag)` pairs for `repo` and removes every one after the first
+/// `retain_n`, skipping any still referenced by a container. Deliberately relies on the engine's
+/// own `images` listing order (newest first for both Docker and Podman) rather than parsing
+/// `CreatedAt` -- the same assumption `jiji-cli`'s `commands/service/prune.rs::prune_service_images`
+/// documents and relies on for the manual-override path. A freshly pulled candidate image is
+/// always the newest entry in that listing, so it stays inside the retained window purely by
+/// recency for any `retain_n >= 1` even in the narrow gap between "image pulled" and "candidate
+/// container created" where the reference check alone wouldn't yet protect it; only
+/// `retain_n == 0` loses this property, which already carries the same risk today via manual
+/// `jiji service prune --retain 0`.
+///
+/// Returns only per-image failures as `(image_id, error)` pairs: removals and retained skips are
+/// not surfaced, since the sole caller (`local_reconcile::fold_retention_problems`) only reports
+/// what went wrong.
 pub async fn prune_repo(
     engine: Engine,
     repo: &str,
     retain_n: usize,
-) -> Result<Vec<(String, PruneOutcome)>, String> {
+) -> Result<Vec<(String, String)>, String> {
     prune_repo_with_binary(engine.as_str(), engine, repo, retain_n).await
 }
 
@@ -72,26 +48,32 @@ async fn prune_repo_with_binary(
     engine: Engine,
     repo: &str,
     retain_n: usize,
-) -> Result<Vec<(String, PruneOutcome)>, String> {
-    let ids = list_image_ids(binary, repo).await?;
-
-    let mut outcomes = Vec::new();
-    for id in ids.into_iter().skip(retain_n) {
-        let referenced = referencing_containers(binary, &id).await?;
-        if !referenced.is_empty() {
-            outcomes.push((id, PruneOutcome::Retained { by: referenced }));
+) -> Result<Vec<(String, String)>, String> {
+    let images = list_images(binary, repo).await?;
+    // One `ps -a` snapshot for the whole run rather than a per-candidate `ancestor=` probe: the
+    // reconcile loop reruns every tick, so probing per image would spawn one engine process per
+    // candidate per tick. Matching by repo:tag (the name every jiji container is created with)
+    // instead of the `ancestor` filter's wider "image or any of its ancestors" match is safe:
+    // `rmi` refuses any directly-referenced image itself, so the wider match only ever
+    // pre-skipped removals that would have failed anyway and been reported back.
+    let in_use: BTreeSet<String> = list_container_images(binary).await?.into_iter().collect();
+    let mut failures = Vec::new();
+    for (id, name) in images.into_iter().skip(retain_n) {
+        if in_use.contains(&name) {
             continue;
         }
-        outcomes.push((id.clone(), remove_image(binary, engine, &id).await));
+        if let Some(error) = remove_image(binary, engine, &id).await {
+            failures.push((id, error));
+        }
     }
-    Ok(outcomes)
+    Ok(failures)
 }
 
-async fn list_image_ids(binary: &str, repo: &str) -> Result<Vec<String>, String> {
+async fn list_images(binary: &str, repo: &str) -> Result<Vec<(String, String)>, String> {
     let output = tokio::process::Command::new(binary)
         .arg("images")
         .arg("--format")
-        .arg("{{.ID}}")
+        .arg("{{.ID}} {{.Repository}}:{{.Tag}}")
         .arg("--filter")
         .arg(format!("reference={repo}"))
         .output()
@@ -100,22 +82,25 @@ async fn list_image_ids(binary: &str, repo: &str) -> Result<Vec<String>, String>
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+        .map(|line| {
+            let (id, name) = line
+                .split_once(' ')
+                .ok_or_else(|| format!("unexpected images output line: {line:?}"))?;
+            Ok((id.to_string(), name.to_string()))
+        })
+        .collect()
 }
 
-async fn referencing_containers(binary: &str, image_id: &str) -> Result<Vec<String>, String> {
+async fn list_container_images(binary: &str) -> Result<Vec<String>, String> {
     let output = tokio::process::Command::new(binary)
         .arg("ps")
         .arg("-a")
-        .arg("--filter")
-        .arg(format!("ancestor={image_id}"))
         .arg("--format")
-        .arg("{{.Names}}")
+        .arg("{{.Image}}")
         .output()
         .await
         .map_err(|error| error.to_string())?;
@@ -130,33 +115,33 @@ async fn referencing_containers(binary: &str, image_id: &str) -> Result<Vec<Stri
         .collect())
 }
 
-async fn remove_image(binary: &str, engine: Engine, image_id: &str) -> PruneOutcome {
+/// `None` when the image was removed or already absent; `Some(error)` only for a real removal
+/// failure worth reporting.
+async fn remove_image(binary: &str, engine: Engine, image_id: &str) -> Option<String> {
     let output = tokio::process::Command::new(binary)
         .arg("rmi")
         .arg(image_id)
         .output()
         .await;
     match output {
-        Ok(output) if output.status.success() => PruneOutcome::Removed,
+        Ok(output) if output.status.success() => None,
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if is_missing_image_error(&stderr) {
-                PruneOutcome::AlreadyAbsent
+                None
             } else {
-                PruneOutcome::Failed { error: stderr }
+                Some(stderr)
             }
         }
         Err(error) => {
             warn!(%error, %engine, image_id, "could not run image removal");
-            PruneOutcome::Failed {
-                error: error.to_string(),
-            }
+            Some(error.to_string())
         }
     }
 }
 
 /// Docker and Podman phrase "no such image" differently; a `false`-negative here just means an
-/// already-gone image is reported as a failure instead of `AlreadyAbsent`, never the reverse.
+/// already-gone image is reported as a failure instead of being skipped, never the reverse.
 fn is_missing_image_error(stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     lower.contains("no such image") || lower.contains("image not known")
@@ -176,6 +161,44 @@ mod tests {
         path
     }
 
+    fn rmi_log(dir: &std::path::Path) -> String {
+        std::fs::read_to_string(dir.join("rmi.log")).unwrap_or_default()
+    }
+
+    fn logging_engine(
+        dir: &std::path::Path,
+        images: &[&str],
+        containers: &[&str],
+    ) -> std::path::PathBuf {
+        let lines = |entries: &[&str]| {
+            let mut body = entries
+                .iter()
+                .map(|entry| format!("  printf '%s\\n' '{entry}'\n"))
+                .collect::<String>();
+            // dash rejects an empty then-branch immediately followed by `elif`.
+            if body.is_empty() {
+                body.push_str("  :\n");
+            }
+            body
+        };
+        fake_engine(
+            dir,
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = "images" ]; then
+{images}elif [ "$1" = "ps" ]; then
+{containers}elif [ "$1" = "rmi" ]; then
+  echo "$2" >> {log}
+  exit 0
+fi
+"#,
+                images = lines(images),
+                containers = lines(containers),
+                log = dir.join("rmi.log").display(),
+            ),
+        )
+    }
+
     #[tokio::test]
     async fn nothing_removed_when_under_the_retain_count() {
         let dir = tempfile::tempdir().unwrap();
@@ -183,100 +206,91 @@ mod tests {
             dir.path(),
             r#"#!/bin/sh
 if [ "$1" = "images" ]; then
-  printf 'img1\nimg2\n'
+  printf 'img1 demo/web:v1\nimg2 demo/web:v2\n'
 fi
 "#,
         );
-        let outcomes =
+        let failures =
             prune_repo_with_binary(engine.to_str().unwrap(), Engine::Docker, "demo/web", 3)
                 .await
                 .unwrap();
-        assert!(outcomes.is_empty());
+        assert!(failures.is_empty());
     }
 
     #[tokio::test]
     async fn oldest_beyond_retain_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = fake_engine(
+        let engine = logging_engine(
             dir.path(),
-            r#"#!/bin/sh
-if [ "$1" = "images" ]; then
-  printf 'img1\nimg2\nimg3\n'
-elif [ "$1" = "ps" ]; then
-  exit 0
-elif [ "$1" = "rmi" ]; then
-  exit 0
-fi
-"#,
+            &["img1 demo/web:v1", "img2 demo/web:v2", "img3 demo/web:v3"],
+            &[],
         );
-        let outcomes =
+        let failures =
             prune_repo_with_binary(engine.to_str().unwrap(), Engine::Docker, "demo/web", 2)
                 .await
                 .unwrap();
-        assert_eq!(outcomes, vec![("img3".to_string(), PruneOutcome::Removed)]);
+        assert!(failures.is_empty());
+        assert_eq!(rmi_log(dir.path()), "img3\n");
     }
 
     #[tokio::test]
-    async fn a_still_referenced_image_beyond_retain_is_retained_with_the_container_name() {
+    async fn a_still_referenced_image_beyond_retain_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = fake_engine(
+        let engine = logging_engine(
             dir.path(),
-            r#"#!/bin/sh
-if [ "$1" = "images" ]; then
-  printf 'img1\nimg2\n'
-elif [ "$1" = "ps" ]; then
-  printf 'demo-web-abc123\n'
-fi
-"#,
+            &["img1 demo/web:v1", "img2 demo/web:v2"],
+            &["demo/web:v2"],
         );
-        let outcomes =
+        let failures =
             prune_repo_with_binary(engine.to_str().unwrap(), Engine::Docker, "demo/web", 1)
                 .await
                 .unwrap();
-        assert_eq!(
-            outcomes,
-            vec![(
-                "img2".to_string(),
-                PruneOutcome::Retained {
-                    by: vec!["demo-web-abc123".to_string()]
-                }
-            )]
-        );
+        assert!(failures.is_empty());
+        assert_eq!(rmi_log(dir.path()), "");
     }
 
     #[tokio::test]
     async fn a_mix_of_retained_and_removed_in_one_run() {
         let dir = tempfile::tempdir().unwrap();
+        let engine = logging_engine(
+            dir.path(),
+            &["img1 demo/web:v1", "img2 demo/web:v2", "img3 demo/web:v3"],
+            &["demo/web:v2"],
+        );
+        let failures =
+            prune_repo_with_binary(engine.to_str().unwrap(), Engine::Docker, "demo/web", 1)
+                .await
+                .unwrap();
+        assert!(failures.is_empty());
+        assert_eq!(rmi_log(dir.path()), "img3\n");
+    }
+
+    #[tokio::test]
+    async fn a_failed_rmi_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
         let engine = fake_engine(
             dir.path(),
             r#"#!/bin/sh
 if [ "$1" = "images" ]; then
-  printf 'img1\nimg2\nimg3\n'
+  printf 'img1 demo/web:v1\nimg2 demo/web:v2\n'
 elif [ "$1" = "ps" ]; then
-  case "$4" in
-    *img2*) printf 'still-running\n' ;;
-    *) exit 0 ;;
-  esac
-elif [ "$1" = "rmi" ]; then
   exit 0
+elif [ "$1" = "rmi" ]; then
+  echo "image is referenced in multiple repositories" >&2
+  exit 1
 fi
 "#,
         );
-        let outcomes =
+        let failures =
             prune_repo_with_binary(engine.to_str().unwrap(), Engine::Docker, "demo/web", 1)
                 .await
                 .unwrap();
         assert_eq!(
-            outcomes,
-            vec![
-                (
-                    "img2".to_string(),
-                    PruneOutcome::Retained {
-                        by: vec!["still-running".to_string()]
-                    }
-                ),
-                ("img3".to_string(), PruneOutcome::Removed),
-            ]
+            failures,
+            vec![(
+                "img2".to_string(),
+                "image is referenced in multiple repositories".to_string()
+            )]
         );
     }
 }

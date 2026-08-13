@@ -249,19 +249,30 @@ pub fn redacted_summary(resolved: &ResolvedEnvironment) -> Vec<String> {
 
 /// Replaces every known secret/control value with `<redacted>` wherever it appears in `text` --
 /// safe to print in live progress output or bubble up in an error message, mirroring
-/// `redacted_summary`'s guarantee for the `KEY=VALUE` debug listing.
+/// `redacted_summary`'s guarantee for the `KEY=VALUE` debug listing. Every non-empty value is
+/// redacted regardless of length: a short secret (a PIN, a short flag) is still a real secret,
+/// and silently leaving it unredacted to reduce noise would be trading security for cosmetics.
+/// Only a genuinely empty value is excluded -- `str::replace("", ...)` would otherwise insert
+/// `<redacted>` between every character of `text`, corrupting it rather than protecting anything.
 pub fn redact_secrets(text: &str, resolved: &ResolvedEnvironment) -> String {
     let mut redacted = text.to_string();
-    for key in resolved
+    let mut values: Vec<&str> = resolved
         .secret_keys
         .iter()
         .chain(resolved.control_keys.iter())
-    {
-        if let Some(value) = resolved.values.get(key) {
-            if !value.is_empty() {
-                redacted = redacted.replace(value.as_str(), "<redacted>");
-            }
-        }
+        .filter_map(|key| resolved.values.get(key))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .collect();
+    // Longest first: if one secret's value is itself a substring of another's (e.g. "foo" and
+    // "foo-v2"), replacing the shorter one first consumes part of the longer one, leaving its
+    // remaining suffix/prefix exposed in cleartext (`<redacted>-v2`) since the longer value can
+    // then never match in full. Processing longest-to-shortest guarantees every value gets a
+    // chance to match intact before any of its substrings can partially consume it.
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
+    for value in values {
+        redacted = redacted.replace(value, "<redacted>");
     }
     redacted
 }
@@ -476,6 +487,54 @@ mod tests {
     fn redact_secrets_is_a_no_op_on_empty_input() {
         let resolved = ResolvedEnvironment::default();
         assert_eq!(redact_secrets("", &resolved), "");
+    }
+
+    #[test]
+    fn redact_secrets_fully_redacts_a_value_that_is_a_substring_of_another_value() {
+        let mut resolved = ResolvedEnvironment::default();
+        resolved
+            .values
+            .insert("SHORT".to_string(), "secret-tok".to_string());
+        resolved.secret_keys.insert("SHORT".to_string());
+        resolved
+            .values
+            .insert("LONG".to_string(), "secret-tok-v2".to_string());
+        resolved.secret_keys.insert("LONG".to_string());
+
+        let text = "auth failed for secret-tok-v2";
+        let redacted = redact_secrets(text, &resolved);
+        // Neither the longer secret's own value, nor any leftover fragment of it (e.g. "-v2"),
+        // may survive: matching the shorter value first would otherwise consume "secret-tok" out
+        // of the middle of "secret-tok-v2" and leave "-v2" exposed in cleartext.
+        assert!(!redacted.contains("secret-tok"));
+        assert!(!redacted.contains("-v2"));
+        assert_eq!(redacted, "auth failed for <redacted>");
+    }
+
+    #[test]
+    fn redact_secrets_redacts_a_short_value_rather_than_leaking_it() {
+        let mut resolved = ResolvedEnvironment::default();
+        resolved.values.insert("PIN".to_string(), "42".to_string());
+        resolved.secret_keys.insert("PIN".to_string());
+
+        let text = "auth failed: expected pin 42, got nothing";
+        let redacted = redact_secrets(text, &resolved);
+        assert!(
+            !redacted.contains("42"),
+            "a short secret must still be redacted, not left to leak: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_secrets_is_still_a_no_op_on_an_empty_secret_value() {
+        let mut resolved = ResolvedEnvironment::default();
+        resolved.values.insert("EMPTY".to_string(), String::new());
+        resolved.secret_keys.insert("EMPTY".to_string());
+
+        // An empty value must never be passed to `str::replace`: it would match between every
+        // character of `text`, inserting `<redacted>` everywhere instead of protecting anything.
+        let text = "connection refused";
+        assert_eq!(redact_secrets(text, &resolved), "connection refused");
     }
 
     #[test]

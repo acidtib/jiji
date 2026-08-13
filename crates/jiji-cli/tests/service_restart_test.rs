@@ -554,6 +554,266 @@ async fn restart_without_hosts_filter_never_contacts_an_unrelated_server() {
     );
 }
 
+fn agent_request_command(kind: &str) -> String {
+    format!(
+        "/etc/jiji/agent/demo-354b6884/bin/jiji-agent request --socket \
+         /etc/jiji/agent/demo-354b6884/agent.sock # jiji-request:{kind}"
+    )
+}
+
+/// Two build-configured services: "web" (only on "app", the one actually being restarted) and
+/// "worker" (on both "app" and "other", but never restarted here -- `-S web` below excludes it
+/// entirely from endpoint selection).
+fn config_yaml_with_a_second_build_service_on_another_server(
+    app_addr: SocketAddr,
+    other_addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: docker }}
+servers:
+  app:
+    host: {app_ip}
+    port: {app_port}
+    keys:
+      - {key_path}
+  other:
+    host: {other_ip}
+    port: {other_port}
+    keys:
+      - {key_path}
+services:
+  web:
+    build: .
+    servers: [app]
+  worker:
+    build: .
+    servers: [app, other]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        app_ip = app_addr.ip(),
+        app_port = app_addr.port(),
+        other_ip = other_addr.ip(),
+        other_port = other_addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn generation_with_a_second_build_service_on_another_server(
+    app_addr: SocketAddr,
+    other_addr: SocketAddr,
+) -> String {
+    let yaml = config_yaml_with_a_second_build_service_on_another_server(
+        app_addr,
+        other_addr,
+        std::path::Path::new("/dev/null"),
+    );
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
+}
+
+/// Regression test: `sweep_stale_retention_specs` used to only ever reach this command's own
+/// `-H`-scoped `sessions`, so a server no *currently selected* endpoint targets -- but that a
+/// still-build-configured service's `servers:` list references -- never got swept for a stale
+/// spec left by a renamed/deleted service, even though `push_retention_spec` already reaches that
+/// same server for a genuinely *desired* push. Here, restarting only "web" (`-S web`) never
+/// selects "worker"'s "other" endpoint at all, so "other" gets no push this run -- but "worker"
+/// still lists "other" in its `servers:`, so the sweep must still reach it and remove a stale
+/// "ghost" spec left over from a service that no longer exists.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_still_sweeps_a_stale_retention_spec_on_a_server_no_endpoint_targets() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let app_probe = SocketAddr::from(([127, 0, 0, 1], 0));
+    let other_probe = SocketAddr::from(([127, 0, 0, 1], 0));
+    let generation =
+        generation_with_a_second_build_service_on_another_server(app_probe, other_probe);
+
+    let old_name = "demo-web-olddeploymen";
+    let mut app_responses = HashMap::new();
+    app_responses.insert(generation_path(), success(&format!("{generation}\n")));
+    app_responses.insert(
+        service_runtime_generation_path(),
+        success(&format!(
+            "{}\n",
+            generation_with_a_second_build_service_on_another_server(app_probe, other_probe)
+        )),
+    );
+    app_responses.insert(active_slots_path(), success("demo:web:app=a\n"));
+    app_responses.insert(inspect_status_command(old_name), success("running\n"));
+    app_responses.insert(
+        image_inspect_command("docker.io/example/web:latest"),
+        success(""),
+    );
+    app_responses.insert(agent_catalog_command(), active_catalog_response());
+    app_responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+    let app = spawn_test_server(client_key.public_key().clone(), app_responses).await;
+
+    let mut other_responses = HashMap::new();
+    other_responses.insert(
+        agent_request_command("image-retention-list"),
+        success(
+            r#"{"Ok":{"type":"image_retention_specs","specs":[{"service":"ghost","repo":"localhost:31270/demo-ghost","retain":3}]}}"#,
+        ),
+    );
+    other_responses.insert(
+        agent_request_command("image-retention-remove"),
+        success(r#"{"Ok":{"type":"image_retention_removed","removed":true}}"#),
+    );
+    let other = spawn_test_server(client_key.public_key().clone(), other_responses).await;
+
+    let config_path = write_config(
+        dir.path(),
+        &config_yaml_with_a_second_build_service_on_another_server(app.addr, other.addr, &key_path),
+    );
+
+    let output = run_jiji_service_restart_with_args(&config_path, &["-S", "web"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+
+    let other_commands = other.received.lock().unwrap().clone();
+    assert!(
+        other_commands
+            .iter()
+            .any(|c| c.contains("jiji-request:image-retention-list")),
+        "'other' should have been swept for stale image-retention specs even though no endpoint \
+         targeted it this run: {other_commands:?}"
+    );
+    assert!(
+        other_commands
+            .iter()
+            .any(|c| c.contains("jiji-request:image-retention-remove")),
+        "'other's stale 'ghost' spec should have been removed by the sweep: {other_commands:?}"
+    );
+}
+
+/// Regression test: `push_retention_spec` used to downgrade a genuine `ImageRetentionApply`
+/// failure to a mere warning whenever the target server was outside this command's own
+/// `-H`-scoped `sessions` -- even though `resolve_sessions` (unreachable) and
+/// `agent_supports_retention` (too old) had already turned the two *expected* reasons to skip a
+/// host into lenient no-ops before this point, so a failure this deep is always a real, unexpected
+/// one worth failing the command over. Here "web" (build-configured, `servers: [app, other]`) has
+/// its one active replica on "app" only; restarting it still unconditionally pushes a retention
+/// spec to "other" too (every host in `servers:`, not just ones with a replica) -- and "other"
+/// rejects the push with a genuine agent-side error.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_fails_when_pushing_a_retention_spec_to_an_untargeted_server_fails() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let probe = SocketAddr::from(([127, 0, 0, 1], 0));
+    let generation = generation_with_a_build_service_on_two_servers(probe, probe);
+
+    let old_name = "demo-web-olddeploymen";
+    let mut app_responses = HashMap::new();
+    app_responses.insert(generation_path(), success(&format!("{generation}\n")));
+    app_responses.insert(
+        service_runtime_generation_path(),
+        success(&format!(
+            "{}\n",
+            generation_with_a_build_service_on_two_servers(probe, probe)
+        )),
+    );
+    app_responses.insert(active_slots_path(), success("demo:web:app=a\n"));
+    app_responses.insert(inspect_status_command(old_name), success("running\n"));
+    app_responses.insert(
+        image_inspect_command("docker.io/example/web:latest"),
+        success(""),
+    );
+    app_responses.insert(agent_catalog_command(), active_catalog_response());
+    app_responses.insert(mktemp_command(), cutover_generation_path("abc123"));
+    let app = spawn_test_server(client_key.public_key().clone(), app_responses).await;
+
+    let mut other_responses = HashMap::new();
+    other_responses.insert(
+        agent_request_command("image-retention-apply"),
+        success(r#"{"Err":{"code":"internal","message":"disk full"}}"#),
+    );
+    let other = spawn_test_server(client_key.public_key().clone(), other_responses).await;
+
+    let config_path = write_config(
+        dir.path(),
+        &config_yaml_with_a_build_service_on_two_servers(app.addr, other.addr, &key_path),
+    );
+
+    let output = run_jiji_service_restart_with_args(&config_path, &["-H", "app"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a genuine image-retention push failure on 'other' must fail the command, not just warn: \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        (stdout.contains("other") && stdout.contains("disk full"))
+            || (stderr.contains("other") && stderr.contains("disk full")),
+        "expected the push failure to 'other' reported: stdout={stdout} stderr={stderr}"
+    );
+}
+
+/// A single build-configured service ("web") whose `servers:` list spans two servers, but whose
+/// one replica (default `replicas: 1`) is only ever placed on the first, "app" -- "other" never
+/// hosts a replica, yet still unconditionally receives "web"'s retention-spec push.
+fn config_yaml_with_a_build_service_on_two_servers(
+    app_addr: SocketAddr,
+    other_addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> String {
+    format!(
+        r#"
+project: demo
+builder: {{ engine: docker }}
+servers:
+  app:
+    host: {app_ip}
+    port: {app_port}
+    keys:
+      - {key_path}
+  other:
+    host: {other_ip}
+    port: {other_port}
+    keys:
+      - {key_path}
+services:
+  web:
+    build: .
+    servers: [app, other]
+ssh:
+  user: tester
+  keys_only: true
+"#,
+        app_ip = app_addr.ip(),
+        app_port = app_addr.port(),
+        other_ip = other_addr.ip(),
+        other_port = other_addr.port(),
+        key_path = key_path.display(),
+    )
+}
+
+fn generation_with_a_build_service_on_two_servers(
+    app_addr: SocketAddr,
+    other_addr: SocketAddr,
+) -> String {
+    let yaml = config_yaml_with_a_build_service_on_two_servers(
+        app_addr,
+        other_addr,
+        std::path::Path::new("/dev/null"),
+    );
+    let config: Config = serde_yaml::from_str(&yaml).expect("parse test config");
+    NetworkPlanner::new()
+        .plan(&config)
+        .expect("build test plan")
+        .mesh_generation
+}
+
 /// "gluetun" (upstream, `network_mode: bridge`) and "qbittorrent" (dependent, `network_mode:
 /// service:gluetun`), both on a single server -- mirrors `network_mode_service_test.rs`'s config
 /// shape, verifying `jiji service restart` cascades a `network_mode: service:<upstream>` dependent

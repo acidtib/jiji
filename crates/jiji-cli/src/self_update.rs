@@ -18,15 +18,9 @@ use std::path::Path;
 use anyhow::Context;
 use serde::Deserialize;
 
-use crate::agent_distribution::DEFAULT_RELEASE_BASE_URL;
+use crate::agent_distribution::{env_nonempty, DEFAULT_RELEASE_BASE_URL};
 
 pub(crate) const DEFAULT_RELEASE_API_BASE_URL: &str = "https://api.github.com/repos/acidtib/jiji";
-
-fn env_nonempty(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-}
 
 pub(crate) fn release_base_url() -> String {
     env_nonempty("JIJI_RELEASE_BASE_URL").unwrap_or_else(|| DEFAULT_RELEASE_BASE_URL.to_string())
@@ -60,12 +54,56 @@ fn normalize_version_tag(version: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct LatestRelease {
+struct ReleaseListItem {
     tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+}
+
+/// `true` only for a bare CLI release tag (`v0.8.0`, optionally with a pre-release suffix like
+/// `v0.9.0-rc.1`), never one of this repo's other seven crate tags (`jiji-agent-v0.6.4`,
+/// `jiji-proxy-v0.6.1`, ...). `release-please-config.json` gives `crates/jiji-cli` alone
+/// `"include-component-in-tag": false` -- every other package's tag carries a hyphenated
+/// component prefix before the `v`, so the absence of one is what identifies a CLI release.
+fn is_cli_release_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
+        return false;
+    };
+    let core = rest
+        .split('-')
+        .next()
+        .expect("split always yields at least one element");
+    let segments: Vec<&str> = core.split('.').collect();
+    segments.len() == 3
+        && segments
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// An explicit `--version` short-circuits with no network call (also the rollback path: it always
 /// proceeds even to an older release). Otherwise resolves "latest" from the GitHub release API.
+///
+/// Deliberately lists releases (`GET /releases`) rather than asking for `/releases/latest`:
+/// that endpoint returns the single most recently published release across the *whole repo*, and
+/// this repo tags and releases eight crates independently (see `release-please-config.json`) --
+/// whichever one happened to release most recently (e.g. `jiji-proxy-v0.6.1`) would otherwise be
+/// treated as "the jiji CLI's latest version." `engine::parse_version` skips leading non-digits,
+/// so a component-prefixed tag like that still parses to a plausible-looking `(0, 6, 1)` instead
+/// of failing loudly, and its download URL then 404s since no `jiji-linux-x86_64` asset was ever
+/// published under that tag. Filters to the first non-draft, non-prerelease tag that is actually
+/// the CLI's own (`is_cli_release_tag`), matching `/releases`'s newest-first ordering.
+/// GitHub paginates `/releases` at 30 entries per page by default. This repo tags and releases
+/// 8 crates independently, each with its own tag/release (see `AGENTS.md`'s "Version Management &
+/// Releases"), and a `cargo-workspace` patch bump cascades widely -- so enough non-CLI releases
+/// (`jiji-agent-v*`, `jiji-core-v*`, ...) landing after the last real CLI tag can push it off a
+/// single unpaginated page entirely, making `jiji update` fail to find a CLI release that
+/// genuinely exists. `PER_PAGE` is GitHub's own maximum; `MAX_PAGES` bounds the walk so a
+/// pathological response (or a broken mock server in tests) can't loop forever.
+const RELEASE_LIST_PER_PAGE: u32 = 100;
+const RELEASE_LIST_MAX_PAGES: u32 = 20;
+
 pub(crate) async fn resolve_target_version(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -74,20 +112,34 @@ pub(crate) async fn resolve_target_version(
     if let Some(version) = explicit {
         return Ok(normalize_version_tag(version));
     }
-    let url = format!("{api_base_url}/releases/latest");
-    let response = client
-        .get(&url)
-        .header("User-Agent", "jiji-update")
-        .send()
-        .await
-        .with_context(|| format!("failed to query the latest jiji release from {url}"))?
-        .error_for_status()
-        .with_context(|| format!("GitHub returned an error for {url}"))?;
-    let release: LatestRelease = response
-        .json()
-        .await
-        .with_context(|| format!("could not parse the release response from {url}"))?;
-    Ok(release.tag_name)
+    for page in 1..=RELEASE_LIST_MAX_PAGES {
+        let url = format!("{api_base_url}/releases?per_page={RELEASE_LIST_PER_PAGE}&page={page}");
+        let response = client
+            .get(&url)
+            .header("User-Agent", "jiji-update")
+            .send()
+            .await
+            .with_context(|| format!("failed to list jiji releases from {url}"))?
+            .error_for_status()
+            .with_context(|| format!("GitHub returned an error for {url}"))?;
+        let releases: Vec<ReleaseListItem> = response
+            .json()
+            .await
+            .with_context(|| format!("could not parse the release list response from {url}"))?;
+        let page_len = releases.len();
+        if let Some(release) = releases.into_iter().find(|release| {
+            !release.draft && !release.prerelease && is_cli_release_tag(&release.tag_name)
+        }) {
+            return Ok(release.tag_name);
+        }
+        if page_len < RELEASE_LIST_PER_PAGE as usize {
+            // A short (or empty) page means GitHub has no more releases to offer.
+            break;
+        }
+    }
+    Err(anyhow::anyhow!(
+        "could not find a published jiji CLI release at {api_base_url}/releases (every recent release tag belonged to a different jiji component, or was a draft/prerelease). Check https://github.com/acidtib/jiji/releases for available versions, or pass --release <version> explicitly."
+    ))
 }
 
 /// `target <= installed`, both compared as parsed semver via `engine::parse_version` (which
@@ -119,7 +171,11 @@ fn not_found_error(tag: &str) -> anyhow::Error {
 }
 
 /// Downloads `{asset}.sha256`, then `{asset}`, and verifies the asset's SHA-256 against the
-/// sidecar before returning its bytes.
+/// sidecar before returning its bytes. A missing sidecar (404) does not fail the download: every
+/// release up to and including v0.8.0 predates `.sha256` sidecars being published at all, so
+/// treating a 404 there as "release not found" broke `jiji update`/`--release <old tag>` against
+/// every release that currently exists. Only the asset itself missing means the release/asset
+/// genuinely doesn't exist.
 pub(crate) async fn fetch_and_verify_asset(
     client: &reqwest::Client,
     base_url: &str,
@@ -132,20 +188,23 @@ pub(crate) async fn fetch_and_verify_asset(
         .send()
         .await
         .with_context(|| format!("failed to download {sha_url}"))?;
-    if sha_response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(not_found_error(tag));
-    }
-    let sha_text = sha_response
-        .error_for_status()
-        .with_context(|| format!("GitHub returned an error for {sha_url}"))?
-        .text()
-        .await
-        .with_context(|| format!("could not read the checksum body from {sha_url}"))?;
-    let expected = sha_text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("checksum file at {sha_url} was empty"))?
-        .to_lowercase();
+    let expected = if sha_response.status() == reqwest::StatusCode::NOT_FOUND {
+        None
+    } else {
+        let sha_text = sha_response
+            .error_for_status()
+            .with_context(|| format!("GitHub returned an error for {sha_url}"))?
+            .text()
+            .await
+            .with_context(|| format!("could not read the checksum body from {sha_url}"))?;
+        Some(
+            sha_text
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("checksum file at {sha_url} was empty"))?
+                .to_lowercase(),
+        )
+    };
 
     let asset_url = format!("{base_url}/releases/download/{tag}/{asset}");
     let asset_response = client
@@ -164,7 +223,15 @@ pub(crate) async fn fetch_and_verify_asset(
         .with_context(|| format!("could not read the asset body from {asset_url}"))?
         .to_vec();
 
-    verify_checksum(tag, &expected, &bytes)?;
+    match expected {
+        Some(expected) => verify_checksum(tag, &expected, &bytes)?,
+        None => {
+            tracing::warn!(
+                %tag,
+                "no .sha256 checksum published for this release; installing {asset} without verification"
+            );
+        }
+    }
     Ok(bytes)
 }
 
@@ -257,6 +324,31 @@ mod tests {
     fn normalize_version_tag_adds_a_leading_v_only_when_missing() {
         assert_eq!(normalize_version_tag("0.7.2"), "v0.7.2");
         assert_eq!(normalize_version_tag("v0.7.2"), "v0.7.2");
+    }
+
+    #[test]
+    fn is_cli_release_tag_accepts_a_bare_version_tag() {
+        assert!(is_cli_release_tag("v0.8.0"));
+        assert!(is_cli_release_tag("v9.9.9"));
+    }
+
+    #[test]
+    fn is_cli_release_tag_accepts_a_prerelease_suffix() {
+        assert!(is_cli_release_tag("v0.9.0-rc.1"));
+    }
+
+    #[test]
+    fn is_cli_release_tag_rejects_a_component_prefixed_tag() {
+        assert!(!is_cli_release_tag("jiji-agent-v0.6.4"));
+        assert!(!is_cli_release_tag("jiji-proxy-v0.6.1"));
+        assert!(!is_cli_release_tag("jiji-core-v0.7.0"));
+    }
+
+    #[test]
+    fn is_cli_release_tag_rejects_garbage() {
+        assert!(!is_cli_release_tag("not-a-tag"));
+        assert!(!is_cli_release_tag("v1.2"));
+        assert!(!is_cli_release_tag(""));
     }
 
     #[test]

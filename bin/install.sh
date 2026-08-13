@@ -84,33 +84,41 @@ if ! curl -fsSL "$BINARY_URL" -o "${TMP_DIR}/${BINARY_NAME}"; then
 fi
 echo "Download complete."
 
-# Download and verify the checksum sidecar.
+# Download and verify the checksum sidecar. A 404 means this release predates published
+# .sha256 sidecars (every release up to and including v0.8.0) -- install proceeds unverified,
+# with a warning, mirroring self_update.rs's `fetch_and_verify_asset` (the `jiji update`
+# equivalent of this script). Any other failure (network error, non-404 HTTP error) still aborts
+# the install.
 CHECKSUM_URL="${BINARY_URL}.sha256"
-if ! curl -fsSL "$CHECKSUM_URL" -o "${TMP_DIR}/${BINARY_NAME}.sha256"; then
-    echo "Failed to download checksum ${CHECKSUM_URL}"
+CHECKSUM_HTTP_STATUS=$(curl -sSL -w '%{http_code}' -o "${TMP_DIR}/${BINARY_NAME}.sha256" "$CHECKSUM_URL")
+
+if [ "$CHECKSUM_HTTP_STATUS" = "404" ]; then
+    echo "No .sha256 checksum published for ${VERSION}; installing ${BINARY_NAME} without verification."
+elif [ "$CHECKSUM_HTTP_STATUS" != "200" ]; then
+    echo "Failed to download checksum ${CHECKSUM_URL} (HTTP ${CHECKSUM_HTTP_STATUS})"
     print_manual_install
     exit 1
-fi
-
-if command -v sha256sum >/dev/null 2>&1; then
-    ACTUAL_SHA256=$(sha256sum "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-    ACTUAL_SHA256=$(shasum -a 256 "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
 else
-    echo "Neither sha256sum nor shasum is available to verify the download."
-    rm -f "${TMP_DIR}/${BINARY_NAME}"
-    print_manual_install
-    exit 1
-fi
-EXPECTED_SHA256=$(awk '{print $1}' "${TMP_DIR}/${BINARY_NAME}.sha256")
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL_SHA256=$(sha256sum "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL_SHA256=$(shasum -a 256 "${TMP_DIR}/${BINARY_NAME}" | awk '{print $1}')
+    else
+        echo "Neither sha256sum nor shasum is available to verify the download."
+        rm -f "${TMP_DIR}/${BINARY_NAME}"
+        print_manual_install
+        exit 1
+    fi
+    EXPECTED_SHA256=$(awk '{print $1}' "${TMP_DIR}/${BINARY_NAME}.sha256")
 
-if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    echo "Checksum verification failed for ${BINARY_NAME} (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256})."
-    rm -f "${TMP_DIR}/${BINARY_NAME}"
-    print_manual_install
-    exit 1
+    if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+        echo "Checksum verification failed for ${BINARY_NAME} (expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256})."
+        rm -f "${TMP_DIR}/${BINARY_NAME}"
+        print_manual_install
+        exit 1
+    fi
+    echo "Checksum verified."
 fi
-echo "Checksum verified."
 
 # Make the binary executable.
 chmod +x "${TMP_DIR}/${BINARY_NAME}"

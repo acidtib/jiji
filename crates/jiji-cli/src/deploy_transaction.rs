@@ -186,12 +186,7 @@ async fn deploy_shared_endpoint(
         ctx.engine,
         &candidate_name,
         &health_plan,
-        |line| {
-            report_progress(
-                ctx,
-                &format!("health check: {}", redact_secrets(line, ctx.resolved_env)),
-            );
-        },
+        |line| health_check_line_progress(ctx, line),
     )
     .await
     {
@@ -234,7 +229,9 @@ async fn deploy_shared_endpoint(
             ctx.service_name,
             &previous.deployment_id,
         );
-        let orphaned_image = capture_orphaned_static_image(ctx, ctx.service, &old_name).await;
+        let orphaned_image =
+            capture_orphaned_static_image(ctx, ctx.service_name, Some(ctx.service), &old_name)
+                .await;
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
         container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await?;
         finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
@@ -251,7 +248,7 @@ async fn deploy_shared_endpoint(
         )
         .await?;
     }
-    sweep_stuck_draining_records(ctx, upstream_service_name).await;
+    sweep_stuck_draining_records(ctx, upstream_service_name, None).await;
     Ok((deployment_id, upstream.address))
 }
 
@@ -411,12 +408,7 @@ async fn deploy_dynamic_endpoint(
         ctx.engine,
         &candidate_name,
         &health_plan,
-        |line| {
-            report_progress(
-                ctx,
-                &format!("health check: {}", redact_secrets(line, ctx.resolved_env)),
-            );
-        },
+        |line| health_check_line_progress(ctx, line),
     )
     .await
     {
@@ -484,7 +476,9 @@ async fn deploy_dynamic_endpoint(
             ctx.service_name,
             &previous.deployment_id,
         );
-        let orphaned_image = capture_orphaned_static_image(ctx, ctx.service, &old_name).await;
+        let orphaned_image =
+            capture_orphaned_static_image(ctx, ctx.service_name, Some(ctx.service), &old_name)
+                .await;
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
         if let Err(error) =
             container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
@@ -507,7 +501,7 @@ async fn deploy_dynamic_endpoint(
                 "previous container still has a network_mode:service dependent attached; \
                  deferring its removal until that dependent redeploys"
             );
-            sweep_stuck_draining_records(ctx, ctx.service_name).await;
+            sweep_stuck_draining_records(ctx, ctx.service_name, Some(ctx.service)).await;
             return Ok((deployment_id, address));
         }
         finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
@@ -532,7 +526,7 @@ async fn deploy_dynamic_endpoint(
         )
         .await?;
     }
-    sweep_stuck_draining_records(ctx, ctx.service_name).await;
+    sweep_stuck_draining_records(ctx, ctx.service_name, Some(ctx.service)).await;
     Ok((deployment_id, address))
 }
 
@@ -545,7 +539,21 @@ async fn deploy_dynamic_endpoint(
 /// blocking removal) -- whichever happens first finishes the interrupted cleanup, since a
 /// `Draining` record's own service only ever looks for its *current* `Active` record on its own
 /// next redeploy, never revisiting an older `Draining` leftover by itself.
-async fn sweep_stuck_draining_records(ctx: &EndpointDeploymentContext<'_>, service_name: &str) {
+///
+/// `service` is `service_name`'s own config, when the caller has it, used the same way the two
+/// normal cutover paths do to capture-then-finish an orphaned static image around the removal
+/// this sweep retries here: the digest a blocked removal's own `capture_orphaned_static_image`
+/// captured is local to that one failed attempt and is lost the moment it returns early without
+/// ever reaching `finish_orphaned_static_image_cleanup` -- this sweep is that record's only other
+/// chance, since nothing else re-visits an old `Draining` leftover by itself. `None` when called
+/// for an upstream from a dependent's own redeploy (`EndpointDeploymentContext` has no `Config` to
+/// look the upstream's own `build:` setting up there): `capture_orphaned_static_image` still
+/// protects a build-managed upstream image in that case, via its own live retention-spec check.
+async fn sweep_stuck_draining_records(
+    ctx: &EndpointDeploymentContext<'_>,
+    service_name: &str,
+    service: Option<&Service>,
+) {
     let project = &ctx.plan.project;
     let Ok(catalog) = crate::agent_client::catalog(ctx.session, project).await else {
         return;
@@ -561,13 +569,8 @@ async fn sweep_stuck_draining_records(ctx: &EndpointDeploymentContext<'_>, servi
     for record in stuck {
         let old_name =
             container_runtime::dynamic_container_name(project, service_name, &record.deployment_id);
-        // No orphaned-static-image cleanup here (unlike the two normal cutover paths): this sweep
-        // can run for a *different* service than `ctx.service` (called for an upstream's stuck
-        // records from a dependent's own redeploy), and `EndpointDeploymentContext` has no `Config`
-        // to look `service_name`'s own `build:` setting up correctly here. Narrow gap in a narrow,
-        // already-rare path (only reached when a `network_mode:service` dependent blocked normal
-        // removal): that replica's own next normal redeploy goes through `deploy_dynamic_endpoint`
-        // and cleans up whatever is running at that point via the check that function does have.
+        let orphaned_image =
+            capture_orphaned_static_image(ctx, service_name, service, &old_name).await;
         if let Err(error) =
             container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
         {
@@ -581,6 +584,7 @@ async fn sweep_stuck_draining_records(ctx: &EndpointDeploymentContext<'_>, servi
             }
             continue;
         }
+        finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
@@ -715,18 +719,59 @@ async fn restore_stop_first(ctx: &EndpointDeploymentContext<'_>, previous: Optio
 /// -- `.Config.Image` (what `inspect_image` reads) is the reference string, identical across every
 /// pull of a moving tag; `.Image` (`inspect_image_id`) is the actual resolved digest, the only way
 /// to identify precisely which local image entry this removal is about to orphan.
+///
+/// `service` is `service_name`'s *current* config, when the caller has it: a fast path that
+/// avoids the RPC below whenever the currently-deploying service still has `build:` configured.
+/// It is never enough on its own, because it describes the config now, not what actually produced
+/// the previous container's image -- a service that just dropped `build:` still has an old,
+/// `retain:`-tracked image sitting there, and a dependent's redeploy cleaning up an *upstream*'s
+/// leftover record has no `Service` for it at all (`None`). Either way,
+/// `service_has_retention_spec` is the actual source of truth: a spec is only ever installed for
+/// a build-configured service, and `image_retention_reconcile.rs`'s own sweep that removes a spec
+/// after `build:` is dropped runs strictly after this deploy's cutover, so a spec still installed
+/// here means the image about to be superseded is one `retain:` is tracking, regardless of what
+/// `service` says.
 async fn capture_orphaned_static_image(
     ctx: &EndpointDeploymentContext<'_>,
-    service: &Service,
+    service_name: &str,
+    service: Option<&Service>,
     old_name: &str,
 ) -> Option<String> {
-    if service.build.is_some() {
+    if service.is_some_and(|service| service.build.is_some()) {
+        return None;
+    }
+    if service_has_retention_spec(ctx, service_name).await {
         return None;
     }
     container_ops::inspect_image_id(ctx.session, ctx.engine, old_name)
         .await
         .ok()
         .flatten()
+}
+
+/// Whether `service_name` currently has an image-retention spec installed on this host, queried
+/// live rather than inferred from a `Service` config -- see `capture_orphaned_static_image`'s doc
+/// comment for why neither the current config nor "no config at all" is reliable here. Fails
+/// closed (`false`) on any RPC error (including a too-old agent that doesn't understand this
+/// request), matching `image_retention_reconcile.rs::sweep_stale_retention_specs`'s own precedent
+/// for this exact request.
+async fn service_has_retention_spec(
+    ctx: &EndpointDeploymentContext<'_>,
+    service_name: &str,
+) -> bool {
+    match crate::agent_client::call(
+        ctx.session,
+        &ctx.plan.project,
+        None,
+        RequestBody::ImageRetentionList,
+    )
+    .await
+    {
+        Ok(ResponseBody::ImageRetentionSpecs { specs }) => {
+            specs.iter().any(|spec| spec.service == service_name)
+        }
+        _ => false,
+    }
 }
 
 /// Removes the image ID `capture_orphaned_static_image` captured, but only once the old
@@ -758,6 +803,13 @@ fn report_progress(ctx: &EndpointDeploymentContext<'_>, detail: &str) {
 
 fn health_check_progress_detail(timeout: std::time::Duration) -> String {
     format!("health check ({}s)", timeout.as_secs())
+}
+
+fn health_check_line_progress(ctx: &EndpointDeploymentContext<'_>, line: &str) {
+    report_progress(
+        ctx,
+        &format!("health check: {}", redact_secrets(line, ctx.resolved_env)),
+    );
 }
 
 fn proxy_activation_progress_detail(targets: &[RouteTarget]) -> String {

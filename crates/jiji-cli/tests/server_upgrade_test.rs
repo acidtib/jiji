@@ -37,12 +37,17 @@ struct TestServer {
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
     received: Arc<Mutex<Vec<String>>>,
+    /// One new SSH/TCP connection per `new_client` call -- lets a test assert a host was never
+    /// dialed a second time beyond its single locked/reused session (see the SSH Connection
+    /// Management docs on avoiding extra target connections).
+    connections: Arc<Mutex<u32>>,
 }
 
 impl server::Server for TestServer {
     type Handler = Self;
 
     fn new_client(&mut self, _peer_addr: Option<SocketAddr>) -> Self {
+        *self.connections.lock().expect("connections mutex poisoned") += 1;
         self.clone()
     }
 }
@@ -142,6 +147,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    connections: Arc<Mutex<u32>>,
 }
 
 async fn spawn_test_server(
@@ -160,11 +166,13 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let connections = Arc::new(Mutex::new(0));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        connections: connections.clone(),
     };
 
     tokio::spawn(async move {
@@ -172,7 +180,11 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        connections,
+    }
 }
 
 fn setup_test_dir() -> (tempfile::TempDir, std::path::PathBuf, PrivateKey) {
@@ -485,9 +497,22 @@ async fn ahead_versions_are_never_downgraded() {
             .any(|c| c.contains("container rm -f jiji-proxy")),
         "an ahead proxy must never be recreated: {commands:?}"
     );
+    // The full "never touched" contract, not just "binary not uploaded": an ahead host must
+    // never even have its agent unit stopped, its config rewritten, or its membership
+    // re-imported -- `ensure_agent` runs all three unconditionally whenever it's called at all,
+    // regardless of `binary_path`, so the only way to honor this is to never call it here.
+    assert!(
+        !commands.iter().any(|c| c.contains("systemctl")),
+        "an ahead host's agent unit must never be touched at all: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|c| c.contains("membership-import")),
+        "an ahead host's membership must never be re-imported: {commands:?}"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ahead"), "stdout: {stdout}");
+    assert!(stdout.contains("not touched"), "stdout: {stdout}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -605,5 +630,143 @@ async fn a_failed_agent_binary_upload_is_reported_and_the_command_fails() {
     assert!(
         stdout.contains("jiji-proxy") && !stdout.contains("jiji-proxy: permission denied"),
         "stdout: {stdout}"
+    );
+}
+
+/// Regression test: an ahead-of-required host used to be excluded from `upgrade_agents`'s own
+/// `target_names`, so both `gather_membership_view`'s fallback and `push_membership_everywhere`
+/// treated it as outside this run's scope and opened a second (and third) fresh connection to a
+/// host already connected and locked this run -- exactly what the SSH Connection Management docs
+/// warn can trip `ufw limit ssh`. It must be reached only through its one already-open session,
+/// and (per the "ahead of required -> never touched" contract, `ahead_versions_are_never_downgraded`
+/// above) never receive a membership push at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ahead_host_is_read_once_and_never_pushed_to() {
+    let (dir, key_path, client_key) = setup_test_dir();
+
+    let mut web1_responses = base_responses();
+    web1_responses.insert(agent_health_command(), agent_health_response("0.0.1"));
+    web1_responses.insert(format!("{}#1", proxy_version_command()), success("0.0.1\n"));
+    web1_responses.insert(
+        proxy_version_command(),
+        success(&format!("{}\n", jiji_network::PROXY_VERSION)),
+    );
+    web1_responses.insert(
+        proxy_fingerprint_command(),
+        success("running v1-docker docker.io/example/outdated:v0.0.1\n"),
+    );
+    let web1 = spawn_test_server(client_key.public_key().clone(), web1_responses).await;
+
+    let mut web2_responses = base_responses();
+    web2_responses.insert(agent_health_command(), agent_health_response("99.0.0"));
+    web2_responses.insert(proxy_version_command(), success("99.0.0\n"));
+    let web2 = spawn_test_server(client_key.public_key().clone(), web2_responses).await;
+
+    let config_path = write_two_server_config(dir.path(), web1.addr, web2.addr, &key_path);
+
+    let output = run_jiji_server_upgrade(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        *web2.connections.lock().unwrap(),
+        2,
+        "an ahead host must be reached through only its one already-locked session (plus the \
+         unrelated, always-happens `jiji network diagnostics` reconnect at the very end) -- never \
+         an extra connection to read or push membership"
+    );
+    let web2_commands = web2.received.lock().unwrap().clone();
+    assert!(
+        !web2_commands
+            .iter()
+            .any(|c| c.contains("membership-import")),
+        "an ahead host's membership must never be re-imported: {web2_commands:?}"
+    );
+}
+
+/// Regression test: a host that fails partway through `enroll_agent_targets` (its own separate
+/// enrollment connection closes on that failure) used to stay inside `target_names`'s exclusion
+/// set regardless, so `push_membership_everywhere`'s mesh-wide fallback below skipped it too --
+/// leaving it with silently stale membership and no diagnostic, since the "membership not yet
+/// current" notice only ever covered `push_outcome.unreachable`. It must still receive a
+/// membership push, through its still-open `HostRuntime`-locked session from `run()` (distinct
+/// from the enrollment attempt's own connection), and the command must still fail overall for
+/// the enroll error itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_enroll_failure_still_gets_membership_pushed_through_its_lock_session() {
+    let (dir, key_path, client_key) = setup_test_dir();
+
+    let mut web1_responses = base_responses();
+    web1_responses.insert(agent_health_command(), agent_health_response("0.0.1"));
+    web1_responses.insert(format!("{}#1", proxy_version_command()), success("0.0.1\n"));
+    web1_responses.insert(
+        proxy_version_command(),
+        success(&format!("{}\n", jiji_network::PROXY_VERSION)),
+    );
+    web1_responses.insert(
+        proxy_fingerprint_command(),
+        success("running v1-docker docker.io/example/outdated:v0.0.1\n"),
+    );
+    let web1 = spawn_test_server(client_key.public_key().clone(), web1_responses).await;
+
+    let mut web2_responses = base_responses();
+    web2_responses.insert(agent_health_command(), agent_health_response("0.0.1"));
+    web2_responses.insert(
+        proxy_version_command(),
+        success(&format!("{}\n", jiji_network::PROXY_VERSION)),
+    );
+    web2_responses.insert(
+        proxy_fingerprint_command(),
+        proxy_fingerprint_current_response(),
+    );
+    // web2's WireGuard public key is unavailable: `enroll_agent_targets` fails partway through
+    // enrolling it (closing that attempt's own separate connection) before it ever reaches the
+    // install/push loop.
+    web2_responses.insert(
+        public_key_command(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "no such file".to_string(),
+        },
+    );
+    let web2 = spawn_test_server(client_key.public_key().clone(), web2_responses).await;
+
+    let config_path = write_two_server_config(dir.path(), web1.addr, web2.addr, &key_path);
+
+    let output = run_jiji_server_upgrade(&config_path, &[]);
+    assert!(!output.status.success(), "expected non-zero exit overall");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("web2") && stdout.contains("WireGuard public key is unavailable"),
+        "expected web2's enroll failure reported: {stdout}"
+    );
+
+    let web2_commands = web2.received.lock().unwrap().clone();
+    assert!(
+        web2_commands
+            .iter()
+            .any(|c| c.contains("membership-import")),
+        "web2 should still have received a membership push through its already-open lock \
+         session despite the enroll failure: {web2_commands:?}"
+    );
+    assert_eq!(
+        *web2.connections.lock().unwrap(),
+        3,
+        "web2 should only ever see its one locked session (reused for the membership push), \
+         enroll_agent_targets's own separate, failed enrollment attempt, and the unrelated, \
+         always-happens `jiji network diagnostics` reconnect at the very end -- never a fourth \
+         connection: {web2_commands:?}"
+    );
+
+    let web1_commands = web1.received.lock().unwrap().clone();
+    assert!(
+        web1_commands
+            .iter()
+            .any(|c| c.contains("systemctl enable --now")),
+        "web1 should still have been upgraded despite web2's enroll failure: {web1_commands:?}"
     );
 }

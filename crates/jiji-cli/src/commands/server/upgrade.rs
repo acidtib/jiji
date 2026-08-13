@@ -20,6 +20,7 @@ use jiji_tui::Ui;
 use crate::agent_distribution::{self, AgentBinarySource};
 use crate::agent_install;
 use crate::audit::{self, AuditStatus};
+use crate::commands::deploy::split_comma_trimmed;
 use crate::commands::server::setup::{
     connect_for_setup, enroll_agent_targets, gather_membership_view,
 };
@@ -271,18 +272,38 @@ pub async fn run(
     .await?;
     Ui::say(&format!("Acquired {} lock(s).", reachable.len()), 1);
 
-    let upgrade_result: anyhow::Result<(ComponentOutcomes, ComponentOutcomes)> = async {
+    let upgrade_result: anyhow::Result<(ComponentOutcomes, ComponentOutcomes, Vec<String>)> = async {
         Ui::section("Reading Component Versions:");
-        for (name, _) in &reachable {
-            let session = sessions.get(name).expect("connected above");
-            let agent = classify(
-                read_agent_version(session, &config.project).await,
-                crate::version_requirements::AGENT_BUILD_VERSION,
-            );
-            let proxy = classify(
-                read_proxy_version(session, config.builder.engine).await,
-                jiji_network::PROXY_VERSION,
-            );
+        // Fan the per-host reads out over the session pool rather than awaiting each host's
+        // two SSH round-trips in sequence: every session is already open and independent, so
+        // this is pure latency saved, and the pool's own concurrency cap keeps the fan-out
+        // under `max_concurrent_starts` for rate-limited SSH firewalls.
+        let read_operations: Vec<_> = reachable
+            .iter()
+            .map(|(name, _)| {
+                let session = Arc::clone(sessions.get(name).expect("connected above"));
+                let project = config.project.clone();
+                let engine = config.builder.engine;
+                let name = name.clone();
+                move || {
+                    let session = Arc::clone(&session);
+                    let project = project.clone();
+                    let name = name.clone();
+                    async move {
+                        let agent = classify(
+                            read_agent_version(&session, &project).await,
+                            crate::version_requirements::AGENT_BUILD_VERSION,
+                        );
+                        let proxy = classify(
+                            read_proxy_version(&session, engine).await,
+                            jiji_network::PROXY_VERSION,
+                        );
+                        (name, agent, proxy)
+                    }
+                }
+            })
+            .collect();
+        for (name, agent, proxy) in pool.execute_concurrent(read_operations).await {
             Ui::say(
                 &format!(
                     "{name}: jiji-agent {} ({}), jiji-proxy {} ({})",
@@ -293,7 +314,7 @@ pub async fn run(
                 ),
                 1,
             );
-            reads.insert(name.clone(), HostRead { agent, proxy });
+            reads.insert(name, HostRead { agent, proxy });
         }
 
         Ui::section("Plan:");
@@ -342,9 +363,19 @@ pub async fn run(
             }
         }
 
+        // `Ahead` is excluded here, not just inside `upgrade_agents`: it must never be touched at
+        // all (`docs`'s "ahead of required -> never touched, reported as such"), and
+        // `ensure_agent` unconditionally stops the unit / rewrites its config / re-imports
+        // membership regardless of `binary_path`, so the only way to honor that is to keep an
+        // ahead-of-required host out of `upgrade_agents`'s target list entirely.
         let agent_reads: BTreeMap<String, ComponentRead> = reads
             .iter()
-            .filter(|(_, read)| !matches!(read.agent.status, VersionStatus::Unavailable))
+            .filter(|(_, read)| {
+                !matches!(
+                    read.agent.status,
+                    VersionStatus::Unavailable | VersionStatus::Ahead
+                )
+            })
             .map(|(name, read)| (name.clone(), read.agent.clone()))
             .collect();
         let agent_targets: Vec<(String, NamedServer)> = reachable
@@ -352,10 +383,15 @@ pub async fn run(
             .filter(|(name, _)| agent_reads.contains_key(name))
             .cloned()
             .collect();
+        let ahead_names: BTreeSet<String> = reads
+            .iter()
+            .filter(|(_, read)| matches!(read.agent.status, VersionStatus::Ahead))
+            .map(|(name, _)| name.clone())
+            .collect();
 
         Ui::section("Upgrading Jiji Agent:");
-        let host_agent_outcomes = if agent_targets.is_empty() {
-            BTreeMap::new()
+        let (mut host_agent_outcomes, membership_problems) = if agent_targets.is_empty() {
+            (BTreeMap::new(), Vec::new())
         } else {
             upgrade_agents(
                 &config,
@@ -365,9 +401,26 @@ pub async fn run(
                 &ssh,
                 &sessions,
                 &agent_reads,
+                &ahead_names,
             )
             .await?
         };
+        for (name, read) in reads
+            .iter()
+            .filter(|(_, read)| matches!(read.agent.status, VersionStatus::Ahead))
+        {
+            // `entry`/`or_insert_with`, not a plain `insert`: `upgrade_agents` may already have
+            // recorded a real outcome for this host (e.g. a membership-push failure through its
+            // still-open lock session) that this friendly "not touched" default must never
+            // silently overwrite.
+            host_agent_outcomes.entry(name.clone()).or_insert_with(|| {
+                Ok(format!(
+                    "is ahead of required v{} (found {}); not touched",
+                    crate::version_requirements::AGENT_BUILD_VERSION,
+                    describe_found(&read.agent.found)
+                ))
+            });
+        }
         for (name, outcome) in &host_agent_outcomes {
             match outcome {
                 Ok(detail) => Ui::result_ok(name, &format!("jiji-agent {detail}")),
@@ -396,62 +449,27 @@ pub async fn run(
         }
 
         for (name, session) in &sessions {
-            let agent_result = host_agent_outcomes.get(name);
-            let agent_message = match &reads[name].agent.status {
-                VersionStatus::Unavailable => "jiji-agent unavailable".to_string(),
-                _ => match agent_result {
-                    Some(Ok(detail)) => format!("jiji-agent {detail}"),
-                    Some(Err(error)) => format!("jiji-agent failed: {error}"),
-                    None => "jiji-agent not attempted".to_string(),
-                },
-            };
-            audit::record(
+            audit_component(
                 session,
                 &config.project,
-                "server_upgrade",
-                if matches!(agent_result, Some(Err(_)))
-                    || matches!(reads[name].agent.status, VersionStatus::Unavailable)
-                {
-                    AuditStatus::Failed
-                } else {
-                    AuditStatus::Success
-                },
-                agent_message,
-                Some(&LockScope::HostRuntime.to_string()),
-                None,
-                Some(started_at.elapsed()),
+                started_at,
+                "jiji-agent",
+                reads[name].agent.status,
+                host_agent_outcomes.get(name),
             )
             .await;
-
-            let proxy_result = host_proxy_outcomes.get(name);
-            let proxy_message = match &reads[name].proxy.status {
-                VersionStatus::Unavailable => "jiji-proxy unavailable".to_string(),
-                _ => match proxy_result {
-                    Some(Ok(detail)) => format!("jiji-proxy {detail}"),
-                    Some(Err(error)) => format!("jiji-proxy failed: {error}"),
-                    None => "jiji-proxy not attempted".to_string(),
-                },
-            };
-            audit::record(
+            audit_component(
                 session,
                 &config.project,
-                "server_upgrade",
-                if matches!(proxy_result, Some(Err(_)))
-                    || matches!(reads[name].proxy.status, VersionStatus::Unavailable)
-                {
-                    AuditStatus::Failed
-                } else {
-                    AuditStatus::Success
-                },
-                proxy_message,
-                Some(&LockScope::HostRuntime.to_string()),
-                None,
-                Some(started_at.elapsed()),
+                started_at,
+                "jiji-proxy",
+                reads[name].proxy.status,
+                host_proxy_outcomes.get(name),
             )
             .await;
         }
 
-        Ok((host_agent_outcomes, host_proxy_outcomes))
+        Ok((host_agent_outcomes, host_proxy_outcomes, membership_problems))
     }
     .await;
 
@@ -460,17 +478,22 @@ pub async fn run(
     for session in sessions.values() {
         session.close().await;
     }
-    let (agent_outcomes, proxy_outcomes) = match (upgrade_result, release_result) {
-        (Ok(outcomes), Ok(())) => outcomes,
-        (Err(error), Ok(())) => return Err(error),
-        (Ok(_), Err(release_error)) => return Err(release_error),
-        (Err(error), Err(release_error)) => {
-            return Err(error.context(format!("Additionally, {release_error}")))
-        }
-    };
+    let (agent_outcomes, proxy_outcomes, membership_problems) =
+        match (upgrade_result, release_result) {
+            (Ok(outcomes), Ok(())) => outcomes,
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(release_error)) => return Err(release_error),
+            (Err(error), Err(release_error)) => {
+                return Err(error.context(format!("Additionally, {release_error}")))
+            }
+        };
 
     Ui::section("Summary:");
-    let mut failed = false;
+    // A mesh-wide membership push failure isn't tied to any one host's agent/proxy status, so it
+    // can't be folded into the per-host loop below -- but it still means the mesh is left
+    // desynchronized, so it must still fail the command the same way `jiji server setup` fails on
+    // the identical underlying failure, instead of only ever warning about it.
+    let mut failed = !membership_problems.is_empty();
     for (name, read) in &reads {
         if matches!(read.agent.status, VersionStatus::Unavailable) {
             failed = true;
@@ -540,6 +563,41 @@ pub async fn run(
 /// already printed, so the summary reflects the actual outcome rather than silently repeating the
 /// pre-upgrade read under a "Summary" heading (a component that was upgraded shows "upgraded ..."
 /// here, not the stale previous version this row's `describe_found` also displays).
+/// One `server_upgrade` audit entry per component: the message folds the version read and the
+/// upgrade outcome into the same shape for both jiji-agent and jiji-proxy.
+async fn audit_component(
+    session: &SshSession,
+    project: &str,
+    started_at: std::time::Instant,
+    component: &str,
+    status: VersionStatus,
+    outcome: Option<&Result<String, String>>,
+) {
+    let message = match status {
+        VersionStatus::Unavailable => format!("{component} unavailable"),
+        _ => match outcome {
+            Some(Ok(detail)) => format!("{component} {detail}"),
+            Some(Err(error)) => format!("{component} failed: {error}"),
+            None => format!("{component} not attempted"),
+        },
+    };
+    audit::record(
+        session,
+        project,
+        "server_upgrade",
+        if matches!(outcome, Some(Err(_))) || matches!(status, VersionStatus::Unavailable) {
+            AuditStatus::Failed
+        } else {
+            AuditStatus::Success
+        },
+        message,
+        Some(&LockScope::HostRuntime.to_string()),
+        None,
+        Some(started_at.elapsed()),
+    )
+    .await;
+}
+
 fn summary_result(status: VersionStatus, outcome: Option<&Result<String, String>>) -> String {
     if matches!(status, VersionStatus::Unavailable) {
         return "unavailable".to_string();
@@ -568,6 +626,7 @@ fn plan_action(status: VersionStatus, is_agent: bool) -> &'static str {
 /// machinery, then calls `agent_install::ensure_agent` per host -- passing a real binary path only
 /// for `Current`/`Outdated` (an `Ahead`/`Unknown` host always gets `binary_path: None`, refreshing
 /// config/unit/membership without ever touching its binary).
+#[allow(clippy::too_many_arguments)]
 async fn upgrade_agents(
     config: &Config,
     config_path: &std::path::Path,
@@ -576,45 +635,26 @@ async fn upgrade_agents(
     ssh: &jiji_config::Ssh,
     lock_sessions: &BTreeMap<String, Arc<SshSession>>,
     agent_reads: &BTreeMap<String, ComponentRead>,
-) -> anyhow::Result<ComponentOutcomes> {
-    let binary_source = match agent_install::find_local_agent_binary() {
-        agent_install::LocalAgentBinary::Found(path) => AgentBinarySource::Local(path),
-        agent_install::LocalAgentBinary::ExplicitOverrideInvalid(message) => {
-            anyhow::bail!("jiji server upgrade requires the authoritative jiji agent: {message}");
-        }
-        agent_install::LocalAgentBinary::NotConfigured => {
-            let download = agent_distribution::managed_download_config();
-            Ui::say(
-                &format!(
-                    "No local jiji-agent binary found; installing jiji-agent v{} from the \
-                     release on hosts that need it.",
-                    download.version
-                ),
-                1,
-            );
-            AgentBinarySource::Managed(download)
-        }
-    };
-    let remote_install_script = match &binary_source {
-        AgentBinarySource::Managed(download) => {
-            let paths = jiji_agent::AgentPaths::default_for_project(&config.project);
-            let bin_dir = paths
-                .binary_path
-                .parent()
-                .expect("binary path always has a parent directory");
-            Some(agent_distribution::remote_install_script(
-                &download.base_url,
-                &download.version,
-                &paths.project_dir,
-                bin_dir,
-                &paths.state_dir,
-                &paths.binary_path,
-            ))
-        }
-        AgentBinarySource::Local(_) => None,
-    };
+    ahead_names: &BTreeSet<String>,
+) -> anyhow::Result<(ComponentOutcomes, Vec<String>)> {
+    let (binary_source, remote_install_script) = agent_distribution::resolve_agent_binary_source(
+        &config.project,
+        "jiji server upgrade requires the authoritative jiji agent",
+        |version| {
+            format!(
+                "No local jiji-agent binary found; installing jiji-agent v{version} from the \
+                 release on hosts that need it."
+            )
+        },
+    )?;
 
-    let target_names: BTreeSet<String> = targets.iter().map(|(name, _)| name.clone()).collect();
+    // The full set of hosts this run already holds a `HostRuntime` lock (and an open session)
+    // on -- not just `targets` (which excludes `Ahead`/agent-`Unavailable` hosts): using the
+    // narrower set here made `gather_membership_view`'s fast path skip an already-connected
+    // host's own session and fall through to a second, redundant connection via
+    // `gather_membership`'s mesh-wide fallback below, exactly what the SSH Connection
+    // Management docs warn can trip `ufw limit ssh` on repeated runs.
+    let target_names: BTreeSet<String> = lock_sessions.keys().cloned().collect();
     let recovery_epoch = crate::recovery_epoch::read(config_path)?;
     let scope = MembershipScope::new(config.project.clone(), recovery_epoch);
     let view = gather_membership_view(config, ssh, lock_sessions, &target_names, &scope).await;
@@ -634,42 +674,66 @@ async fn upgrade_agents(
         outcomes.insert(name, Err(error));
     }
 
+    // Tracks every host reached below through a session opened specifically for enrollment
+    // (`prepared`'s own connection, separate from `lock_sessions`) so the follow-up loop after
+    // it never pushes a second time through `lock_sessions`' own still-open session for the same
+    // host.
+    let mut directly_reached: BTreeSet<String> = BTreeSet::new();
+
     for (name, session, mesh_config) in prepared {
+        directly_reached.insert(name.clone());
         let read = agent_reads.get(&name);
+        // `Ahead` never reaches this loop at all: the caller (`run`) excludes it from `targets`
+        // entirely, matching the documented "ahead of required -> never touched" contract --
+        // `ensure_agent` unconditionally stops the unit, rewrites its config, and re-imports
+        // membership regardless of `binary_path`, so the only way to genuinely never touch an
+        // ahead-of-required host is to never call it for one.
         let status = read
             .map(|read| read.status)
             .unwrap_or(VersionStatus::Unknown);
-        let touch_binary = matches!(status, VersionStatus::Current | VersionStatus::Outdated);
-        let binary_path = if touch_binary {
-            match &binary_source {
-                AgentBinarySource::Local(path) => Some(path.clone()),
-                AgentBinarySource::Managed(_) => {
-                    let script = remote_install_script
-                        .as_ref()
-                        .expect("remote script is rendered whenever managed mode is used");
-                    match session.execute(script).await {
-                        Ok(result) if result.success => None,
-                        Ok(result) => {
-                            outcomes.insert(
-                                name.clone(),
-                                Err(format!(
-                                    "could not download the jiji agent from the release: {}",
-                                    result.stderr.trim()
-                                )),
+        // Only an `Outdated` host actually needs a binary change. `Local` source's re-upload for
+        // an already-`Current` host is a cheap local hash compare (no network dependency), so it
+        // stays harmless to keep; `Managed` source's equivalent is a remote script whose *first*
+        // action is an unconditional `curl` of the `.sha256` sidecar before it even checks
+        // whether the installed binary already matches -- running it for a `Current` host makes
+        // an otherwise no-op refresh depend on GitHub being reachable for no reason, since this
+        // CLI already knows the host is current from the `Health` RPC read that classified it.
+        let mut managed_binary_changed = false;
+        let binary_path = match (&binary_source, status) {
+            (AgentBinarySource::Local(path), VersionStatus::Current | VersionStatus::Outdated) => {
+                Some(path.clone())
+            }
+            (AgentBinarySource::Managed(_), VersionStatus::Outdated) => {
+                let script = remote_install_script
+                    .as_ref()
+                    .expect("remote script is rendered whenever managed mode is used");
+                match session.execute(script).await {
+                    Ok(result) if result.success => {
+                        managed_binary_changed =
+                            agent_distribution::remote_install_script_changed_binary(
+                                &result.stdout,
                             );
-                            session.close().await;
-                            continue;
-                        }
-                        Err(error) => {
-                            outcomes.insert(name.clone(), Err(error.to_string()));
-                            session.close().await;
-                            continue;
-                        }
+                        None
+                    }
+                    Ok(result) => {
+                        outcomes.insert(
+                            name.clone(),
+                            Err(format!(
+                                "could not download the jiji agent from the release: {}",
+                                result.stderr.trim()
+                            )),
+                        );
+                        session.close().await;
+                        continue;
+                    }
+                    Err(error) => {
+                        outcomes.insert(name.clone(), Err(error.to_string()));
+                        session.close().await;
+                        continue;
                     }
                 }
             }
-        } else {
-            None
+            _ => None,
         };
 
         let result = agent_install::ensure_agent(
@@ -692,18 +756,25 @@ async fn upgrade_agents(
                 {
                     outcomes.insert(name.clone(), Err(error.to_string()));
                 } else {
+                    // `ensure_agent` is always called with `binary_path: None` in managed mode
+                    // (the script above already did any real install work), so its own
+                    // `AgentStatus` can't distinguish "the script just installed a new binary"
+                    // from "nothing needed to change" -- both come back as `AlreadyRunning`.
+                    // `managed_binary_changed` (from the script's own trailing marker) is the
+                    // only place that distinction still exists; without it, an outdated host
+                    // upgraded through managed mode was reported as merely "already current".
+                    let upgraded_detail = format!(
+                        "upgraded {} -> v{}",
+                        describe_found(&read.and_then(|read| read.found.clone())),
+                        crate::version_requirements::AGENT_BUILD_VERSION
+                    );
                     let detail = match (status, agent_result) {
                         (VersionStatus::Outdated, agent_install::AgentStatus::Upgraded) => {
-                            format!(
-                                "upgraded {} -> v{}",
-                                describe_found(&read.and_then(|read| read.found.clone())),
-                                crate::version_requirements::AGENT_BUILD_VERSION
-                            )
+                            upgraded_detail
                         }
-                        (VersionStatus::Ahead, _) => {
-                            "is ahead of required version, config refreshed (binary not touched)"
-                                .to_string()
-                        }
+                        // Managed mode always reports `AlreadyRunning` (see above); the
+                        // script's own marker is the only evidence the binary was replaced.
+                        (VersionStatus::Outdated, _) if managed_binary_changed => upgraded_detail,
                         (VersionStatus::Unknown, _) => {
                             "has an unparseable version, config refreshed (binary not touched)"
                                 .to_string()
@@ -724,18 +795,79 @@ async fn upgrade_agents(
         session.close().await;
     }
 
-    let push_outcome = crate::commands::network::membership::push_membership_everywhere(
+    // Every other host this run holds a `HostRuntime` lock on -- agent-unreachable via `Health`
+    // (never in `targets` at all), or one that failed partway through `enroll_agent_targets`
+    // (that attempt's own separate connection is already closed, but its `lock_sessions` entry
+    // never was) -- still has an already-open session right here. Push membership directly
+    // through it instead of leaving it to `push_membership_everywhere`'s mesh-wide fallback
+    // below: that fallback would otherwise either open a second, redundant connection to a host
+    // already connected this run, or (now that `target_names` covers every locked host, see
+    // above) never reach it at all. An enroll failure's outcome is left as the more specific
+    // error already recorded above; every other host gets its push result recorded fresh.
+    //
+    // `Ahead` is skipped here, same as everywhere else in this function: the documented
+    // "ahead of required -> never touched" contract covers membership too, so an ahead host's
+    // still-open session is used above only to *read* its membership (harmless), never to push
+    // to it -- it stays excluded from `push_membership_everywhere` below via `target_names`
+    // (which is `lock_sessions.keys()`, not filtered to `targets`) too, so it gets no push from
+    // either path.
+    for (name, session) in lock_sessions {
+        if directly_reached.contains(name) || ahead_names.contains(name) {
+            continue;
+        }
+        match crate::commands::network::membership::push_membership(
+            session,
+            &config.project,
+            &records,
+        )
+        .await
+        {
+            Ok(()) => {
+                outcomes
+                    .entry(name.clone())
+                    .or_insert_with(|| Ok("membership refreshed".to_string()));
+            }
+            Err(error) => {
+                outcomes
+                    .entry(name.clone())
+                    .or_insert_with(|| Err(error.to_string()));
+            }
+        }
+    }
+
+    // Never `?` here: every host already processed above has a real outcome sitting in
+    // `outcomes` (upgraded, refreshed, or a per-host failure) that the caller still needs to
+    // print and audit. Propagating a mesh-wide push failure at this point discarded that
+    // already-completed, audit-worthy work along with it -- the caller's `?` on this whole
+    // function would abort before it ever reached its own audit-recording loop, so a mid-run
+    // failure here silently erased the audit trail for hosts that had already been upgraded.
+    // Its own failure is instead returned as a "problem" the caller folds into whether the
+    // overall command fails, matching `jiji server setup`'s `?`-propagated posture for the same
+    // failure rather than only ever warning about it.
+    let mut problems = Vec::new();
+    match crate::commands::network::membership::push_membership_everywhere(
         config,
         ssh,
         &records,
         &target_names,
     )
-    .await?;
-    for (name, error) in &push_outcome.unreachable {
-        Ui::say(&format!("{name}: membership not yet current ({error})"), 1);
+    .await
+    {
+        Ok(push_outcome) => {
+            for (name, error) in &push_outcome.unreachable {
+                Ui::say(&format!("{name}: membership not yet current ({error})"), 1);
+            }
+        }
+        Err(error) => {
+            let message = format!("could not push membership to the rest of the mesh: {error}");
+            Ui::warn(&format!(
+                "{message}. Hosts upgraded above were still upgraded; run `jiji server upgrade` again once this is resolved."
+            ));
+            problems.push(message);
+        }
     }
 
-    Ok(outcomes)
+    Ok((outcomes, problems))
 }
 
 /// Applies proxy version-comparison results for `targets` (already filtered to reachable,
@@ -804,21 +936,6 @@ async fn upgrade_proxies(
         }
     }
     Ok(outcomes)
-}
-
-/// Filters `servers` down to those whose `host` value matches at least one comma-separated
-/// `*`-wildcard pattern, matching `server setup`/`server teardown`'s own precedent.
-fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
-    value
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

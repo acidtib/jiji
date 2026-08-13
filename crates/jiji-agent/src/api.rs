@@ -159,7 +159,6 @@ pub enum RequestBody {
         service: String,
         repo: String,
         retain: u32,
-        revision: u64,
     },
     ImageRetentionRemove {
         service: String,
@@ -825,20 +824,16 @@ impl AgentApi {
                 service,
                 repo,
                 retain,
-                revision,
             } => {
                 let spec = ImageRetentionSpec {
                     service,
                     repo,
                     retain,
-                    revision,
                 };
-                let outcome = store
+                let stored = store
                     .apply_image_retention_spec(&spec)
                     .map_err(|error| internal(&error))?;
-                Ok(ResponseBody::ImageRetentionApplied {
-                    spec: outcome.spec().clone(),
-                })
+                Ok(ResponseBody::ImageRetentionApplied { spec: stored })
             }
             RequestBody::ImageRetentionRemove { service } => {
                 let removed = store
@@ -1451,19 +1446,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let socket_path = spawn_server(dir.path()).await;
 
-        let apply_request =
-            |repo: &str, retain: u32, revision: u64| RequestBody::ImageRetentionApply {
-                service: "web".into(),
-                repo: repo.into(),
-                retain,
-                revision,
-            };
+        let apply_request = |repo: &str, retain: u32| RequestBody::ImageRetentionApply {
+            service: "web".into(),
+            repo: repo.into(),
+            retain,
+        };
 
         let response = call(
             &socket_path,
             &Request {
                 idempotency_key: None,
-                body: apply_request("ghcr.io/example/demo-web", 3, 1),
+                body: apply_request("ghcr.io/example/demo-web", 3),
             },
         )
         .await
@@ -1481,7 +1474,7 @@ mod tests {
             &socket_path,
             &Request {
                 idempotency_key: None,
-                body: apply_request("ghcr.io/example/demo-web", 3, 1),
+                body: apply_request("ghcr.io/example/demo-web", 3),
             },
         )
         .await

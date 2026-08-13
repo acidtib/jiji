@@ -146,15 +146,14 @@ pub async fn wait_until_healthy(
     })
 }
 
-/// Prefers `stderr` (last non-empty line, to avoid a large body/script output flooding one
-/// progress row), falls back to `stdout` the same way, falls back to the exit status if both are
-/// empty.
+/// Prefers `stderr` (to avoid a large body/script output flooding one progress row), falls back
+/// to `stdout` the same way, falls back to the exit status if both are empty.
 fn summarize_attempt(result: &CommandResult) -> String {
-    if let Some(line) = last_nonempty_line(&result.stderr) {
-        return line.to_string();
+    if let Some(summary) = summarize_stream(&result.stderr) {
+        return summary;
     }
-    if let Some(line) = last_nonempty_line(&result.stdout) {
-        return line.to_string();
+    if let Some(summary) = summarize_stream(&result.stdout) {
+        return summary;
     }
     match result.code {
         Some(code) => format!("exited with status {code}"),
@@ -162,11 +161,20 @@ fn summarize_attempt(result: &CommandResult) -> String {
     }
 }
 
-fn last_nonempty_line(text: &str) -> Option<&str> {
-    text.lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
+/// A failing command's own diagnostic conventionally starts on its first line of output, with
+/// anything after it either elaboration or unrelated trailing noise (a cleanup message, a blank
+/// prompt, a generic "command failed" footer) -- taking only the *last* non-empty line instead
+/// surfaced whichever of those a multi-line failure happened to end with and silently dropped the
+/// actual cause above it. Keeps this a single line (no embedded newline, matching
+/// `wait_until_healthy`'s one-line-per-progress-row contract) by carrying the last line alongside
+/// the first only when it differs, rather than by discarding one of them outright.
+fn summarize_stream(text: &str) -> Option<String> {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next()?;
+    match lines.next_back() {
+        Some(last) if last != first => Some(format!("{first} (... {last})")),
+        _ => Some(first.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -263,8 +271,26 @@ mod tests {
     }
 
     #[test]
-    fn summarize_attempt_keeps_only_the_last_nonempty_line_of_multiline_output() {
+    fn summarize_attempt_keeps_both_ends_of_multiline_output() {
         let summary = summarize_attempt(&result("", "line one\n\nline two\n", Some(1)));
-        assert_eq!(summary, "line two");
+        assert_eq!(summary, "line one (... line two)");
+    }
+
+    #[test]
+    fn summarize_attempt_does_not_lose_the_root_cause_behind_a_generic_trailing_line() {
+        // The real diagnostic is on the first line; a generic footer follows it, matching a
+        // common real-world shape (e.g. curl's actual error, then a script's own "failed" echo).
+        let summary = summarize_attempt(&result(
+            "",
+            "curl: (7) Failed to connect to localhost port 3000\nhealthcheck failed\n",
+            Some(1),
+        ));
+        assert!(summary.contains("Failed to connect"), "summary: {summary}");
+    }
+
+    #[test]
+    fn summarize_attempt_collapses_to_one_line_when_every_repeated_line_is_identical() {
+        let summary = summarize_attempt(&result("", "boom\nboom\nboom\n", Some(1)));
+        assert_eq!(summary, "boom");
     }
 }
