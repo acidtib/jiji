@@ -10,8 +10,6 @@ The public website must not present schema-only or deferred behavior as an
 available feature. Keep these limits visible until their runtime work is
 complete:
 
-- `network_mode: host` and `network_mode: none` do not change container
-  networking. Implement or reject them as described below.
 - External `secrets:` adapters do not resolve values. Implement the adapter
   path described below.
 - Cron jobs do not retry, transfer ownership during an outage, or run once per
@@ -23,7 +21,6 @@ in the same change.
 Sources:
 
 - `crates/jiji-config/src/jiji.yml`
-- `crates/jiji-cli/src/container_runtime.rs`
 - `crates/jiji-cli/src/commands/service/prune.rs`
 - `crates/jiji-agent/src/scheduler.rs`
 
@@ -52,25 +49,6 @@ Sources:
 - `crates/jiji-cli/src/env_resolution.rs`
 - `crates/jiji-cli/src/commands/secrets/print.rs`
 - `crates/jiji-cli/src/registry.rs`
-
-### Implement or reject `network_mode: host` and `network_mode: none`
-
-The configuration reference documents both modes. The runtime currently
-starts these services with normal project bridge networking instead.
-
-- Implement both modes with explicit container-engine arguments, or reject
-  them during configuration validation.
-- Define address leasing, DNS, port, proxy, health-check, cron, and scaling
-  rules for each implemented mode.
-- Add validation and deployment tests for the selected behavior.
-- Update the configuration reference to match the implementation.
-
-Sources:
-
-- `crates/jiji-config/src/jiji.yml`
-- `crates/jiji-config/src/validation.rs`
-- `crates/jiji-cli/src/container_runtime.rs`
-- `crates/jiji-cli/src/deploy_transaction.rs`
 
 ### Increase project capacity
 
@@ -122,39 +100,3 @@ Sources:
 - `crates/jiji-agent/src/cron.rs`
 - `crates/jiji-agent/src/cron_exec.rs`
 - `crates/jiji-agent/src/scheduler.rs`
-
-## Documentation clarity
-
-### Clarify `replicas:` semantics to prevent a common misreading
-
-`servers: [a, b]` plus `replicas: 2` is easy to misread as "each assigned
-server gets its own instance plus a replica" (4 total, 2 per server).
-The actual behavior is that `replicas` is the total instance count spread
-across the eligible `servers:` set - 2 total, 1 per server under the
-default `placement: spread` (confirmed by `place()`'s balanced-load
-assignment and its `spread_is_balanced_and_input_order_independent` test).
-The website configuration reference already states this ("`servers:` is
-the eligible placement set, not 'one copy per server.' `replicas:` is the
-desired total count across that whole set."), but a reader can still form
-the wrong mental model from it.
-
-- Add a worked example to the configuration reference showing `servers:`,
-  `replicas:`, and the resulting per-server placement side by side (e.g. a
-  small table), not just prose.
-- Consider a preflight/dry-run output for `jiji deploy` that prints the
-  computed replica-to-server plan before applying it, so the mental model
-  gets checked against real output instead of only documentation.
-- Consider clarifying `replicas` in `jiji deploy --help` / service command
-  help text to make the "total, not per-server" meaning explicit there too.
-
-Sources:
-
-- `crates/jiji-cli/src/placement.rs`
-- Website: `app/docs/reference/configuration/page.mdx` (Replicas and placement section)
-
-## Removed stale items
-
-The Kamal proxy health-check bug and target-address activation race do not
-apply to the current proxy architecture. Jiji-proxy now resolves aggregate
-service DNS records and does not receive a mutable backend address during
-route activation.
