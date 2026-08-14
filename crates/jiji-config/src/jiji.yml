@@ -515,6 +515,19 @@ services:
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: BUILD_DATE
+  #     secrets:                          # Names resolved the same way environment.secrets is
+  #                                        # (.env, then host env with --host-env), but mounted
+  #                                        # into the build via --secret id=<NAME>,src=<path>
+  #                                        # instead of --build-arg, so the value never lands in
+  #                                        # `docker history` or image metadata. Never read from
+  #                                        # environment.clear. Dockerfile side:
+  #                                        #   RUN --mount=type=secret,id=NPM_TOKEN \
+  #                                        #     NPM_TOKEN=$(cat /run/secrets/NPM_TOKEN) npm install
+  #                                        # Classic (non-buildx) `docker build` needs BuildKit for
+  #                                        # --secret; jiji sets DOCKER_BUILDKIT=1 automatically
+  #                                        # when secrets are configured.
+  #       - NPM_TOKEN
+  #       - PIP_INDEX_PASSWORD
   #   servers:                              # Deploy to both amd64 and arm64 servers
   #     - vps-prod
   #     - arm-builder

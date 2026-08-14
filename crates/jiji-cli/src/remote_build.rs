@@ -3,7 +3,8 @@
 //! instead of a local subprocess: preflight the builder, stage the build context, stream the
 //! build/push commands, and clean up the staging directory on every exit path.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use jiji_config::{ContainerEngine, Registry};
@@ -155,10 +156,47 @@ impl RemoteBuildExecutor {
             dockerfile: format!("{remote_context}/{}", package.dockerfile_rel),
             args: build.args.clone(),
             target: build.target.clone(),
+            secrets: build.secrets.clone(),
         })
     }
 
-    /// `build` must already be remote-resolved (the output of `stage_context`). Mirrors
+    /// Stages each resolved build secret under `{staging_root}/secrets/{service_name}/{name}`,
+    /// piping content over stdin via `execute_with_input` the same way `stage_context`'s tar
+    /// upload does -- no secret value is ever embedded in a command string. Unlike
+    /// `env_resolution::stage_env_file`, a secret is read by `RUN --mount=type=secret` as raw
+    /// bytes with no format restriction, so a multi-line value (a PEM key, a JSON credentials
+    /// blob) is staged as-is with no newline rejection. No separate cleanup needed: `finish()`
+    /// already `rm -rf`s the whole per-run staging root on every exit path, and this is a
+    /// subdirectory of it.
+    pub async fn stage_secrets(
+        &self,
+        service_name: &str,
+        secrets: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Vec<(String, PathBuf)>> {
+        if secrets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let remote_dir = format!("{}/secrets/{service_name}", self.staging_root);
+        let mkdir_command = format!("mkdir -m 0700 -p {remote_dir}");
+        let mkdir_result = self.session.execute(&mkdir_command).await?;
+        mounts::ensure_success(&self.session, &mkdir_command, &mkdir_result)?;
+
+        let mut staged = Vec::new();
+        for (name, value) in secrets {
+            let remote_path = format!("{remote_dir}/{name}");
+            let command = format!("install -D -m 0600 /dev/stdin {remote_path}");
+            let result = self
+                .session
+                .execute_with_input(&command, value.as_bytes())
+                .await?;
+            mounts::ensure_success(&self.session, &command, &result)?;
+            staged.push((name.clone(), PathBuf::from(remote_path)));
+        }
+        Ok(staged)
+    }
+
+    /// `build` must already be remote-resolved (the output of `stage_context`); `secrets` must
+    /// already be remote-staged (the output of `stage_secrets`). Mirrors
     /// `build_engine::build_and_push`'s structure over SSH instead of a local subprocess,
     /// reusing the same pure command renderers.
     #[allow(clippy::too_many_arguments)]
@@ -173,6 +211,7 @@ impl RemoteBuildExecutor {
         project: &str,
         service_name: &str,
         local_registry: bool,
+        secrets: &[(String, PathBuf)],
     ) -> anyhow::Result<()> {
         if let Some(error) = build_engine::multi_arch_requires_push(platforms, push) {
             anyhow::bail!(error);
@@ -181,7 +220,7 @@ impl RemoteBuildExecutor {
             (BuildStrategy::SingleArch, _) => {
                 self.stream(
                     engine_kind,
-                    build_engine::render_single_arch_build(build, no_cache, tags),
+                    build_engine::render_single_arch_build(build, no_cache, tags, secrets),
                 )
                 .await?;
                 if push {
@@ -232,6 +271,7 @@ impl RemoteBuildExecutor {
                         platforms,
                         tags,
                         &builder_name,
+                        secrets,
                     ),
                 )
                 .await
@@ -249,7 +289,7 @@ impl RemoteBuildExecutor {
                     self.stream(
                         engine_kind,
                         build_engine::render_podman_arch_build(
-                            build, no_cache, platform, &manifest,
+                            build, no_cache, platform, &manifest, secrets,
                         ),
                     )
                     .await?;

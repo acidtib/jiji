@@ -236,6 +236,11 @@ pub struct BuildConfig {
     pub args: Option<HashMap<String, String>>,
     #[serde(default)]
     pub target: Option<String>,
+    /// Names resolved from `.env`/host-env the same way `environment.secrets` is, but mounted
+    /// into the build via `--secret id=<NAME>,src=<path>` instead of `--build-arg`, so the value
+    /// never lands in `docker history`/image metadata. Never read from `environment.clear`.
+    #[serde(default)]
+    pub secrets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

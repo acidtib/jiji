@@ -166,6 +166,49 @@ pub fn resolve_build_arg_references(
     Ok(())
 }
 
+/// Resolves `build.secrets` names to values, keyed by service name. Unlike
+/// `resolve_build_arg_references`, this never reads `environment.clear`: a build secret exists
+/// specifically to bypass `--build-arg`, and mixing in the same cleartext-by-design map a plain
+/// build arg reads from would defeat that. Reports every missing name across every service in one
+/// error, matching `resolve_environment`'s "report every missing secret" behavior rather than
+/// `resolve_build_arg_references`'s per-value bail.
+pub fn resolve_build_secrets(
+    // Unused: kept for signature symmetry with `resolve_build_arg_references`. A build secret's
+    // precedence is deliberately narrower (.env/host-env only, never `environment.clear`), so
+    // there is currently no config-derived value this resolver needs.
+    _config: &Config,
+    plan: &[BuildPlanEntry],
+    loaded: &BTreeMap<String, String>,
+    allow_host_env: bool,
+) -> anyhow::Result<BTreeMap<String, BTreeMap<String, String>>> {
+    let mut resolved = BTreeMap::new();
+    let mut missing: Vec<String> = Vec::new();
+    for entry in plan {
+        let mut values = BTreeMap::new();
+        for name in &entry.build.secrets {
+            match env_resolution::resolve_secret_name(name, loaded, allow_host_env) {
+                Some(value) => {
+                    values.insert(name.clone(), value);
+                }
+                None => missing.push(format!(
+                    "services.{}.build.secrets: missing {name}",
+                    entry.service_name
+                )),
+            }
+        }
+        resolved.insert(entry.service_name.clone(), values);
+    }
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{}. Define them in .env or pass --host-env.",
+            missing.join("; ")
+        );
+    }
+
+    Ok(resolved)
+}
+
 pub fn render_plan_summary(plan: &[BuildPlanEntry]) -> String {
     plan.iter()
         .map(|entry| {
@@ -190,6 +233,7 @@ pub async fn build_one(
     project: &str,
     project_root: &Path,
     local_registry: bool,
+    secrets: &BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     executor
         .build_and_push(
@@ -200,6 +244,7 @@ pub async fn build_one(
             project,
             project_root,
             local_registry,
+            secrets,
         )
         .await
 }
@@ -369,5 +414,101 @@ services:
             .contains("services.app.build.args.API_URL"));
         assert!(error.to_string().contains("MISSING_API_URL"));
         assert!(error.to_string().contains("--host-env"));
+    }
+
+    #[test]
+    fn build_secrets_never_resolve_from_environment_clear() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: podman }
+environment:
+  clear:
+    NPM_TOKEN: from-clear-must-not-be-used
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+    servers: [web]
+"#,
+        );
+        let plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
+
+        // NPM_TOKEN is only in environment.clear, never in the .env file or host env, so
+        // resolution must fail rather than silently pick up the clear-text value.
+        let error = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false)
+            .expect_err("must not fall back to environment.clear");
+        assert!(error.to_string().contains("missing NPM_TOKEN"));
+    }
+
+    #[test]
+    fn build_secrets_prefer_env_file_over_host_env_and_require_host_env_flag() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - JIJI_TEST_BUILD_SECRET_TOKEN
+    servers: [web]
+"#,
+        );
+        let plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
+        let loaded = BTreeMap::from([(
+            "JIJI_TEST_BUILD_SECRET_TOKEN".into(),
+            "from-env-file".into(),
+        )]);
+
+        let resolved = resolve_build_secrets(&config, &plan, &loaded, false).expect("resolve");
+        assert_eq!(
+            resolved["app"]["JIJI_TEST_BUILD_SECRET_TOKEN"],
+            "from-env-file"
+        );
+
+        // Without --host-env, a name absent from the .env file must fail even if present in the
+        // host environment.
+        std::env::set_var("JIJI_TEST_BUILD_SECRET_TOKEN", "from-host-env");
+        let resolved = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false);
+        std::env::remove_var("JIJI_TEST_BUILD_SECRET_TOKEN");
+        assert!(resolved.is_err());
+    }
+
+    #[test]
+    fn missing_build_secrets_report_every_service_and_name() {
+        let config = config(
+            r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+        - PIP_INDEX_PASSWORD
+    servers: [web]
+"#,
+        );
+        let plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
+
+        let error = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false)
+            .expect_err("missing reference must fail");
+
+        let message = error.to_string();
+        assert!(message.contains("services.app.build.secrets: missing NPM_TOKEN"));
+        assert!(message.contains("services.app.build.secrets: missing PIP_INDEX_PASSWORD"));
+        assert!(message.contains(".env"));
+        assert!(message.contains("--host-env"));
     }
 }

@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 
+use anyhow::Context;
 use jiji_config::{BuildValue, Config, ContainerEngine, Service};
 
 use crate::local_exec;
@@ -23,6 +26,9 @@ pub struct ResolvedBuildConfig {
     pub dockerfile: String,
     pub args: BTreeMap<String, String>,
     pub target: Option<String>,
+    /// Names only (not yet resolved to values); `build_plan::resolve_build_secrets` fills in the
+    /// actual values, kept separate from `args` since they must never read `environment.clear`.
+    pub secrets: Vec<String>,
 }
 
 /// `dockerfile:` is resolved relative to `context:` (matching Docker Compose convention), then
@@ -60,6 +66,7 @@ pub fn resolve_build_config(build: &BuildValue) -> ResolvedBuildConfig {
             context: context.clone(),
             args: BTreeMap::new(),
             target: None,
+            secrets: Vec::new(),
         },
         BuildValue::Detailed(build) => {
             let dockerfile = build.dockerfile.as_deref().unwrap_or("Dockerfile");
@@ -68,6 +75,7 @@ pub fn resolve_build_config(build: &BuildValue) -> ResolvedBuildConfig {
                 context: build.context.clone(),
                 args: build.args.clone().unwrap_or_default().into_iter().collect(),
                 target: build.target.clone(),
+                secrets: build.secrets.clone().unwrap_or_default(),
             }
         }
     }
@@ -108,13 +116,23 @@ pub fn multi_arch_requires_push(platforms: &[String], push: bool) -> Option<Stri
     })
 }
 
-fn common_build_flags(build: &ResolvedBuildConfig, no_cache: bool) -> Vec<String> {
+fn common_build_flags(
+    build: &ResolvedBuildConfig,
+    no_cache: bool,
+    secrets: &[(String, PathBuf)],
+) -> Vec<String> {
     let mut args = vec!["-f".into(), build.dockerfile.clone()];
     for (key, value) in &build.args {
         args.extend(["--build-arg".into(), format!("{key}={value}")]);
     }
     if let Some(target) = &build.target {
         args.extend(["--target".into(), target.clone()]);
+    }
+    for (name, path) in secrets {
+        args.extend([
+            "--secret".into(),
+            format!("id={name},src={}", path.display()),
+        ]);
     }
     if no_cache {
         args.push("--no-cache".into());
@@ -126,9 +144,10 @@ pub fn render_single_arch_build(
     build: &ResolvedBuildConfig,
     no_cache: bool,
     tags: &[String],
+    secrets: &[(String, PathBuf)],
 ) -> Vec<String> {
     let mut args = vec!["build".into()];
-    args.extend(common_build_flags(build, no_cache));
+    args.extend(common_build_flags(build, no_cache, secrets));
     for tag in tags {
         args.extend(["-t".into(), tag.clone()]);
     }
@@ -173,6 +192,7 @@ pub fn render_buildx_build(
     platforms: &[String],
     tags: &[String],
     builder_name: &str,
+    secrets: &[(String, PathBuf)],
 ) -> Vec<String> {
     let mut args = vec![
         "buildx".into(),
@@ -182,7 +202,7 @@ pub fn render_buildx_build(
         "--platform".into(),
         platforms.join(","),
     ];
-    args.extend(common_build_flags(build, no_cache));
+    args.extend(common_build_flags(build, no_cache, secrets));
     for tag in tags {
         args.extend(["-t".into(), tag.clone()]);
     }
@@ -207,9 +227,10 @@ pub fn render_podman_arch_build(
     no_cache: bool,
     platform: &str,
     manifest: &str,
+    secrets: &[(String, PathBuf)],
 ) -> Vec<String> {
     let mut args = vec!["build".into(), "--platform".into(), platform.into()];
-    args.extend(common_build_flags(build, no_cache));
+    args.extend(common_build_flags(build, no_cache, secrets));
     args.extend(["--manifest".into(), manifest.into(), build.context.clone()]);
     args
 }
@@ -224,8 +245,13 @@ pub fn render_manifest_push(manifest: &str, tag: &str, local_registry: bool) -> 
     args
 }
 
-async fn stream(engine: ContainerEngine, args: Vec<String>, cwd: &Path) -> anyhow::Result<()> {
-    if !local_exec::run_streaming(&engine.to_string(), &args, Some(cwd)).await? {
+async fn stream(
+    engine: ContainerEngine,
+    args: Vec<String>,
+    cwd: &Path,
+    envs: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    if !local_exec::run_streaming(&engine.to_string(), &args, Some(cwd), envs).await? {
         anyhow::bail!(
             "Local command '{} {}' failed. Fix the reported container-engine error and retry.",
             engine,
@@ -233,6 +259,47 @@ async fn stream(engine: ContainerEngine, args: Vec<String>, cwd: &Path) -> anyho
         );
     }
     Ok(())
+}
+
+/// Stages each resolved build secret to its own mode-0600 temp file (no local builder reads a
+/// secret straight from memory during `--mount=type=secret`), keyed by name for
+/// `common_build_flags`' `--secret id=<name>,src=<path>`. The returned `NamedTempFile` guards
+/// must be held alive for the whole build (buildx/podman multi-arch issue several build
+/// invocations against the same staged files) and are deleted by `Drop` when the caller's scope
+/// ends, on every exit path -- success, an engine failure, or an early bail.
+fn stage_build_secrets(
+    secrets: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<(String, tempfile::NamedTempFile)>> {
+    secrets
+        .iter()
+        .map(|(name, value)| {
+            let mut file = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o600))
+                .tempfile()
+                .with_context(|| {
+                    format!("Could not create a temp file for build secret '{name}'")
+                })?;
+            file.write_all(value.as_bytes())
+                .with_context(|| format!("Could not write build secret '{name}' to a temp file"))?;
+            file.flush()
+                .with_context(|| format!("Could not flush build secret '{name}' to a temp file"))?;
+            Ok((name.clone(), file))
+        })
+        .collect()
+}
+
+/// Classic (non-buildx) `docker build` only understands `--secret` when BuildKit is active;
+/// buildx always uses BuildKit and `podman build` supports `--secret` natively, so neither needs
+/// this override.
+fn docker_buildkit_env(
+    engine: ContainerEngine,
+    secrets_present: bool,
+) -> Vec<(&'static str, &'static str)> {
+    if engine == ContainerEngine::Docker && secrets_present {
+        vec![("DOCKER_BUILDKIT", "1")]
+    } else {
+        Vec::new()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,6 +314,7 @@ pub async fn build_and_push(
     service_name: &str,
     cwd: &Path,
     local_registry: bool,
+    secrets: &BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     if let Some(error) = multi_arch_requires_push(platforms, push) {
         anyhow::bail!(error);
@@ -256,12 +324,25 @@ pub async fn build_and_push(
             "Container engine '{engine}' was not found locally. Install it or update builder.engine."
         );
     }
+    let secret_files = stage_build_secrets(secrets)?;
+    let secret_paths: Vec<(String, PathBuf)> = secret_files
+        .iter()
+        .map(|(name, file)| (name.clone(), file.path().to_path_buf()))
+        .collect();
+    let single_arch_envs = docker_buildkit_env(engine, !secret_paths.is_empty());
+
     match (build_strategy(platforms), engine) {
         (BuildStrategy::SingleArch, _) => {
-            stream(engine, render_single_arch_build(build, no_cache, tags), cwd).await?;
+            stream(
+                engine,
+                render_single_arch_build(build, no_cache, tags, &secret_paths),
+                cwd,
+                &single_arch_envs,
+            )
+            .await?;
             if push {
                 for tag in tags {
-                    stream(engine, render_push(engine, local_registry, tag), cwd).await?;
+                    stream(engine, render_push(engine, local_registry, tag), cwd, &[]).await?;
                 }
             }
         }
@@ -279,6 +360,7 @@ pub async fn build_and_push(
                     engine,
                     render_buildx_create(&builder_name, local_registry),
                     cwd,
+                    &[],
                 )
                 .await
                 {
@@ -299,8 +381,16 @@ pub async fn build_and_push(
             }
             stream(
                 engine,
-                render_buildx_build(build, no_cache, platforms, tags, &builder_name),
+                render_buildx_build(
+                    build,
+                    no_cache,
+                    platforms,
+                    tags,
+                    &builder_name,
+                    &secret_paths,
+                ),
                 cwd,
+                &[],
             )
             .await?;
         }
@@ -309,12 +399,13 @@ pub async fn build_and_push(
             let _ =
                 local_exec::run_captured("podman", &render_manifest_rm(&manifest), None, Some(cwd))
                     .await;
-            stream(engine, render_manifest_create(&manifest), cwd).await?;
+            stream(engine, render_manifest_create(&manifest), cwd, &[]).await?;
             for platform in platforms {
                 stream(
                     engine,
-                    render_podman_arch_build(build, no_cache, platform, &manifest),
+                    render_podman_arch_build(build, no_cache, platform, &manifest, &secret_paths),
                     cwd,
+                    &[],
                 )
                 .await?;
             }
@@ -323,6 +414,7 @@ pub async fn build_and_push(
                     engine,
                     render_manifest_push(&manifest, tag, local_registry),
                     cwd,
+                    &[],
                 )
                 .await?;
             }
@@ -349,6 +441,7 @@ mod tests {
                 dockerfile: Some("Dockerfile".into()),
                 args: None,
                 target: None,
+                secrets: None,
             }))
             .dockerfile,
             "api/Dockerfile"
@@ -359,6 +452,7 @@ mod tests {
                 dockerfile: Some("docker/Dockerfile.prod".into()),
                 args: None,
                 target: None,
+                secrets: None,
             }))
             .dockerfile,
             "api/docker/Dockerfile.prod"
@@ -373,6 +467,7 @@ mod tests {
                 dockerfile: Some("/etc/jiji/Containerfile".into()),
                 args: None,
                 target: None,
+                secrets: None,
             }))
             .dockerfile,
             "/etc/jiji/Containerfile"
@@ -413,13 +508,14 @@ services:
             dockerfile: "Containerfile".into(),
             args: BTreeMap::from([("B".into(), "2".into()), ("A".into(), "1".into())]),
             target: Some("release".into()),
+            secrets: Vec::new(),
         }
     }
 
     #[test]
     fn renderers_are_stable_and_sorted() {
         assert_eq!(
-            render_single_arch_build(&build(), true, &["repo/app:v1".into()]),
+            render_single_arch_build(&build(), true, &["repo/app:v1".into()], &[]),
             [
                 "build",
                 "-f",
@@ -442,6 +538,7 @@ services:
             &["linux/arm64".into(), "linux/amd64".into()],
             &["repo/app:v1".into()],
             &buildx_builder_name("demo", false),
+            &[],
         );
         assert_eq!(args[5], "linux/arm64,linux/amd64");
         assert_eq!(args.last().unwrap(), ".");
@@ -493,6 +590,69 @@ services:
             render_push(ContainerEngine::Podman, false, "ghcr.io/acme/app:v1"),
             ["push", "ghcr.io/acme/app:v1"]
         );
+    }
+
+    #[test]
+    fn all_three_renderers_emit_secret_id_and_src() {
+        let secrets: Vec<(String, PathBuf)> = vec![
+            ("NPM_TOKEN".into(), PathBuf::from("/tmp/npm-token")),
+            ("PIP_PASS".into(), PathBuf::from("/tmp/pip-pass")),
+        ];
+
+        let single = render_single_arch_build(&build(), false, &["repo/app:v1".into()], &secrets);
+        assert!(single
+            .windows(2)
+            .any(|w| w == ["--secret", "id=NPM_TOKEN,src=/tmp/npm-token"]));
+        assert!(single
+            .windows(2)
+            .any(|w| w == ["--secret", "id=PIP_PASS,src=/tmp/pip-pass"]));
+
+        let buildx = render_buildx_build(
+            &build(),
+            false,
+            &["linux/amd64".into()],
+            &["repo/app:v1".into()],
+            "builder",
+            &secrets,
+        );
+        assert!(buildx
+            .windows(2)
+            .any(|w| w == ["--secret", "id=NPM_TOKEN,src=/tmp/npm-token"]));
+
+        let podman = render_podman_arch_build(&build(), false, "linux/amd64", "manifest", &secrets);
+        assert!(podman
+            .windows(2)
+            .any(|w| w == ["--secret", "id=NPM_TOKEN,src=/tmp/npm-token"]));
+    }
+
+    #[test]
+    fn no_secrets_means_no_secret_flags() {
+        let args = render_single_arch_build(&build(), false, &["repo/app:v1".into()], &[]);
+        assert!(!args.contains(&"--secret".to_string()));
+    }
+
+    #[test]
+    fn docker_buildkit_env_is_only_set_for_docker_single_arch_with_secrets() {
+        assert_eq!(
+            docker_buildkit_env(ContainerEngine::Docker, true),
+            vec![("DOCKER_BUILDKIT", "1")]
+        );
+        assert!(docker_buildkit_env(ContainerEngine::Docker, false).is_empty());
+        assert!(docker_buildkit_env(ContainerEngine::Podman, true).is_empty());
+        assert!(docker_buildkit_env(ContainerEngine::Podman, false).is_empty());
+    }
+
+    #[test]
+    fn stage_build_secrets_writes_mode_0600_files_with_the_secret_value() {
+        let secrets = BTreeMap::from([("NPM_TOKEN".to_string(), "top-secret-value".to_string())]);
+        let staged = stage_build_secrets(&secrets).expect("stage");
+        assert_eq!(staged.len(), 1);
+        let (name, file) = &staged[0];
+        assert_eq!(name, "NPM_TOKEN");
+        let content = std::fs::read_to_string(file.path()).expect("read staged secret");
+        assert_eq!(content, "top-secret-value");
+        let mode = std::fs::metadata(file.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

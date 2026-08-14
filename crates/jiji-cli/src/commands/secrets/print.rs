@@ -277,6 +277,13 @@ fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<Secret
                     true,
                 );
             }
+            for secret in build.secrets.iter().flatten() {
+                refs.push(SecretRef {
+                    name: secret.clone(),
+                    source: format!("{prefix}.build.secrets"),
+                    runtime_resolved: true,
+                });
+            }
         }
 
         if let Some(command) = &service.command {
@@ -524,6 +531,7 @@ mod tests {
                     dockerfile: None,
                     args: Some(args),
                     target: None,
+                    secrets: None,
                 })),
                 ..default_service()
             },
@@ -532,6 +540,29 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, "DB_PASSWORD_SECRET");
         assert_eq!(refs[0].source, "services.web.build.args.DB_PASSWORD");
+        assert!(refs[0].runtime_resolved);
+    }
+
+    #[test]
+    fn build_secrets_are_scanned_as_runtime_resolved_references() {
+        let mut config = base_config();
+        config.services.insert(
+            "web".to_string(),
+            Service {
+                build: Some(BuildValue::Detailed(BuildConfig {
+                    context: ".".to_string(),
+                    dockerfile: None,
+                    args: None,
+                    target: None,
+                    secrets: Some(vec!["NPM_TOKEN".to_string()]),
+                })),
+                ..default_service()
+            },
+        );
+        let refs = collect_secret_refs(&config, &[]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "NPM_TOKEN");
+        assert_eq!(refs[0].source, "services.web.build.secrets");
         assert!(refs[0].runtime_resolved);
     }
 

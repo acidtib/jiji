@@ -67,6 +67,8 @@ pub async fn run(
     version_tag::validate_or_bail(&version)?;
     let mut plan = build_plan::compute_plan(&config, &config.project, &services, &version)?;
     build_plan::resolve_build_arg_references(&config, &mut plan, &loaded_env, host_env)?;
+    let resolved_secrets =
+        build_plan::resolve_build_secrets(&config, &plan, &loaded_env, host_env)?;
     Ui::say(&format!("Executor: {executor_identity}"), 1);
     Ui::say(&build_plan::render_plan_summary(&plan), 1);
 
@@ -172,6 +174,7 @@ pub async fn run(
                 &config.project,
                 &project_root,
                 config.builder.registry.is_local(),
+                &resolved_secrets[&entry.service_name],
             )
             .await
             .with_context(|| format!("Build failed for service '{}'", entry.service_name));

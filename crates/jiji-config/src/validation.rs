@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use crate::remote_builder::parse_remote_builder_uri;
-use crate::schema::{CommandValue, Config, Service, SshConfigFiles, SslValue};
+use crate::schema::{BuildValue, CommandValue, Config, Service, SshConfigFiles, SslValue};
 
 const MAX_SERVICES: usize = 500;
 const MAX_REPLICAS: u32 = 2_000;
@@ -239,6 +240,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
             });
         }
         validate_service_crons(name, service, &mut errors);
+        validate_service_build_secrets(name, service, &mut errors);
         total_crons = total_crons.saturating_add(service.crons.len());
     }
     if total_crons > MAX_CRONS_PER_PROJECT {
@@ -321,6 +323,55 @@ fn validate_builder(config: &Config, errors: &mut Vec<ValidationError>) {
             message: "Registry credentials require `builder.registry.server`; add the remote registry server or remove `username` and `password` to use Jiji's local registry".to_string(),
             code: "REGISTRY_CREDENTIALS_REQUIRE_SERVER",
         });
+    }
+}
+
+/// Mirrors `env_resolution::is_bare_all_caps_name` in `jiji-cli`, duplicated here rather than
+/// imported: the dependency graph only runs `jiji-cli` -> `jiji-config`, never the other way, so
+/// `jiji-config` cannot call into `jiji-cli`. `[A-Z0-9_]`-only already excludes both `,` and `=`
+/// as a side effect, so no separate "reject these characters" rule is needed alongside it.
+fn is_bare_all_caps_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// `build.secrets` names double as both the `.env`/host-env lookup key and the `--secret id=`
+/// value passed to the container engine, so they're held to the same ALL_CAPS shape
+/// `environment.secrets` already requires, with no duplicates within one service.
+fn validate_service_build_secrets(
+    service_name: &str,
+    service: &Service,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(BuildValue::Detailed(build)) = &service.build else {
+        return;
+    };
+    let Some(secrets) = &build.secrets else {
+        return;
+    };
+    let path = format!("services.{service_name}.build.secrets");
+    let mut seen = HashSet::new();
+    for name in secrets {
+        if !is_bare_all_caps_name(name) {
+            errors.push(ValidationError {
+                path: path.clone(),
+                message: format!(
+                    "Service '{service_name}' build secret '{name}' must be an ALL_CAPS name (letters, digits, underscore, starting with a letter), matching environment.secrets' convention"
+                ),
+                code: "BUILD_SECRET_NAME_INVALID",
+            });
+            continue;
+        }
+        if !seen.insert(name.as_str()) {
+            errors.push(ValidationError {
+                path: path.clone(),
+                message: format!(
+                    "Service '{service_name}' build secret '{name}' is listed more than once in build.secrets"
+                ),
+                code: "BUILD_SECRET_DUPLICATE",
+            });
+        }
     }
 }
 

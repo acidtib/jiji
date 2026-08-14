@@ -82,14 +82,18 @@ pub async fn run_captured_with_timeout(
     })
 }
 
+/// `envs` is added on top of the inherited process environment (never clears it), e.g. to force
+/// `DOCKER_BUILDKIT=1` for a single call without affecting anything else this process runs.
 pub async fn run_streaming(
     program: &str,
     args: &[String],
     cwd: Option<&Path>,
+    envs: &[(&str, &str)],
 ) -> anyhow::Result<bool> {
     let mut command = Command::new(program);
     command
         .args(args)
+        .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

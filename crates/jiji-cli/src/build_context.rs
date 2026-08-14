@@ -245,6 +245,7 @@ mod tests {
             dockerfile: dockerfile.to_string(),
             args: BTreeMap::new(),
             target: None,
+            secrets: Vec::new(),
         }
     }
 
@@ -296,6 +297,7 @@ mod tests {
                 dockerfile: Some("Dockerfile".into()),
                 args: None,
                 target: None,
+                secrets: None,
             },
         ));
         assert_eq!(build.dockerfile, "api/Dockerfile");

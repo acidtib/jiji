@@ -3,6 +3,7 @@
 //! staging root, and everything needed to stage a context and stream a build over it). Exactly
 //! one is selected per invocation from `build_plan::select_executor`'s `ExecutorTarget`.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use jiji_config::{ContainerEngine, Registry};
@@ -100,6 +101,7 @@ impl BuildExecutor {
         project: &str,
         project_root: &Path,
         local_registry: bool,
+        secrets: &BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
         let tags = [entry.version_ref.clone(), entry.latest_ref.clone()];
         match self {
@@ -115,6 +117,7 @@ impl BuildExecutor {
                     &entry.service_name,
                     project_root,
                     local_registry,
+                    secrets,
                 )
                 .await
             }
@@ -128,6 +131,7 @@ impl BuildExecutor {
                         remote_build::DEFAULT_MAX_CONTEXT_UPLOAD_BYTES,
                     )
                     .await?;
+                let staged_secrets = remote.stage_secrets(&entry.service_name, secrets).await?;
                 remote
                     .build_and_push(
                         engine,
@@ -139,6 +143,7 @@ impl BuildExecutor {
                         project,
                         &entry.service_name,
                         local_registry,
+                        &staged_secrets,
                     )
                     .await
             }

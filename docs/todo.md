@@ -16,9 +16,6 @@ complete:
   path described below.
 - Cron jobs do not retry, transfer ownership during an outage, or run once per
   replica.
-- Audit coverage is not yet complete for every state-changing command. The
-  current trail covers deploys, service lifecycle operations, scaling, pruning,
-  server setup and teardown, and manual lock changes.
 
 When a release implements one of these items, update the website and this file
 in the same change.
@@ -29,27 +26,6 @@ Sources:
 - `crates/jiji-cli/src/container_runtime.rs`
 - `crates/jiji-cli/src/commands/service/prune.rs`
 - `crates/jiji-agent/src/scheduler.rs`
-- `crates/jiji-cli/src/audit.rs`
-
-### Complete audit coverage
-
-The CLI describes the audit trail as a record of every state-changing command,
-but several commands do not write an audit entry yet. These include network,
-registry, and proxy mutations.
-
-- List every command that can change local or remote state.
-- Add a success or failure entry for each command.
-- Keep audit writes best-effort so an audit failure does not hide the command
-  result.
-- Use stable action names and include the affected lock scope when applicable.
-- Add tests that compare the state-changing command surface with audit coverage.
-
-Sources:
-
-- `crates/jiji-cli/src/audit.rs`
-- `crates/jiji-cli/src/commands/network/`
-- `crates/jiji-cli/src/commands/registry/`
-- `crates/jiji-cli/src/commands/proxy/`
 
 ### Implement external secret adapters
 
@@ -76,29 +52,6 @@ Sources:
 - `crates/jiji-cli/src/env_resolution.rs`
 - `crates/jiji-cli/src/commands/secrets/print.rs`
 - `crates/jiji-cli/src/registry.rs`
-
-### Add mounted build secrets
-
-Jiji resolves build arguments, but build arguments are not safe for secret
-values. Docker and Podman support temporary secret mounts for build steps.
-
-- Add `services.<name>.build.secrets` to the configuration schema.
-- Resolve each secret from the selected `.env` file or the host environment.
-- Pass each value with the engine's `--secret` option.
-- Keep secret values out of command arguments, logs, errors, and image metadata.
-- Support local builders, remote builders, and multi-architecture builds.
-- Remove staged secret files after success, failure, cancellation, and timeout.
-- Document the required Dockerfile `RUN --mount=type=secret` syntax.
-- Add tests for Docker, Podman, missing values, redaction, and cleanup.
-
-Sources:
-
-- `crates/jiji-config/src/schema.rs`
-- `crates/jiji-config/src/jiji.yml`
-- `crates/jiji-cli/src/build_engine.rs`
-- `crates/jiji-cli/src/build_executor.rs`
-- `crates/jiji-cli/src/remote_build.rs`
-- `crates/jiji-cli/src/env_resolution.rs`
 
 ### Implement or reject `network_mode: host` and `network_mode: none`
 

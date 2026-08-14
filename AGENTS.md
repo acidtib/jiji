@@ -588,6 +588,12 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   multi-arch publishing, remote registries, a loopback-only local registry
   exposed via temporary reverse SSH tunnels. `builder.remote` runs the build
   on a dedicated remote host instead of the local engine.
+  `services.<name>.build.secrets` mounts ALL_CAPS names resolved from
+  `.env`/host-env into the build via `--secret id=<name>,src=<path>`
+  instead of `--build-arg` (never from `environment.clear`), staged to a
+  mode-0600 temp file locally or piped over SSH stdin to the builder
+  remotely; `DOCKER_BUILDKIT=1` is set automatically for classic
+  single-arch `docker build` when secrets are configured.
 - `jiji registry login` / `logout`: credentials on the local machine and/or
   `-H`-selected servers, password over stdin only.
 - `jiji registry teardown`: removes the exact local `jiji-registry`
@@ -604,11 +610,12 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   execution.
 - `jiji secrets print`: non-fatal `.env`/host-env resolution status
   (`[SET]`/`[MISSING]`, `--show-values`, `-S` filter).
-  Server host references, build arguments, `environment.secrets`,
-  `builder.registry.password`, and proxy SSL certificate references resolve
-  from `.env`/host-env. Build arguments first read the merged service
-  `environment.clear` map. Other secret-shaped fields (SSH key passphrases and
-  `${VAR}` interpolation) are visibility-only.
+  Server host references, build arguments, `build.secrets`,
+  `environment.secrets`, `builder.registry.password`, and proxy SSL
+  certificate references resolve from `.env`/host-env. Build arguments
+  first read the merged service `environment.clear` map; `build.secrets`
+  deliberately never does. Other secret-shaped fields (SSH key passphrases
+  and `${VAR}` interpolation) are visibility-only.
 - `jiji proxy restart` / `jiji proxy logs`: unconditionally re-pull and
   recreate the shared per-host jiji-proxy container, or read its logs
   (`--follow` requires exactly one host).
@@ -632,11 +639,16 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   / `--scope host-runtime|proxy` targets a specific stuck lock.
 - `jiji audit`: a per-project, per-server, append-only JSONL trail at
   `.jiji/{project}/audit.log`. Current writers are deploy, service lifecycle,
-  scale, prune, server setup/teardown, and manual lock changes. Writes are
-  best-effort and never mask or block the command's own outcome.
-  `-n/--lines`, `-g/--grep`, `--status`, `--json`, `-f/--follow`, `--stats`
-  (with `--since`, e.g. `30m`/`12h`/`7d`). `-S`/`--services` is rejected:
-  the trail is host-scoped.
+  scale, prune, server setup/teardown/upgrade, network setup/compact/restore,
+  registry login/logout, proxy restart, manual lock changes, `server exec`,
+  `service cron run`, and `jiji build` (the `builder.remote` path only -- a
+  local build opens no SSH session, so there is no host to write an entry
+  through). `registry teardown`, local registry login/logout, and `network
+  recover` are local-only operations with the same no-host reasoning, and are
+  unaudited by design, not by gap. Writes are best-effort and never mask or
+  block the command's own outcome. `-n/--lines`, `-g/--grep`, `--status`,
+  `--json`, `-f/--follow`, `--stats` (with `--since`, e.g. `30m`/`12h`/`7d`).
+  `-S`/`--services` is rejected: the trail is host-scoped.
 
 ## Known Gaps
 
@@ -651,8 +663,6 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   either value, so a service configured with them still gets normal bridge
   networking, silently. Only `"bridge"` (default) and `"service:<name>"`
   (see "Container Namespace Sharing" above) actually change behavior today.
-- Audit coverage is incomplete. Network, registry, and proxy mutations do not
-  write audit entries. See `docs/todo.md` for the coverage plan.
 
 ## Testing
 

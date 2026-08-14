@@ -622,6 +622,88 @@ fn cleanup_command(staging_root: &str) -> String {
     format!("rm -rf {staging_root}")
 }
 
+fn secret_mkdir_command(staging_root: &str, service: &str) -> String {
+    format!("mkdir -m 0700 -p {staging_root}/secrets/{service}")
+}
+
+fn secret_stage_command(staging_root: &str, service: &str, name: &str) -> String {
+    format!("install -D -m 0600 /dev/stdin {staging_root}/secrets/{service}/{name}")
+}
+
+fn build_command_with_secret(
+    staging_root: &str,
+    tags: &[&str],
+    service: &str,
+    secret_name: &str,
+) -> String {
+    let remote_context = format!("{staging_root}/context/{service}");
+    let secret_path = format!("{staging_root}/secrets/{service}/{secret_name}");
+    let mut args = vec![
+        "build".to_string(),
+        "-f".to_string(),
+        format!("{remote_context}/Dockerfile"),
+        "--secret".to_string(),
+        format!("id={secret_name},src={secret_path}"),
+    ];
+    for tag in tags {
+        args.push("-t".to_string());
+        args.push(tag.to_string());
+    }
+    args.push(remote_context);
+    remote_command(
+        "docker",
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+}
+
+/// Mirrors `write_project`, adding a `.env` file and `services.web.build.secrets` so the
+/// staging/mount path can be exercised end to end over the real SSH server.
+fn write_project_with_build_secret(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").expect("write Dockerfile");
+    std::fs::write(dir.join(".env"), "NPM_TOKEN=top-secret-value\n").expect("write .env");
+
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: testproject
+builder:
+  engine: docker
+  remote: ssh://tester@{ip}:{port}
+  registry:
+    type: remote
+    server: registry.example.com
+servers:
+  app:
+    host: 10.0.0.1
+services:
+  web:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+    servers: [app]
+ssh:
+  user: tester
+  keys_only: true
+  keys: [{key_path}]
+"#,
+            ip = addr.ip(),
+            port = addr.port(),
+            key_path = key_path.display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
 /// Mirrors `registry::render_login_command` exactly (private to `jiji-cli`, unreachable here).
 fn login_command(server: &str, username: &str) -> String {
     format!(
@@ -873,6 +955,116 @@ async fn remote_build_failure_writes_a_failed_audit_entry() {
     let audit_line = String::from_utf8_lossy(audit_stdin);
     assert!(audit_line.contains("\"action\":\"build\""), "{audit_line}");
     assert!(audit_line.contains("\"status\":\"failed\""), "{audit_line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_build_stages_and_mounts_build_secrets() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(staging_root_command(), staging_root_response("abc123"));
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_project_with_build_secret(dir.path(), harness.addr, &key_path);
+
+    let output = run_build(&config_path, &["--version", "v1", "--no-push"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let staging_root = ".jiji/testproject/builds/run.abc123";
+    let received = harness.received.lock().unwrap().clone();
+    let position = |command: &str| {
+        received
+            .iter()
+            .position(|c| c == command)
+            .unwrap_or_else(|| panic!("expected '{command}' in {received:?}"))
+    };
+
+    let mktemp = position(&staging_root_command());
+    let mkdir_secrets = position(&secret_mkdir_command(staging_root, "web"));
+    let stage_secret = position(&secret_stage_command(staging_root, "web", "NPM_TOKEN"));
+    let build = position(&build_command_with_secret(
+        staging_root,
+        &[TAG_V1, TAG_LATEST],
+        "web",
+        "NPM_TOKEN",
+    ));
+    let cleanup = position(&cleanup_command(staging_root));
+
+    assert!(mktemp < mkdir_secrets, "{received:?}");
+    assert!(mkdir_secrets < stage_secret, "{received:?}");
+    assert!(stage_secret < build, "{received:?}");
+    assert!(build < cleanup, "{received:?}");
+
+    assert!(
+        received
+            .iter()
+            .all(|command| !command.contains("top-secret-value")),
+        "the secret value must never appear in a rendered command: {received:?}"
+    );
+
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let (_, secret_stdin) = received_stdin
+        .iter()
+        .find(|(command, _)| command == &secret_stage_command(staging_root, "web", "NPM_TOKEN"))
+        .unwrap_or_else(|| panic!("expected staged secret stdin among {received_stdin:?}"));
+    assert_eq!(secret_stdin, b"top-secret-value");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_remote_build_secret_is_an_actionable_error_and_never_connects() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let harness = spawn_test_server(client_key.public_key().clone(), HashMap::new()).await;
+    let jiji_dir = dir.path().join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    std::fs::write(dir.path().join("Dockerfile"), "FROM scratch\n").expect("write Dockerfile");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: testproject
+builder:
+  engine: docker
+  remote: ssh://tester@{ip}:{port}
+  registry:
+    type: remote
+    server: registry.example.com
+servers:
+  app:
+    host: 10.0.0.1
+services:
+  web:
+    build:
+      context: .
+      secrets:
+        - MISSING_TOKEN
+    servers: [app]
+ssh:
+  user: tester
+  keys_only: true
+  keys: [{key_path}]
+"#,
+            ip = harness.addr.ip(),
+            port = harness.addr.port(),
+            key_path = key_path.display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+
+    let output = run_build(&config_path, &["--version", "v1", "--no-push"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("services.web.build.secrets: missing MISSING_TOKEN"),
+        "stderr: {stderr}"
+    );
+
+    assert!(
+        harness.received.lock().unwrap().is_empty(),
+        "the builder must never be contacted when a required build secret is missing"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

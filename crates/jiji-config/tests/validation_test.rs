@@ -1382,3 +1382,101 @@ services:
         .iter()
         .any(|e| e.code == "TOO_MANY_CRONS_PER_SERVICE"));
 }
+
+#[test]
+fn build_secret_names_must_be_all_caps() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - npm_token
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "BUILD_SECRET_NAME_INVALID" && e.path == "services.app.build.secrets"));
+}
+
+#[test]
+fn build_secret_name_with_comma_or_equals_is_rejected_as_invalid_name() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - "NPM_TOKEN,EXTRA"
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "BUILD_SECRET_NAME_INVALID"));
+}
+
+#[test]
+fn duplicate_build_secret_name_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+        - NPM_TOKEN
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.code == "BUILD_SECRET_DUPLICATE"));
+}
+
+#[test]
+fn valid_build_secrets_validate_cleanly() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+        - PIP_INDEX_PASSWORD
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "{:?}", result.errors);
+}

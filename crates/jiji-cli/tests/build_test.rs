@@ -357,3 +357,158 @@ exit 0
         "the build must still proceed after the race resolves: {logged}"
     );
 }
+
+/// `project_root_from_config_path` assumes `<project_root>/.jiji/<file>.yml`, unlike this file's
+/// other tests (which place `deploy.yml` directly under the tempdir and never need `.env` to
+/// resolve) -- a build secret's whole point is to be read from `.env`, so this test needs the
+/// real project layout for that lookup to find anything.
+fn write_build_secret_project(dir: &std::path::Path) -> std::path::PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    std::fs::write(dir.join(".env"), "NPM_TOKEN=top-secret-value\n").expect("write .env");
+    let config = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config,
+        r#"
+project: demo
+builder: { engine: docker }
+servers:
+  app: { host: 127.0.0.1 }
+services:
+  web:
+    build:
+      context: .
+      secrets:
+        - NPM_TOKEN
+    servers: [app]
+"#,
+    )
+    .expect("write config");
+    config
+}
+
+/// Logs `DOCKER_BUILDKIT=<value> <argv>` (instead of just `<argv>`) so the build-secrets test
+/// below can additionally assert on the `DOCKER_BUILDKIT` override, and appends the mode of every
+/// `--secret ...,src=<path>` argument it finds, so this doubles as the "temp file was mode 0600"
+/// check without a second process inspecting it mid-build.
+fn write_fake_docker_with_env_and_secret_mode(dir: &std::path::Path) -> std::path::PathBuf {
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin).expect("create bin");
+    let docker = bin.join("docker");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf 'DOCKER_BUILDKIT=%s %s\n' "$DOCKER_BUILDKIT" "$*" >> "$JIJI_TEST_LOG"
+for arg in "$@"; do
+  case "$arg" in
+    id=*,src=*)
+      path="${arg#*,src=}"
+      mode=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path")
+      printf 'secret-mode %s %s\n' "$path" "$mode" >> "$JIJI_TEST_LOG"
+      ;;
+  esac
+done
+exit 0
+"#,
+    )
+    .expect("write docker");
+    let mut permissions = std::fs::metadata(&docker).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&docker, permissions).expect("chmod");
+    bin
+}
+
+#[test]
+fn single_arch_build_with_secrets_mounts_a_mode_0600_temp_file_and_sets_buildkit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_build_secret_project(dir.path());
+    let bin = write_fake_docker_with_env_and_secret_mode(dir.path());
+    let log = dir.path().join("log.txt");
+    std::fs::write(&log, "").expect("create log");
+
+    let output = run_build(&config, &bin, &log, &["--version", "v1", "--no-push"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let logged = std::fs::read_to_string(&log).expect("read log");
+    let build_line = logged
+        .lines()
+        .find(|line| line.contains(" build "))
+        .expect("expected a logged `docker build` invocation");
+    assert!(
+        build_line.starts_with("DOCKER_BUILDKIT=1 "),
+        "classic docker build needs BuildKit for --secret: {build_line}"
+    );
+    assert!(
+        !build_line.contains("top-secret-value"),
+        "the secret value must never appear in the rendered command: {build_line}"
+    );
+
+    let secret_arg = build_line
+        .split_whitespace()
+        .find(|arg| arg.starts_with("id=NPM_TOKEN,src="))
+        .unwrap_or_else(|| panic!("expected --secret id=NPM_TOKEN,src=<path>: {build_line}"));
+    let secret_path = secret_arg
+        .strip_prefix("id=NPM_TOKEN,src=")
+        .expect("src path");
+
+    let mode_line = logged
+        .lines()
+        .find(|line| line.starts_with("secret-mode "))
+        .unwrap_or_else(|| panic!("expected a logged secret-mode line: {logged}"));
+    assert!(
+        mode_line.ends_with(" 600"),
+        "staged secret file must be mode 0600: {mode_line}"
+    );
+
+    assert!(
+        !std::path::Path::new(secret_path).exists(),
+        "the staged secret temp file must be cleaned up once the build finishes: {secret_path}"
+    );
+}
+
+#[test]
+fn missing_build_secret_is_an_actionable_error_and_never_starts_the_engine() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jiji_dir = dir.path().join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config,
+        r#"
+project: demo
+builder: { engine: docker }
+servers:
+  app: { host: 127.0.0.1 }
+services:
+  web:
+    build:
+      context: .
+      secrets:
+        - MISSING_TOKEN
+    servers: [app]
+"#,
+    )
+    .expect("write config");
+    let bin = write_fake_docker(dir.path());
+    let log = dir.path().join("log.txt");
+    std::fs::write(&log, "").expect("create log");
+
+    let output = run_build(&config, &bin, &log, &["--version", "v1", "--no-push"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("services.web.build.secrets: missing MISSING_TOKEN"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("--host-env"), "stderr: {stderr}");
+
+    let logged = std::fs::read_to_string(&log).expect("read log");
+    assert!(
+        logged.is_empty(),
+        "the engine must never run when a required build secret is missing: {logged}"
+    );
+}

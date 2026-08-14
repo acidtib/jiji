@@ -282,6 +282,8 @@ pub async fn run(
             &loaded_env,
             host_env,
         )?;
+        let resolved_secrets =
+            build_plan::resolve_build_secrets(&config, &build_plan, &loaded_env, host_env)?;
         for entry in &build_plan {
             if let Some(error) = build_engine::multi_arch_requires_push(&entry.platforms, true) {
                 anyhow::bail!("Service '{}': {error}", entry.service_name);
@@ -368,6 +370,7 @@ pub async fn run(
                     &config.project,
                     &project_root,
                     config.builder.registry.is_local(),
+                    &resolved_secrets[&entry.service_name],
                 )
                 .await
                 .with_context(|| format!("Build failed for service '{}'", entry.service_name));
