@@ -2,6 +2,7 @@ use jiji_config::validate_config;
 use jiji_tui::Ui;
 
 use super::shared::{self, TargetKind, TargetOutcome};
+use crate::audit::{self, AuditStatus};
 use crate::{env_resolution, registry};
 
 #[allow(clippy::too_many_arguments)]
@@ -106,15 +107,34 @@ pub async fn run(
             jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Logging in".to_string());
         let handle = progress.handle();
         for (name, session) in &sessions {
+            let host_started = std::time::Instant::now();
             handle.set_status(name, "logging in");
-            match registry::login_remote(
+            let result = registry::login_remote(
                 session,
                 config.builder.engine,
                 &config.builder.registry,
                 &password,
             )
-            .await
-            {
+            .await;
+            let (audit_status, audit_message) = match &result {
+                Ok(()) => (
+                    AuditStatus::Success,
+                    format!("authenticated to {}", credentials.server),
+                ),
+                Err(error) => (AuditStatus::Failed, error.to_string()),
+            };
+            audit::record(
+                session,
+                &config.project,
+                "registry_login",
+                audit_status,
+                audit_message,
+                None,
+                None,
+                Some(host_started.elapsed()),
+            )
+            .await;
+            match result {
                 Ok(()) => {
                     handle.mark_success(name, "authenticated");
                     outcomes.push(TargetOutcome::Success(TargetKind::Remote(name.clone())))

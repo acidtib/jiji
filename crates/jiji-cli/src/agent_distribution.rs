@@ -51,17 +51,107 @@ pub enum AgentBinarySource {
     Managed(ManagedAgentDownload),
 }
 
+/// A locally discovered `jiji-agent` binary's version, relative to
+/// `version_requirements::AGENT_BUILD_VERSION`. `Unknown` covers both an unparseable version
+/// string and a binary old enough to predate the `version` subcommand entirely (its invocation
+/// fails outright) -- neither can be proven current, so both are treated the same as `Outdated`
+/// by every caller.
+enum LocalAgentVersion {
+    Current,
+    Outdated(String),
+    Unknown,
+}
+
+/// Runs `{path} version` locally (a fast, trusted, non-networked call -- no different from
+/// shelling out to a local `docker`/`podman`) and compares the result against
+/// `AGENT_BUILD_VERSION`. This exists because `jiji update` only ever replaces the `jiji` binary
+/// on disk, never the `jiji-agent` sitting beside it (see that command's own docs); without this
+/// check, a `jiji-agent` left over from before an update silently gets uploaded again as-is,
+/// `ensure_agent`'s hash comparison correctly finds it unchanged, and the run reports the host as
+/// "already current" even though it never reached the version this CLI actually requires
+/// (confirmed live).
+async fn local_agent_binary_version(path: &Path) -> LocalAgentVersion {
+    let Ok(result) = crate::local_exec::run_captured(
+        &path.display().to_string(),
+        &["version".to_string()],
+        None,
+        None,
+    )
+    .await
+    else {
+        return LocalAgentVersion::Unknown;
+    };
+    let found = result.stdout.trim().to_string();
+    if !result.success || found.is_empty() {
+        return LocalAgentVersion::Unknown;
+    }
+    match (
+        crate::engine::parse_version(&found),
+        crate::engine::parse_version(crate::version_requirements::AGENT_BUILD_VERSION),
+    ) {
+        (Some(found_semver), Some(required_semver)) if found_semver >= required_semver => {
+            LocalAgentVersion::Current
+        }
+        _ => LocalAgentVersion::Outdated(found),
+    }
+}
+
 /// Shared by `server setup` and `server upgrade`: resolves where the jiji-agent binary to
 /// install comes from (local discovery, explicit env override, or the GitHub release download)
 /// and renders the host-side install script for the managed case. `bail_context` and
 /// `download_notice` carry each command's own wording for the two user-facing strings.
-pub fn resolve_agent_binary_source(
+pub async fn resolve_agent_binary_source(
     project: &str,
     bail_context: &str,
     download_notice: impl FnOnce(&str) -> String,
 ) -> anyhow::Result<(AgentBinarySource, Option<String>)> {
     let binary_source = match crate::agent_install::find_local_agent_binary() {
-        crate::agent_install::LocalAgentBinary::Found(path) => AgentBinarySource::Local(path),
+        crate::agent_install::LocalAgentBinary::Found { path, explicit } => {
+            match local_agent_binary_version(&path).await {
+                LocalAgentVersion::Current => AgentBinarySource::Local(path),
+                LocalAgentVersion::Outdated(found) if explicit => {
+                    anyhow::bail!(
+                        "{bail_context}: JIJI_AGENT_BINARY={} is v{found}, but this jiji requires \
+                         at least v{}. Rebuild it (`mise install`) or point JIJI_AGENT_BINARY at a \
+                         matching build.",
+                        path.display(),
+                        crate::version_requirements::AGENT_BUILD_VERSION
+                    );
+                }
+                LocalAgentVersion::Unknown if explicit => {
+                    anyhow::bail!(
+                        "{bail_context}: JIJI_AGENT_BINARY={} did not report its own version (too \
+                         old, or not a jiji-agent binary at all). Rebuild it (`mise install`) or \
+                         point JIJI_AGENT_BINARY at a matching build.",
+                        path.display()
+                    );
+                }
+                LocalAgentVersion::Outdated(found) => {
+                    let download = managed_download_config();
+                    jiji_tui::Ui::warn(&format!(
+                        "Local jiji-agent binary at {} is v{found}, below the v{} this jiji \
+                         requires; downloading jiji-agent v{} from the release instead. Run \
+                         `mise install` to rebuild it locally and skip this download next time.",
+                        path.display(),
+                        crate::version_requirements::AGENT_BUILD_VERSION,
+                        download.version,
+                    ));
+                    AgentBinarySource::Managed(download)
+                }
+                LocalAgentVersion::Unknown => {
+                    let download = managed_download_config();
+                    jiji_tui::Ui::warn(&format!(
+                        "Local jiji-agent binary at {} did not report its own version (too old, \
+                         or not a jiji-agent binary at all); downloading jiji-agent v{} from the \
+                         release instead. Run `mise install` to rebuild it locally and skip this \
+                         download next time.",
+                        path.display(),
+                        download.version,
+                    ));
+                    AgentBinarySource::Managed(download)
+                }
+            }
+        }
         crate::agent_install::LocalAgentBinary::ExplicitOverrideInvalid(message) => {
             anyhow::bail!("{bail_context}: {message}");
         }

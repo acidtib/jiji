@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -218,6 +219,27 @@ fn add_network_setup_responses(responses: &mut HashMap<String, CannedResponse>) 
         format!("cat {dir}/public.key"),
         success("test-wireguard-public-key\n"),
     );
+}
+
+/// A `JIJI_AGENT_BINARY` override candidate that actually runs: `resolve_agent_binary_source`
+/// now execs `{path} version` locally before trusting a discovered binary (see
+/// `agent_distribution.rs`), so a placeholder that isn't a real executable is rejected as
+/// unparseable rather than silently uploaded, unlike before that check existed.
+fn write_fake_local_agent_binary(dir: &std::path::Path, version: &str) -> std::path::PathBuf {
+    let path = dir.join("fake-jiji-agent");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = version ]; then printf '%s\\n' '{version}'; fi\nexit 0\n"
+        ),
+    )
+    .expect("write fake agent binary");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("read fake agent binary metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).expect("chmod fake agent binary");
+    path
 }
 
 fn write_config(
@@ -471,8 +493,7 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
     .expect("write key file");
     let config_path = write_config(dir.path(), addr, &key_path);
 
-    let binary_path = dir.path().join("fake-jiji-agent");
-    std::fs::write(&binary_path, b"fake agent bytes").expect("write fake agent binary");
+    let binary_path = write_fake_local_agent_binary(dir.path(), env!("JIJI_AGENT_BUILD_VERSION"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
         .arg("server")
@@ -649,6 +670,138 @@ async fn invalid_explicit_agent_binary_override_fails_setup() {
     assert!(
         !commands.iter().any(|c| c.contains("/etc/jiji/agent/")),
         "no agent commands should be sent when an explicit override is invalid: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outdated_explicit_agent_binary_override_fails_setup() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    // Reproduces the live bug: `jiji update` replaces only the `jiji` binary, never the
+    // `jiji-agent` beside it, so a real (but stale) local agent binary can end up pointed at by
+    // `JIJI_AGENT_BINARY`. Before `resolve_agent_binary_source` execed it to check, this binary
+    // was uploaded as-is and the run reported the host as "already current" even though it never
+    // reached `AGENT_BUILD_VERSION`. An explicit override must fail loudly instead of silently
+    // using a binary the operator didn't realize was outdated.
+    let binary_path = write_fake_local_agent_binary(dir.path(), "0.0.1");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env("JIJI_AGENT_BINARY", &binary_path)
+        .output()
+        .expect("run jiji server setup");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is v0.0.1") && stderr.contains("requires at least v"),
+        "stderr: {stderr}"
+    );
+
+    let commands = received.lock().unwrap().clone();
+    assert!(
+        !commands.iter().any(|c| c.contains("/etc/jiji/agent/")),
+        "no agent commands should be sent when the explicit override is outdated: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outdated_auto_discovered_agent_binary_falls_back_to_download() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let mut responses = HashMap::new();
+    responses.insert("which docker".to_string(), success(""));
+    responses.insert(
+        "docker --version".to_string(),
+        success("Docker version 99.0.0, build abcdef\n"),
+    );
+    add_network_setup_responses(&mut responses);
+
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    // Same isolated-directory technique as `missing_agent_binary_falls_back_to_remote_release_
+    // download`, but this time a real, outdated `jiji-agent` sits next to `jiji` -- the sibling-
+    // discovery path (no `JIJI_AGENT_BINARY` override) must fall back to downloading the correct
+    // release rather than silently uploading a binary that doesn't meet `AGENT_BUILD_VERSION`,
+    // since auto-discovery is only ever an optimization over the download, never a hard
+    // requirement the way an explicit override is.
+    let isolated_bin_dir = dir.path().join("isolated-bin");
+    std::fs::create_dir(&isolated_bin_dir).expect("create isolated bin dir");
+    let isolated_jiji = isolated_bin_dir.join("jiji");
+    std::fs::copy(env!("CARGO_BIN_EXE_jiji"), &isolated_jiji).expect("copy jiji binary");
+    write_fake_local_agent_binary(&isolated_bin_dir, "0.0.1");
+    std::fs::rename(
+        isolated_bin_dir.join("fake-jiji-agent"),
+        isolated_bin_dir.join("jiji-agent"),
+    )
+    .expect("rename fake agent binary to the sibling-discovery name");
+
+    let output = Command::new(&isolated_jiji)
+        .arg("server")
+        .arg("setup")
+        .arg("-c")
+        .arg(&config_path)
+        .env_remove("JIJI_AGENT_BINARY")
+        .output()
+        .expect("run jiji server setup");
+    assert!(
+        output.status.success(),
+        "stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // `Ui::warn` prints to stdout (matching `Ui::say`), not stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("is v0.0.1") && stdout.contains("downloading jiji-agent v"),
+        "stdout: {stdout}"
+    );
+
+    let commands = received.lock().unwrap().clone();
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains("jiji-agent-linux-") && c.contains("sha256sum")),
+        "expected the release-download install script to run instead of uploading the outdated \
+         local binary: {commands:?}"
     );
 }
 

@@ -14,6 +14,7 @@ use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 use serde::{Deserialize, Serialize};
 
+use crate::audit::{self, AuditStatus};
 use crate::lock::{LockRequest, LockScope};
 use crate::ssh_adapter;
 
@@ -431,6 +432,7 @@ pub async fn restore(
             let handle = progress.handle();
             let mut failures = Vec::new();
             for server_plan in &selected {
+                let host_started = std::time::Instant::now();
                 handle.set_status(&server_plan.name, "restoring");
                 let name = &server_plan.name;
                 let exact_snapshot = backup
@@ -451,6 +453,8 @@ pub async fn restore(
                 let session = match SshSession::connect(&options).await {
                     Ok(session) => session,
                     Err(error) => {
+                        // No session was ever opened for this host, so there is nothing to
+                        // write a per-server audit entry through.
                         handle.mark_failed(name, &error.to_string());
                         failures.push(format!("{name}: {error}"));
                         continue;
@@ -470,19 +474,34 @@ pub async fn restore(
                 let result = session
                     .execute_with_input(&command, &serde_json::to_vec(&snapshot)?)
                     .await;
+                let (audit_status, summary) = match &result {
+                    Ok(result) if result.success => (
+                        AuditStatus::Success,
+                        "same-epoch state restored".to_string(),
+                    ),
+                    Ok(result) => (AuditStatus::Failed, result.stderr.trim().to_string()),
+                    Err(error) => (AuditStatus::Failed, error.to_string()),
+                };
+                audit::record(
+                    &session,
+                    &config.project,
+                    "network_restore",
+                    audit_status,
+                    summary.clone(),
+                    Some(&LockScope::ProjectMaintenance.to_string()),
+                    None,
+                    Some(host_started.elapsed()),
+                )
+                .await;
                 session.close().await;
-                match result {
-                    Ok(result) if result.success => {
+                match audit_status {
+                    AuditStatus::Success => {
                         handle.mark_success(name, "restored");
-                        Ui::result_ok(name, "same-epoch state restored")
+                        Ui::result_ok(name, &summary);
                     }
-                    Ok(result) => {
-                        handle.mark_failed(name, result.stderr.trim());
-                        failures.push(format!("{name}: {}", result.stderr.trim()))
-                    }
-                    Err(error) => {
-                        handle.mark_failed(name, &error.to_string());
-                        failures.push(format!("{name}: {error}"))
+                    AuditStatus::Failed => {
+                        handle.mark_failed(name, &summary);
+                        failures.push(format!("{name}: {summary}"));
                     }
                 }
             }

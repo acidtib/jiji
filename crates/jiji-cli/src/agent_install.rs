@@ -32,9 +32,14 @@ fn to_agent_engine(engine: ContainerEngine) -> jiji_agent::Engine {
 /// Outcome of resolving a locally built `jiji-agent` binary. `ExplicitOverrideInvalid` is
 /// always a hard failure (the caller asked for a specific binary and it isn't there);
 /// `NotConfigured` means no override was set and no sibling binary was found next to the
-/// running `jiji`, which the caller treats as a fallback signal, not a failure.
+/// running `jiji`, which the caller treats as a fallback signal, not a failure. `Found.explicit`
+/// distinguishes an env-var override from the sibling-binary auto-discovery: both still need
+/// their *version* checked before being trusted (see `agent_distribution::
+/// resolve_agent_binary_source`), but the two should react differently to a stale binary -- an
+/// explicit override is worth bailing loudly over, since the caller asked for it specifically;
+/// auto-discovery is only ever an optimization over downloading, so it should just fall back.
 pub enum LocalAgentBinary {
-    Found(PathBuf),
+    Found { path: PathBuf, explicit: bool },
     ExplicitOverrideInvalid(String),
     NotConfigured,
 }
@@ -43,12 +48,17 @@ pub enum LocalAgentBinary {
 /// tests and custom installs, and an invalid override is always reported as
 /// `ExplicitOverrideInvalid`, never silently treated as "not configured"; otherwise looks next
 /// to the currently running executable, mirroring how `cargo build` places
-/// `jiji`/`jiji_dev`/`jiji-agent` in the same target directory.
+/// `jiji`/`jiji_dev`/`jiji-agent` in the same target directory. Only checks existence, not
+/// version -- see `agent_distribution::resolve_agent_binary_source` for the version gate every
+/// `Found` result still has to pass before it's actually used.
 pub fn find_local_agent_binary() -> LocalAgentBinary {
     if let Ok(path) = std::env::var("JIJI_AGENT_BINARY") {
         let path = PathBuf::from(path);
         return if path.is_file() {
-            LocalAgentBinary::Found(path)
+            LocalAgentBinary::Found {
+                path,
+                explicit: true,
+            }
         } else {
             LocalAgentBinary::ExplicitOverrideInvalid(format!(
                 "JIJI_AGENT_BINARY={} does not exist",
@@ -60,7 +70,10 @@ pub fn find_local_agent_binary() -> LocalAgentBinary {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("jiji-agent")));
     match candidate {
-        Some(candidate) if candidate.is_file() => LocalAgentBinary::Found(candidate),
+        Some(candidate) if candidate.is_file() => LocalAgentBinary::Found {
+            path: candidate,
+            explicit: false,
+        },
         _ => LocalAgentBinary::NotConfigured,
     }
 }

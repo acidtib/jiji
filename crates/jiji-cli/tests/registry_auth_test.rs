@@ -498,16 +498,110 @@ async fn default_login_authenticates_locally_and_on_every_configured_server() {
         "password must never appear in a remote command string: {received:?}"
     );
     let received_stdin = harness.received_stdin.lock().unwrap().clone();
-    assert_eq!(
-        String::from_utf8_lossy(&received_stdin),
-        "s3cret",
-        "password must be delivered through the SSH stdin channel"
+    // Starts with, not equals: the same session also pipes a `registry_login` audit entry
+    // through stdin (see `login_writes_a_success_audit_entry_for_the_remote_server`), appended
+    // after the password in this flat, unseparated capture buffer.
+    assert!(
+        String::from_utf8_lossy(&received_stdin).starts_with("s3cret"),
+        "password must be delivered through the SSH stdin channel: {:?}",
+        String::from_utf8_lossy(&received_stdin)
     );
 
     assert!(
         !stdout.contains("s3cret") && !String::from_utf8_lossy(&output.stderr).contains("s3cret"),
         "password must never be printed"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_writes_a_success_audit_entry_for_the_remote_server() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        login_command("docker", "registry.example.com", "alice"),
+        success(""),
+    );
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
+    let bin = write_fake_engine(dir.path(), "docker");
+    let log = dir.path().join("commands.log");
+
+    let output = run_jiji(
+        "login",
+        &config_path,
+        &bin,
+        &["--skip-local"],
+        &[("JIJI_TEST_LOG", log.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")
+                && c.contains("install -d -m 0700 .jiji/demo")),
+        "login should append an audit entry: {received:?}"
+    );
+    let received_stdin =
+        String::from_utf8_lossy(&harness.received_stdin.lock().unwrap()).into_owned();
+    // `received_stdin` is a flat, unseparated concatenation of every channel's stdin bytes (the
+    // login command's password has no trailing newline of its own), so isolate the JSON object
+    // itself rather than trusting `.lines()` to have split cleanly ahead of it.
+    let json_start = received_stdin
+        .find("{\"timestamp\"")
+        .expect("no audit JSON object in stdin");
+    let audit_line = received_stdin[json_start..]
+        .lines()
+        .next()
+        .expect("audit JSON object has at least one line");
+    assert!(
+        audit_line.contains("\"action\":\"registry_login\""),
+        "{audit_line}"
+    );
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
+    assert!(
+        !audit_line.contains("s3cret"),
+        "the audit message must never contain the password: {audit_line}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_failure_writes_a_failed_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        login_command("docker", "registry.example.com", "alice"),
+        failure("Error: permission denied"),
+    );
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
+    let bin = write_fake_engine(dir.path(), "docker");
+    let log = dir.path().join("commands.log");
+
+    let output = run_jiji(
+        "login",
+        &config_path,
+        &bin,
+        &["--skip-local"],
+        &[("JIJI_TEST_LOG", log.to_str().unwrap())],
+    );
+    assert!(!output.status.success(), "expected a nonzero exit overall");
+
+    let received_stdin =
+        String::from_utf8_lossy(&harness.received_stdin.lock().unwrap()).into_owned();
+    let audit_line = received_stdin
+        .lines()
+        .find(|line| line.contains("\"action\":\"registry_login\""))
+        .unwrap_or_else(|| panic!("no registry_login audit line in stdin: {received_stdin:?}"));
+    assert!(audit_line.contains("\"status\":\"failed\""), "{audit_line}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -909,6 +1003,51 @@ async fn default_logout_logs_out_locally_and_on_every_configured_server() {
     assert!(local_log.contains("logout registry.example.com"));
     let received = harness.received.lock().unwrap().clone();
     assert!(received.contains(&logout_command("docker", "registry.example.com")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logout_writes_a_success_audit_entry_for_the_remote_server() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        logout_command("docker", "registry.example.com"),
+        success(""),
+    );
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
+    let bin = write_fake_engine(dir.path(), "docker");
+    let log = dir.path().join("commands.log");
+
+    let output = run_jiji(
+        "logout",
+        &config_path,
+        &bin,
+        &["--skip-local"],
+        &[("JIJI_TEST_LOG", log.to_str().unwrap())],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "logout should append an audit entry: {received:?}"
+    );
+    let received_stdin =
+        String::from_utf8_lossy(&harness.received_stdin.lock().unwrap()).into_owned();
+    let audit_line = received_stdin
+        .lines()
+        .find(|line| line.contains("\"action\":\"registry_logout\""))
+        .unwrap_or_else(|| panic!("no registry_logout audit line in stdin: {received_stdin:?}"));
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

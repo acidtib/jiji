@@ -262,6 +262,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
 
     validate_builder(config, &mut errors);
     validate_proxy_hosts(config, &mut errors);
+    validate_proxy_has_a_routable_host(config, &mut errors);
     validate_tcp_targets(config, &mut errors);
 
     if let Some(ssh) = &config.ssh {
@@ -352,6 +353,49 @@ fn validate_proxy_hosts(config: &Config, errors: &mut Vec<ValidationError>) {
                 &proxy.ssl,
                 errors,
             );
+        }
+    }
+}
+
+/// An HTTP route (no `listen_port`) with no `hosts:` builds zero `RouteTarget`s
+/// (`proxy_routes::targets_for_service` maps an empty/absent `hosts:` list to an empty `Vec`,
+/// not an error) -- the service deploys, its container starts and passes its own health check,
+/// but jiji-proxy never registers a route for it at all, so the URL silently never works and
+/// nothing in `jiji deploy`'s own output says why (confirmed live). jiji-proxy routes by Host
+/// header (see `validate_proxy_hosts`'s wildcard-host doc comment), so at least one host is
+/// required for any HTTP route; a raw-TCP target (`listen_port` set) has no Host header at all
+/// and is exempt.
+fn validate_proxy_has_a_routable_host(config: &Config, errors: &mut Vec<ValidationError>) {
+    for (name, service) in &config.services {
+        let Some(proxy) = &service.proxy else {
+            continue;
+        };
+        if let Some(targets) = &proxy.targets {
+            for (index, target) in targets.iter().enumerate() {
+                if target.listen_port.is_some() {
+                    continue;
+                }
+                if target.hosts.as_deref().unwrap_or_default().is_empty() {
+                    errors.push(ValidationError {
+                        path: format!("services.{name}.proxy.targets[{index}].hosts"),
+                        message: format!(
+                            "Service '{name}' proxy target has no `hosts:` configured. jiji-proxy routes HTTP traffic by Host header, so this route can never be reached; add at least one hostname (or a wildcard like '*.example.com'), or set `listen_port` for a raw TCP route that doesn't need one."
+                        ),
+                        code: "PROXY_HTTP_ROUTE_WITHOUT_HOSTS",
+                    });
+                }
+            }
+        } else if proxy.listen_port.is_none()
+            && proxy.port.is_some()
+            && proxy.hosts.as_deref().unwrap_or_default().is_empty()
+        {
+            errors.push(ValidationError {
+                path: format!("services.{name}.proxy.hosts"),
+                message: format!(
+                    "Service '{name}' proxy has no `hosts:` configured. jiji-proxy routes HTTP traffic by Host header, so this route can never be reached; add at least one hostname (or a wildcard like '*.example.com'), or set `listen_port` for a raw TCP route that doesn't need one."
+                ),
+                code: "PROXY_HTTP_ROUTE_WITHOUT_HOSTS",
+            });
         }
     }
 }

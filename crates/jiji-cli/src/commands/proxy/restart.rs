@@ -3,6 +3,7 @@ use jiji_network::NetworkPlanner;
 use jiji_ssh::{SshPool, SshSession};
 use jiji_tui::Ui;
 
+use crate::audit::{self, AuditStatus};
 use crate::{proxy, ssh_adapter};
 
 pub async fn run(
@@ -72,6 +73,7 @@ pub async fn run(
         handle.set_status(name, "queued");
     }
 
+    let project = config.project.clone();
     let mut operations = Vec::with_capacity(selected.len());
     for server_plan in selected {
         let name = server_plan.name.clone();
@@ -92,12 +94,32 @@ pub async fn run(
             None
         };
         let handle = handle.clone();
+        let project = project.clone();
         operations.push(move || async move {
+            let host_started = std::time::Instant::now();
             handle.set_status(&name, "connecting");
             let result = async {
                 let session = SshSession::connect(&options).await?;
                 handle.set_status(&name, "restarting");
                 let outcome = proxy::ensure_proxy(&session, engine, network, true).await;
+                // No `HostGlobalProxy` lock is taken for this command today (a pre-existing
+                // gap, not introduced here), so this entry gets no `lock_scope`, the same as
+                // `service prune`'s unlocked audit entries.
+                let (audit_status, audit_message) = match &outcome {
+                    Ok(_) => (AuditStatus::Success, "jiji-proxy restarted".to_string()),
+                    Err(error) => (AuditStatus::Failed, error.to_string()),
+                };
+                audit::record(
+                    &session,
+                    &project,
+                    "proxy_restart",
+                    audit_status,
+                    audit_message,
+                    None,
+                    None,
+                    Some(host_started.elapsed()),
+                )
+                .await;
                 session.close().await;
                 outcome
             }

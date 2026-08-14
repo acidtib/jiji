@@ -374,6 +374,14 @@ async fn recover_incomplete_lock(session: &SshSession, path: &str) -> anyhow::Re
 pub enum ReleaseOwnedResult {
     Released,
     NoLongerOwned,
+    /// The lock's containing directory is already gone -- distinct from `NoLongerOwned` (a
+    /// different `lock_id` present, meaning someone else now holds it): there is nothing here
+    /// that could have been stolen. A caller whose own preceding steps can legitimately delete a
+    /// lock's storage as a side effect (e.g. `server teardown` `rm -rf`s the whole project
+    /// staging directory the lock file lives under) should treat this as an unsurprising no-op,
+    /// not a stuck-lock warning; a caller with no such step (e.g. rolling back an acquire it just
+    /// performed) should still treat it as worth investigating.
+    AlreadyGone,
 }
 
 pub async fn release_owned_lock(
@@ -384,13 +392,16 @@ pub async fn release_owned_lock(
     let expected = serde_json::to_string(lock_id)?;
     let command = format!(
         "set -eu\n\
-         test -d {path} || exit 75\n\
+         test -d {path} || exit 76\n\
          actual=$(sed -n 's/.*\"lock_id\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' {path}/info.json)\n\
          test \"$actual\" = {expected} || exit 75\n\
          rm -f {path}/info.json\n\
          rmdir {path}"
     );
     let result = session.execute(&command).await?;
+    if result.code == Some(76) {
+        return Ok(ReleaseOwnedResult::AlreadyGone);
+    }
     if result.code == Some(75) {
         return Ok(ReleaseOwnedResult::NoLongerOwned);
     }
@@ -596,7 +607,13 @@ async fn release_requests(
         .zip(pool.execute_concurrent(operations).await)
     {
         match result {
-            Ok(ReleaseOwnedResult::Released) => {}
+            // `AlreadyGone` is silent here, unlike `NoLongerOwned`: this is the shared release
+            // path every `with_locks` operation uses, including `server teardown`, whose own
+            // preceding steps legitimately `rm -rf` the whole project staging directory the lock
+            // file lived under. There is nothing left to warn about -- the lock's storage is
+            // gone because this invocation's own work removed it, not because another invocation
+            // is now holding it.
+            Ok(ReleaseOwnedResult::Released) | Ok(ReleaseOwnedResult::AlreadyGone) => {}
             Ok(ReleaseOwnedResult::NoLongerOwned) => warnings.push(format!(
                 "{} lock on {} is no longer owned by this invocation; it was not removed.",
                 request.scope, request.host

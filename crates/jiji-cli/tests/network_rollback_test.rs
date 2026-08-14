@@ -58,7 +58,9 @@ struct TestServer {
     authorized_keys: Vec<PublicKey>,
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
+    stdin: Arc<Mutex<HashMap<ChannelId, Vec<u8>>>>,
     received: Arc<Mutex<Vec<String>>>,
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 impl server::Server for TestServer {
@@ -104,6 +106,21 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .entry(channel)
+            .or_default()
+            .extend_from_slice(data);
+        Ok(())
+    }
+
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
@@ -119,6 +136,18 @@ impl server::Handler for TestServer {
             .lock()
             .expect("received mutex poisoned")
             .push(command.clone());
+
+        if let Some(stdin) = self
+            .stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .remove(&channel)
+        {
+            self.received_stdin
+                .lock()
+                .expect("received_stdin mutex poisoned")
+                .extend_from_slice(&stdin);
+        }
 
         let occurrence = self
             .received
@@ -163,6 +192,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn spawn_test_server(
@@ -181,11 +211,14 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let received_stdin = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_keys,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
+        stdin: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        received_stdin: received_stdin.clone(),
     };
 
     tokio::spawn(async move {
@@ -193,7 +226,25 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        received_stdin,
+    }
+}
+
+/// Finds the first JSON audit object piped over stdin and returns its own line, isolated from
+/// whatever unrelated stdin bytes happen to precede it in this flat, per-session capture buffer.
+fn find_audit_json_line(received_stdin: &[u8]) -> String {
+    let text = String::from_utf8_lossy(received_stdin).into_owned();
+    let json_start = text
+        .find("{\"timestamp\"")
+        .unwrap_or_else(|| panic!("no audit JSON object in stdin: {text:?}"));
+    text[json_start..]
+        .lines()
+        .next()
+        .expect("audit JSON object has at least one line")
+        .to_string()
 }
 
 fn config_yaml(project: &str, addr: SocketAddr, key_path: &std::path::Path) -> String {
@@ -297,6 +348,23 @@ async fn first_install_activation_failure_removes_the_partially_created_bridge()
         "rollback should remove the partially-created bridge left behind by the failed \
          activation, not just jiji's own compiled-state symlinks: {received:?}"
     );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains(&format!("cat >> .jiji/{project}/audit.log"))),
+        "a rolled-back setup should still append an audit entry: {received:?}"
+    );
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let audit_line = find_audit_json_line(&received_stdin);
+    assert!(
+        audit_line.contains("\"action\":\"network_setup\""),
+        "{audit_line}"
+    );
+    assert!(audit_line.contains("\"status\":\"failed\""), "{audit_line}");
+    assert!(
+        audit_line.contains("rollback after activation failure"),
+        "{audit_line}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -370,5 +438,25 @@ async fn setup_migrates_an_existing_bridge_and_reattaches_the_proxy() {
                 )
         }),
         "migration should reconnect the proxy at its new planned address: {received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains(&format!("cat >> .jiji/{project}/audit.log"))),
+        "a successful setup should append an audit entry: {received:?}"
+    );
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let audit_line = find_audit_json_line(&received_stdin);
+    assert!(
+        audit_line.contains("\"action\":\"network_setup\""),
+        "{audit_line}"
+    );
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
+    assert!(
+        audit_line.contains("\"lock_scope\":\"project-maintenance\""),
+        "{audit_line}"
     );
 }

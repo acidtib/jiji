@@ -2,6 +2,7 @@ use jiji_config::validate_config;
 use jiji_tui::Ui;
 
 use super::shared::{self, TargetKind, TargetOutcome};
+use crate::audit::{self, AuditStatus};
 use crate::registry;
 
 pub async fn run(
@@ -90,10 +91,32 @@ pub async fn run(
             jiji_tui::ServerSetupProgress::with_title(hosts.clone(), "Logging out".to_string());
         let handle = progress.handle();
         for (name, session) in &sessions {
+            let host_started = std::time::Instant::now();
             handle.set_status(name, "logging out");
-            match registry::logout_remote(session, config.builder.engine, &config.builder.registry)
-                .await
-            {
+            let result =
+                registry::logout_remote(session, config.builder.engine, &config.builder.registry)
+                    .await;
+            let (audit_status, audit_message) = match &result {
+                Ok(registry::AuthOutcome::LoggedOut) => {
+                    (AuditStatus::Success, "logged out".to_string())
+                }
+                Ok(registry::AuthOutcome::AlreadyLoggedOut) => {
+                    (AuditStatus::Success, "already logged out".to_string())
+                }
+                Err(error) => (AuditStatus::Failed, error.to_string()),
+            };
+            audit::record(
+                session,
+                &config.project,
+                "registry_logout",
+                audit_status,
+                audit_message,
+                None,
+                None,
+                Some(host_started.elapsed()),
+            )
+            .await;
+            match result {
                 Ok(registry::AuthOutcome::LoggedOut) => {
                     handle.mark_success(name, "logged out");
                     outcomes.push(TargetOutcome::Success(TargetKind::Remote(name.clone())))

@@ -681,6 +681,88 @@ services:
 }
 
 #[test]
+fn http_proxy_route_with_no_hosts_is_rejected_for_flat_and_multi_target_configs() {
+    for raw in [
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 80, path_prefix: /saca }
+"#,
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy:
+      targets:
+        - { port: 80, path_prefix: /saca }
+"#,
+    ] {
+        let result = validate_yaml(&parse(raw));
+        assert!(!result.valid, "config should be rejected: {raw}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.code == "PROXY_HTTP_ROUTE_WITHOUT_HOSTS"),
+            "unexpected errors: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn tcp_listen_port_proxy_target_needs_no_hosts() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+    proxy: { port: 5432, listen_port: 5432 }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(
+        result.valid,
+        "a raw TCP route has no Host header to route by, so it needs no `hosts:`: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn service_without_a_proxy_block_is_unaffected_by_the_hosts_requirement() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [web]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(result.valid, "unexpected errors: {:?}", result.errors);
+}
+
+#[test]
 fn removed_proxy_app_port_is_rejected_for_flat_and_multi_target_configs() {
     for raw in [
         r#"

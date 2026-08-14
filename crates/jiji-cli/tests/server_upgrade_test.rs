@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -367,7 +368,22 @@ fn run_jiji_server_upgrade(
     let dir = config_path.parent().expect("config has a parent dir");
     let fake_binary = dir.join("fake-jiji-agent");
     if !fake_binary.exists() {
-        std::fs::write(&fake_binary, b"fake agent bytes").expect("write fake agent binary");
+        // `resolve_agent_binary_source` execs `{path} version` locally before trusting a
+        // discovered binary (see `agent_distribution.rs`), so this placeholder must actually run
+        // and report a current version, not just exist as a file.
+        std::fs::write(
+            &fake_binary,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = version ]; then printf '%s\\n' '{}'; fi\nexit 0\n",
+                env!("JIJI_AGENT_BUILD_VERSION")
+            ),
+        )
+        .expect("write fake agent binary");
+        let mut permissions = std::fs::metadata(&fake_binary)
+            .expect("read fake agent binary metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_binary, permissions).expect("chmod fake agent binary");
     }
     command
         .env("JIJI_AGENT_BINARY", &fake_binary)

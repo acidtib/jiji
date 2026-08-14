@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use jiji_agent::api::{RequestBody, ResponseBody};
 use jiji_config::validate_config;
 use jiji_tui::Ui;
 
 use super::select_single_cron;
+use crate::audit::{self, AuditStatus};
 use crate::commands::proxy::logs::{render_logs_command, stream_logs};
 
 /// Requests an immediate run from the assigned agent (`CronRun`, Phase 2's agent API). A forbidden
@@ -57,6 +58,7 @@ pub async fn run(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let started = Instant::now();
     let response = crate::agent_client::call(
         &owner.session,
         &config.project,
@@ -80,6 +82,27 @@ pub async fn run(
         )),
         Err(error) => Err(error),
     };
+
+    let audit_target = format!("cron '{cron}' on service '{service_name}'");
+    let (audit_status, audit_message) = match &outcome {
+        Ok(run_id) => (
+            AuditStatus::Success,
+            format!("{audit_target}: run '{run_id}' on '{}'", owner.server_name),
+        ),
+        Err(error) => (AuditStatus::Failed, format!("{audit_target}: {error}")),
+    };
+    audit::record(
+        &owner.session,
+        &config.project,
+        "service_cron_run",
+        audit_status,
+        audit_message,
+        None,
+        None,
+        Some(started.elapsed()),
+    )
+    .await;
+
     let run_id = match outcome {
         Ok(run_id) => run_id,
         Err(error) => {

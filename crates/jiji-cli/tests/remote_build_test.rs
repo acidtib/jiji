@@ -817,6 +817,65 @@ async fn staging_upload_build_and_push_happen_in_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn remote_build_writes_a_success_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(staging_root_command(), staging_root_response("abc123"));
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_project(dir.path(), harness.addr, &key_path);
+
+    let output = run_build(&config_path, &["--version", "v1"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let audit_command = "set -eu; install -d -m 0700 .jiji/testproject; umask 077; \
+                          cat >> .jiji/testproject/audit.log";
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let (_, audit_stdin) = received_stdin
+        .iter()
+        .find(|(command, _)| command == audit_command)
+        .unwrap_or_else(|| panic!("no audit write among {received_stdin:?}"));
+    let audit_line = String::from_utf8_lossy(audit_stdin);
+    assert!(audit_line.contains("\"action\":\"build\""), "{audit_line}");
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
+    assert!(audit_line.contains("web"), "{audit_line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_build_failure_writes_a_failed_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(staging_root_command(), staging_root_response("abc123"));
+    let staging_root = ".jiji/testproject/builds/run.abc123";
+    responses.insert(
+        build_command(staging_root, &[TAG_V1, TAG_LATEST]),
+        failure(),
+    );
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_project(dir.path(), harness.addr, &key_path);
+
+    let output = run_build(&config_path, &["--version", "v1"]);
+    assert!(!output.status.success(), "expected a build failure");
+
+    let audit_command = "set -eu; install -d -m 0700 .jiji/testproject; umask 077; \
+                          cat >> .jiji/testproject/audit.log";
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let (_, audit_stdin) = received_stdin
+        .iter()
+        .find(|(command, _)| command == audit_command)
+        .unwrap_or_else(|| panic!("no audit write among {received_stdin:?}"));
+    let audit_line = String::from_utf8_lossy(audit_stdin);
+    assert!(audit_line.contains("\"action\":\"build\""), "{audit_line}");
+    assert!(audit_line.contains("\"status\":\"failed\""), "{audit_line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn detailed_build_with_context_omitted_packages_and_builds_the_project_root() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();

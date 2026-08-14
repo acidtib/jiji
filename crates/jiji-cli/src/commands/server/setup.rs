@@ -766,7 +766,8 @@ async fn setup_agents(
                  release on each server."
             )
         },
-    )?;
+    )
+    .await?;
     let target_names: BTreeSet<String> = servers.iter().map(|(name, _)| name.clone()).collect();
     Ui::section("Installing Jiji Agent:");
 

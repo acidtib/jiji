@@ -66,7 +66,11 @@ struct TestServer {
     authorized_key: PublicKey,
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
+    stdin: Arc<Mutex<HashMap<ChannelId, Vec<u8>>>>,
     received: Arc<Mutex<Vec<String>>>,
+    /// Every channel's stdin bytes, flattened in close order -- enough to find and parse a piped
+    /// JSON audit line via a `{"timestamp"` scan (mirrors `audit_test.rs`'s harness).
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 impl server::Server for TestServer {
@@ -112,6 +116,21 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .entry(channel)
+            .or_default()
+            .extend_from_slice(data);
+        Ok(())
+    }
+
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
@@ -127,6 +146,18 @@ impl server::Handler for TestServer {
             .lock()
             .expect("received mutex poisoned")
             .push(command.clone());
+
+        if let Some(stdin) = self
+            .stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .remove(&channel)
+        {
+            self.received_stdin
+                .lock()
+                .expect("received_stdin mutex poisoned")
+                .extend_from_slice(&stdin);
+        }
 
         let response = self
             .responses
@@ -150,6 +181,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn spawn_test_server(
@@ -168,11 +200,14 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let received_stdin = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
+        stdin: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        received_stdin: received_stdin.clone(),
     };
 
     tokio::spawn(async move {
@@ -180,7 +215,25 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        received_stdin,
+    }
+}
+
+/// Finds the first JSON audit object piped over stdin and returns its own line (mirrors
+/// `audit_test.rs::find_audit_json_line`).
+fn find_audit_json_line(received_stdin: &[u8]) -> String {
+    let text = String::from_utf8_lossy(received_stdin).into_owned();
+    let json_start = text
+        .find("{\"timestamp\"")
+        .unwrap_or_else(|| panic!("no audit JSON object in stdin: {text:?}"));
+    text[json_start..]
+        .lines()
+        .next()
+        .expect("audit JSON object has at least one line")
+        .to_string()
 }
 
 fn config_yaml(addr: SocketAddr, key_path: &std::path::Path) -> String {
@@ -587,4 +640,77 @@ async fn run_reports_a_conflict_as_an_actionable_error() {
         stderr.contains("already running") && stderr.contains("run-already-active"),
         "stderr: {stderr}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_writes_a_success_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let accepted = r#"{"Ok":{"type":"cron_run_accepted","run_id":"run-abc123"}}"#;
+
+    let mut responses = HashMap::new();
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_for("another-worker", &replica_id, "dep-a"),
+    );
+    responses.insert(agent_request_command("cron-run"), success(accepted));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji(&config_path, &["run", "backup", "-S", "another-worker"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "run should append an audit entry: {received:?}"
+    );
+
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let audit_line = find_audit_json_line(&received_stdin);
+    assert!(
+        audit_line.contains("\"action\":\"service_cron_run\""),
+        "{audit_line}"
+    );
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
+    assert!(audit_line.contains("run-abc123"), "{audit_line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_conflict_writes_a_failed_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let conflict = r#"{"Ok":{"type":"cron_run_conflict","active_run_id":"run-already-active"}}"#;
+
+    let mut responses = HashMap::new();
+    responses.insert(
+        agent_request_command("catalog-list"),
+        active_catalog_response_for("another-worker", &replica_id, "dep-a"),
+    );
+    responses.insert(agent_request_command("cron-run"), success(conflict));
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji(&config_path, &["run", "backup", "-S", "another-worker"]);
+    assert!(!output.status.success());
+
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let audit_line = find_audit_json_line(&received_stdin);
+    assert!(
+        audit_line.contains("\"action\":\"service_cron_run\""),
+        "{audit_line}"
+    );
+    assert!(audit_line.contains("\"status\":\"failed\""), "{audit_line}");
+    assert!(audit_line.contains("run-already-active"), "{audit_line}");
 }

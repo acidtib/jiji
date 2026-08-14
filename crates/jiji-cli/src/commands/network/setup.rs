@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use jiji_config::{validate_config, Config, ContainerEngine, NamedServer};
@@ -11,6 +12,7 @@ use jiji_tui::Ui;
 use sha2::{Digest, Sha256};
 
 use super::bridge::{BridgeMigration, BridgeProvisioner};
+use crate::audit::{self, AuditStatus};
 use crate::lock::{LockRequest, LockScope};
 use crate::ssh_adapter;
 
@@ -610,12 +612,21 @@ async fn apply_connected(
         Ui::say(&format!("{}: generation staged", host.name), 1);
     }
 
+    // Captured once, before activation starts, rather than per-iteration: `rollback_context`
+    // below holds a shared borrow of `started` for the rest of the function, so it cannot be
+    // mutated once created.
+    let started: BTreeMap<String, Instant> = target_hosts
+        .iter()
+        .map(|host| (host.name.clone(), Instant::now()))
+        .collect();
+
     let rollback_context = RollbackContext {
         previous: &previous,
         activation_domains: &activation_domains,
         migrations: &migrations,
         plan,
         engine: config.builder.engine,
+        started: &started,
     };
 
     Ui::section("Activating Network:");
@@ -763,6 +774,20 @@ async fn apply_connected(
 
     for host in &target_hosts {
         remove_legacy_service_runtime(&host.session, plan).await?;
+    }
+
+    for host in &target_hosts {
+        audit::record(
+            &host.session,
+            &plan.project,
+            "network_setup",
+            AuditStatus::Success,
+            format!("mesh generation {}", &plan.mesh_generation[..12]),
+            Some(&LockScope::ProjectMaintenance.to_string()),
+            None,
+            Some(started[&host.name].elapsed()),
+        )
+        .await;
     }
 
     Ui::success("Private network setup completed.");
@@ -1456,6 +1481,41 @@ struct RollbackContext<'a> {
     migrations: &'a BTreeMap<String, BridgeMigration>,
     plan: &'a NetworkPlan,
     engine: ContainerEngine,
+    /// When each target host's activation attempt began, so a rollback's audit entry can report
+    /// how long that host was in flight rather than the whole loop's duration.
+    started: &'a BTreeMap<String, Instant>,
+}
+
+/// Writes one `network_setup` `Failed` audit entry for a single attempted host during a
+/// rollback, whether or not that host's own rollback succeeded -- a rollback still means the
+/// overall `network setup` action failed for every attempted host, not only the one that
+/// triggered it.
+#[allow(clippy::too_many_arguments)]
+async fn record_rollback_audit(
+    host: &ConnectedHost,
+    context: &RollbackContext<'_>,
+    failed_host: &str,
+    phase: &str,
+    cause: &anyhow::Error,
+    rollback_outcome: Result<(), &str>,
+) {
+    let message = match rollback_outcome {
+        Ok(()) => format!("rollback after {phase} failure on '{failed_host}': {cause}"),
+        Err(error) => format!(
+            "rollback after {phase} failure on '{failed_host}': {cause}; rollback itself failed: {error}"
+        ),
+    };
+    audit::record(
+        &host.session,
+        &context.plan.project,
+        "network_setup",
+        AuditStatus::Failed,
+        message,
+        Some(&LockScope::ProjectMaintenance.to_string()),
+        None,
+        Some(context.started[&host.name].elapsed()),
+    )
+    .await;
 }
 
 async fn rollback_transaction(
@@ -1483,10 +1543,10 @@ async fn rollback_transaction(
                 .restore_previous_bridge(&host.session, migration)
                 .await
             {
-                rollback_failures.push(format!(
-                    "{}: could not restore previous bridge: {error}",
-                    host.name
-                ));
+                let detail = format!("could not restore previous bridge: {error}");
+                record_rollback_audit(host, context, failed_host, phase, &cause, Err(&detail))
+                    .await;
+                rollback_failures.push(format!("{}: {detail}", host.name));
                 continue;
             }
             if context.engine == ContainerEngine::Docker {
@@ -1506,10 +1566,19 @@ async fn rollback_transaction(
                             Err(error) => Err(error),
                         };
                     if let Err(error) = ingress_result {
-                        rollback_failures.push(format!(
-                            "{}: previous bridge was restored but proxy ingress was not: {error}",
-                            host.name
-                        ));
+                        let detail = format!(
+                            "previous bridge was restored but proxy ingress was not: {error}"
+                        );
+                        record_rollback_audit(
+                            host,
+                            context,
+                            failed_host,
+                            phase,
+                            &cause,
+                            Err(&detail),
+                        )
+                        .await;
+                        rollback_failures.push(format!("{}: {detail}", host.name));
                         continue;
                     }
                 }
@@ -1526,9 +1595,12 @@ async fn rollback_transaction(
         )
         .await;
         if let Err(error) = rollback {
-            rollback_failures.push(format!("{}: {error}", host.name));
+            let detail = error.to_string();
+            record_rollback_audit(host, context, failed_host, phase, &cause, Err(&detail)).await;
+            rollback_failures.push(format!("{}: {detail}", host.name));
             continue;
         }
+        record_rollback_audit(host, context, failed_host, phase, &cause, Ok(())).await;
         Ui::say(
             &format!(
                 "{}: restored generation {}",

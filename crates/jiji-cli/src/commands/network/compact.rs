@@ -6,6 +6,8 @@ use jiji_network::{NetworkPlanner, ServerPlan};
 use jiji_ssh::SshSession;
 use jiji_tui::Ui;
 
+use crate::audit::{self, AuditStatus};
+use crate::lock::LockScope;
 use crate::ssh_adapter;
 
 pub async fn run(
@@ -58,12 +60,16 @@ pub async fn run(
             let handle = progress.handle();
             let mut failures = Vec::new();
             for server_plan in &selected {
+                let host_started = std::time::Instant::now();
                 handle.set_status(&server_plan.name, "compacting");
                 let name = &server_plan.name;
                 let options = ssh_adapter::connect_options(name, &config.servers[name], ssh)?;
                 let session = match SshSession::connect(&options).await {
                     Ok(session) => session,
                     Err(error) => {
+                        // No session was ever opened for this host, so there is nothing to
+                        // write a per-server audit entry through -- the same "no host to write
+                        // to" boundary `registry login`/`logout` accept for a connect failure.
                         handle.mark_failed(name, &error.to_string());
                         failures.push(format!("{name}: {error}"));
                         continue;
@@ -76,29 +82,43 @@ pub async fn run(
                     RequestBody::Compact,
                 )
                 .await;
-                session.close().await;
-                match response {
+                let (audit_status, summary) = match &response {
                     Ok(ResponseBody::Compacted {
                         membership_removed,
                         catalog_removed,
                         desired_removed,
-                    }) => {
-                        handle.mark_success(name, &format!("{catalog_removed} removed"));
-                        Ui::result_ok(
-                            name,
-                            &format!(
-                            "removed {membership_removed} membership, {catalog_removed} catalog, \
-                     {desired_removed} desired operation(s)"
+                    }) => (
+                        AuditStatus::Success,
+                        format!(
+                            "removed {membership_removed} membership, {catalog_removed} catalog, {desired_removed} desired operation(s)"
                         ),
-                        )
+                    ),
+                    Ok(other) => (
+                        AuditStatus::Failed,
+                        format!("unexpected response {other:?}"),
+                    ),
+                    Err(error) => (AuditStatus::Failed, error.to_string()),
+                };
+                audit::record(
+                    &session,
+                    &config.project,
+                    "network_compact",
+                    audit_status,
+                    summary.clone(),
+                    Some(&LockScope::ProjectMaintenance.to_string()),
+                    None,
+                    Some(host_started.elapsed()),
+                )
+                .await;
+                session.close().await;
+                match audit_status {
+                    AuditStatus::Success => {
+                        handle.mark_success(name, &summary);
+                        Ui::result_ok(name, &summary);
                     }
-                    Ok(other) => {
-                        handle.mark_failed(name, "unexpected response");
-                        failures.push(format!("{name}: unexpected response {other:?}"))
-                    }
-                    Err(error) => {
-                        handle.mark_failed(name, &error.to_string());
-                        failures.push(format!("{name}: {error}"))
+                    AuditStatus::Failed => {
+                        handle.mark_failed(name, &summary);
+                        failures.push(format!("{name}: {summary}"));
                     }
                 }
             }

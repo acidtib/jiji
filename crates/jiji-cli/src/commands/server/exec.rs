@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::time::Instant;
 
 use anyhow::Context;
 use jiji_config::{validate_config, Config, Ssh};
@@ -8,6 +9,7 @@ use jiji_tui::Ui;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
+use crate::audit::{self, AuditStatus};
 use crate::ssh_adapter;
 
 #[allow(clippy::too_many_arguments)]
@@ -124,6 +126,7 @@ async fn run_interactive(
     }
     let effective_pty = want_pty && is_tty;
 
+    let started = Instant::now();
     let result = if effective_pty {
         run_pty(&session, command).await
     } else {
@@ -131,6 +134,23 @@ async fn run_interactive(
         let command = command.expect("non-interactive path always has a command");
         run_streaming(&session, command).await
     };
+
+    let audit_target = command.unwrap_or("interactive shell");
+    let (status, message) = match &result {
+        Ok(()) => (AuditStatus::Success, audit_target.to_string()),
+        Err(error) => (AuditStatus::Failed, format!("{audit_target}: {error}")),
+    };
+    audit::record(
+        &session,
+        &config.project,
+        "server_exec",
+        status,
+        message,
+        None,
+        None,
+        Some(started.elapsed()),
+    )
+    .await;
 
     session.close().await;
     result
@@ -157,7 +177,24 @@ async fn run_single_host(
         .with_context(|| format!("Could not connect to '{}'", target.name))?;
     Ui::say(&format!("{}: connected", target.name), 1);
 
+    let started = Instant::now();
     let result = run_streaming(&session, command).await;
+    let (status, message) = match &result {
+        Ok(()) => (AuditStatus::Success, command.to_string()),
+        Err(error) => (AuditStatus::Failed, format!("{command}: {error}")),
+    };
+    audit::record(
+        &session,
+        &config.project,
+        "server_exec",
+        status,
+        message,
+        None,
+        None,
+        Some(started.elapsed()),
+    )
+    .await;
+
     session.close().await;
     result
 }
@@ -188,10 +225,35 @@ async fn run_multi_host(
             .clone();
         let options = ssh_adapter::connect_options(&name, &named_server, ssh)?;
         let command = command.to_string();
+        let project = config.project.clone();
         operations.push(move || async move {
             let result = async {
                 let session = SshSession::connect(&options).await?;
+                let started = Instant::now();
                 let outcome = session.execute(&command).await;
+                let (status, message) = match &outcome {
+                    Ok(r) if r.success => (AuditStatus::Success, command.clone()),
+                    Ok(r) => (
+                        AuditStatus::Failed,
+                        format!(
+                            "{command}: exited with status {:?}: {}",
+                            r.code,
+                            r.stderr.trim()
+                        ),
+                    ),
+                    Err(error) => (AuditStatus::Failed, format!("{command}: {error}")),
+                };
+                audit::record(
+                    &session,
+                    &project,
+                    "server_exec",
+                    status,
+                    message,
+                    None,
+                    None,
+                    Some(started.elapsed()),
+                )
+                .await;
                 session.close().await;
                 outcome
             }

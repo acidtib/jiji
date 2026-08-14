@@ -152,6 +152,13 @@ pub async fn run(
                 Ok(lock::ReleaseOwnedResult::NoLongerOwned) => Ui::warn(&format!(
                     "{name}: lock is no longer owned by this invocation; it was not removed"
                 )),
+                // Unlike `with_locks`'s own release path (see `lock.rs::release_requests`), this
+                // rollback runs immediately after this same invocation successfully acquired the
+                // lock -- nothing legitimate should have deleted its directory in between, so
+                // this is worth surfacing, not silently ignoring.
+                Ok(lock::ReleaseOwnedResult::AlreadyGone) => Ui::warn(&format!(
+                    "{name}: lock directory is unexpectedly missing; nothing was rolled back"
+                )),
                 Err(error) => Ui::error(&format!("{name}: could not roll back ({error})")),
             }
         }

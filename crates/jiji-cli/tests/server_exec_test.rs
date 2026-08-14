@@ -45,7 +45,11 @@ struct TestServer {
     authorized_key: PublicKey,
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
+    stdin: Arc<Mutex<HashMap<ChannelId, Vec<u8>>>>,
     received: Arc<Mutex<Vec<String>>>,
+    /// Every channel's stdin bytes, flattened in close order -- enough to find and parse a piped
+    /// JSON audit line via a `{"timestamp"` scan (mirrors `audit_test.rs`'s harness).
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 impl server::Server for TestServer {
@@ -91,6 +95,21 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .entry(channel)
+            .or_default()
+            .extend_from_slice(data);
+        Ok(())
+    }
+
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
@@ -106,6 +125,18 @@ impl server::Handler for TestServer {
             .lock()
             .expect("received mutex poisoned")
             .push(command.clone());
+
+        if let Some(stdin) = self
+            .stdin
+            .lock()
+            .expect("stdin mutex poisoned")
+            .remove(&channel)
+        {
+            self.received_stdin
+                .lock()
+                .expect("received_stdin mutex poisoned")
+                .extend_from_slice(&stdin);
+        }
 
         let response = self
             .responses
@@ -128,6 +159,7 @@ impl server::Handler for TestServer {
 
 struct Harness {
     received: Arc<Mutex<Vec<String>>>,
+    received_stdin: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn spawn_test_server(
@@ -147,11 +179,14 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let received_stdin = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
+        stdin: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        received_stdin: received_stdin.clone(),
     };
 
     tokio::spawn(async move {
@@ -159,7 +194,27 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    (Harness { received }, addr)
+    (
+        Harness {
+            received,
+            received_stdin,
+        },
+        addr,
+    )
+}
+
+/// Finds the first JSON audit object piped over stdin and returns its own line (mirrors
+/// `audit_test.rs::find_audit_json_line`).
+fn find_audit_json_line(received_stdin: &[u8]) -> String {
+    let text = String::from_utf8_lossy(received_stdin).into_owned();
+    let json_start = text
+        .find("{\"timestamp\"")
+        .unwrap_or_else(|| panic!("no audit JSON object in stdin: {text:?}"));
+    text[json_start..]
+        .lines()
+        .next()
+        .expect("audit JSON object has at least one line")
+        .to_string()
 }
 
 fn config_yaml(addr: SocketAddr, key_path: &std::path::Path) -> String {
@@ -278,6 +333,43 @@ async fn non_interactive_command_streams_output_and_succeeds() {
 
     let received = harness.received.lock().unwrap().clone();
     assert!(received.contains(&"echo hi".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_interactive_command_writes_a_success_audit_entry() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert("echo hi".to_string(), success("hi\n"));
+    let (harness, addr) =
+        spawn_test_server("127.0.0.1", client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path));
+
+    let output = run_jiji_exec(&config_path, &["echo hi"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c.contains("cat >> .jiji/demo/audit.log")),
+        "server exec should append an audit entry: {received:?}"
+    );
+
+    let received_stdin = harness.received_stdin.lock().unwrap().clone();
+    let audit_line = find_audit_json_line(&received_stdin);
+    assert!(
+        audit_line.contains("\"action\":\"server_exec\""),
+        "{audit_line}"
+    );
+    assert!(
+        audit_line.contains("\"status\":\"success\""),
+        "{audit_line}"
+    );
+    assert!(audit_line.contains("echo hi"), "{audit_line}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -456,6 +548,47 @@ async fn multi_host_command_reports_which_hosts_failed() {
         stderr.contains("Command failed on 1 server"),
         "stderr: {stderr}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_host_failure_writes_a_failed_audit_entry_on_the_failing_host() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut ok_responses = HashMap::new();
+    ok_responses.insert("false".to_string(), success("ignored"));
+    let mut fail_responses = HashMap::new();
+    fail_responses.insert("false".to_string(), failure("boom"));
+    let (harness1, addr1) =
+        spawn_test_server("127.0.0.1", client_key.public_key().clone(), ok_responses).await;
+    let (harness2, addr2) =
+        spawn_test_server("127.0.0.2", client_key.public_key().clone(), fail_responses).await;
+    let config_path = write_config_str(
+        dir.path(),
+        &config_yaml_two_servers(addr1, addr2, &key_path),
+    );
+
+    let output = run_jiji_exec(&config_path, &["false"]);
+    assert!(!output.status.success(), "expected a nonzero exit");
+
+    let audit_line_1 = find_audit_json_line(&harness1.received_stdin.lock().unwrap());
+    assert!(
+        audit_line_1.contains("\"action\":\"server_exec\""),
+        "{audit_line_1}"
+    );
+    assert!(
+        audit_line_1.contains("\"status\":\"success\""),
+        "{audit_line_1}"
+    );
+
+    let audit_line_2 = find_audit_json_line(&harness2.received_stdin.lock().unwrap());
+    assert!(
+        audit_line_2.contains("\"action\":\"server_exec\""),
+        "{audit_line_2}"
+    );
+    assert!(
+        audit_line_2.contains("\"status\":\"failed\""),
+        "{audit_line_2}"
+    );
+    assert!(audit_line_2.contains("boom"), "{audit_line_2}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

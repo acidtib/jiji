@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use jiji_config::{ContainerEngine, Registry};
+use jiji_ssh::SshSession;
 
 use crate::build_plan::{BuildPlanEntry, ExecutorTarget};
 use crate::{build_engine, engine, registry, remote_build};
@@ -46,6 +47,17 @@ impl BuildExecutor {
         match self {
             BuildExecutor::Local => None,
             BuildExecutor::Remote(remote) => Some(remote.engine_status()),
+        }
+    }
+
+    /// The remote builder's own SSH session, for `build.rs` to write a `build` audit entry
+    /// against once the run finishes. `None` for `Local`: a local build never opens a session,
+    /// so there is no host to audit against (same local-only exclusion `registry teardown` and
+    /// local `registry login`/`logout` already use).
+    pub fn remote_session(&self) -> Option<&SshSession> {
+        match self {
+            BuildExecutor::Local => None,
+            BuildExecutor::Remote(remote) => Some(remote.session()),
         }
     }
 

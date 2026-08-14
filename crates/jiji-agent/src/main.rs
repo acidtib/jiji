@@ -18,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prints this binary's own version, bare (no formatting), so `jiji server setup`/`jiji
+    /// server upgrade` can compare a locally discovered binary against the version this CLI was
+    /// built alongside before trusting it -- see `agent_distribution::resolve_agent_binary_source`.
+    Version,
     /// Runs the agent in the foreground (the systemd unit rendered by `jiji server setup` execs
     /// this directly, `Type=simple`).
     Run {
@@ -106,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Command::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Command::Run {
             project,
             engine,

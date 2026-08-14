@@ -77,6 +77,12 @@ impl RemoteBuildExecutor {
         &self.engine_status
     }
 
+    /// The connected builder's own session, for a caller (`build.rs`) to write an audit entry
+    /// against once the build run finishes, before `finish` consumes this executor and closes it.
+    pub fn session(&self) -> &SshSession {
+        &self.session
+    }
+
     /// Prepares the builder to reach the configured registry, before any context upload. For a
     /// local registry, opens a reverse tunnel from the builder's own loopback back to the local
     /// registry (mirroring `commands/deploy.rs`'s existing tunnel-to-deploy-host pattern); a

@@ -4,6 +4,7 @@ use anyhow::Context;
 use jiji_config::{load_config, validate_config};
 use jiji_tui::Ui;
 
+use crate::audit::{self, AuditStatus};
 use crate::build_executor::{self, BuildExecutor};
 use crate::{build_engine, build_plan, engine, env_resolution, registry, version_tag};
 
@@ -202,6 +203,36 @@ pub async fn run(
         // Fill skipped for the non-error early-exit path where we never marked remaining?
         // (all Ok path already marked success, so this is a no-op then)
         progress.finish();
+    }
+    // Only a `builder.remote` host has a session to audit against; a local build has no host to
+    // write a per-server entry through, the same local-only exclusion `registry teardown` uses.
+    if let Some(session) = executor.remote_session() {
+        let service_names = plan
+            .iter()
+            .map(|entry| entry.service_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (status, message) = match &run_result {
+            Ok(()) => (
+                AuditStatus::Success,
+                format!("built {service_names} on {executor_identity}"),
+            ),
+            Err(error) => (
+                AuditStatus::Failed,
+                format!("build failed on {executor_identity}: {error}"),
+            ),
+        };
+        audit::record(
+            session,
+            &config.project,
+            "build",
+            status,
+            message,
+            None,
+            None,
+            Some(started_at.elapsed()),
+        )
+        .await;
     }
     build_executor::combine_with_cleanup_error(run_result, executor.finish().await)?;
 

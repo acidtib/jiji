@@ -646,7 +646,8 @@ async fn upgrade_agents(
                  release on hosts that need it."
             )
         },
-    )?;
+    )
+    .await?;
 
     // The full set of hosts this run already holds a `HostRuntime` lock (and an open session)
     // on -- not just `targets` (which excludes `Ahead`/agent-`Unavailable` hosts): using the
