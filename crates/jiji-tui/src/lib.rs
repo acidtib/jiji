@@ -6,18 +6,55 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant};
 
 pub struct Ui;
 
+/// The one live `MultiProgress` dashboard currently ticking on stderr, if any. `DeployProgress`/
+/// `ServerSetupProgress` register themselves here while their bars are active and clear it on
+/// `finish`/drop. Every `Ui` print function below suspends this dashboard's redraw around its own
+/// output: a raw `println!`/`eprintln!` issued while indicatif's steady-tick thread is mid-redraw
+/// desyncs its cursor-position bookkeeping from what's actually on the terminal (indicatif has no
+/// way to know something else wrote new lines), corrupting every subsequent frame into a stack of
+/// stale, repeated spinner lines instead of one redrawn-in-place dashboard (confirmed live: `jiji
+/// server setup`'s `Ui::say` status lines interleaved with its `ServerSetupProgress` dashboard).
+/// Only one dashboard is ever active at a time in this codebase (each command creates one, uses
+/// handles cloned from it, and finishes it before returning), so a single global slot is enough --
+/// no nesting/token tracking needed.
+fn active_multi_slot() -> &'static Mutex<Option<MultiProgress>> {
+    static SLOT: OnceLock<Mutex<Option<MultiProgress>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn set_active_multi(multi: Option<MultiProgress>) {
+    *active_multi_slot()
+        .lock()
+        .expect("active multi slot mutex poisoned") = multi;
+}
+
+/// Runs `f`, suspending the active dashboard's bars around it (clear, run `f`, redraw) if one is
+/// registered, so any output inside `f` lands cleanly instead of corrupting the next redraw.
+fn with_suspended_multi<R>(f: impl FnOnce() -> R) -> R {
+    let multi = active_multi_slot()
+        .lock()
+        .expect("active multi slot mutex poisoned")
+        .clone();
+    match multi {
+        Some(multi) => multi.suspend(f),
+        None => f(),
+    }
+}
+
 impl Ui {
     /// Start a new section with clear visual separation.
     pub fn section(title: &str) {
-        println!();
-        let style = stdout_style(Style::new().bold().cyan());
-        println!("{}", title.trim().style(style));
+        with_suspended_multi(|| {
+            println!();
+            let style = stdout_style(Style::new().bold().cyan());
+            println!("{}", title.trim().style(style));
+        });
     }
 
     /// Print a message indented by `indent` levels (2 spaces each).
@@ -25,82 +62,104 @@ impl Ui {
     /// Every line is indented independently so rendered summaries do not lose
     /// their hierarchy after the first newline.
     pub fn say(message: &str, indent: u8) {
-        let indentation = "  ".repeat(indent as usize);
-        for line in message.lines() {
-            println!("{indentation}{line}");
-        }
+        with_suspended_multi(|| {
+            let indentation = "  ".repeat(indent as usize);
+            for line in message.lines() {
+                println!("{indentation}{line}");
+            }
+        });
     }
 
     pub fn success(message: &str) {
-        let style = stdout_style(Style::new().green().bold());
-        println!("{} {}", "Done".style(style), message.trim_start());
+        with_suspended_multi(|| {
+            let style = stdout_style(Style::new().green().bold());
+            println!("{} {}", "Done".style(style), message.trim_start());
+        });
     }
 
     pub fn success_elapsed(message: &str, elapsed: Duration) {
-        let style = stdout_style(Style::new().green().bold());
-        let timing = stdout_style(Style::new().dimmed());
-        let message = message.trim_start().trim_end_matches('.');
-        println!(
-            "{} {} {}",
-            "Done".style(style),
-            message,
-            format!("in {}", format_duration(elapsed)).style(timing)
-        );
+        with_suspended_multi(|| {
+            let style = stdout_style(Style::new().green().bold());
+            let timing = stdout_style(Style::new().dimmed());
+            let message = message.trim_start().trim_end_matches('.');
+            println!(
+                "{} {} {}",
+                "Done".style(style),
+                message,
+                format!("in {}", format_duration(elapsed)).style(timing)
+            );
+        });
     }
 
     pub fn progress(title: &str, completed: usize, total: usize) {
-        println!();
-        let marker = stdout_style(Style::new().cyan().bold());
-        let title_style = stdout_style(Style::new().bold());
-        println!(
-            "{} {} {completed}/{total}",
-            "[+]".style(marker),
-            title.trim().style(title_style)
-        );
+        with_suspended_multi(|| {
+            println!();
+            let marker = stdout_style(Style::new().cyan().bold());
+            let title_style = stdout_style(Style::new().bold());
+            println!(
+                "{} {} {completed}/{total}",
+                "[+]".style(marker),
+                title.trim().style(title_style)
+            );
+        });
     }
 
     pub fn rule(width: usize, indent: u8) {
-        let indentation = "  ".repeat(indent as usize);
-        let style = stdout_style(Style::new().dimmed());
-        println!("{indentation}{}", "-".repeat(width).style(style));
+        with_suspended_multi(|| {
+            let indentation = "  ".repeat(indent as usize);
+            let style = stdout_style(Style::new().dimmed());
+            println!("{indentation}{}", "-".repeat(width).style(style));
+        });
     }
 
     pub fn result_ok(label: &str, detail: &str) {
-        result_line_stdout("OK", Style::new().green().bold(), label, detail);
+        with_suspended_multi(|| {
+            result_line_stdout("OK", Style::new().green().bold(), label, detail);
+        });
     }
 
     pub fn result_warn(label: &str, detail: &str) {
-        result_line_stdout("SKIP", Style::new().yellow().bold(), label, detail);
+        with_suspended_multi(|| {
+            result_line_stdout("SKIP", Style::new().yellow().bold(), label, detail);
+        });
     }
 
     pub fn result_error(label: &str, detail: &str) {
-        let status = "FAIL";
-        eprintln!(
-            "  {} {} {}",
-            format!("{status:<4}").style(stderr_style(Style::new().red().bold())),
-            label,
-            detail
-        );
+        with_suspended_multi(|| {
+            let status = "FAIL";
+            eprintln!(
+                "  {} {} {}",
+                format!("{status:<4}").style(stderr_style(Style::new().red().bold())),
+                label,
+                detail
+            );
+        });
     }
 
     pub fn warn(message: &str) {
-        let style = stdout_style(Style::new().yellow().bold());
-        println!("{} {}", "Warning:".style(style), message.trim_start());
+        with_suspended_multi(|| {
+            let style = stdout_style(Style::new().yellow().bold());
+            println!("{} {}", "Warning:".style(style), message.trim_start());
+        });
     }
 
     pub fn error(message: &str) {
-        let style = stderr_style(Style::new().red().bold());
-        eprintln!("{} {}", "Error:".style(style), message.trim_start());
+        with_suspended_multi(|| {
+            let style = stderr_style(Style::new().red().bold());
+            eprintln!("{} {}", "Error:".style(style), message.trim_start());
+        });
     }
 
     /// Render a bordered panel with a bold title and a body.
     pub fn panel(title: &str, body: &str) {
-        println!();
-        let style = stdout_style(Style::new().bold().cyan());
-        println!("{}", title.trim().style(style));
-        for line in body.lines() {
-            println!("  {line}");
-        }
+        with_suspended_multi(|| {
+            println!();
+            let style = stdout_style(Style::new().bold().cyan());
+            println!("{}", title.trim().style(style));
+            for line in body.lines() {
+                println!("  {line}");
+            }
+        });
     }
 
     pub fn confirm(prompt: &str, default: bool) -> Result<bool> {
@@ -300,6 +359,9 @@ impl DeployProgress {
         let start = Instant::now();
 
         let multi = MultiProgress::new();
+        if tty {
+            set_active_multi(Some(multi.clone()));
+        }
         let overall = if tty && total > 0 {
             let bar = multi.add(ProgressBar::new(total as u64));
             let style = ProgressStyle::with_template(
@@ -666,6 +728,7 @@ impl DeployProgressInner {
             }
             // MultiProgress does not need explicit clear; dropping bars hides them.
             let _ = &self.multi;
+            set_active_multi(None);
         }
     }
 }
@@ -715,6 +778,9 @@ impl ServerSetupProgress {
         let start = Instant::now();
 
         let multi = MultiProgress::new();
+        if tty {
+            set_active_multi(Some(multi.clone()));
+        }
         let overall = if tty && total > 0 {
             let bar = multi.add(ProgressBar::new(total as u64));
             let style = ProgressStyle::with_template(
@@ -954,6 +1020,7 @@ impl ServerSetupProgressInner {
                 self.overall.finish_and_clear();
             }
             let _ = &self.multi;
+            set_active_multi(None);
         }
     }
 }
