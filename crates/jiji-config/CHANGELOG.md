@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.8.2...jiji-config-v0.9.0) (2026-08-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* make servers a literal deploy target list and replace replicas/placement with per-server scale ([#98](https://github.com/acidtib/jiji/issues/98))
+
+### Features
+
+* add mounted build secrets support ([d6ccab4](https://github.com/acidtib/jiji/commit/d6ccab4e738cf0547784df7239e0400e3efee32f))
+* complete audit coverage and harden validation and distribution ([f350693](https://github.com/acidtib/jiji/commit/f350693ea8723e90b5056903b1620bed2dd42c26))
+* implement network_mode: host, reject network_mode: none ([#97](https://github.com/acidtib/jiji/issues/97)) ([75f34c7](https://github.com/acidtib/jiji/commit/75f34c725411d5f4509e2461f479148870ed97e4))
+* make servers a literal deploy target list and replace replicas/placement with per-server scale ([#98](https://github.com/acidtib/jiji/issues/98)) ([beba101](https://github.com/acidtib/jiji/commit/beba101b243c28edf0e4ac054999e29165a07aa2))
+
 ## [0.8.2](https://github.com/acidtib/jiji/compare/jiji-config-v0.8.1...jiji-config-v0.8.2) (2026-08-13)
 
 

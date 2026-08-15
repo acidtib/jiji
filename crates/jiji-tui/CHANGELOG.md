@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/acidtib/jiji/compare/jiji-tui-v0.7.0...jiji-tui-v0.7.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **jiji-tui:** suspend progress dashboards around other output ([cac4036](https://github.com/acidtib/jiji/commit/cac403672dfa46c628afc3bc4dcb70e02b1b12d3))
+
 ## [0.7.0](https://github.com/acidtib/jiji/compare/jiji-tui-v0.6.1...jiji-tui-v0.7.0) (2026-08-12)
 
 

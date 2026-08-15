@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/acidtib/jiji/compare/jiji-network-v0.8.2...jiji-network-v0.9.0) (2026-08-15)
+
+
+### Features
+
+* implement network_mode: host, reject network_mode: none ([#97](https://github.com/acidtib/jiji/issues/97)) ([75f34c7](https://github.com/acidtib/jiji/commit/75f34c725411d5f4509e2461f479148870ed97e4))
+
 ## [0.8.2](https://github.com/acidtib/jiji/compare/jiji-network-v0.8.1...jiji-network-v0.8.2) (2026-08-13)
 
 ## [0.8.1](https://github.com/acidtib/jiji/compare/jiji-network-v0.8.0...jiji-network-v0.8.1) (2026-08-10)
