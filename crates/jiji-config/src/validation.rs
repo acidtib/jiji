@@ -199,6 +199,15 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                         code: "NETWORK_MODE_SERVICE_CHAIN_UNSUPPORTED",
                     });
                 }
+                if upstream.network_mode == "host" {
+                    errors.push(ValidationError {
+                        path: format!("services.{name}.network_mode"),
+                        message: format!(
+                            "Service '{name}' cannot depend on '{upstream_name}', which uses network_mode: host; a dependent can only share a network_mode: bridge upstream's namespace"
+                        ),
+                        code: "NETWORK_MODE_SERVICE_HOST_UPSTREAM_UNSUPPORTED",
+                    });
+                }
                 if !service
                     .servers
                     .iter()
@@ -621,6 +630,16 @@ fn validate_host_network_ports(config: &Config, errors: &mut Vec<ValidationError
             });
             continue;
         };
+        if port == 0 {
+            errors.push(ValidationError {
+                path: format!("services.{name}.ports"),
+                message: format!(
+                    "Service '{name}' uses network_mode: host; 'ports' entry '0' is not a valid port."
+                ),
+                code: "HOST_NETWORK_INVALID_PORT",
+            });
+            continue;
+        }
         for (existing_port, existing_service, existing_servers) in &seen_ports {
             if *existing_port == port
                 && service

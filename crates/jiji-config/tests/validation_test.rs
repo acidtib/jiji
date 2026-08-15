@@ -223,6 +223,34 @@ services:
 }
 
 #[test]
+fn network_mode_service_depending_on_a_host_mode_upstream_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_SERVICE_HOST_UPSTREAM_UNSUPPORTED"));
+}
+
+#[test]
 fn network_mode_service_server_mismatch_is_rejected() {
     let raw = parse(
         r#"
@@ -416,6 +444,30 @@ services:
     servers: [one]
     network_mode: host
     ports: ["8080/udp"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_INVALID_PORT"));
+}
+
+#[test]
+fn network_mode_host_rejects_port_zero() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["0"]
 "#,
     );
     let result = validate_yaml(&raw);

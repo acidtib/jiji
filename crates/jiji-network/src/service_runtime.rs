@@ -124,28 +124,32 @@ impl NetworkedContainerRun {
                 args.push(self.bridge_name.clone());
                 args.push("--ip".to_string());
                 args.push(self.address.to_string());
-                args.push("--dns".to_string());
-                args.push(self.dns_address.to_string());
-                args.push("--dns-search".to_string());
-                args.push(jiji_core::DEFAULT_SERVICE_DOMAIN.to_string());
-                args.push("--dns-option".to_string());
-                args.push("ndots:1".to_string());
+                args.extend(self.dns_args());
             }
             NetworkTarget::Host => {
                 args.push("--network".to_string());
                 args.push("host".to_string());
-                args.push("--dns".to_string());
-                args.push(self.dns_address.to_string());
-                args.push("--dns-search".to_string());
-                args.push(jiji_core::DEFAULT_SERVICE_DOMAIN.to_string());
-                args.push("--dns-option".to_string());
-                args.push("ndots:1".to_string());
+                args.extend(self.dns_args());
             }
         }
         args.extend(self.extra_args.clone());
         args.push(self.image.clone());
         args.extend(self.command.clone());
         args
+    }
+
+    /// `--dns`/`--dns-search`/`--dns-option` flags shared by `Bridge` and `Host`: both need
+    /// `.jiji` resolution, unlike `SharedContainer`, which inherits its resolver config from
+    /// whatever container it joins.
+    fn dns_args(&self) -> Vec<String> {
+        vec![
+            "--dns".to_string(),
+            self.dns_address.to_string(),
+            "--dns-search".to_string(),
+            jiji_core::DEFAULT_SERVICE_DOMAIN.to_string(),
+            "--dns-option".to_string(),
+            "ndots:1".to_string(),
+        ]
     }
 
     pub fn shell_command(&self) -> String {

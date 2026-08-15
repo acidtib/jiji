@@ -282,7 +282,22 @@ already apply to `service:<name>` sharing.
 `network_mode: none` is rejected by validation outright: every service
 needs a reachable address for DNS and health checks, the catalog's address
 field is not optional, and the one legitimate use of `none` (an isolated
-one-off with no network needs) is already served by `crons:`.
+one-off with no network needs) is already served by `crons:`. A
+`service:<name>` dependent cannot target a `host`-mode upstream: it would
+silently gain host networking through the shared namespace without ever
+declaring `network_mode: host` itself, so validation rejects it the same
+way it rejects a chained `service:<name>` dependency.
+
+Known gap: `host` mode's `jiji.lease` label carries `management_address`
+for observability, reusing the convention `service:<upstream>` sharing
+already established for the upstream's address. Agent-side discovery does
+not distinguish this from a genuine per-deployment bridge lease, so it
+tries to record that label's address as a real lease keyed by
+`deployment_id`. For `host` mode this leaves a permanently-orphaned
+`address_leases` row after every redeploy, since cleanup only runs from the
+bridge `AllocateAddress` path. Pre-existing for `service:<name>` sharing;
+`host` mode makes it worse because a `host`-only project never calls that
+path at all.
 
 Sources:
 
@@ -291,6 +306,7 @@ Sources:
 - `crates/jiji-cli/src/deploy_transaction.rs`
 - `crates/jiji-network/src/service_runtime.rs`
 - `crates/jiji-cli/src/container_runtime.rs`
+- `crates/jiji-agent/src/discovery.rs`
 
 ## Scheduled Jobs
 

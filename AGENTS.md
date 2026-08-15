@@ -229,10 +229,29 @@ container-side port as routing/uniqueness metadata only, since `-p`
 combined with `--network host` is a discarded, warning-spamming no-op on
 current Docker/Podman and a hard error on some older Podman releases.
 `proxy:` and `replicas > 1` stay rejected by the same generic non-bridge
-checks `service:<name>` sharing already triggers. `network_mode: none` is
-rejected outright by validation: every service needs a reachable address
-for DNS and health checks, and the one thing `none` is good for (an
-isolated one-off) is already served by `crons:`.
+checks `service:<name>` sharing already triggers. A `service:<name>`
+dependent cannot target a `host`-mode upstream either: validation rejects
+it, since joining a host-networked container's namespace would silently
+hand the dependent host networking too, without it ever declaring
+`network_mode: host` itself. `network_mode: none` is rejected outright by
+validation: every service needs a reachable address for DNS and health
+checks, and the one thing `none` is good for (an isolated one-off) is
+already served by `crons:`.
+
+Known gap (not yet fixed): a host-mode container's `jiji.lease` label
+carries `management_address` for observability, the same convention
+`service:<name>` sharing already uses for the upstream's address. Agent-side
+discovery (`recover_labeled_leases` in `jiji-agent/src/discovery.rs`)
+doesn't distinguish this from a genuine per-deployment bridge lease, so it
+tries to claim that label's address as a real lease row keyed by
+`deployment_id`. For `host` mode this produces a permanently-orphaned
+`address_leases` row on every redeploy (cleanup only runs from the bridge
+`AllocateAddress` path, which `host`-mode projects never call) plus a
+recurring "container label conflicts with a durable address lease"
+warning. This bug pattern already existed for `service:<name>` sharing
+before `host` mode was added; fixing it properly needs a way for discovery
+to tell a genuine lease claim apart from an address label kept only for
+observability.
 
 Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
 
