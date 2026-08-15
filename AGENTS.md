@@ -443,6 +443,25 @@ public. **Security:** always pipe a fetched release body into this script
 via `env:`, never interpolate `${{ }}` directly into a `run:` block. It's
 free-text commit/PR content.
 
+**Gotcha (confirmed live, don't reintroduce):**
+`.github/scripts/self-heal-stuck-release.sh` (runs before the
+`googleapis/release-please-action` step, on every push and a 4h schedule)
+recovers a merged release PR release-please's own
+`getBranchComponent`/`getComponent` bug (upstream #2214) drops the
+tag/release for -- but that bug only occurs when the PR released exactly
+one package, and that package has `include-component-in-tag: false` (only
+`jiji-cli`, here). The script must gate on that exact precondition before
+touching anything: a release PR is *always* still labeled `autorelease:
+pending` for the brief window before `release-please-action`'s own step,
+later in the same job, processes it -- that's normal, not evidence of
+being stuck. Confirmed live: an earlier version of this script queried and
+self-healed *any* merged-and-pending PR with no such gate, so it also
+fired on a PR that released 5 packages together (a normal case, unaffected
+by the bug), pre-creating all 5 tags/releases; `release-please-action`'s
+own attempt right after then failed outright with `Release already
+exists` on the first tag it reached, failing the whole job even though
+every tag/release had, by then, already been correctly created.
+
 `jiji-cli`'s and `jiji-network`'s `build.rs` each read a sibling crate's
 version at compile time (`jiji-agent` → `AGENT_BUILD_VERSION`, `jiji-proxy`
 → `PROXY_VERSION`/`image()`) via a shared `sibling_crate_version()` helper,

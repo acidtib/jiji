@@ -11,6 +11,20 @@
 # got wrong), creates whatever's missing, then flips the label. Idempotent:
 # skips tags that already exist, so reruns and partial prior runs are safe.
 #
+# Deliberately scoped to *exactly* that bug precondition (single package,
+# include-component-in-tag: false): this runs before the
+# googleapis/release-please-action step in the same job, and a merged
+# release PR is *always* still labeled "autorelease: pending" for the brief
+# window before that next step processes it -- that's normal, not evidence
+# of being stuck. A PR releasing more than one package is unaffected by the
+# upstream bug and is handled correctly by that next step on its own,
+# without this script's help; racing ahead and creating its tags/releases
+# here too collides with it (confirmed live: PR #94 released 5 packages
+# together, self-heal created all 5 preemptively before this fix, and
+# release-please-action's own attempt right after failed with "Release
+# already exists" on the first one it reached, failing the whole job even
+# though every tag/release had, in fact, already been correctly created).
+#
 # Requires: full history checkout (fetch-depth: 0) with a push-capable
 # token (default GITHUB_TOKEN can't trigger downstream release workflows),
 # and GH_TOKEN set for `gh`.
@@ -76,11 +90,32 @@ for i in $(seq 0 $((pending_count - 1))); do
     continue
   fi
 
+  mapfile -t changes < <(changed_packages "$sha")
+
+  # Only the documented single-jiji-cli-alone bug precondition qualifies --
+  # see the file header for why.
+  if [ "${#changes[@]}" -ne 1 ]; then
+    echo "PR #$number: released ${#changes[@]} package(s) together, not the single-jiji-cli bug case -- leaving it for release-please-action"
+    continue
+  fi
+
+  bug_path="${changes[0]%%=*}"
+  bug_include_component=$(jq -r --arg p "$bug_path" \
+    'if (.packages[$p] | has("include-component-in-tag"))
+     then .packages[$p]["include-component-in-tag"]
+     else true end' \
+    release-please-config.json)
+  if [ "$bug_include_component" != "false" ]; then
+    echo "PR #$number: released '$bug_path' alone, but it tags normally -- leaving it for release-please-action"
+    continue
+  fi
+
   echo "PR #$number (merge commit $sha): checking for missing tags/releases"
 
   fully_healed=1
-  while IFS='=' read -r path version; do
-    [ -z "$path" ] && continue
+  for change in "${changes[@]}"; do
+    path="${change%%=*}"
+    version="${change#*=}"
     tag=$(tag_for_package "$path" "$version")
 
     if tag_exists "$tag"; then
@@ -107,7 +142,7 @@ for i in $(seq 0 $((pending_count - 1))); do
     if ! tag_exists "$tag"; then
       fully_healed=0
     fi
-  done < <(changed_packages "$sha")
+  done
 
   if [ "$fully_healed" -eq 1 ]; then
     echo "  all tags present for PR #$number, flipping label to autorelease: tagged"
