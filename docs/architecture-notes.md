@@ -260,11 +260,37 @@ deferred until the dependent wave finishes.
 Namespace-sharing updates are not zero-downtime. There is a real interval
 between removal of the old upstream and attachment of the new dependent.
 
+### Host networking (`network_mode: host`)
+
+A service can instead share the host's own network namespace via
+`network_mode: host`. Unlike `service:<upstream>` sharing, it still goes
+through the full candidate/active/draining/tombstone catalog lifecycle and a
+container-readiness health check, exactly like a bridge-networked service
+does; it just never leases an address from the agent. The catalog record's
+address is the server's own management (WireGuard mesh) address, since the
+container shares that interface directly. `ports:` accepts at most one bare
+container-side port number as routing metadata only, never rendered as
+`-p`: combining `-p` with `--network host` is a discarded, warning-spamming
+no-op on current Docker/Podman and a hard error on some older Podman
+releases. Two `host`-mode services whose `servers` overlap cannot declare
+the same port; the check is project-scoped, so a different project's
+`host`-mode service on a shared machine can still collide, surfacing as a
+failed container start rather than a validation error. `proxy:` and
+`replicas > 1` are rejected by the same generic non-bridge checks that
+already apply to `service:<name>` sharing.
+
+`network_mode: none` is rejected by validation outright: every service
+needs a reachable address for DNS and health checks, the catalog's address
+field is not optional, and the one legitimate use of `none` (an isolated
+one-off with no network needs) is already served by `crons:`.
+
 Sources:
 
 - `crates/jiji-config/src/validation.rs`
 - `crates/jiji-cli/src/cascade.rs`
 - `crates/jiji-cli/src/deploy_transaction.rs`
+- `crates/jiji-network/src/service_runtime.rs`
+- `crates/jiji-cli/src/container_runtime.rs`
 
 ## Scheduled Jobs
 

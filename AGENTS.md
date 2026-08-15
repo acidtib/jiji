@@ -212,6 +212,30 @@ upstream's new container exists.
 
 Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
 
+### Host Networking (`network_mode: host`)
+
+A service can share the host's own network namespace via `network_mode:
+"host"` instead of getting a project-bridge address. It still goes through
+the full candidate/active/draining/tombstone catalog lifecycle like a
+bridge-networked service (`deploy_host_mode` in `deploy_transaction.rs`),
+it just never calls the agent's `AllocateAddress` RPC and uses the server's
+`management_address` (its WireGuard mesh address) everywhere a bridge
+deployment would use its leased address: catalog commit, `jiji.lease`
+label. `NetworkedContainerRun::host` renders `--network host` plus
+`--dns*` flags (still needed for `.jiji` resolution; unlike
+`service:<name>` sharing, a host-mode container inherits no one else's
+resolver config) and never `-p`: `ports:` accepts at most one bare
+container-side port as routing/uniqueness metadata only, since `-p`
+combined with `--network host` is a discarded, warning-spamming no-op on
+current Docker/Podman and a hard error on some older Podman releases.
+`proxy:` and `replicas > 1` stay rejected by the same generic non-bridge
+checks `service:<name>` sharing already triggers. `network_mode: none` is
+rejected outright by validation: every service needs a reachable address
+for DNS and health checks, and the one thing `none` is good for (an
+isolated one-off) is already served by `crons:`.
+
+Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
+
 ### Scheduled Cron Execution (`crons:`)
 
 Each service can define `crons:` (name -> `CronConfig`: `schedule`,
@@ -657,12 +681,6 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   `secrets:` today changes nothing and produces no warning. `.env` files and
   host-env fallback are implemented; no adapter implementations exist. See
   `docs/todo.md` for the concrete integration plan.
-- `network_mode: "host"` / `"none"` are documented in `crates/jiji-config/
-  src/jiji.yml` but not implemented by any runtime code path:
-  `container_runtime::build_dynamic_run` never reads `network_mode` for
-  either value, so a service configured with them still gets normal bridge
-  networking, silently. Only `"bridge"` (default) and `"service:<name>"`
-  (see "Container Namespace Sharing" above) actually change behavior today.
 
 ## Testing
 

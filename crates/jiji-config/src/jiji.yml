@@ -942,10 +942,21 @@ services:
 #       once the upstream's old container is torn down). This is not itself zero-downtime
 #       with respect to upstream churn: there is a brief gap between the upstream's cutover
 #       completing and each dependent's own redeploy completing.
-#   - "host" and "none" are accepted by the schema but are not currently implemented by any
-#     runtime code path -- setting either one is silently ignored and the service still gets
-#     normal bridge networking. Only "bridge" and "service:<name>" actually change behavior
-#     today. Docker's native "container:<id>" syntax is explicitly rejected by validation.
+#     - "host" - Shares the host's own network namespace instead of getting a project-bridge
+#       address. `ports:` accepts at most one entry, a bare container-side port number only
+#       (e.g. "8080"), never a host:container mapping or a "/udp" suffix: it is metadata only
+#       (what the service listens on, for the per-server uniqueness check below), never
+#       rendered as `-p` -- the app must already bind the port it wants directly on the host.
+#       Two `host`-mode services whose `servers` overlap cannot declare the same port; this
+#       check is project-scoped only, so a different project's `host`-mode service on a shared
+#       machine can still collide, surfacing as a failed container start instead. `proxy:` and
+#       `replicas` > 1 stay rejected, the same as any other non-bridge mode. Host networking
+#       removes jiji's mesh isolation for that container: it can reach, and be reached by,
+#       anything the host's own network can, bypassing the project bridge entirely.
+#     - "none" - Not supported. Every service needs a reachable address for DNS and health
+#       checks; rejected by validation with a pointer to `service:<name>` (explicit sharing) or
+#       `crons:` (isolated one-off/scheduled work) as the supported alternatives.
+#   - Docker's native "container:<id>" syntax is explicitly rejected by validation.
 #
 # devices: Device mappings for hardware access
 #   - Type: array of strings

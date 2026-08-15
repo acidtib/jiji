@@ -176,6 +176,53 @@ pub fn build_shared_run(
     run
 }
 
+/// Builds the run for a `network_mode: host` service: shares the host's own network namespace
+/// instead of a leased bridge address. `address` is the server's `management_address`, kept only
+/// for the `jiji.lease` label and catalog/observability use -- it is never rendered into `--ip`,
+/// since a host-networked container has no address of its own (see `NetworkedContainerRun::host`).
+/// Ports are deliberately never rendered here: `-p` combined with `--network host` is at best a
+/// discarded, warning-spamming no-op and at worst a hard error on some engine versions (see
+/// `docs/architecture-notes.md#container-namespace-sharing`); the app must already bind whatever
+/// port it wants directly on the host.
+#[allow(clippy::too_many_arguments)]
+pub fn build_host_run(
+    engine: ContainerEngine,
+    project: &str,
+    service_name: &str,
+    server_name: &str,
+    replica_id: &str,
+    deployment_id: &str,
+    image: &str,
+    address: Ipv4Addr,
+    server: &ServerPlan,
+    service: &Service,
+    mount_args: &[String],
+    env_file_path: &str,
+) -> NetworkedContainerRun {
+    let name = dynamic_container_name(project, service_name, deployment_id);
+    let mut run = NetworkedContainerRun::host(engine, name, image, address, server);
+    run.extra_args = vec![
+        "--detach".to_string(),
+        "--restart".to_string(),
+        service.restart.unwrap_or_default().to_string(),
+    ];
+    run.extra_args.extend(render_dynamic_labels(
+        project,
+        service_name,
+        server_name,
+        replica_id,
+        deployment_id,
+        address,
+        "candidate",
+    ));
+    run.extra_args.extend(mount_args.iter().cloned());
+    run.extra_args.push("--env-file".to_string());
+    run.extra_args.push(env_file_path.to_string());
+    run.extra_args.extend(render_resource_options(service));
+    run.command = render_command(&service.command);
+    run
+}
+
 pub fn dynamic_container_name(project: &str, service: &str, deployment_id: &str) -> String {
     let suffix = deployment_id.get(..12).unwrap_or(deployment_id);
     format!("{project}-{service}-{suffix}")
@@ -417,5 +464,36 @@ cap_add: ["SYS_ADMIN"]
             vec!["./run.sh".to_string(), "--flag".to_string()]
         );
         assert!(render_command(&None).is_empty());
+    }
+
+    #[test]
+    fn build_host_run_uses_network_host_omits_ports_and_labels_management_address() {
+        use jiji_network::NetworkPlanner;
+
+        let config: jiji_config::Config = serde_yaml::from_str(
+            "project: demo\nbuilder: { engine: docker }\nservers:\n  app: { host: 203.0.113.10 }\nservices:\n  web: { image: nginx, servers: [app], network_mode: host, ports: [\"8080\"] }\n",
+        )
+        .unwrap();
+        let plan = NetworkPlanner::new().plan(&config).unwrap();
+        let server = &plan.servers["app"];
+        let service = &config.services["web"];
+        let run = build_host_run(
+            ContainerEngine::Docker,
+            "demo",
+            "web",
+            "app",
+            "replica-1",
+            "deadbeefdeadbeef",
+            "nginx:latest",
+            server.management_address,
+            server,
+            service,
+            &[],
+            "/tmp/env",
+        );
+        let command = run.shell_command();
+        assert!(command.contains("--network host"));
+        assert!(!command.contains("-p 8080"));
+        assert!(command.contains(&format!("jiji.lease={}", server.management_address)));
     }
 }

@@ -26,4 +26,4 @@ pub use proxy_script::{
     CONTAINER_NAME, INGRESS_TABLE, INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT, PROXY_VERSION,
     RELAY_NAT_TABLE,
 };
-pub use service_runtime::NetworkedContainerRun;
+pub use service_runtime::{NetworkTarget, NetworkedContainerRun};
