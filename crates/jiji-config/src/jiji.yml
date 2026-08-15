@@ -553,7 +553,7 @@ services:
   #       path: /api/health               # HTTP health check endpoint
   #       interval: 15s
   #       timeout: 10s
-  #       deploy_timeout: 60s
+  #       deploy_timeout: 30s
   #   # Or with command-based health check (for containers without HTTP endpoints)
   #   # proxy:
   #   #   port: 3000
@@ -564,7 +564,7 @@ services:
   #   #     cmd_runtime: docker           # Optional: Runtime (docker/podman, defaults to builder.engine)
   #   #     interval: 15s
   #   #     timeout: 10s
-  #   #     deploy_timeout: 60s
+  #   #     deploy_timeout: 30s
   #   # Or path-based routing (same domain, different path)
   #   # proxy:
   #   #   port: 3000
@@ -575,7 +575,7 @@ services:
   #   #     path: /api/health
   #   #     interval: 15s
   #   #     timeout: 10s
-  #   #     deploy_timeout: 60s
+  #   #     deploy_timeout: 30s
   #   # Or combined routing (specific host + path prefix)
   #   # proxy:
   #   #   port: 3000
@@ -586,7 +586,7 @@ services:
   #   #     path: /v2/health
   #   #     interval: 15s
   #   #     timeout: 10s
-  #   #     deploy_timeout: 60s
+  #   #     deploy_timeout: 30s
 
   # Example: Multi-Target Proxy for services with multiple ports
   # Useful for services like Garage that expose multiple APIs
@@ -611,14 +611,14 @@ services:
   #         healthcheck:
   #           path: /health               # HTTP health check endpoint
   #           interval: 30s
-  #           deploy_timeout: 60s
+  #           deploy_timeout: 30s
   #       - port: 3903                    # Admin API endpoint
   #         hosts: [admin.garage.example.com]
   #         ssl: true
   #         healthcheck:
   #           path: /health               # HTTP health check endpoint
   #           interval: 30s
-  #           deploy_timeout: 60s
+  #           deploy_timeout: 30s
   #   # Note: Each target is deployed as {project}-{service}-{port} in jiji-proxy
   #   # Example: myproject-garage-3900, myproject-garage-3903
   #
@@ -651,7 +651,7 @@ services:
   #         healthcheck:
   #           cmd: "pg_isready -U appuser -d app"
   #           interval: 35s
-  #           deploy_timeout: 60s
+  #           deploy_timeout: 30s
   #
   # Health Check Configuration:
   # ==========================
@@ -665,7 +665,7 @@ services:
   #        path: /health                  # HTTP endpoint to check (e.g., "/health", "/up")
   #        interval: 10s                  # Check interval (default: 10s)
   #        timeout: 5s                    # Request timeout (default: 5s)
-  #        deploy_timeout: 60s            # Max wait for initial deployment (default: 60s)
+  #        deploy_timeout: 30s            # Max wait for initial deployment (default: 30s)
   #
   # 2. Command-based Health Checks
   #    - Executes commands via docker exec or podman exec
@@ -678,7 +678,7 @@ services:
   #        cmd_runtime: docker            # Optional: Runtime (docker/podman, auto-detects from builder.engine)
   #        interval: 10s                  # Check interval (default: 10s)
   #        timeout: 5s                    # Command timeout (default: 5s)
-  #        deploy_timeout: 60s            # Max wait for initial deployment (default: 60s)
+  #        deploy_timeout: 30s            # Max wait for initial deployment (default: 30s)
   #
   # Command Health Check Examples:
   # - File-based readiness: cmd: "test -f /app/ready"
