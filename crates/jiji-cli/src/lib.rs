@@ -553,7 +553,7 @@ pub async fn run() {
                 }
             }
             ServiceCommands::Scale {
-                replicas,
+                scale,
                 reset,
                 dry_run,
                 yes,
@@ -563,7 +563,7 @@ pub async fn run() {
                     cli.config_file.as_deref(),
                     cli.hosts.as_deref(),
                     cli.services.as_deref(),
-                    *replicas,
+                    *scale,
                     *reset,
                     *dry_run,
                     *yes,

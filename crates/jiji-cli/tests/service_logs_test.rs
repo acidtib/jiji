@@ -257,7 +257,7 @@ fn agent_catalog_command() -> String {
 
 fn active_catalog_response() -> CannedResponse {
     success(
-        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
     )
 }
 

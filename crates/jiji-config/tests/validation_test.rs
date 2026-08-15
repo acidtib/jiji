@@ -74,7 +74,7 @@ services:
 }
 
 #[test]
-fn replicas_and_placement_have_distributed_defaults() {
+fn scale_has_a_default_of_one() {
     let config: jiji_config::Config = serde_yaml::from_str(
         r#"
 project: demo
@@ -88,11 +88,7 @@ services:
 "#,
     )
     .unwrap();
-    assert_eq!(config.services["web"].replicas, 1);
-    assert_eq!(
-        config.services["web"].placement,
-        jiji_config::PlacementPolicy::Spread
-    );
+    assert_eq!(config.services["web"].scale, 1);
 }
 
 #[test]
@@ -107,7 +103,7 @@ services:
   database:
     image: postgres
     servers: [one]
-    replicas: 2
+    scale: 2
     stop_first: true
     volumes: [data:/var/lib/postgresql/data]
 "#,
@@ -293,7 +289,7 @@ services:
     image: qbittorrent
     servers: [one]
     network_mode: service:gluetun
-    replicas: 2
+    scale: 2
     proxy:
       port: 8080
 "#,
@@ -550,7 +546,7 @@ services:
     servers: [one]
     network_mode: host
     ports: ["8080"]
-    replicas: 2
+    scale: 2
     proxy:
       port: 8080
 "#,

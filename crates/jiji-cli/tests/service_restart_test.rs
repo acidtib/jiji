@@ -61,7 +61,7 @@ fn agent_catalog_command() -> String {
 
 fn active_catalog_response_with_image(image: &str) -> CannedResponse {
     success(&format!(
-        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"olddeployment1234567890","address":"100.64.0.9","ports":[],"image":"{image}","state":"active","health":"healthy"}}]}}}}"#
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"olddeployment1234567890","address":"100.64.0.9","ports":[],"image":"{image}","state":"active","health":"healthy"}}]}}}}"#
     ))
 }
 
@@ -412,7 +412,7 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.contains("demo:web:app: restarted ("),
+        stdout.contains("demo:web:web-ad2048bd513e: restarted ("),
         "stdout: {stdout}"
     );
 
@@ -545,7 +545,7 @@ async fn restart_without_hosts_filter_never_contacts_an_unrelated_server() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.contains("demo:web:app: restarted ("),
+        stdout.contains("demo:web:web-ad2048bd513e: restarted ("),
         "stdout: {stdout}"
     );
     assert!(
@@ -702,10 +702,10 @@ async fn restart_still_sweeps_a_stale_retention_spec_on_a_server_no_endpoint_tar
 /// `-H`-scoped `sessions` -- even though `resolve_sessions` (unreachable) and
 /// `agent_supports_retention` (too old) had already turned the two *expected* reasons to skip a
 /// host into lenient no-ops before this point, so a failure this deep is always a real, unexpected
-/// one worth failing the command over. Here "web" (build-configured, `servers: [app, other]`) has
-/// its one active replica on "app" only; restarting it still unconditionally pushes a retention
-/// spec to "other" too (every host in `servers:`, not just ones with a replica) -- and "other"
-/// rejects the push with a genuine agent-side error.
+/// one worth failing the command over. Here "web" (build-configured, `servers: [app, other]`) is
+/// deployed on both, but `-H app` only targets its replica on "app"; restarting still
+/// unconditionally pushes a retention spec to "other" too (every host in `servers:`, not just the
+/// ones `-H` selected) -- and "other" rejects the push with a genuine agent-side error.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_fails_when_pushing_a_retention_spec_to_an_untargeted_server_fails() {
     let (dir, key_path, client_key) = setup_test_dir();
@@ -759,9 +759,9 @@ async fn restart_fails_when_pushing_a_retention_spec_to_an_untargeted_server_fai
     );
 }
 
-/// A single build-configured service ("web") whose `servers:` list spans two servers, but whose
-/// one replica (default `replicas: 1`) is only ever placed on the first, "app" -- "other" never
-/// hosts a replica, yet still unconditionally receives "web"'s retention-spec push.
+/// A single build-configured service ("web") whose `servers:` list spans two servers; both get a
+/// replica (default `scale: 1` per server), and both unconditionally receive "web"'s
+/// retention-spec push regardless of which one `-H` targets for a restart.
 fn config_yaml_with_a_build_service_on_two_servers(
     app_addr: SocketAddr,
     other_addr: SocketAddr,
@@ -882,7 +882,7 @@ async fn restarting_the_upstream_cascades_and_sequences_its_dependent() {
     // satisfy both gluetun's own "is there a previous deployment" lookup (by replica_id) and
     // qbittorrent's upstream-resolution lookup (by service+owner_node_id), so restarting only
     // gluetun explicitly and having qbittorrent cascade in needs just one static canned response.
-    let gluetun_replica_id = jiji_cli::placement::replica_id("demo", "gluetun", 0);
+    let gluetun_replica_id = jiji_cli::placement::replica_id_for("demo", "gluetun", "app", 0);
     let old_gluetun_name = "demo-gluetun-oldgluetunde";
     let catalog_response = success(&format!(
         r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"{gluetun_replica_id}","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"oldgluetundeploy1234567","address":"100.64.0.20","ports":[],"image":"docker.io/qmcgaw/gluetun:latest","state":"active","health":"healthy"}}]}}}}"#

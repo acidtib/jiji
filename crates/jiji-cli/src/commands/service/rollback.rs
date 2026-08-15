@@ -72,25 +72,9 @@ pub async fn run(
         );
     }
 
-    let mut selected: Vec<ServiceEndpointPlan> = select_target_endpoints(&plan, hosts, services)?
-        .into_iter()
-        .cloned()
-        .collect();
-    let mut replica_ids: BTreeMap<String, String> = BTreeMap::new();
-    for endpoint in &selected {
-        let service = config
-            .services
-            .get(&endpoint.service)
-            .expect("checked by select_target_endpoints");
-        let replica_id = crate::placement::endpoint_replica_id(
-            &plan.project,
-            &endpoint.service,
-            service,
-            &endpoint.server,
-        )
-        .expect("selected endpoint is eligible for its service");
-        replica_ids.insert(endpoint.identity.clone(), replica_id);
-    }
+    let matched_endpoints = select_target_endpoints(&plan, hosts, services)?;
+    let (mut selected, mut replica_ids) =
+        crate::cascade::expand_replicas(&config, matched_endpoints);
     // A rolled-back upstream's `network_mode: service:<upstream>` dependents must be rolled back
     // too in the same invocation, in the same order `jiji deploy` cascades them -- see
     // `add_cascaded_dependents`.

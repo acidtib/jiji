@@ -33,9 +33,9 @@ fn success(stdout: &str) -> CannedResponse {
 
 fn default_response(command: &str) -> CannedResponse {
     let body = if command.contains("# jiji-request:catalog-list") {
-        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#
     } else if command.contains("# jiji-request:catalog-commit") {
-        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":3,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"stopped","health":"unhealthy"}}}"#
+        r#"{"Ok":{"type":"catalog_committed","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"app","owner_epoch":1,"revision":3,"deployment_id":"abcdef1234567890","address":"100.64.0.9","ports":[3000],"image":"docker.io/example/web:latest","state":"stopped","health":"unhealthy"}}}"#
     } else if command.contains("# jiji-request:release-address") {
         r#"{"Ok":{"type":"address_released","released":true}}"#
     } else if command.contains("# jiji-request:cron-spec-list") {
@@ -369,11 +369,11 @@ async fn remove_is_blocked_while_a_concurrent_operation_holds_the_replica_lock()
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
     responses.insert(
-        "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-c1fe97ed0787.lock.".to_string(),
+        "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-ad2048bd513e.lock.".to_string(),
         success("JIJI_LOCK_HELD\n"),
     );
     responses.insert(
-        "cat .jiji/demo/locks/replica/web-c1fe97ed0787.lock/info.json 2>/dev/null || true"
+        "cat .jiji/demo/locks/replica/web-ad2048bd513e.lock/info.json 2>/dev/null || true"
             .to_string(),
         success(
             r#"{"message":"jiji deploy: web","acquired_at":1000000000,"acquired_by":"alice","pid":123}"#,

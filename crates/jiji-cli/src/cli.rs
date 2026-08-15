@@ -336,15 +336,15 @@ pub enum ServiceCommands {
         #[arg(long, help = "Replace an existing deployment lock")]
         force_lock: bool,
     },
-    #[command(about = "Change the desired replica count for one service")]
+    #[command(about = "Change the desired instance count per server for one service")]
     Scale {
-        #[arg(long, value_name = "N", conflicts_with = "reset")]
-        replicas: Option<u32>,
         #[arg(
-            long,
-            conflicts_with = "replicas",
-            help = "Reset to the configured replica count"
+            value_name = "N",
+            conflicts_with = "reset",
+            help = "Instances per server (uses the current value, or prompts, if omitted)"
         )]
+        scale: Option<u32>,
+        #[arg(long, conflicts_with = "scale", help = "Reset to the configured scale")]
         reset: bool,
         #[arg(long, help = "Print the scale plan without changing state")]
         dry_run: bool,

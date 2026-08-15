@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use jiji_agent::api::{RequestBody, ResponseBody};
 use jiji_agent::catalog::{DeploymentState, HealthState};
-use jiji_agent::desired::ReplicaAssignment as DesiredAssignment;
 use jiji_config::{validate_config, NamedServer};
 use jiji_network::{NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{SshPool, SshSession};
@@ -23,7 +22,7 @@ pub async fn run(
     config_file: Option<&str>,
     hosts: Option<&str>,
     services: Option<&str>,
-    replicas: Option<u32>,
+    scale: Option<u32>,
     reset: bool,
     dry_run: bool,
     yes: bool,
@@ -33,7 +32,7 @@ pub async fn run(
     let started = std::time::Instant::now();
     if hosts.is_some() {
         anyhow::bail!(
-            "`jiji service scale` does not accept -H/--hosts; placement is computed across the service's configured eligible servers"
+            "`jiji service scale` does not accept -H/--hosts; scale applies uniformly to every server already listed in `servers:`"
         );
     }
     let service_filter = services.ok_or_else(|| {
@@ -98,15 +97,15 @@ pub async fn run(
     let catalog = crate::agent_client::catalog(seed, &config.project).await?;
     let current_count = current_desired
         .as_ref()
-        .map(|record| record.assignments.len() as u32)
-        .unwrap_or(service.replicas);
+        .and_then(|record| record.scale_override)
+        .unwrap_or(service.scale);
     let requested = if reset {
-        service.replicas
-    } else if let Some(replicas) = replicas {
-        replicas
+        service.scale
+    } else if let Some(scale) = scale {
+        scale
     } else if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         print!(
-            "Desired replicas for '{}' [{}]: ",
+            "Desired scale for '{}' (instances per server) [{}]: ",
             service_name, current_count
         );
         std::io::stdout().flush()?;
@@ -118,15 +117,19 @@ pub async fn run(
             value
                 .trim()
                 .parse()
-                .context("Replica count must be a non-negative integer")?
+                .context("Scale must be a non-negative integer")?
         }
     } else {
         anyhow::bail!(
-            "`--replicas N` is required when `jiji service scale` is not attached to a terminal"
+            "`jiji service scale N -S <service>` requires N when not attached to a terminal"
         );
     };
-    if requested > 2_000 {
-        anyhow::bail!("Replica count {requested} exceeds Jiji's supported limit of 2000");
+    let total_instances = (eligible.len() as u32).saturating_mul(requested);
+    if total_instances > 2_000 {
+        anyhow::bail!(
+            "Scale {requested} across {} server(s) is {total_instances} total instances, which exceeds Jiji's supported limit of 2000",
+            eligible.len()
+        );
     }
     if requested > 1 {
         if service.stop_first {
@@ -148,42 +151,16 @@ pub async fn run(
                 "Service '{service_name}' uses exclusive host resources and cannot be scaled"
             );
         }
-        if !service.ports.is_empty() && requested as usize > eligible.len() {
+        if !service.ports.is_empty() {
             anyhow::bail!(
-                "Service '{service_name}' publishes fixed host ports and cannot place more than one replica on each of its {} eligible hosts",
-                eligible.len()
+                "Service '{service_name}' publishes fixed host ports and cannot run more than one replica on the same host"
             );
         }
     }
-    let assignments = placement::place(
-        &config.project,
-        service_name,
-        requested,
-        &eligible,
-        service.placement,
-    );
-    let declared_current_assignments = current_desired
-        .as_ref()
-        .map(|record| {
-            record
-                .assignments
-                .iter()
-                .map(|assignment| placement::ReplicaAssignment {
-                    replica_id: assignment.replica_id.clone(),
-                    ordinal: assignment.ordinal,
-                    server: assignment.owner_node_id.clone(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| {
-            placement::place(
-                &config.project,
-                service_name,
-                service.replicas,
-                &eligible,
-                service.placement,
-            )
-        });
+    let assignments =
+        placement::assignments_for(&config.project, service_name, &eligible, requested);
+    let declared_current_assignments =
+        placement::assignments_for(&config.project, service_name, &eligible, current_count);
     let active_replica_ids = catalog
         .iter()
         .filter(|record| {
@@ -224,13 +201,9 @@ pub async fn run(
     }
 
     Ui::say(&format!("Service: {service_name}"), 1);
-    Ui::say(&format!("Configured replicas: {}", service.replicas), 1);
-    Ui::say(&format!("Current desired replicas: {current_count}"), 1);
-    Ui::say(&format!("New desired replicas: {requested}"), 1);
-    Ui::say(
-        &format!("Placement: {:?}", service.placement).to_lowercase(),
-        1,
-    );
+    Ui::say(&format!("Configured scale: {}", service.scale), 1);
+    Ui::say(&format!("Current desired scale: {current_count}"), 1);
+    Ui::say(&format!("New desired scale: {requested}"), 1);
     for assignment in &additions {
         Ui::say(
             &format!("add {} on {}", assignment.replica_id, assignment.server),
@@ -253,7 +226,9 @@ pub async fn run(
     }
     if !yes
         && !Ui::confirm(
-            &format!("Scale '{service_name}' from {current_count} to {requested} replicas?"),
+            &format!(
+                "Scale '{service_name}' from {current_count} to {requested} instance(s) per server?"
+            ),
             false,
         )?
     {
@@ -338,18 +313,9 @@ pub async fn run(
         .expect("at least one affected session is connected");
     let operation_result: anyhow::Result<()> = async {
 
-    let desired = assignments
-        .iter()
-        .map(|assignment| DesiredAssignment {
-            replica_id: assignment.replica_id.clone(),
-            ordinal: assignment.ordinal,
-            owner_node_id: assignment.server.clone(),
-        })
-        .collect();
-    let desired_is_current = current_desired.as_ref().is_some_and(|record| {
-        record.replica_override == (!reset).then_some(requested)
-            && record.assignments == desired
-    });
+    let desired_is_current = current_desired
+        .as_ref()
+        .is_some_and(|record| record.scale_override == (!reset).then_some(requested));
     if !desired_is_current {
         let source_revision = current_desired
             .as_ref()
@@ -364,8 +330,7 @@ pub async fn run(
             )),
             RequestBody::DesiredCommit {
                 service: service_name.clone(),
-                replica_override: (!reset).then_some(requested),
-                assignments: desired,
+                scale_override: (!reset).then_some(requested),
             },
         )
         .await?
@@ -556,7 +521,7 @@ pub async fn run(
             } else {
                 crate::audit::AuditStatus::Failed
             },
-            format!("{service_name}: {current_count} -> {requested} replicas on {name}"),
+            format!("{service_name}: scale {current_count} -> {requested} (per server) on {name}"),
             Some(
                 &LockScope::ServiceScale {
                     service: service_name.clone(),

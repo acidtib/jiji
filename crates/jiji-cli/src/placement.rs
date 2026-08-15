@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-
-use jiji_config::{PlacementPolicy, Service};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,70 +7,46 @@ pub struct ReplicaAssignment {
     pub server: String,
 }
 
-pub fn replica_id(project: &str, service: &str, ordinal: u32) -> String {
-    let digest = Sha256::digest(format!("{project}\0{service}\0{ordinal}").as_bytes());
+/// A replica's id depends only on its own `(server, local_index)` pair: adding/
+/// removing an unrelated server, or changing `scale`, never reassigns any other
+/// replica's id.
+pub fn replica_id_for(project: &str, service: &str, server: &str, local_index: u32) -> String {
+    let digest =
+        Sha256::digest(format!("{project}\0{service}\0{server}\0{local_index}").as_bytes());
     format!(
         "{}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         service, digest[0], digest[1], digest[2], digest[3], digest[4], digest[5]
     )
 }
 
-/// Return the stable identity used by the legacy one-endpoint-per-server
-/// command surface while it is being migrated to replica assignments.
-pub fn endpoint_replica_id(
-    project: &str,
-    service_name: &str,
-    service: &Service,
-    server_name: &str,
-) -> anyhow::Result<String> {
-    let mut servers = service.servers.clone();
-    servers.sort();
-    servers.dedup();
-    let ordinal = servers
-        .iter()
-        .position(|server| server == server_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Server '{server_name}' is not eligible for service '{service_name}'")
-        })? as u32;
-    Ok(replica_id(project, service_name, ordinal))
-}
-
-/// Deterministic initial placement. Eligibility is sorted so YAML map order,
-/// SSH connection order, and the node that computes the plan cannot alter it.
-pub fn place(
+/// Every listed server is a literal deploy target: `scale` instances land on each
+/// one, not a total spread across a pool. Servers are sorted+dedup'd so YAML map
+/// order, SSH connection order, and the node that computes the plan cannot alter it.
+/// `ordinal` is a plain secondary sort key (position in the sorted
+/// `(server, local_index)` enumeration), not part of replica identity.
+pub fn assignments_for(
     project: &str,
     service: &str,
-    replicas: u32,
-    eligible_servers: &[String],
-    policy: PlacementPolicy,
+    servers: &[String],
+    scale: u32,
 ) -> Vec<ReplicaAssignment> {
-    let mut servers = eligible_servers.to_vec();
+    let mut servers = servers.to_vec();
     servers.sort();
     servers.dedup();
-    if servers.is_empty() {
-        return Vec::new();
-    }
 
-    let mut loads =
-        BTreeMap::<String, u32>::from_iter(servers.iter().cloned().map(|server| (server, 0)));
-    (0..replicas)
-        .map(|ordinal| {
-            let server = match policy {
-                PlacementPolicy::Spread => loads
-                    .iter()
-                    .min_by_key(|(server, count)| (**count, server.as_str()))
-                    .map(|(server, _)| server.clone())
-                    .expect("eligible server set is non-empty"),
-                PlacementPolicy::Packed => servers[0].clone(),
-            };
-            *loads.get_mut(&server).expect("selected server exists") += 1;
-            ReplicaAssignment {
-                replica_id: replica_id(project, service, ordinal),
+    let mut ordinal = 0;
+    let mut assignments = Vec::new();
+    for server in &servers {
+        for local_index in 0..scale {
+            assignments.push(ReplicaAssignment {
+                replica_id: replica_id_for(project, service, server, local_index),
                 ordinal,
-                server,
-            }
-        })
-        .collect()
+                server: server.clone(),
+            });
+            ordinal += 1;
+        }
+    }
+    assignments
 }
 
 #[cfg(test)]
@@ -82,54 +55,66 @@ mod tests {
 
     #[test]
     fn stable_replica_identity_does_not_include_owner() {
-        assert_eq!(replica_id("demo", "web", 2), replica_id("demo", "web", 2));
-        assert_ne!(replica_id("demo", "web", 2), replica_id("demo", "web", 3));
+        assert_eq!(
+            replica_id_for("demo", "web", "a", 0),
+            replica_id_for("demo", "web", "a", 0)
+        );
+        assert_ne!(
+            replica_id_for("demo", "web", "a", 0),
+            replica_id_for("demo", "web", "a", 1)
+        );
     }
 
     #[test]
-    fn spread_is_balanced_and_input_order_independent() {
-        let left = place(
-            "demo",
-            "web",
-            5,
-            &["b".into(), "a".into()],
-            PlacementPolicy::Spread,
-        );
-        let right = place(
-            "demo",
-            "web",
-            5,
-            &["a".into(), "b".into()],
-            PlacementPolicy::Spread,
-        );
-        assert_eq!(left, right);
+    fn replica_identity_is_stable_across_unrelated_server_changes() {
+        // Adding/removing an unrelated server never reassigns "a"'s local_index 0 id.
+        let two_servers = assignments_for("demo", "web", &["a".into(), "b".into()], 1);
+        let three_servers =
+            assignments_for("demo", "web", &["a".into(), "b".into(), "c".into()], 1);
+        let a_id_two = two_servers
+            .iter()
+            .find(|a| a.server == "a")
+            .unwrap()
+            .replica_id
+            .clone();
+        let a_id_three = three_servers
+            .iter()
+            .find(|a| a.server == "a")
+            .unwrap()
+            .replica_id
+            .clone();
+        assert_eq!(a_id_two, a_id_three);
+    }
+
+    #[test]
+    fn replica_identity_is_stable_across_scale_changes() {
+        let scale_one = assignments_for("demo", "web", &["a".into()], 1);
+        let scale_two = assignments_for("demo", "web", &["a".into()], 2);
+        assert_eq!(scale_one[0].replica_id, scale_two[0].replica_id);
+    }
+
+    #[test]
+    fn assignments_for_produces_one_per_server_per_local_index() {
+        let servers = vec!["b".into(), "a".into()];
+        let assignments = assignments_for("demo", "web", &servers, 2);
+        assert_eq!(assignments.len(), 4);
         assert_eq!(
-            left.iter()
-                .map(|item| item.server.as_str())
+            assignments
+                .iter()
+                .map(|a| a.server.as_str())
                 .collect::<Vec<_>>(),
-            ["a", "b", "a", "b", "a"]
+            ["a", "a", "b", "b"]
         );
-    }
-
-    #[test]
-    fn packed_uses_deterministic_first_host() {
-        let plan = place(
-            "demo",
-            "worker",
-            3,
-            &["z".into(), "a".into()],
-            PlacementPolicy::Packed,
-        );
-        assert!(plan.iter().all(|item| item.server == "a"));
-    }
-
-    #[test]
-    fn endpoint_identity_is_independent_of_config_order() {
-        let service: Service =
-            serde_yaml::from_str("image: example/web\nservers: [b, a]\n").unwrap();
         assert_eq!(
-            endpoint_replica_id("demo", "web", &service, "b").unwrap(),
-            replica_id("demo", "web", 1)
+            assignments.iter().map(|a| a.ordinal).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    fn assignments_for_dedups_duplicate_servers() {
+        let servers = vec!["a".into(), "a".into()];
+        let assignments = assignments_for("demo", "web", &servers, 1);
+        assert_eq!(assignments.len(), 1);
     }
 }

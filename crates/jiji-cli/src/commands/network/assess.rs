@@ -64,12 +64,10 @@ pub(crate) async fn assess_host(
             continue;
         }
         accounted_services.insert(service_name.as_str());
-        let replica_id = placement::endpoint_replica_id(
-            &config.project,
-            service_name,
-            service,
-            &server_plan.name,
-        )?;
+        // Discovery above finds at most one pre-existing container per (service, server);
+        // treat it as local_index 0 regardless of `scale`, matching `network::import`.
+        let replica_id =
+            placement::replica_id_for(&config.project, service_name, &server_plan.name, 0);
         let has_catalog_record = catalog.iter().any(|record| record.replica_id == replica_id);
         if has_catalog_record {
             already_migrated.push(format!("{service_name} (replica {replica_id})"));

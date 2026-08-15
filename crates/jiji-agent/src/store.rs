@@ -335,6 +335,16 @@ const MIGRATIONS: &[Migration] = &[
                   updated_at TEXT NOT NULL
               );",
     },
+    Migration {
+        version: 11,
+        // `scale_overrides`/`replica_assignments` (from migration 4) were superseded by
+        // `desired_operations`/`desired_records` (migration 6) before anything ever read or
+        // wrote them -- dead tables sitting in every agent database since. Dropped here as
+        // cleanup while touching desired-state semantics for the `servers:`-is-literal /
+        // `scale:`-is-per-server rework.
+        sql: "DROP TABLE scale_overrides;
+              DROP TABLE replica_assignments;",
+    },
 ];
 
 fn current_schema_version() -> i64 {
@@ -1912,6 +1922,7 @@ fn apply_migration(conn: &Connection, migration: &Migration) -> Result<(), Store
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desired::{DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION};
     use crate::membership::{
         MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
         MEMBERSHIP_SCHEMA_VERSION,
@@ -2140,6 +2151,23 @@ mod tests {
                          FROM desired_operations_current;
                      DROP TABLE desired_operations_current;
                      DROP TABLE image_retention_specs;
+                     CREATE TABLE scale_overrides (
+                         service TEXT PRIMARY KEY,
+                         replicas INTEGER NOT NULL,
+                         revision INTEGER NOT NULL,
+                         updated_at TEXT NOT NULL
+                     );
+                     CREATE TABLE replica_assignments (
+                         replica_id TEXT PRIMARY KEY,
+                         service TEXT NOT NULL,
+                         ordinal INTEGER NOT NULL,
+                         owner_node_id TEXT NOT NULL,
+                         owner_epoch INTEGER NOT NULL,
+                         state TEXT NOT NULL,
+                         revision INTEGER NOT NULL,
+                         updated_at TEXT NOT NULL,
+                         UNIQUE(service, ordinal)
+                     );
                      DELETE FROM schema_migrations WHERE version >= 9;",
                 )
                 .unwrap();
@@ -2396,6 +2424,52 @@ mod tests {
         let store = AgentStore::open(&db_path).unwrap();
         assert_eq!(store.latest_catalog().unwrap().len(), 1);
         assert_eq!(store.catalog_operations().unwrap(), vec![record]);
+    }
+
+    #[test]
+    fn apply_desired_replays_a_pre_upgrade_schema_version_without_wedging() {
+        // Regression test: a node that ran `jiji service scale` before this schema bump has a
+        // durable schema-version-1 row (old `replica_override` field name, now-dropped
+        // `assignments` field) sitting in `desired_operations` forever, since `apply_desired`
+        // replays the FULL unscoped history on every call. That old row must not hard-fail every
+        // future desired-state write on this node.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.sqlite3");
+        let membership = membership_view_for("node-a");
+        {
+            let store = AgentStore::open(&db_path).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO desired_operations (operation_id, service, record_json, applied_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        "legacy-op-1",
+                        "web",
+                        r#"{"project_id":"project","recovery_epoch":1,"protocol_version":1,"schema_version":1,"service":"web","replica_override":3,"assignments":[],"revision":1,"author_node_id":"node-a","author_epoch":1}"#,
+                        0i64,
+                    ],
+                )
+                .unwrap();
+        }
+        let store = AgentStore::open(&db_path).unwrap();
+        let record = DesiredStateRecord {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: DESIRED_PROTOCOL_VERSION,
+            schema_version: DESIRED_SCHEMA_VERSION,
+            service: "api".into(),
+            scale_override: Some(2),
+            revision: 1,
+            author_node_id: "node-a".into(),
+            author_epoch: 1,
+        };
+        assert_eq!(
+            store
+                .apply_desired(record, RecordProvenance::Local, "project", 1, &membership)
+                .unwrap(),
+            DesiredApply::Applied
+        );
     }
 
     #[test]

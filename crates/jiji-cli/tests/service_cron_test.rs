@@ -366,7 +366,7 @@ async fn list_reports_not_deployed_when_no_active_replica_exists() {
 #[tokio::test(flavor = "multi_thread")]
 async fn list_reports_installed_and_drifted_states() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "worker", "app", 0);
 
     // "cleanup"'s installed hash won't match anything real jiji renders (no real spec-apply ever
     // ran), so it reports drifted; "sync-data" has no installed entry at all, so not-deployed.
@@ -432,7 +432,7 @@ async fn status_reports_no_match_when_filter_selects_no_cron_service() {
 #[tokio::test(flavor = "multi_thread")]
 async fn status_reports_durable_state_from_the_owner() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "worker", "app", 0);
     let statuses = r#"{"Ok":{"type":"cron_statuses","statuses":[{"service":"worker","cron_name":"sync-data","last_scheduled_at":1704067200,"last_started_at":1704067201,"last_finished_at":1704067210,"last_state":"succeeded","last_exit_code":0,"next_due_at":1704153600,"active_run_id":null,"skipped_overlap_count":2}]}}"#;
 
     let mut responses = HashMap::new();
@@ -532,7 +532,7 @@ async fn logs_rejects_follow_combined_with_run_id() {
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_prints_the_latest_runs_output() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "worker", "app", 0);
     let runs = r#"{"Ok":{"type":"cron_runs","runs":[{"run_id":"run-1","project":"demo","service":"worker","cron_name":"sync-data","cause":"scheduled","scheduled_at":1704067200,"claimed_at":1704067200,"started_at":1704067201,"finished_at":1704067210,"state":"succeeded","deployment_id":"run-1","container_name":"demo-worker-cron-sync-data-run1","address":"100.64.0.9","exit_code":0,"error":null}]}}"#;
 
     let mut responses = HashMap::new();
@@ -589,7 +589,7 @@ async fn run_reports_no_owner_actionably() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_accepts_and_reports_the_run_id() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "another-worker", "app", 0);
     let accepted = r#"{"Ok":{"type":"cron_run_accepted","run_id":"run-abc123"}}"#;
 
     let mut responses = HashMap::new();
@@ -620,7 +620,7 @@ async fn run_accepts_and_reports_the_run_id() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_reports_a_conflict_as_an_actionable_error() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "another-worker", "app", 0);
     let conflict = r#"{"Ok":{"type":"cron_run_conflict","active_run_id":"run-already-active"}}"#;
 
     let mut responses = HashMap::new();
@@ -645,7 +645,7 @@ async fn run_reports_a_conflict_as_an_actionable_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_writes_a_success_audit_entry() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "another-worker", "app", 0);
     let accepted = r#"{"Ok":{"type":"cron_run_accepted","run_id":"run-abc123"}}"#;
 
     let mut responses = HashMap::new();
@@ -689,7 +689,7 @@ async fn run_writes_a_success_audit_entry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_conflict_writes_a_failed_audit_entry() {
     let (dir, key_path, client_key) = setup_test_dir();
-    let replica_id = jiji_cli::placement::replica_id("demo", "another-worker", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("demo", "another-worker", "app", 0);
     let conflict = r#"{"Ok":{"type":"cron_run_conflict","active_run_id":"run-already-active"}}"#;
 
     let mut responses = HashMap::new();

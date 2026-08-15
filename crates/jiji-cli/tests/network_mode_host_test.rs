@@ -37,7 +37,7 @@ fn default_response(command: &str) -> CannedResponse {
     let body = if command.contains("# jiji-request:catalog-list") {
         r#"{"Ok":{"type":"catalog_list","records":[]}}"#
     } else if command.contains("# jiji-request:desired-commit") {
-        r#"{"Ok":{"type":"desired_state","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":1,"service":"app","replica_override":1,"assignments":[{"replica_id":"app-test","ordinal":0,"owner_node_id":"app"}],"revision":1,"author_node_id":"app","author_epoch":1}}}"#
+        r#"{"Ok":{"type":"desired_state","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"app","scale_override":1,"revision":1,"author_node_id":"app","author_epoch":1}}}"#
     } else if command.contains("# jiji-request:desired-read") {
         r#"{"Ok":{"type":"desired_state","record":null}}"#
     } else if command.contains("# jiji-request:catalog-commit") {

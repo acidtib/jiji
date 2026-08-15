@@ -131,9 +131,11 @@ authentication detail: `docs/architecture-notes.md#distributed-control-plane`.
 ### Health-Gated Deployment Strategy
 
 Jiji uses **dynamically leased deployment addresses**, not fixed A/B slots or
-a stable service VIP: a **logical replica** (stable `replica_id`, survives
-redeploy) points at exactly one **deployment** (the actual container,
-replaceable). Each deploy leases a fresh address, commits the candidate to
+a stable service VIP: a **logical replica** (stable `replica_id`, one per
+`(server, local_index)` pair -- `servers:` lists literal deploy targets and
+`scale: N` puts N replicas on each one, survives redeploy) points at exactly
+one **deployment** (the actual container, replaceable). Each deploy leases a
+fresh address, commits the candidate to
 the catalog *before* starting it (durable even if the start fails),
 health-checks it directly at its own address (never through the proxy), and
 only touches jiji-proxy once the catalog already marks it `Active`/`Healthy`.
@@ -228,7 +230,7 @@ resolver config) and never `-p`: `ports:` accepts at most one bare
 container-side port as routing/uniqueness metadata only, since `-p`
 combined with `--network host` is a discarded, warning-spamming no-op on
 current Docker/Podman and a hard error on some older Podman releases.
-`proxy:` and `replicas > 1` stay rejected by the same generic non-bridge
+`proxy:` and `scale > 1` stay rejected by the same generic non-bridge
 checks `service:<name>` sharing already triggers. A `service:<name>`
 dependent cannot target a `host`-mode upstream either: validation rejects
 it, since joining a host-networked container's namespace would silently
@@ -283,42 +285,17 @@ collapses any pile-up of missed ticks by comparing the schedule's natural
 next occurrence against "next after now" -- no separate startup-recovery
 pass needed.
 
-Two bugs found by code review, not real-host testing: an earlier version of
-the sweep above only removed specs whose names were still present in the
-current `service.crons` map, so a renamed/deleted entry (or a service whose
-`crons:` block went empty) left its old installation running forever,
-undiscoverable by `service remove` either. Separately, `jiji service cron
-list`'s drift check (`commands/service/cron/list.rs`) must recompute a
-spec's expected hash using the exact same absolutized `env_file_path`/
-`mount_args` the sweep above installs with (`remote_home_dir`/`absolutize`/
-`absolutize_mount_args`, all `pub(crate)` from `cron_reconcile.rs` for this
-reason) -- comparing against the unabsolutized form reports every installed
-job as permanently `drifted`, regardless of whether anything actually
-changed.
-
-Two gotchas confirmed live, both because `jiji-agent` spawns cron
-containers directly via `tokio::process::Command`, never over SSH:
-- The `.jiji/{project}/...`-relative paths `stage_env_file`/
-  `mounts::remote_mount_base` hand back only resolve against an *SSH
-  login's* home directory. `jiji-agent`'s own cwd is `/` (no such login),
-  so `cron_reconcile.rs` resolves the owner's home directory once
-  (`remote_home_dir`) and sends `CronSpecApply` absolute paths instead.
-- Lease cron container addresses from `mesh_config.local_runtime.
-  container_subnet` (this host's actual bridge subnet), never
-  `container_cidr` (the whole-mesh reserved range covering every project
-  and server) -- the latter hands out addresses podman rejects outright as
-  outside the bridge's subnet.
-
-`jiji-agent`'s systemd unit also needs `KillMode=process` (not the default
+`jiji-agent`'s systemd unit needs `KillMode=process` (not the default
 `control-group`): Podman here runs `cgroup_manager = cgroupfs` (see
 "Container Engine Provisioning" below), so a container's conmon/crun
-process stays in the unit's own cgroup, and any agent restart -- an
-upgrade, `Restart=on-failure` -- would otherwise `SIGKILL` every container
-the agent manages, `jiji-proxy` included (confirmed live; `podman ps` kept
-reporting the dead container "Up" since conmon never got to record an
-orderly exit).
+process stays in the unit's own cgroup, and any agent restart would
+otherwise `SIGKILL` every container the agent manages, `jiji-proxy`
+included. Agent-spawned cron containers are also relative-path- and
+subnet-sensitive since `jiji-agent` spawns them directly, never over SSH.
 
-Full detail: `docs/architecture-notes.md#scheduled-jobs`.
+Full detail, including two regressions found by code review (a stale-spec
+sweep gap and a drift-check false positive) and the confirmed-live gotchas
+behind them: `docs/architecture-notes.md#scheduled-jobs`.
 
 ### Image Retention Reconciliation (`image_retention_reconcile.rs`)
 
@@ -328,21 +305,9 @@ Rhymes with cron reconciliation above (reuses `resolve_sessions`/
 successful deploy, and swept from any host whose service dropped `build:`,
 changed `servers:`, or was renamed/deleted.
 
-Two bugs found by code review, fixed and confirmed live on real hosts: the
-stale-spec sweep was scoped to the caller's own `-H`-targeted sessions
-instead of widened to every server any build-configured service still
-references -- the same class of bug the cron sweep had (a host dropped from
-`-H` targeting but still relevant elsewhere was never swept again).
-Separately, `deploy_transaction.rs`'s cutover decided whether to prune the
-*previous* deployment's image from the *current* config's `build:` field,
-not whether that deployment was actually build-produced -- switching a
-service from `build:` to a static `image:` deleted the most recently
-retained build image outright. Fixed by querying the agent's own installed
-retention spec live (`capture_orphaned_static_image`/
-`service_has_retention_spec`) instead of trusting config state: the spec's
-own removal only happens in the sweep *after* cutover in the same command,
-so it is still installed -- and correctly protects the image -- at the
-moment cutover checks it.
+Full detail, including two regressions found by code review (an
+`-H`-scoped sweep gap, and a `build:`-to-`image:` cutover that deleted a
+still-protected retained image): `docs/architecture-notes.md#image-retention-reconciliation`.
 
 ### `jiji server teardown` (inverse of `server setup`)
 
@@ -404,8 +369,9 @@ Full rationale: `docs/architecture-notes.md#deployment-locks`.
 Quick-recognition patterns (full derivation/rationale in
 `docs/architecture-notes.md#naming-and-ownership`):
 
-- Logical replica: `placement::replica_id(project, service, ordinal)`,
-  stable across redeploys.
+- Logical replica: `placement::replica_id_for(project, service, server,
+  local_index)`, stable across redeploys (and stable under an unrelated
+  server being added/removed, or `scale` changing).
 - Deployment: fresh random `deployment_id` per container start.
 - Container: `{project}-{service}-{first 12 hex chars of deployment_id}`.
 - DNS: `{project}-{service}.jiji` (aggregate), `{project}-{service}-
@@ -494,8 +460,9 @@ build to install/pull is "the same version as me".
   needs; carries no service/deployment state.
 - `crates/jiji-network/src/naming.rs`: every project-derived name; the
   single source of truth the per-project isolation design depends on.
-- `crates/jiji-cli/src/placement.rs`: `replica_id`/`endpoint_replica_id`,
-  deterministic initial placement across a service's eligible servers.
+- `crates/jiji-cli/src/placement.rs`: `replica_id_for`/`assignments_for`,
+  deterministic placement of `scale` instances onto each of a service's
+  literal `servers:` targets.
 - `crates/jiji-cli/src/deploy_transaction.rs`: the dynamic per-endpoint
   deploy transaction: lease, candidate commit, start, health-check, proxy
   activation, active/draining/tombstoned catalog commits.
@@ -668,9 +635,11 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   only the endpoint's actually-owned replicas, tombstones the catalog record;
   `--volumes` also removes named volumes. `prune` enforces `service.retain`
   (build-configured services only, keeps first N image tags, removes the
-  rest unless still referenced), deliberately left unlocked. `scale -S
-  <service> --replicas N` writes a distributed desired-scale override under
-  one `ServiceScale` lock keyed by service name.
+  rest unless still referenced), deliberately left unlocked. `scale N -S
+  <service>` writes a distributed desired-scale override (N instances on
+  each of the service's already-listed `servers:`) under one `ServiceScale`
+  lock keyed by service name; `N` is a positional argument, prompted for
+  interactively if omitted.
 - `jiji service cron list/status/run/logs`: scheduled per-service commands
   (see "Scheduled Cron Execution" above). `list`/`status` read installation
   state and durable run history from the owning replica's agent; `run
