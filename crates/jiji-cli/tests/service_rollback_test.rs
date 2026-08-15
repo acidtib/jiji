@@ -62,7 +62,7 @@ fn agent_catalog_command() -> String {
 
 fn active_catalog_response() -> CannedResponse {
     success(
-        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"olddeployment1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
+        r#"{"Ok":{"type":"catalog_list","records":[{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"olddeployment1234567890","address":"100.64.0.9","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}]}}"#,
     )
 }
 
@@ -370,7 +370,7 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stdout.contains(target_image), "stdout: {stdout}");
     assert!(
-        stdout.contains("demo:web:app: rolled back to 'v1.2.3' ("),
+        stdout.contains("demo:web:web-ad2048bd513e: rolled back to 'v1.2.3' ("),
         "stdout: {stdout}"
     );
 
@@ -570,7 +570,7 @@ async fn rolling_back_the_upstream_cascades_and_sequences_its_dependent() {
     // gluetun's own real, deterministically-derived replica_id: the same catalog record must
     // satisfy both gluetun's own "is there a previous deployment" lookup (by replica_id) and
     // qbittorrent's upstream-resolution lookup (by service+owner_node_id).
-    let gluetun_replica_id = jiji_cli::placement::replica_id("demo", "gluetun", 0);
+    let gluetun_replica_id = jiji_cli::placement::replica_id_for("demo", "gluetun", "app", 0);
     let old_gluetun_name = "demo-gluetun-oldgluetunde";
     let catalog_response = success(&format!(
         r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"{gluetun_replica_id}","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"oldgluetundeploy1234567","address":"100.64.0.20","ports":[],"image":"docker.io/qmcgaw/gluetun:v1.0.0","state":"active","health":"healthy"}}]}}}}"#

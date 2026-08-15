@@ -884,12 +884,11 @@ fn select_replica_endpoints(
     let mut replica_ids = BTreeMap::new();
     for service_name in service_names {
         let service = &config.services[service_name];
-        for assignment in crate::placement::place(
+        for assignment in crate::placement::assignments_for(
             &config.project,
             service_name,
-            service.replicas,
             &service.servers,
-            service.placement,
+            service.scale,
         ) {
             if !allowed_hosts.contains(assignment.server.as_str()) {
                 continue;
@@ -947,7 +946,7 @@ async fn select_effective_replica_endpoints(
         if configured.proxy.is_some() {
             ingress_hosts.extend(configured.servers.iter().cloned());
         }
-        let assignments = match crate::agent_client::call(
+        let record = match crate::agent_client::call(
             seed,
             &config.project,
             None,
@@ -957,30 +956,20 @@ async fn select_effective_replica_endpoints(
         )
         .await?
         {
-            jiji_agent::api::ResponseBody::DesiredState {
-                record: Some(record),
-            } => record
-                .assignments
-                .into_iter()
-                .map(|assignment| crate::placement::ReplicaAssignment {
-                    replica_id: assignment.replica_id,
-                    ordinal: assignment.ordinal,
-                    server: assignment.owner_node_id,
-                })
-                .collect(),
-            jiji_agent::api::ResponseBody::DesiredState { record: None } => {
-                crate::placement::place(
-                    &config.project,
-                    service_name,
-                    configured.replicas,
-                    &configured.servers,
-                    configured.placement,
-                )
-            }
+            jiji_agent::api::ResponseBody::DesiredState { record } => record,
             response => {
                 anyhow::bail!("Agent returned unexpected desired-state response: {response:?}")
             }
         };
+        let scale = record
+            .and_then(|record| record.scale_override)
+            .unwrap_or(configured.scale);
+        let assignments = crate::placement::assignments_for(
+            &config.project,
+            service_name,
+            &configured.servers,
+            scale,
+        );
         for assignment in assignments {
             if !configured.servers.contains(&assignment.server) {
                 anyhow::bail!(

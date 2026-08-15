@@ -115,7 +115,8 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     let mut total_replicas = 0_u32;
     let mut total_crons = 0_usize;
     for (name, service) in &config.services {
-        total_replicas = total_replicas.saturating_add(service.replicas);
+        total_replicas =
+            total_replicas.saturating_add(service.servers.len() as u32 * service.scale);
         if service.servers.is_empty() {
             errors.push(ValidationError {
                 path: format!("services.{name}.servers"),
@@ -139,9 +140,9 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 });
             }
         }
-        if service.stop_first && service.replicas > 1 {
+        if service.stop_first && service.scale > 1 {
             errors.push(ValidationError {
-                path: format!("services.{name}.replicas"),
+                path: format!("services.{name}.scale"),
                 message: format!("Service '{name}' uses stop_first and must remain a singleton"),
                 code: "STOP_FIRST_REQUIRES_SINGLETON",
             });
@@ -164,7 +165,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 code: "NETWORK_MODE_NONE_UNSUPPORTED",
             });
         }
-        if service.replicas > 1 && service.network_mode != "bridge" {
+        if service.scale > 1 && service.network_mode != "bridge" {
             errors.push(ValidationError {
                 path: format!("services.{name}.network_mode"),
                 message: format!("Service '{name}' can only scale with project bridge networking"),
@@ -237,20 +238,20 @@ pub fn validate_config(config: &Config) -> ValidationResult {
         let has_local_state = !service.volumes.is_empty()
             || !service.files.is_empty()
             || !service.directories.is_empty();
-        if service.replicas > 1 && has_local_state {
+        if service.scale > 1 && has_local_state {
             errors.push(ValidationError {
-                path: format!("services.{name}.replicas"),
+                path: format!("services.{name}.scale"),
                 message: format!(
                     "Service '{name}' cannot scale local volumes, files, or directories implicitly"
                 ),
                 code: "STATEFUL_SCALE",
             });
         }
-        if service.replicas > 1
+        if service.scale > 1
             && (service.privileged || !service.devices.is_empty() || service.gpus.is_some())
         {
             errors.push(ValidationError {
-                path: format!("services.{name}.replicas"),
+                path: format!("services.{name}.scale"),
                 message: format!(
                     "Service '{name}' cannot scale exclusive host devices, GPUs, or privileged access"
                 ),

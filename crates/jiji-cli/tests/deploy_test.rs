@@ -46,7 +46,7 @@ fn default_response(command: &str) -> CannedResponse {
     let body = if command.contains("# jiji-request:catalog-list") {
         r#"{"Ok":{"type":"catalog_list","records":[]}}"#
     } else if command.contains("# jiji-request:desired-commit") {
-        r#"{"Ok":{"type":"desired_state","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":1,"service":"web","replica_override":1,"assignments":[{"replica_id":"web-c1fe97ed0787","ordinal":0,"owner_node_id":"app"}],"revision":1,"author_node_id":"app","author_epoch":1}}}"#
+        r#"{"Ok":{"type":"desired_state","record":{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","scale_override":1,"revision":1,"author_node_id":"app","author_epoch":1}}}"#
     } else if command.contains("# jiji-request:desired-read") {
         r#"{"Ok":{"type":"desired_state","record":null}}"#
     } else if command.contains("# jiji-request:allocate-address") {
@@ -81,7 +81,7 @@ fn agent_request_command(kind: &str) -> String {
 
 fn active_catalog_response(deployment_id: &str, address: &str) -> CannedResponse {
     success(&format!(
-        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"node-test","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
     ))
 }
 
@@ -857,7 +857,6 @@ async fn service_scale_commits_desired_state_and_deploys_a_missing_replica() {
             config_path.to_str().unwrap(),
             "service",
             "scale",
-            "--replicas",
             "1",
             "--yes",
         ])
@@ -1200,7 +1199,7 @@ async fn replacement_leaves_an_image_still_tracked_by_a_stale_retention_spec_alo
 /// session by that name, so it must match this file's single-server test topology.
 fn active_catalog_response_owned_by_app(deployment_id: &str, address: &str) -> CannedResponse {
     success(&format!(
-        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-c1fe97ed0787","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"web","replica_id":"web-ad2048bd513e","owner_node_id":"app","owner_epoch":1,"revision":2,"deployment_id":"{deployment_id}","address":"{address}","ports":[],"image":"docker.io/example/web:latest","state":"active","health":"healthy"}}]}}}}"#
     ))
 }
 
@@ -1208,7 +1207,7 @@ fn active_catalog_response_owned_by_app(deployment_id: &str, address: &str) -> C
 /// for this test (parseable `ResponseBody::CronSpecApplied`), not the field values.
 fn cron_spec_applied_response() -> CannedResponse {
     success(
-        r#"{"Ok":{"type":"cron_spec_applied","spec":{"project":"demo","service":"web","cron_name":"sync","revision":2,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-c1fe97ed0787","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":".jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"},"outcome":"installed"}}"#,
+        r#"{"Ok":{"type":"cron_spec_applied","spec":{"project":"demo","service":"web","cron_name":"sync","revision":2,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-ad2048bd513e","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":".jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"},"outcome":"installed"}}"#,
     )
 }
 
@@ -1410,7 +1409,7 @@ async fn deploy_reports_a_partial_failure_when_cron_installation_fails_without_u
 /// dropped `crons:` entirely) while a previous installation is still sitting on the agent.
 fn cron_specs_response_with_one_orphan() -> CannedResponse {
     success(
-        r#"{"Ok":{"type":"cron_specs","specs":[{"project":"demo","service":"web","cron_name":"orphaned","revision":1,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-c1fe97ed0787","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":"/root/.jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"}]}}"#,
+        r#"{"Ok":{"type":"cron_specs","specs":[{"project":"demo","service":"web","cron_name":"orphaned","revision":1,"canonical_hash":"abc123","owner_node_id":"app","owner_epoch":1,"server":"app","source_deployment_id":"olddeployment1234567890","source_replica_id":"web-ad2048bd513e","image":"docker.io/example/web:latest","schedule":"*/5 * * * *","timezone":"UTC","timeout_seconds":3600,"overlap":"forbid","missed_runs":"skip","command":["echo","hi"],"env_file_path":"/root/.jiji/demo/env/web-app.env","mount_args":[],"resource_args":[],"bridge_network":"jiji-demo","dns_address":"100.64.0.5"}]}}"#,
     )
 }
 
@@ -1972,7 +1971,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
     // server "app" (see `default_response`'s desired-read/desired-commit canned records), so
     // `jiji deploy` acquires exactly one `LogicalReplica` lock at this path.
     let lock_path =
-        "cat .jiji/demo/locks/replica/web-c1fe97ed0787.lock/info.json 2>/dev/null || true";
+        "cat .jiji/demo/locks/replica/web-ad2048bd513e.lock/info.json 2>/dev/null || true";
     let mut responses = HashMap::new();
     responses.insert(atomic_lock_command(), success("JIJI_LOCK_HELD\n"));
     responses.insert(
@@ -2004,7 +2003,7 @@ async fn deploy_bails_when_deployment_lock_is_held() {
 }
 
 fn atomic_lock_command() -> String {
-    "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-c1fe97ed0787.lock.".to_string()
+    "PREFIX:set -eu\nmkdir -p .jiji/demo/locks/replica\nmkdir .jiji/demo/locks/replica/web-ad2048bd513e.lock.".to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -426,14 +426,14 @@ services:
     # nginx:latest -> docker.io/library/nginx:latest
     # owner/image:tag -> docker.io/owner/image:tag
     image: nginx:latest
-    # Eligible placement set. This does not mean "one copy per server".
+    # Literal deploy target list: every server listed here gets a deployment.
     servers:
       - vps-prod
       - home-server
-    # Desired total replicas across the eligible servers (default: 1).
-    # `spread` prefers distinct hosts; `packed` fills hosts in deterministic order.
-    replicas: 1
-    placement: spread
+    # Instances on EACH listed server above (default: 1), not a total spread
+    # across them. `scale: 2` here would run 2 on vps-prod AND 2 on home-server
+    # (4 total), not 2 total.
+    scale: 1
     # Port Mappings: Map host ports to container ports
     # Supported formats:
     #   - "8000"                           # Container port only (host port auto-assigned)
@@ -927,7 +927,7 @@ services:
 #   - Default: "bridge"
 #   - Supported values:
 #     - "bridge" - Default Docker/Podman bridge network (isolated). Required for `proxy:`,
-#       and required if `replicas` > 1.
+#       and required if `scale` > 1.
 #     - "service:<other-service-name>" - Shares that other ("upstream") service's container
 #       network namespace instead of getting its own dynamically-leased address (the standard
 #       "VPN killswitch" pattern: a torrent client sharing a VPN gateway container's network
@@ -935,7 +935,7 @@ services:
 #       itself the dependency declaration; there is no separate `depends_on` field. The
 #       upstream must itself use `network_mode: bridge` (chained sharing is not supported),
 #       and this service's `servers` must be a subset of the upstream's `servers`. A
-#       dependent can't set `replicas` above 1 or configure its own `proxy:` -- traffic
+#       dependent can't set `scale` above 1 or configure its own `proxy:` -- traffic
 #       reaches it through the upstream's own `proxy:` route, at the upstream's address.
 #       Redeploying the upstream automatically redeploys every dependent too, after the
 #       upstream's own deploy finishes (a dependent's old container becomes network-orphaned
@@ -950,7 +950,7 @@ services:
 #       Two `host`-mode services whose `servers` overlap cannot declare the same port; this
 #       check is project-scoped only, so a different project's `host`-mode service on a shared
 #       machine can still collide, surfacing as a failed container start instead. `proxy:` and
-#       `replicas` > 1 stay rejected, the same as any other non-bridge mode. Host networking
+#       `scale` > 1 stay rejected, the same as any other non-bridge mode. Host networking
 #       removes jiji's mesh isolation for that container: it can reach, and be reached by,
 #       anything the host's own network can, bypassing the project bridge entirely.
 #     - "none" - Not supported. Every service needs a reachable address for DNS and health

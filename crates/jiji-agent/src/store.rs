@@ -335,6 +335,16 @@ const MIGRATIONS: &[Migration] = &[
                   updated_at TEXT NOT NULL
               );",
     },
+    Migration {
+        version: 11,
+        // `scale_overrides`/`replica_assignments` (from migration 4) were superseded by
+        // `desired_operations`/`desired_records` (migration 6) before anything ever read or
+        // wrote them -- dead tables sitting in every agent database since. Dropped here as
+        // cleanup while touching desired-state semantics for the `servers:`-is-literal /
+        // `scale:`-is-per-server rework.
+        sql: "DROP TABLE scale_overrides;
+              DROP TABLE replica_assignments;",
+    },
 ];
 
 fn current_schema_version() -> i64 {
@@ -2140,6 +2150,23 @@ mod tests {
                          FROM desired_operations_current;
                      DROP TABLE desired_operations_current;
                      DROP TABLE image_retention_specs;
+                     CREATE TABLE scale_overrides (
+                         service TEXT PRIMARY KEY,
+                         replicas INTEGER NOT NULL,
+                         revision INTEGER NOT NULL,
+                         updated_at TEXT NOT NULL
+                     );
+                     CREATE TABLE replica_assignments (
+                         replica_id TEXT PRIMARY KEY,
+                         service TEXT NOT NULL,
+                         ordinal INTEGER NOT NULL,
+                         owner_node_id TEXT NOT NULL,
+                         owner_epoch INTEGER NOT NULL,
+                         state TEXT NOT NULL,
+                         revision INTEGER NOT NULL,
+                         updated_at TEXT NOT NULL,
+                         UNIQUE(service, ordinal)
+                     );
                      DELETE FROM schema_migrations WHERE version >= 9;",
                 )
                 .unwrap();

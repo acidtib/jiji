@@ -21,11 +21,9 @@ use crate::deploy_transaction::{
 /// can orphan it. Validation already forbids chains (a referenced upstream can't itself be a
 /// dependent), so this never needs to recurse.
 ///
-/// A dependent's own `replicas`/`placement` policy is deliberately not used for this: validation
-/// already forces a dependent's `replicas` to exactly 1 (`NON_BRIDGE_SCALE`), and its real
-/// cardinality is "one instance per shared-namespace server", not an independently round-robined
-/// count. `placement::endpoint_replica_id` (sorted-position-in-`servers` ordinal) already
-/// expresses exactly that one-per-eligible-server model.
+/// A dependent's own `scale` is fixed at 1 by validation (`NON_BRIDGE_SCALE`), so its per-server
+/// fan-out is always local index 0 -- the same one-instance-per-listed-server model every service
+/// uses now, not a dependent-specific special case.
 pub(crate) fn add_cascaded_dependents(
     config: &Config,
     plan: &NetworkPlan,
@@ -55,12 +53,8 @@ pub(crate) fn add_cascaded_dependents(
             if !dependent_service.servers.iter().any(|s| s == server_name) {
                 continue;
             }
-            let replica_id = crate::placement::endpoint_replica_id(
-                &config.project,
-                dependent_name,
-                dependent_service,
-                server_name,
-            )?;
+            let replica_id =
+                crate::placement::replica_id_for(&config.project, dependent_name, server_name, 0);
             let mut endpoint = plan
                 .endpoints
                 .values()

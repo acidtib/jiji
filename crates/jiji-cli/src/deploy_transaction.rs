@@ -88,11 +88,13 @@ async fn deploy_shared_endpoint(
         })
         .cloned();
 
-    // Resolved by service+server, not by recomputing the upstream's replica_id through placement
-    // arithmetic: the upstream may use a different placement policy/ordinal scheme than this
-    // dependent, but at most one of its replicas can ever be Active/Healthy on any given server
-    // (only one container can hold one address), so filtering the catalog directly is both
-    // simpler and correct regardless of how the upstream was placed.
+    // Resolved by service+server, not by recomputing the upstream's replica_id: a dependent is
+    // always scale 1 and has no local_index of its own to derive the upstream's from. This
+    // assumes the upstream itself is also effectively scale 1 on this server -- if the upstream
+    // runs `scale > 1`, `.find()` below picks whichever of its Active/Healthy replicas the
+    // catalog iterator happens to return first, not necessarily local_index 0. Known limitation,
+    // not introduced or fixed by this change: `network_mode: service:<name>` sharing was never
+    // validated against the upstream's own scale.
     let upstream = catalog
         .iter()
         .find(|record| {

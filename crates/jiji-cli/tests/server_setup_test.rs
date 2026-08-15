@@ -1668,7 +1668,7 @@ async fn import_reports_nothing_to_import_when_a_live_catalog_record_already_exi
     );
     add_network_setup_responses(&mut responses);
     let paths = AgentPaths::default_for_project("testproject");
-    let replica_id = jiji_cli::placement::replica_id("testproject", "web", 0);
+    let replica_id = jiji_cli::placement::replica_id_for("testproject", "web", "web1", 0);
     responses.insert(
         container_list_command("testproject"),
         success("testproject-web-a|testproject|web|web1|running\n"),

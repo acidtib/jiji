@@ -372,23 +372,6 @@ impl fmt::Display for RestartPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PlacementPolicy {
-    #[default]
-    Spread,
-    Packed,
-}
-
-impl fmt::Display for PlacementPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PlacementPolicy::Spread => write!(f, "spread"),
-            PlacementPolicy::Packed => write!(f, "packed"),
-        }
-    }
-}
-
 /// `overlap: forbid` skips a due run while the prior run is still active. Modeled as a
 /// single-variant enum (not `bool`) so a later release can add a queuing/allow variant without a
 /// schema-breaking change; any other value is rejected at parse time like `ContainerEngine`'s.
@@ -460,6 +443,7 @@ fn default_cron_timeout() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Service {
     #[serde(default)]
     pub image: Option<String>,
@@ -467,10 +451,10 @@ pub struct Service {
     pub build: Option<BuildValue>,
     #[serde(default)]
     pub servers: Vec<String>,
-    #[serde(default = "default_replicas")]
-    pub replicas: u32,
-    #[serde(default)]
-    pub placement: PlacementPolicy,
+    /// Every listed server is a literal deploy target; this is the instance count on
+    /// *each* one, not a total spread across a pool (see `docs/architecture-notes.md`).
+    #[serde(default = "default_scale")]
+    pub scale: u32,
     #[serde(default)]
     pub ports: Vec<String>,
     #[serde(default)]
@@ -557,7 +541,7 @@ fn default_retain() -> u32 {
     3
 }
 
-fn default_replicas() -> u32 {
+fn default_scale() -> u32 {
     1
 }
 

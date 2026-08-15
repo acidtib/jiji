@@ -121,12 +121,11 @@ async fn find_owner_in(
         .with_context(|| {
             format!("service '{service_name}': could not read the service catalog to determine cron ownership")
         })?;
-    let assignments = crate::placement::place(
+    let assignments = crate::placement::assignments_for(
         &config.project,
         service_name,
-        service.replicas,
         &service.servers,
-        service.placement,
+        service.scale,
     );
     let Some((owner_assignment, owner_record)) = select_cron_owner(&assignments, &catalog) else {
         anyhow::bail!(
@@ -512,12 +511,11 @@ async fn install_on_owner(
             return (problems, None, installed);
         }
     };
-    let assignments = crate::placement::place(
+    let assignments = crate::placement::assignments_for(
         &config.project,
         service_name,
-        service.replicas,
         &service.servers,
-        service.placement,
+        service.scale,
     );
     let Some((owner_assignment, owner_record)) = select_cron_owner(&assignments, &catalog) else {
         problems.push(format!(

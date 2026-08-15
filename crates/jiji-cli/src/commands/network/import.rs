@@ -145,12 +145,11 @@ async fn discover_candidates(
             }) else {
                 continue;
             };
-            let replica_id = placement::endpoint_replica_id(
-                &config.project,
-                service_name,
-                service,
-                server_plan_name,
-            )?;
+            // Discovery above finds at most one pre-existing container per (service, server);
+            // treat it as local_index 0 regardless of `scale`, matching every other single-
+            // container-per-server lookup in this codebase (e.g. `restart::resolve_restart_image`).
+            let replica_id =
+                placement::replica_id_for(&config.project, service_name, server_plan_name, 0);
             if let Some(existing) = catalog.iter().find(|r| r.replica_id == replica_id) {
                 if !matches!(
                     existing.state,

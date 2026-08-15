@@ -110,10 +110,6 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
             session,
             &plan,
             endpoint,
-            config
-                .services
-                .get(&endpoint.service)
-                .expect("selected service is configured"),
             config.builder.engine,
             effective_lines,
             since,
@@ -152,16 +148,11 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
                 }
             }
         }
-        let service = config
-            .services
-            .get(&endpoint.service)
-            .expect("selected service is configured");
-        let replica_id = crate::placement::endpoint_replica_id(
-            &plan.project,
-            &endpoint.service,
-            service,
-            &endpoint.server,
-        )?;
+        // One endpoint per server, regardless of `scale`; always resolves local_index 0's
+        // replica, the same one-representative-container-per-server choice `resolve_restart_image`
+        // makes (every replica on a server for a service runs the same image/logs stream).
+        let replica_id =
+            crate::placement::replica_id_for(&plan.project, &endpoint.service, &endpoint.server, 0);
         let active = catalog_cache
             .get(&endpoint.server)
             .expect("inserted above")
@@ -251,19 +242,16 @@ async fn follow_endpoint(
     session: &SshSession,
     plan: &NetworkPlan,
     endpoint: &jiji_network::ServiceEndpointPlan,
-    service: &jiji_config::Service,
     engine: jiji_config::ContainerEngine,
     lines: Option<u32>,
     since: Option<&str>,
     grep: Option<&str>,
     grep_options: Option<&str>,
 ) -> anyhow::Result<()> {
-    let replica_id = crate::placement::endpoint_replica_id(
-        &plan.project,
-        &endpoint.service,
-        service,
-        &endpoint.server,
-    )?;
+    // One endpoint per server, regardless of `scale`; always resolves local_index 0's replica
+    // (see the non-follow path above for the same choice).
+    let replica_id =
+        crate::placement::replica_id_for(&plan.project, &endpoint.service, &endpoint.server, 0);
     let active = crate::agent_client::catalog(session, &plan.project)
         .await?
         .into_iter()

@@ -9,14 +9,7 @@ use thiserror::Error;
 use crate::membership::{MembershipView, ProvenanceError, RecordProvenance};
 
 pub const DESIRED_PROTOCOL_VERSION: u16 = 1;
-pub const DESIRED_SCHEMA_VERSION: u16 = 1;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReplicaAssignment {
-    pub replica_id: String,
-    pub ordinal: u32,
-    pub owner_node_id: String,
-}
+pub const DESIRED_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesiredStateRecord {
@@ -25,9 +18,12 @@ pub struct DesiredStateRecord {
     pub protocol_version: u16,
     pub schema_version: u16,
     pub service: String,
-    /// `None` means reset to the configured replica count.
-    pub replica_override: Option<u32>,
-    pub assignments: Vec<ReplicaAssignment>,
+    /// `None` means reset to the configured scale. Per-server instance count override
+    /// (every server in `servers:` still gets this many); the actual assignment set is
+    /// always recomputed from this plus the service's configured `servers`, never
+    /// stored here, so it can never drift out of sync with this value.
+    #[serde(alias = "replica_override")]
+    pub scale_override: Option<u32>,
     pub revision: u64,
     pub author_node_id: String,
     pub author_epoch: u64,
@@ -35,10 +31,11 @@ pub struct DesiredStateRecord {
 
 impl DesiredStateRecord {
     fn validate(&self) -> Result<(), DesiredError> {
-        if self.protocol_version != DESIRED_PROTOCOL_VERSION
-            || self.schema_version != DESIRED_SCHEMA_VERSION
-        {
-            return Err(DesiredError::IncompatibleVersion);
+        if self.protocol_version != DESIRED_PROTOCOL_VERSION {
+            return Err(DesiredError::ProtocolVersion(self.protocol_version));
+        }
+        if self.schema_version != DESIRED_SCHEMA_VERSION {
+            return Err(DesiredError::SchemaVersion(self.schema_version));
         }
         if self.project_id.is_empty()
             || self.service.is_empty()
@@ -46,16 +43,6 @@ impl DesiredStateRecord {
             || self.revision == 0
             || self.author_epoch == 0
         {
-            return Err(DesiredError::InvalidRecord);
-        }
-        let mut ids = BTreeSet::new();
-        let mut ordinals = BTreeSet::new();
-        if self.assignments.iter().any(|assignment| {
-            assignment.replica_id.is_empty()
-                || assignment.owner_node_id.is_empty()
-                || !ids.insert(&assignment.replica_id)
-                || !ordinals.insert(assignment.ordinal)
-        }) {
             return Err(DesiredError::InvalidRecord);
         }
         Ok(())
@@ -164,8 +151,10 @@ pub enum DesiredError {
     Serialization(#[from] serde_json::Error),
     #[error("desired state record is invalid")]
     InvalidRecord,
-    #[error("desired state protocol or schema is incompatible")]
-    IncompatibleVersion,
+    #[error("desired state protocol version {0} is unsupported")]
+    ProtocolVersion(u16),
+    #[error("desired state schema version {0} is unsupported")]
+    SchemaVersion(u16),
     #[error("desired state belongs to another project")]
     WrongProject,
     #[error("desired state belongs to another recovery epoch")]
@@ -211,21 +200,14 @@ mod tests {
         view
     }
 
-    fn record(revision: u64, replicas: u32) -> DesiredStateRecord {
+    fn record(revision: u64, scale: u32) -> DesiredStateRecord {
         DesiredStateRecord {
             project_id: "demo".into(),
             recovery_epoch: 1,
             protocol_version: DESIRED_PROTOCOL_VERSION,
             schema_version: DESIRED_SCHEMA_VERSION,
             service: "web".into(),
-            replica_override: Some(replicas),
-            assignments: (0..replicas)
-                .map(|ordinal| ReplicaAssignment {
-                    replica_id: format!("web-{ordinal}"),
-                    ordinal,
-                    owner_node_id: "a".into(),
-                })
-                .collect(),
+            scale_override: Some(scale),
             revision,
             author_node_id: "a".into(),
             author_epoch: 1,
@@ -259,7 +241,7 @@ mod tests {
                 .unwrap(),
             DesiredApply::Applied
         );
-        assert_eq!(view.get("web").unwrap().assignments.len(), 2);
+        assert_eq!(view.get("web").unwrap().scale_override, Some(2));
     }
 
     #[test]
@@ -270,6 +252,17 @@ mod tests {
         assert!(matches!(
             verify(&stale, RecordProvenance::Local, "demo", 1, &membership),
             Err(DesiredError::StaleAuthor)
+        ));
+    }
+
+    #[test]
+    fn a_stale_schema_version_is_rejected() {
+        let membership = fixture();
+        let mut stale = record(1, 1);
+        stale.schema_version = 1;
+        assert!(matches!(
+            verify(&stale, RecordProvenance::Local, "demo", 1, &membership),
+            Err(DesiredError::SchemaVersion(1))
         ));
     }
 

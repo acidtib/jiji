@@ -247,7 +247,7 @@ patterns.
 
 The upstream name is the dependency declaration. Validation rejects missing,
 self-referencing, or chained upstreams; server placement outside the
-upstream's server set; replicas above one; and a proxy or health check on the
+upstream's server set; scale above one; and a proxy or health check on the
 dependent. The dependent receives no address, DNS settings, published ports,
 or proxy route of its own.
 
@@ -276,7 +276,7 @@ releases. Two `host`-mode services whose `servers` overlap cannot declare
 the same port; the check is project-scoped, so a different project's
 `host`-mode service on a shared machine can still collide, surfacing as a
 failed container start rather than a validation error. `proxy:` and
-`replicas > 1` are rejected by the same generic non-bridge checks that
+`scale > 1` are rejected by the same generic non-bridge checks that
 already apply to `service:<name>` sharing.
 
 `network_mode: none` is rejected by validation outright: every service
@@ -337,14 +337,38 @@ claimed or running jobs are reconciled against real containers before the
 scheduler starts. Existing containers resume monitoring, missing containers
 become failed runs, and unclaimed cron containers are removed.
 
-Agent-spawned container paths must be absolute. Relative staging paths work in
-an SSH login's home directory but resolve from `/` when the systemd agent
-starts a process. Cron addresses must come from the host's `container_subnet`,
-not the project-wide `container_cidr`.
-
 The agent systemd unit uses `KillMode=process`. With Podman and cgroupfs,
 `KillMode=control-group` can kill container monitor processes when the agent
-restarts.
+restarts (confirmed live: `podman ps` kept reporting a dead container "Up"
+because conmon never got to record an orderly exit).
+
+### Regressions found and fixed
+
+Two bugs found by code review, not real-host testing: an earlier sweep only
+removed specs whose names were still present in the current `service.crons`
+map, so a renamed/deleted entry (or a service whose `crons:` block went
+empty) left its old installation running forever, undiscoverable by
+`service remove` either. Separately, `jiji service cron list`'s drift check
+must recompute a spec's expected hash using the same absolutized
+`env_file_path`/`mount_args` the sweep installs with (`remote_home_dir`/
+`absolutize`/`absolutize_mount_args`, all `pub(crate)` from
+`cron_reconcile.rs` for this reason) -- comparing against the unabsolutized
+form reports every installed job as permanently `drifted`, regardless of
+whether anything actually changed.
+
+Two gotchas confirmed live, both because `jiji-agent` spawns cron containers
+directly via `tokio::process::Command`, never over SSH:
+
+- The `.jiji/{project}/...`-relative paths `stage_env_file`/
+  `mounts::remote_mount_base` hand back only resolve against an *SSH login's*
+  home directory. `jiji-agent`'s own cwd is `/` (no such login), so
+  `cron_reconcile.rs` resolves the owner's home directory once
+  (`remote_home_dir`) and sends `CronSpecApply` absolute paths instead.
+- Cron container addresses must come from `mesh_config.local_runtime.
+  container_subnet` (this host's actual bridge subnet), never
+  `container_cidr` (the whole-mesh reserved range covering every project and
+  server) -- the latter hands out addresses Podman rejects outright as
+  outside the bridge's subnet.
 
 ### Scheduler semantics
 
@@ -364,6 +388,38 @@ Sources:
 - `crates/jiji-agent/src/cron.rs`
 - `crates/jiji-agent/src/cron_exec.rs`
 - `crates/jiji-agent/src/scheduler.rs`
+
+## Image Retention Reconciliation
+
+A build-configured service's `retain: N` spec is pushed to every host in its
+`servers:` list after a successful deploy, and swept from any host whose
+service dropped `build:`, changed `servers:`, or was renamed/deleted. This
+reuses `resolve_sessions`/`close_newly_opened` from cron reconciliation
+above, since the two follow the same shape.
+
+### Regressions found and fixed
+
+Two bugs found by code review, fixed and confirmed live on real hosts: the
+stale-spec sweep was scoped to the caller's own `-H`-targeted sessions
+instead of widened to every server any build-configured service still
+references -- the same class of bug the cron sweep had (a host dropped from
+`-H` targeting but still relevant elsewhere was never swept again).
+
+Separately, the deploy transaction's cutover decided whether to prune the
+*previous* deployment's image from the *current* config's `build:` field,
+not whether that deployment was actually build-produced -- switching a
+service from `build:` to a static `image:` deleted the most recently
+retained build image outright. Fixed by querying the agent's own installed
+retention spec live (`capture_orphaned_static_image`/
+`service_has_retention_spec`) instead of trusting config state: the spec's
+own removal only happens in the sweep *after* cutover in the same command,
+so it is still installed -- and correctly protects the image -- at the
+moment cutover checks it.
+
+Sources:
+
+- `crates/jiji-cli/src/image_retention_reconcile.rs`
+- `crates/jiji-cli/src/deploy_transaction.rs`
 
 ## Teardown Ordering
 
@@ -441,7 +497,9 @@ Source: `crates/jiji-cli/src/lock.rs`.
 
 Stable identities and runtime instances are different:
 
-- Logical replica: deterministic from project, service, and ordinal.
+- Logical replica: deterministic from project, service, server, and a
+  server-local index (0..scale) -- adding/removing an unrelated server or
+  changing `scale` never reassigns another replica's identity.
 - Deployment: a fresh ID for every container start.
 - Service container: `{project}-{service}-{deployment-id-prefix}`.
 - Aggregate DNS: `{project}-{service}.jiji`.

@@ -22,9 +22,7 @@ use crate::cron::{
     CronClaimOutcome, CronJobSpec, CronJobStatus, CronMissedRuns, CronOverlap, CronRun,
     CronRunCause, CronRunFilter, CronSpecApplyOutcomeKind,
 };
-use crate::desired::{
-    DesiredStateRecord, ReplicaAssignment, DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION,
-};
+use crate::desired::{DesiredStateRecord, DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION};
 use crate::image_retention::ImageRetentionSpec;
 use crate::leases::{AddressAllocator, DEFAULT_QUARANTINE_SECONDS};
 use crate::membership::{MembershipView, NodeIdentity, RecordProvenance};
@@ -82,8 +80,7 @@ pub enum RequestBody {
     },
     DesiredCommit {
         service: String,
-        replica_override: Option<u32>,
-        assignments: Vec<ReplicaAssignment>,
+        scale_override: Option<u32>,
     },
     DesiredRead {
         service: String,
@@ -486,8 +483,7 @@ impl AgentApi {
             }
             RequestBody::DesiredCommit {
                 service,
-                replica_override,
-                assignments,
+                scale_override,
             } => {
                 let identity = self.catalog_identity.as_ref().ok_or_else(|| {
                     ApiError::new(
@@ -519,8 +515,7 @@ impl AgentApi {
                     protocol_version: DESIRED_PROTOCOL_VERSION,
                     schema_version: DESIRED_SCHEMA_VERSION,
                     service,
-                    replica_override,
-                    assignments,
+                    scale_override,
                     revision,
                     author_node_id: identity.node_id.clone(),
                     author_epoch: author.owner_epoch,

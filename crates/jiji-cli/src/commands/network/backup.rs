@@ -360,8 +360,7 @@ pub async fn replay_recovery_desired_state(
                 )),
                 jiji_agent::api::RequestBody::DesiredCommit {
                     service: record.service.clone(),
-                    replica_override: record.replica_override,
-                    assignments: record.assignments.clone(),
+                    scale_override: record.scale_override,
                 },
             )
             .await?;
