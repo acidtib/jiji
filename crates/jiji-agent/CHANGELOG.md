@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.5...jiji-agent-v0.7.0) (2026-08-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* make servers a literal deploy target list and replace replicas/placement with per-server scale ([#98](https://github.com/acidtib/jiji/issues/98))
+
+### Features
+
+* complete audit coverage and harden validation and distribution ([f350693](https://github.com/acidtib/jiji/commit/f350693ea8723e90b5056903b1620bed2dd42c26))
+* implement network_mode: host, reject network_mode: none ([#97](https://github.com/acidtib/jiji/issues/97)) ([75f34c7](https://github.com/acidtib/jiji/commit/75f34c725411d5f4509e2461f479148870ed97e4))
+* make servers a literal deploy target list and replace replicas/placement with per-server scale ([#98](https://github.com/acidtib/jiji/issues/98)) ([beba101](https://github.com/acidtib/jiji/commit/beba101b243c28edf0e4ac054999e29165a07aa2))
+
 ## [0.6.5](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.4...jiji-agent-v0.6.5) (2026-08-13)
 
 
