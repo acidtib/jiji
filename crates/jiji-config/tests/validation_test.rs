@@ -223,6 +223,34 @@ services:
 }
 
 #[test]
+fn network_mode_service_depending_on_a_host_mode_upstream_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  gluetun:
+    image: gluetun
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+  qbittorrent:
+    image: qbittorrent
+    servers: [one]
+    network_mode: service:gluetun
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_SERVICE_HOST_UPSTREAM_UNSUPPORTED"));
+}
+
+#[test]
 fn network_mode_service_server_mismatch_is_rejected() {
     let raw = parse(
         r#"
@@ -306,6 +334,237 @@ services:
         .iter()
         .any(|error| error.code.starts_with("NETWORK_MODE_SERVICE")
             || error.code == "UNDEFINED_NETWORK_MODE_SERVICE"));
+}
+
+#[test]
+fn network_mode_none_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  worker:
+    image: busybox
+    servers: [one]
+    network_mode: none
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NETWORK_MODE_NONE_UNSUPPORTED"));
+}
+
+#[test]
+fn network_mode_host_with_valid_single_port_validates_cleanly() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result
+        .errors
+        .iter()
+        .any(|error| error.code.starts_with("HOST_NETWORK")));
+}
+
+#[test]
+fn network_mode_host_rejects_more_than_one_port() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080", "9090"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_TOO_MANY_PORTS"));
+}
+
+#[test]
+fn network_mode_host_rejects_host_container_port_mapping() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080:80"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_INVALID_PORT"));
+}
+
+#[test]
+fn network_mode_host_rejects_udp_suffix() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080/udp"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_INVALID_PORT"));
+}
+
+#[test]
+fn network_mode_host_rejects_port_zero() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["0"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_INVALID_PORT"));
+}
+
+#[test]
+fn network_mode_host_rejects_port_collision_on_shared_server() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app-a:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+  app-b:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "HOST_NETWORK_PORT_CONFLICT"));
+}
+
+#[test]
+fn network_mode_host_allows_same_port_on_disjoint_servers() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+  two: { host: 10.0.0.2 }
+services:
+  app-a:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+  app-b:
+    image: nginx
+    servers: [two]
+    network_mode: host
+    ports: ["8080"]
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result
+        .errors
+        .iter()
+        .any(|error| error.code.starts_with("HOST_NETWORK")));
+}
+
+#[test]
+fn network_mode_host_still_rejects_scale_and_proxy() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  one: { host: 10.0.0.1 }
+services:
+  app:
+    image: nginx
+    servers: [one]
+    network_mode: host
+    ports: ["8080"]
+    replicas: 2
+    proxy:
+      port: 8080
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NON_BRIDGE_SCALE"));
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.code == "NON_BRIDGE_PROXY"));
 }
 
 #[test]

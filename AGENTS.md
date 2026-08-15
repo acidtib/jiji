@@ -212,6 +212,49 @@ upstream's new container exists.
 
 Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
 
+### Host Networking (`network_mode: host`)
+
+A service can share the host's own network namespace via `network_mode:
+"host"` instead of getting a project-bridge address. It still goes through
+the full candidate/active/draining/tombstone catalog lifecycle like a
+bridge-networked service (`deploy_host_mode` in `deploy_transaction.rs`),
+it just never calls the agent's `AllocateAddress` RPC and uses the server's
+`management_address` (its WireGuard mesh address) everywhere a bridge
+deployment would use its leased address: catalog commit, `jiji.lease`
+label. `NetworkedContainerRun::host` renders `--network host` plus
+`--dns*` flags (still needed for `.jiji` resolution; unlike
+`service:<name>` sharing, a host-mode container inherits no one else's
+resolver config) and never `-p`: `ports:` accepts at most one bare
+container-side port as routing/uniqueness metadata only, since `-p`
+combined with `--network host` is a discarded, warning-spamming no-op on
+current Docker/Podman and a hard error on some older Podman releases.
+`proxy:` and `replicas > 1` stay rejected by the same generic non-bridge
+checks `service:<name>` sharing already triggers. A `service:<name>`
+dependent cannot target a `host`-mode upstream either: validation rejects
+it, since joining a host-networked container's namespace would silently
+hand the dependent host networking too, without it ever declaring
+`network_mode: host` itself. `network_mode: none` is rejected outright by
+validation: every service needs a reachable address for DNS and health
+checks, and the one thing `none` is good for (an isolated one-off) is
+already served by `crons:`.
+
+A container's `jiji.lease` label carries `management_address` for a
+`host`-mode container, or the upstream's address for a `service:<name>`
+dependent -- kept purely for observability, since neither ever holds a real
+per-deployment bridge lease. `jiji.lease-owned` (`true` only for a genuine
+dynamic bridge lease, `false` for both of the above) tells agent-side
+discovery (`recover_labeled_leases` in `jiji-agent/src/discovery.rs`) which
+is which: without it, discovery would durably record that observability-only
+address as a real claim on every agent restart, a row nothing ever cleans up
+for a `host`-only project (cleanup only runs from the bridge
+`AllocateAddress` path). A container with no `jiji.lease-owned` label at all
+(deployed by a `jiji-cli` build older than this label) still gets the
+previous unconditional recovery attempt, so an in-place agent upgrade never
+regresses recovery for an already-running bridge deployment ahead of its
+next redeploy.
+
+Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
+
 ### Scheduled Cron Execution (`crons:`)
 
 Each service can define `crons:` (name -> `CronConfig`: `schedule`,
@@ -657,12 +700,6 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   `secrets:` today changes nothing and produces no warning. `.env` files and
   host-env fallback are implemented; no adapter implementations exist. See
   `docs/todo.md` for the concrete integration plan.
-- `network_mode: "host"` / `"none"` are documented in `crates/jiji-config/
-  src/jiji.yml` but not implemented by any runtime code path:
-  `container_runtime::build_dynamic_run` never reads `network_mode` for
-  either value, so a service configured with them still gets normal bridge
-  networking, silently. Only `"bridge"` (default) and `"service:<name>"`
-  (see "Container Namespace Sharing" above) actually change behavior today.
 
 ## Testing
 

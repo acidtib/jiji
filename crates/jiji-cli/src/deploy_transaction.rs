@@ -39,9 +39,13 @@ pub enum EndpointOutcome {
 }
 
 pub async fn deploy_endpoint(ctx: &EndpointDeploymentContext<'_>) -> EndpointOutcome {
-    let result = match ctx.service.network_mode_dependency() {
-        Some(upstream_service_name) => deploy_shared_endpoint(ctx, upstream_service_name).await,
-        None => deploy_dynamic_endpoint(ctx).await,
+    let result = if ctx.service.network_mode == "host" {
+        deploy_host_mode(ctx).await
+    } else {
+        match ctx.service.network_mode_dependency() {
+            Some(upstream_service_name) => deploy_shared_endpoint(ctx, upstream_service_name).await,
+            None => deploy_dynamic_endpoint(ctx).await,
+        }
     };
     match result {
         Ok((deployment_id, _address)) => EndpointOutcome::Deployed { deployment_id },
@@ -505,6 +509,208 @@ async fn deploy_dynamic_endpoint(
             return Ok((deployment_id, address));
         }
         finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
+        let _ = crate::agent_client::call(
+            ctx.session,
+            project,
+            Some(format!("release:{}", previous.deployment_id)),
+            RequestBody::ReleaseAddress {
+                deployment_id: previous.deployment_id.clone(),
+                timestamp,
+            },
+        )
+        .await?;
+        commit_catalog(
+            ctx,
+            &previous.replica_id,
+            &previous.deployment_id,
+            previous.address,
+            previous.ports,
+            DeploymentState::Tombstoned,
+            HealthState::Unknown,
+        )
+        .await?;
+    }
+    sweep_stuck_draining_records(ctx, ctx.service_name, Some(ctx.service)).await;
+    Ok((deployment_id, address))
+}
+
+/// Deploys a `network_mode: host` service: a container that shares the host's own network
+/// namespace instead of leasing a bridge address. Closer in shape to `deploy_dynamic_endpoint`
+/// than to `deploy_shared_endpoint`: it still creates a genuinely new container with the full
+/// candidate/active/draining/tombstone catalog lifecycle and a container-readiness health check,
+/// it just never calls `AllocateAddress` and uses `ctx.server.management_address` everywhere the
+/// dynamic path uses the leased address. `proxy:` is rejected by validation for any non-bridge
+/// mode, so there is never a route to activate here (mirrors `deploy_shared_endpoint`'s "no
+/// healthcheck config exists" fallback for the same reason).
+async fn deploy_host_mode(
+    ctx: &EndpointDeploymentContext<'_>,
+) -> anyhow::Result<(String, std::net::Ipv4Addr)> {
+    use sha2::{Digest, Sha256};
+
+    let project = &ctx.plan.project;
+    let replica_id = ctx.replica_id.to_string();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let deployment_id = Sha256::digest(
+        format!("{project}\0{replica_id}\0{nonce}\0{}", std::process::id()).as_bytes(),
+    )
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+    let candidate_name =
+        container_runtime::dynamic_container_name(project, ctx.service_name, &deployment_id);
+    let address = ctx.server.management_address;
+    let committed_ports: Vec<u16> = ctx
+        .service
+        .ports
+        .first()
+        .and_then(|port| port.parse::<u16>().ok())
+        .into_iter()
+        .collect();
+
+    let catalog = crate::agent_client::catalog(ctx.session, project).await?;
+    let previous = catalog
+        .iter()
+        .find(|record| {
+            record.replica_id == replica_id
+                && record.state == DeploymentState::Active
+                && record.health == HealthState::Healthy
+        })
+        .cloned();
+
+    if ctx.service.stop_first {
+        if let Some(previous) = &previous {
+            let previous_name = container_runtime::dynamic_container_name(
+                project,
+                ctx.service_name,
+                &previous.deployment_id,
+            );
+            container_ops::stop(ctx.session, ctx.engine, &previous_name).await?;
+        }
+    }
+
+    container_ops::ensure_image(ctx.session, ctx.engine, ctx.image).await?;
+    let mount_args = mounts::prepare_mounts(
+        ctx.session,
+        ctx.service,
+        ctx.service_name,
+        project,
+        ctx.project_root,
+        ctx.max_dir_upload_bytes,
+    )
+    .await?;
+    let env_file_path = crate::env_resolution::stage_env_file(
+        ctx.session,
+        project,
+        ctx.service_name,
+        &ctx.server.name,
+        ctx.resolved_env,
+    )
+    .await?;
+    let run = container_runtime::build_host_run(
+        ctx.engine,
+        project,
+        ctx.service_name,
+        &ctx.server.name,
+        &replica_id,
+        &deployment_id,
+        ctx.image,
+        address,
+        ctx.server,
+        ctx.service,
+        &mount_args,
+        &env_file_path,
+    );
+
+    commit_catalog(
+        ctx,
+        &replica_id,
+        &deployment_id,
+        address,
+        committed_ports.clone(),
+        DeploymentState::Candidate,
+        HealthState::Unknown,
+    )
+    .await?;
+
+    report_progress(ctx, "starting container");
+    if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
+        release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
+        restore_stop_first(ctx, previous.as_ref()).await;
+        return Err(error);
+    }
+
+    let health_plan =
+        health_check::plan_for_candidate(ctx.engine, &candidate_name, address, 0, None);
+    report_progress(
+        ctx,
+        &health_check_progress_detail(health_plan.deploy_timeout),
+    );
+    if let Err(error) = health_check::wait_until_healthy(
+        ctx.session,
+        ctx.engine,
+        &candidate_name,
+        &health_plan,
+        |line| health_check_line_progress(ctx, line),
+    )
+    .await
+    {
+        release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
+        restore_stop_first(ctx, previous.as_ref()).await;
+        let message = redact_secrets(&error.to_string(), ctx.resolved_env);
+        return Err(anyhow::anyhow!(message));
+    }
+
+    commit_catalog(
+        ctx,
+        &replica_id,
+        &deployment_id,
+        address,
+        committed_ports.clone(),
+        DeploymentState::Active,
+        HealthState::Healthy,
+    )
+    .await?;
+
+    if let Some(previous) = previous {
+        commit_catalog(
+            ctx,
+            &previous.replica_id,
+            &previous.deployment_id,
+            previous.address,
+            previous.ports.clone(),
+            DeploymentState::Draining,
+            HealthState::Unknown,
+        )
+        .await?;
+        let old_name = container_runtime::dynamic_container_name(
+            project,
+            ctx.service_name,
+            &previous.deployment_id,
+        );
+        let orphaned_image =
+            capture_orphaned_static_image(ctx, ctx.service_name, Some(ctx.service), &old_name)
+                .await;
+        let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
+        if let Err(error) =
+            container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
+        {
+            if !is_dependent_container_error(&error) {
+                return Err(error);
+            }
+            tracing::warn!(
+                container = %old_name,
+                service = ctx.service_name,
+                "previous container still has a network_mode:service dependent attached; \
+                 deferring its removal until that dependent redeploys"
+            );
+            sweep_stuck_draining_records(ctx, ctx.service_name, Some(ctx.service)).await;
+            return Ok((deployment_id, address));
+        }
+        finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
+        // No lease was ever allocated for a host-mode container, but the release call stays
+        // unconditional (matching `deploy_shared_endpoint`'s precedent): the agent's release
+        // handler already no-ops correctly when nothing was ever leased for this `deployment_id`.
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let _ = crate::agent_client::call(
             ctx.session,
             project,

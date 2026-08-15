@@ -19,7 +19,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use jiji_network::NetworkedContainerRun;
+use jiji_network::{NetworkTarget, NetworkedContainerRun};
 use tracing::warn;
 
 use crate::cron::{CronJobSpec, CronRun, CronRunState};
@@ -124,7 +124,7 @@ fn render_cron_run(
         bridge_interface: String::new(),
         // A cron job is unconditionally rejected at config-validation time for a service using
         // `network_mode: service:<name>`, so a cron container always gets its own address.
-        shared_with_container: None,
+        network_target: NetworkTarget::Bridge,
         extra_args: Vec::new(),
         command: spec.command.clone(),
     };
@@ -682,7 +682,7 @@ mod tests {
             "100.64.0.9".parse().unwrap(),
         )
         .unwrap();
-        assert!(run.shared_with_container.is_none());
+        assert_eq!(run.network_target, NetworkTarget::Bridge);
         let args = run.args();
         let joined = args.join(" ");
         for expected in [

@@ -155,6 +155,15 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 code: "UNSUPPORTED_NETWORK_MODE",
             });
         }
+        if service.network_mode == "none" {
+            errors.push(ValidationError {
+                path: format!("services.{name}.network_mode"),
+                message: format!(
+                    "Service '{name}' uses network_mode: none, which is not supported: every service needs a reachable address for DNS and health checks. Use 'network_mode: service:<name>' to explicitly share another service's namespace, or 'crons:' for isolated one-off/scheduled work."
+                ),
+                code: "NETWORK_MODE_NONE_UNSUPPORTED",
+            });
+        }
         if service.replicas > 1 && service.network_mode != "bridge" {
             errors.push(ValidationError {
                 path: format!("services.{name}.network_mode"),
@@ -188,6 +197,15 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                             "Service '{name}' cannot depend on '{upstream_name}', which is itself a network_mode:service dependent; chained namespace sharing is not supported"
                         ),
                         code: "NETWORK_MODE_SERVICE_CHAIN_UNSUPPORTED",
+                    });
+                }
+                if upstream.network_mode == "host" {
+                    errors.push(ValidationError {
+                        path: format!("services.{name}.network_mode"),
+                        message: format!(
+                            "Service '{name}' cannot depend on '{upstream_name}', which uses network_mode: host; a dependent can only share a network_mode: bridge upstream's namespace"
+                        ),
+                        code: "NETWORK_MODE_SERVICE_HOST_UPSTREAM_UNSUPPORTED",
                     });
                 }
                 if !service
@@ -266,6 +284,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     validate_proxy_hosts(config, &mut errors);
     validate_proxy_has_a_routable_host(config, &mut errors);
     validate_tcp_targets(config, &mut errors);
+    validate_host_network_ports(config, &mut errors);
 
     if let Some(ssh) = &config.ssh {
         let user_can_come_from_config = !matches!(ssh.config, SshConfigFiles::Enabled(false));
@@ -571,6 +590,74 @@ fn validate_tcp_target(
         return;
     }
     seen_listen_ports.insert(listen_port, service_name.to_string());
+}
+
+/// `network_mode: host` shares the host's own network stack, so `ports:` exists only as metadata
+/// (what the service listens on), never as a `-p` mapping: at most one entry, a bare
+/// container-side port number, never a `host:container` mapping or a `/udp` suffix. Two
+/// `host`-mode services whose `servers:` sets overlap must not declare the same port, since both
+/// containers would try to bind it on the same machine. Project-scoped only, the same
+/// cross-project blind spot `validate_tcp_targets` already discloses for its own port space: a
+/// different project's `host`-mode service on a shared machine can still collide, surfacing at
+/// container start instead.
+fn validate_host_network_ports(config: &Config, errors: &mut Vec<ValidationError>) {
+    let mut seen_ports: Vec<(u16, &str, &Vec<String>)> = Vec::new();
+    for (name, service) in &config.services {
+        if service.network_mode != "host" {
+            continue;
+        }
+        if service.ports.len() > 1 {
+            errors.push(ValidationError {
+                path: format!("services.{name}.ports"),
+                message: format!(
+                    "Service '{name}' uses network_mode: host and can declare at most one port (the port it listens on); found {}",
+                    service.ports.len()
+                ),
+                code: "HOST_NETWORK_TOO_MANY_PORTS",
+            });
+            continue;
+        }
+        let Some(raw_port) = service.ports.first() else {
+            continue;
+        };
+        let Ok(port) = raw_port.parse::<u16>() else {
+            errors.push(ValidationError {
+                path: format!("services.{name}.ports"),
+                message: format!(
+                    "Service '{name}' uses network_mode: host; 'ports' entry '{raw_port}' must be a bare container port number, not a host:container mapping or a /udp suffix -- the app must already bind the port it wants."
+                ),
+                code: "HOST_NETWORK_INVALID_PORT",
+            });
+            continue;
+        };
+        if port == 0 {
+            errors.push(ValidationError {
+                path: format!("services.{name}.ports"),
+                message: format!(
+                    "Service '{name}' uses network_mode: host; 'ports' entry '0' is not a valid port."
+                ),
+                code: "HOST_NETWORK_INVALID_PORT",
+            });
+            continue;
+        }
+        for (existing_port, existing_service, existing_servers) in &seen_ports {
+            if *existing_port == port
+                && service
+                    .servers
+                    .iter()
+                    .any(|host| existing_servers.contains(host))
+            {
+                errors.push(ValidationError {
+                    path: format!("services.{name}.ports"),
+                    message: format!(
+                        "Service '{name}' uses network_mode: host on port {port}, already used by service '{existing_service}' on a shared server. Each host-mode service needs its own port on any server it shares."
+                    ),
+                    code: "HOST_NETWORK_PORT_CONFLICT",
+                });
+            }
+        }
+        seen_ports.push((port, name, &service.servers));
+    }
 }
 
 /// A cron container has no network namespace of its own to lease into once its service already

@@ -260,11 +260,59 @@ deferred until the dependent wave finishes.
 Namespace-sharing updates are not zero-downtime. There is a real interval
 between removal of the old upstream and attachment of the new dependent.
 
+### Host networking (`network_mode: host`)
+
+A service can instead share the host's own network namespace via
+`network_mode: host`. Unlike `service:<upstream>` sharing, it still goes
+through the full candidate/active/draining/tombstone catalog lifecycle and a
+container-readiness health check, exactly like a bridge-networked service
+does; it just never leases an address from the agent. The catalog record's
+address is the server's own management (WireGuard mesh) address, since the
+container shares that interface directly. `ports:` accepts at most one bare
+container-side port number as routing metadata only, never rendered as
+`-p`: combining `-p` with `--network host` is a discarded, warning-spamming
+no-op on current Docker/Podman and a hard error on some older Podman
+releases. Two `host`-mode services whose `servers` overlap cannot declare
+the same port; the check is project-scoped, so a different project's
+`host`-mode service on a shared machine can still collide, surfacing as a
+failed container start rather than a validation error. `proxy:` and
+`replicas > 1` are rejected by the same generic non-bridge checks that
+already apply to `service:<name>` sharing.
+
+`network_mode: none` is rejected by validation outright: every service
+needs a reachable address for DNS and health checks, the catalog's address
+field is not optional, and the one legitimate use of `none` (an isolated
+one-off with no network needs) is already served by `crons:`. A
+`service:<name>` dependent cannot target a `host`-mode upstream: it would
+silently gain host networking through the shared namespace without ever
+declaring `network_mode: host` itself, so validation rejects it the same
+way it rejects a chained `service:<name>` dependency.
+
+`host` mode's `jiji.lease` label carries `management_address` for
+observability, reusing the convention `service:<upstream>` sharing already
+established for the upstream's address; neither ever holds a real
+per-deployment bridge lease. A second label, `jiji.lease-owned`, tells
+agent-side discovery which is which (`true` only for a genuine dynamic
+bridge lease, rendered by `container_runtime::render_dynamic_labels`):
+`recover_labeled_leases` (`jiji-agent/src/discovery.rs`) skips recovery
+outright when it reads `jiji.lease-owned=false`, rather than durably
+recording an observability-only address as a real claim keyed by
+`deployment_id` -- a row nothing would otherwise ever clean up for a
+`host`-only project, since expiry only runs from the bridge
+`AllocateAddress` path. A container with no `jiji.lease-owned` label at all
+(from a `jiji-cli` build predating this label) still gets the previous
+unconditional recovery attempt, so an in-place agent upgrade never
+regresses recovery for an already-running bridge deployment ahead of its
+next redeploy.
+
 Sources:
 
 - `crates/jiji-config/src/validation.rs`
 - `crates/jiji-cli/src/cascade.rs`
 - `crates/jiji-cli/src/deploy_transaction.rs`
+- `crates/jiji-network/src/service_runtime.rs`
+- `crates/jiji-cli/src/container_runtime.rs`
+- `crates/jiji-agent/src/discovery.rs`
 
 ## Scheduled Jobs
 

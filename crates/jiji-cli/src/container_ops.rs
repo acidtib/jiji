@@ -1,5 +1,5 @@
 use jiji_config::ContainerEngine;
-use jiji_network::NetworkedContainerRun;
+use jiji_network::{NetworkTarget, NetworkedContainerRun};
 use jiji_ssh::{CommandResult, SshSession, StreamChunk};
 use std::time::Duration;
 
@@ -173,8 +173,8 @@ pub async fn create_and_start(
     ensure_success(session, &command, &result)?;
     // A `network_mode: service:<other>` dependent has no bridge attachment of its own to
     // reconcile -- it inherits the upstream's, already handled by the upstream's own
-    // create_and_start call.
-    if run.shared_with_container.is_some() {
+    // create_and_start call. A `network_mode: host` container has no bridge attachment either.
+    if !matches!(run.network_target, NetworkTarget::Bridge) {
         return Ok(());
     }
     crate::commands::network::bridge::reconcile_podman_dns_address(
