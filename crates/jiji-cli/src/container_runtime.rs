@@ -60,6 +60,16 @@ pub fn render_labels(project: &str, service: &str, server: &str) -> Vec<String> 
     ]
 }
 
+/// `owns_lease` distinguishes a genuine per-deployment bridge address claim (`build_dynamic_run`)
+/// from `lease_address` being kept on the label purely for observability -- the upstream's address
+/// for a `service:<name>` dependent, or the server's `management_address` for `host` mode. Agent
+/// startup (`discovery::recover_labeled_leases`) reads `jiji.lease-owned` to decide whether this
+/// label is real lease evidence to reconstruct into the durable `address_leases` table, or an
+/// address this container never actually leased. `false` is rendered explicitly (rather than
+/// omitting the label) so a legacy container without it -- deployed before this label existed --
+/// still gets the old, back-compat-safe "attempt recovery" behavior, never a silent regression for
+/// an in-place agent upgrade ahead of that container's next redeploy.
+#[allow(clippy::too_many_arguments)]
 pub fn render_dynamic_labels(
     project: &str,
     service: &str,
@@ -68,6 +78,7 @@ pub fn render_dynamic_labels(
     deployment_id: &str,
     lease_address: Ipv4Addr,
     lifecycle: &str,
+    owns_lease: bool,
 ) -> Vec<String> {
     let mut labels = render_labels(project, service, server);
     for value in [
@@ -75,6 +86,7 @@ pub fn render_dynamic_labels(
         format!("jiji.replica={replica_id}"),
         format!("jiji.deployment={deployment_id}"),
         format!("jiji.lease={lease_address}"),
+        format!("jiji.lease-owned={owns_lease}"),
         format!("jiji.lifecycle={lifecycle}"),
     ] {
         labels.push("--label".to_string());
@@ -113,6 +125,7 @@ pub fn build_dynamic_run(
         deployment_id,
         address,
         "candidate",
+        true,
     ));
     run.extra_args.extend(render_ports(&service.ports));
     run.extra_args.extend(mount_args.iter().cloned());
@@ -167,6 +180,7 @@ pub fn build_shared_run(
         deployment_id,
         upstream_address,
         "candidate",
+        false,
     ));
     run.extra_args.extend(mount_args.iter().cloned());
     run.extra_args.push("--env-file".to_string());
@@ -214,6 +228,7 @@ pub fn build_host_run(
         deployment_id,
         address,
         "candidate",
+        false,
     ));
     run.extra_args.extend(mount_args.iter().cloned());
     run.extra_args.push("--env-file".to_string());

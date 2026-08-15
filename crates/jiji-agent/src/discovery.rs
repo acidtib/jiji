@@ -40,12 +40,13 @@ pub async fn discover(engine: Engine, project: &str) -> DiscoveryOutcome {
 
 pub async fn discover_with_binary(binary: &str, engine: Engine, project: &str) -> DiscoveryOutcome {
     let template = format!(
-        "{{{{.ID}}}}|{{{{.Names}}}}|{{{{.Image}}}}|{}|{}|{}|{}|{}|{}|{{{{.State}}}}",
+        "{{{{.ID}}}}|{{{{.Names}}}}|{{{{.Image}}}}|{}|{}|{}|{}|{}|{}|{}|{{{{.State}}}}",
         label_template(engine, "jiji.service"),
         label_template(engine, "jiji.catalog-managed"),
         label_template(engine, "jiji.replica"),
         label_template(engine, "jiji.deployment"),
         label_template(engine, "jiji.lease"),
+        label_template(engine, "jiji.lease-owned"),
         label_template(engine, "jiji.lifecycle"),
     );
     let output = tokio::process::Command::new(binary)
@@ -92,6 +93,7 @@ fn parse_line(line: &str) -> Option<Observation> {
     let replica = fields.next().unwrap_or_default().trim().to_string();
     let deployment = fields.next().unwrap_or_default().trim().to_string();
     let lease = fields.next().unwrap_or_default().trim().to_string();
+    let lease_owned = fields.next().unwrap_or_default().trim().to_string();
     let lifecycle = fields.next().unwrap_or_default().trim().to_string();
     let state = fields.next().unwrap_or_default().trim().to_string();
     let labels_json = serde_json::json!({
@@ -100,6 +102,7 @@ fn parse_line(line: &str) -> Option<Observation> {
         "jiji.replica": replica,
         "jiji.deployment": deployment,
         "jiji.lease": lease,
+        "jiji.lease-owned": lease_owned,
         "jiji.lifecycle": lifecycle,
     })
     .to_string();
@@ -115,6 +118,18 @@ fn parse_line(line: &str) -> Option<Observation> {
 /// Reconstructs durable local leases from positive container-label evidence. A conflicting label
 /// never steals an address: `recover_address_lease` returns false and the allocator continues to
 /// reserve the existing claim until an operator resolves the conflict.
+///
+/// `jiji.lease-owned=false` (set for a `network_mode: service:<name>` dependent or a `host`-mode
+/// container -- see `container_runtime::render_dynamic_labels`) skips recovery entirely: that
+/// container's `jiji.lease` label carries an address kept only for observability (the upstream's
+/// address, or the server's `management_address`), never a real per-deployment bridge claim this
+/// agent's own `AddressAllocator` needs to track. Recovering it anyway would durably record the
+/// server's own management address, or another container's address, as "leased" to a deployment
+/// that never actually leased anything -- a row nothing then ever cleans up, since expiry only
+/// runs from the bridge `AllocateAddress` path. A container without the label at all (deployed by
+/// a jiji-cli build older than this label) still gets the previous unconditional behavior, so an
+/// in-place agent upgrade never regresses recovery for an already-running bridge deployment ahead
+/// of its next redeploy.
 pub fn recover_labeled_leases(
     store: &AgentStore,
     observations: &[Observation],
@@ -131,6 +146,9 @@ pub fn recover_labeled_leases(
                 .filter(|value| !value.is_empty())
         };
         if value("jiji.catalog-managed") != Some("true") {
+            continue;
+        }
+        if value("jiji.lease-owned") == Some("false") {
             continue;
         }
         let (Some(deployment_id), Some(replica_id), Some(address)) = (
@@ -262,7 +280,7 @@ mod tests {
     #[test]
     fn parses_pipe_delimited_ps_output() {
         let observations = parse_lines(
-            "abc123|demo-web-a|nginx:alpine|web|true|replica-1|deploy-1|10.0.0.4|active|running\n\n",
+            "abc123|demo-web-a|nginx:alpine|web|true|replica-1|deploy-1|10.0.0.4|true|active|running\n\n",
         );
         assert_eq!(
             observations,
@@ -276,6 +294,7 @@ mod tests {
                     "jiji.replica": "replica-1",
                     "jiji.deployment": "deploy-1",
                     "jiji.lease": "10.0.0.4",
+                    "jiji.lease-owned": "true",
                     "jiji.lifecycle": "active",
                 })
                 .to_string(),
@@ -295,7 +314,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let engine_path = write_fake_engine(
             dir.path(),
-            "echo 'abc123|demo-web-a|nginx:alpine|web|true|replica-1|deploy-1|10.0.0.4|active|running'",
+            "echo 'abc123|demo-web-a|nginx:alpine|web|true|replica-1|deploy-1|10.0.0.4|true|active|running'",
         );
         let outcome =
             discover_with_binary(engine_path.to_str().unwrap(), Engine::Docker, "demo").await;
@@ -311,6 +330,7 @@ mod tests {
                     "jiji.replica": "replica-1",
                     "jiji.deployment": "deploy-1",
                     "jiji.lease": "10.0.0.4",
+                    "jiji.lease-owned": "true",
                     "jiji.lifecycle": "active",
                 })
                 .to_string(),
@@ -335,17 +355,49 @@ mod tests {
             .claim_address_lease("deploy-1", "replica-1", "10.0.0.4".parse().unwrap())
             .unwrap();
         store.quarantine_address_lease("deploy-1", 999).unwrap();
-        let observations =
-            parse_lines("abc|demo-web|nginx|web|true|replica-1|deploy-1|10.0.0.4|active|running");
+        let observations = parse_lines(
+            "abc|demo-web|nginx|web|true|replica-1|deploy-1|10.0.0.4|true|active|running",
+        );
         assert_eq!(recover_labeled_leases(&store, &observations).unwrap(), 1);
         let lease = store.address_lease("deploy-1").unwrap().unwrap();
         assert_eq!(lease.state, "active");
         assert_eq!(lease.quarantine_until, None);
 
-        let conflicting =
-            parse_lines("def|demo-web-2|nginx|web|true|replica-2|deploy-2|10.0.0.4|active|running");
+        let conflicting = parse_lines(
+            "def|demo-web-2|nginx|web|true|replica-2|deploy-2|10.0.0.4|true|active|running",
+        );
         assert_eq!(recover_labeled_leases(&store, &conflicting).unwrap(), 0);
         assert!(store.address_lease("deploy-2").unwrap().is_none());
+    }
+
+    /// A `network_mode: service:<name>` dependent or a `host`-mode container labels `jiji.lease`
+    /// with an address it never actually leased (the upstream's address, or the server's own
+    /// `management_address`) purely for observability, and marks that with
+    /// `jiji.lease-owned=false`. Recovery must skip it entirely, not durably claim that address for
+    /// a `deployment_id` that never leased anything.
+    #[test]
+    fn lease_owned_false_is_never_recovered_as_a_real_claim() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        let observations = parse_lines(
+            "abc|demo-web-host|nginx|web|true|replica-1|deploy-1|198.18.0.1|false|active|running",
+        );
+        assert_eq!(recover_labeled_leases(&store, &observations).unwrap(), 0);
+        assert!(store.address_lease("deploy-1").unwrap().is_none());
+    }
+
+    /// A container deployed before this label existed has an empty `jiji.lease-owned` field (no
+    /// such Docker/Podman label to fill the template slot), which must fall back to the previous
+    /// unconditional recovery attempt -- never a silent regression on an in-place agent upgrade.
+    #[test]
+    fn legacy_container_without_the_lease_owned_label_still_recovers() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        let observations =
+            parse_lines("abc|demo-web|nginx|web|true|replica-1|deploy-1|10.0.0.4||active|running");
+        assert_eq!(recover_labeled_leases(&store, &observations).unwrap(), 1);
+        let lease = store.address_lease("deploy-1").unwrap().unwrap();
+        assert_eq!(lease.state, "active");
     }
 
     #[tokio::test]

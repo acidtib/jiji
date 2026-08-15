@@ -288,16 +288,22 @@ silently gain host networking through the shared namespace without ever
 declaring `network_mode: host` itself, so validation rejects it the same
 way it rejects a chained `service:<name>` dependency.
 
-Known gap: `host` mode's `jiji.lease` label carries `management_address`
-for observability, reusing the convention `service:<upstream>` sharing
-already established for the upstream's address. Agent-side discovery does
-not distinguish this from a genuine per-deployment bridge lease, so it
-tries to record that label's address as a real lease keyed by
-`deployment_id`. For `host` mode this leaves a permanently-orphaned
-`address_leases` row after every redeploy, since cleanup only runs from the
-bridge `AllocateAddress` path. Pre-existing for `service:<name>` sharing;
-`host` mode makes it worse because a `host`-only project never calls that
-path at all.
+`host` mode's `jiji.lease` label carries `management_address` for
+observability, reusing the convention `service:<upstream>` sharing already
+established for the upstream's address; neither ever holds a real
+per-deployment bridge lease. A second label, `jiji.lease-owned`, tells
+agent-side discovery which is which (`true` only for a genuine dynamic
+bridge lease, rendered by `container_runtime::render_dynamic_labels`):
+`recover_labeled_leases` (`jiji-agent/src/discovery.rs`) skips recovery
+outright when it reads `jiji.lease-owned=false`, rather than durably
+recording an observability-only address as a real claim keyed by
+`deployment_id` -- a row nothing would otherwise ever clean up for a
+`host`-only project, since expiry only runs from the bridge
+`AllocateAddress` path. A container with no `jiji.lease-owned` label at all
+(from a `jiji-cli` build predating this label) still gets the previous
+unconditional recovery attempt, so an in-place agent upgrade never
+regresses recovery for an already-running bridge deployment ahead of its
+next redeploy.
 
 Sources:
 

@@ -238,20 +238,20 @@ validation: every service needs a reachable address for DNS and health
 checks, and the one thing `none` is good for (an isolated one-off) is
 already served by `crons:`.
 
-Known gap (not yet fixed): a host-mode container's `jiji.lease` label
-carries `management_address` for observability, the same convention
-`service:<name>` sharing already uses for the upstream's address. Agent-side
-discovery (`recover_labeled_leases` in `jiji-agent/src/discovery.rs`)
-doesn't distinguish this from a genuine per-deployment bridge lease, so it
-tries to claim that label's address as a real lease row keyed by
-`deployment_id`. For `host` mode this produces a permanently-orphaned
-`address_leases` row on every redeploy (cleanup only runs from the bridge
-`AllocateAddress` path, which `host`-mode projects never call) plus a
-recurring "container label conflicts with a durable address lease"
-warning. This bug pattern already existed for `service:<name>` sharing
-before `host` mode was added; fixing it properly needs a way for discovery
-to tell a genuine lease claim apart from an address label kept only for
-observability.
+A container's `jiji.lease` label carries `management_address` for a
+`host`-mode container, or the upstream's address for a `service:<name>`
+dependent -- kept purely for observability, since neither ever holds a real
+per-deployment bridge lease. `jiji.lease-owned` (`true` only for a genuine
+dynamic bridge lease, `false` for both of the above) tells agent-side
+discovery (`recover_labeled_leases` in `jiji-agent/src/discovery.rs`) which
+is which: without it, discovery would durably record that observability-only
+address as a real claim on every agent restart, a row nothing ever cleans up
+for a `host`-only project (cleanup only runs from the bridge
+`AllocateAddress` path). A container with no `jiji.lease-owned` label at all
+(deployed by a `jiji-cli` build older than this label) still gets the
+previous unconditional recovery attempt, so an in-place agent upgrade never
+regresses recovery for an already-running bridge deployment ahead of its
+next redeploy.
 
 Full detail: `docs/architecture-notes.md#container-namespace-sharing`.
 
