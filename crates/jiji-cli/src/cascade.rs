@@ -24,6 +24,41 @@ use crate::deploy_transaction::{
 /// A dependent's own `scale` is fixed at 1 by validation (`NON_BRIDGE_SCALE`), so its per-server
 /// fan-out is always local index 0 -- the same one-instance-per-listed-server model every service
 /// uses now, not a dependent-specific special case.
+/// Expands each selected `(service, server)` endpoint into one entry per `(server, local_index)`
+/// replica for that service's configured `scale`, building each replica's
+/// `{project}:{service}:{replica_id}` identity. Shared by `restart`, `rollback`, and `logs`
+/// (`deploy`/`service scale` instead go through `placement::assignments_for`, since they also
+/// need to diff against a desired-scale override). Callers that also cascade dependents
+/// (`restart`/`rollback`) still call `add_cascaded_dependents` afterward, which re-sorts the
+/// result itself.
+pub(crate) fn expand_replicas<'a>(
+    config: &Config,
+    matched_endpoints: impl IntoIterator<Item = &'a ServiceEndpointPlan>,
+) -> (Vec<ServiceEndpointPlan>, BTreeMap<String, String>) {
+    let mut selected: Vec<ServiceEndpointPlan> = Vec::new();
+    let mut replica_ids: BTreeMap<String, String> = BTreeMap::new();
+    for endpoint in matched_endpoints {
+        let service = config
+            .services
+            .get(&endpoint.service)
+            .expect("checked by select_target_endpoints");
+        for local_index in 0..service.scale {
+            let replica_id = crate::placement::replica_id_for(
+                &config.project,
+                &endpoint.service,
+                &endpoint.server,
+                local_index,
+            );
+            let mut replica_endpoint = endpoint.clone();
+            replica_endpoint.identity =
+                format!("{}:{}:{}", config.project, endpoint.service, replica_id);
+            replica_ids.insert(replica_endpoint.identity.clone(), replica_id);
+            selected.push(replica_endpoint);
+        }
+    }
+    (selected, replica_ids)
+}
+
 pub(crate) fn add_cascaded_dependents(
     config: &Config,
     plan: &NetworkPlan,

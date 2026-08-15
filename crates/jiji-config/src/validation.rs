@@ -115,8 +115,8 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     let mut total_replicas = 0_u32;
     let mut total_crons = 0_usize;
     for (name, service) in &config.services {
-        total_replicas =
-            total_replicas.saturating_add(service.servers.len() as u32 * service.scale);
+        total_replicas = total_replicas
+            .saturating_add((service.servers.len() as u32).saturating_mul(service.scale));
         if service.servers.is_empty() {
             errors.push(ValidationError {
                 path: format!("services.{name}.servers"),

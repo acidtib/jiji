@@ -10,6 +10,14 @@ use crate::membership::{MembershipView, ProvenanceError, RecordProvenance};
 
 pub const DESIRED_PROTOCOL_VERSION: u16 = 1;
 pub const DESIRED_SCHEMA_VERSION: u16 = 2;
+/// Oldest schema version this build still accepts when replaying durable local history or
+/// syncing from a peer. Schema 1's `replica_override` field is read via `#[serde(alias =
+/// "replica_override")]` below and its `assignments: Vec<ReplicaAssignment>` field is simply
+/// absent from schema 2 and ignored on deserialize, so every schema-1 record on disk remains
+/// fully readable. Without this floor, `apply_desired`/`from_records` replaying a node's own
+/// pre-upgrade history (or a peer's) would hard-fail on the first schema-1 record it finds,
+/// permanently wedging every future desired-state write on that node.
+pub const DESIRED_MIN_SUPPORTED_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesiredStateRecord {
@@ -34,7 +42,9 @@ impl DesiredStateRecord {
         if self.protocol_version != DESIRED_PROTOCOL_VERSION {
             return Err(DesiredError::ProtocolVersion(self.protocol_version));
         }
-        if self.schema_version != DESIRED_SCHEMA_VERSION {
+        if self.schema_version < DESIRED_MIN_SUPPORTED_SCHEMA_VERSION
+            || self.schema_version > DESIRED_SCHEMA_VERSION
+        {
             return Err(DesiredError::SchemaVersion(self.schema_version));
         }
         if self.project_id.is_empty()
@@ -151,9 +161,13 @@ pub enum DesiredError {
     Serialization(#[from] serde_json::Error),
     #[error("desired state record is invalid")]
     InvalidRecord,
-    #[error("desired state protocol version {0} is unsupported")]
+    #[error(
+        "desired state protocol version {0} is unsupported (this build understands {DESIRED_PROTOCOL_VERSION}); run `jiji server upgrade` to bring this host's jiji-agent in line with this jiji CLI"
+    )]
     ProtocolVersion(u16),
-    #[error("desired state schema version {0} is unsupported")]
+    #[error(
+        "desired state schema version {0} is unsupported (this build understands {DESIRED_MIN_SUPPORTED_SCHEMA_VERSION}..={DESIRED_SCHEMA_VERSION}); run `jiji server upgrade` to bring this host's jiji-agent in line with this jiji CLI"
+    )]
     SchemaVersion(u16),
     #[error("desired state belongs to another project")]
     WrongProject,
@@ -256,13 +270,24 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_schema_version_is_rejected() {
+    fn a_still_supported_old_schema_version_is_accepted() {
+        // Schema 1's `replica_override` field (aliased above) and dropped `assignments` field
+        // must not wedge replay of a node's own pre-upgrade history; see
+        // `DESIRED_MIN_SUPPORTED_SCHEMA_VERSION`'s doc comment.
         let membership = fixture();
-        let mut stale = record(1, 1);
-        stale.schema_version = 1;
+        let mut old = record(1, 1);
+        old.schema_version = 1;
+        assert!(verify(&old, RecordProvenance::Local, "demo", 1, &membership).is_ok());
+    }
+
+    #[test]
+    fn a_genuinely_unsupported_schema_version_is_rejected() {
+        let membership = fixture();
+        let mut unsupported = record(1, 1);
+        unsupported.schema_version = DESIRED_SCHEMA_VERSION + 1;
         assert!(matches!(
-            verify(&stale, RecordProvenance::Local, "demo", 1, &membership),
-            Err(DesiredError::SchemaVersion(1))
+            verify(&unsupported, RecordProvenance::Local, "demo", 1, &membership),
+            Err(DesiredError::SchemaVersion(v)) if v == DESIRED_SCHEMA_VERSION + 1
         ));
     }
 

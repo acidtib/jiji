@@ -124,7 +124,7 @@ pub async fn run(
             "`jiji service scale N -S <service>` requires N when not attached to a terminal"
         );
     };
-    let total_instances = eligible.len() as u32 * requested;
+    let total_instances = (eligible.len() as u32).saturating_mul(requested);
     if total_instances > 2_000 {
         anyhow::bail!(
             "Scale {requested} across {} server(s) is {total_instances} total instances, which exceeds Jiji's supported limit of 2000",

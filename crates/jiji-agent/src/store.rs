@@ -1922,6 +1922,7 @@ fn apply_migration(conn: &Connection, migration: &Migration) -> Result<(), Store
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desired::{DESIRED_PROTOCOL_VERSION, DESIRED_SCHEMA_VERSION};
     use crate::membership::{
         MembershipRecord, MembershipScope, MembershipState, MEMBERSHIP_PROTOCOL_VERSION,
         MEMBERSHIP_SCHEMA_VERSION,
@@ -2423,6 +2424,52 @@ mod tests {
         let store = AgentStore::open(&db_path).unwrap();
         assert_eq!(store.latest_catalog().unwrap().len(), 1);
         assert_eq!(store.catalog_operations().unwrap(), vec![record]);
+    }
+
+    #[test]
+    fn apply_desired_replays_a_pre_upgrade_schema_version_without_wedging() {
+        // Regression test: a node that ran `jiji service scale` before this schema bump has a
+        // durable schema-version-1 row (old `replica_override` field name, now-dropped
+        // `assignments` field) sitting in `desired_operations` forever, since `apply_desired`
+        // replays the FULL unscoped history on every call. That old row must not hard-fail every
+        // future desired-state write on this node.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.sqlite3");
+        let membership = membership_view_for("node-a");
+        {
+            let store = AgentStore::open(&db_path).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO desired_operations (operation_id, service, record_json, applied_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        "legacy-op-1",
+                        "web",
+                        r#"{"project_id":"project","recovery_epoch":1,"protocol_version":1,"schema_version":1,"service":"web","replica_override":3,"assignments":[],"revision":1,"author_node_id":"node-a","author_epoch":1}"#,
+                        0i64,
+                    ],
+                )
+                .unwrap();
+        }
+        let store = AgentStore::open(&db_path).unwrap();
+        let record = DesiredStateRecord {
+            project_id: "project".into(),
+            recovery_epoch: 1,
+            protocol_version: DESIRED_PROTOCOL_VERSION,
+            schema_version: DESIRED_SCHEMA_VERSION,
+            service: "api".into(),
+            scale_override: Some(2),
+            revision: 1,
+            author_node_id: "node-a".into(),
+            author_epoch: 1,
+        };
+        assert_eq!(
+            store
+                .apply_desired(record, RecordProvenance::Local, "project", 1, &membership)
+                .unwrap(),
+            DesiredApply::Applied
+        );
     }
 
     #[test]

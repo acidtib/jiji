@@ -105,6 +105,16 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
 
     if follow {
         let endpoint = selected[0];
+        let service = config
+            .services
+            .get(&endpoint.service)
+            .expect("checked by select_target_endpoints");
+        if service.scale > 1 {
+            Ui::warn(&format!(
+                "Service '{}' has scale {} on '{}'; --follow only streams local_index 0's replica",
+                endpoint.service, service.scale, endpoint.server
+            ));
+        }
         let session = sessions.get(&endpoint.server).expect("connected above");
         let result = follow_endpoint(
             session,
@@ -124,7 +134,11 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
     // Catalog state is cached per server: every local agent exposes the converged project view,
     // and several selected replicas commonly share one SSH session.
     let logs_started = std::time::Instant::now();
-    let ids: Vec<(String, String)> = selected
+    // One entry per `(server, local_index)` replica, not one per server: with `scale > 1` a
+    // server hosts several distinct containers for the same service, and each needs its own
+    // logs fetch rather than only ever showing local_index 0's.
+    let (targets, replica_ids) = crate::cascade::expand_replicas(&config, selected.iter().copied());
+    let ids: Vec<(String, String)> = targets
         .iter()
         .map(|e| (e.identity.clone(), e.server.clone()))
         .collect();
@@ -133,7 +147,7 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
     let logs_handle = logs_progress.handle();
     let mut catalog_cache: BTreeMap<String, Vec<CatalogRecord>> = BTreeMap::new();
     let mut failures = Vec::new();
-    for endpoint in &selected {
+    for endpoint in &targets {
         logs_handle.set_status(&endpoint.identity, "fetching");
         let session = sessions.get(&endpoint.server).expect("connected above");
         if !catalog_cache.contains_key(&endpoint.server) {
@@ -148,17 +162,15 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
                 }
             }
         }
-        // One endpoint per server, regardless of `scale`; always resolves local_index 0's
-        // replica, the same one-representative-container-per-server choice `resolve_restart_image`
-        // makes (every replica on a server for a service runs the same image/logs stream).
-        let replica_id =
-            crate::placement::replica_id_for(&plan.project, &endpoint.service, &endpoint.server, 0);
+        let replica_id = replica_ids
+            .get(&endpoint.identity)
+            .expect("computed by expand_replicas above");
         let active = catalog_cache
             .get(&endpoint.server)
             .expect("inserted above")
             .iter()
             .find(|record| {
-                record.replica_id == replica_id
+                record.replica_id == *replica_id
                     && record.state == DeploymentState::Active
                     && record.health == HealthState::Healthy
             });
@@ -222,7 +234,7 @@ pub async fn run(options: LogsOptions<'_>) -> anyhow::Result<()> {
     Ui::say(
         &format!(
             "Fetched {} log(s) in {}",
-            selected.len(),
+            targets.len(),
             jiji_tui::format_duration(logs_started.elapsed())
         ),
         1,
@@ -248,8 +260,9 @@ async fn follow_endpoint(
     grep: Option<&str>,
     grep_options: Option<&str>,
 ) -> anyhow::Result<()> {
-    // One endpoint per server, regardless of `scale`; always resolves local_index 0's replica
-    // (see the non-follow path above for the same choice).
+    // `--follow` streams exactly one live SSH connection, so unlike the non-follow (batch) path
+    // above it can't reasonably show every replica when `scale > 1`; it always resolves
+    // local_index 0's replica, and the caller warns when that's not the whole picture.
     let replica_id =
         crate::placement::replica_id_for(&plan.project, &endpoint.service, &endpoint.server, 0);
     let active = crate::agent_client::catalog(session, &plan.project)

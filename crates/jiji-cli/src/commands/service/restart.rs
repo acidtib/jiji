@@ -64,28 +64,8 @@ pub async fn run(
     }
 
     let matched_endpoints = select_target_endpoints(&plan, hosts, services)?;
-    let mut selected: Vec<ServiceEndpointPlan> = Vec::new();
-    let mut replica_ids: BTreeMap<String, String> = BTreeMap::new();
-    for endpoint in matched_endpoints {
-        let service = config
-            .services
-            .get(&endpoint.service)
-            .expect("checked by select_target_endpoints");
-        for local_index in 0..service.scale {
-            let replica_id = crate::placement::replica_id_for(
-                &plan.project,
-                &endpoint.service,
-                &endpoint.server,
-                local_index,
-            );
-            let mut replica_endpoint = endpoint.clone();
-            replica_endpoint.identity =
-                format!("{}:{}:{}", plan.project, endpoint.service, replica_id);
-            replica_ids.insert(replica_endpoint.identity.clone(), replica_id);
-            selected.push(replica_endpoint);
-        }
-    }
-    selected.sort_by(|a, b| a.identity.cmp(&b.identity));
+    let (mut selected, mut replica_ids) =
+        crate::cascade::expand_replicas(&config, matched_endpoints);
     // A restarted upstream's `network_mode: service:<upstream>` dependents must be restarted too
     // in the same invocation, in the same order `jiji deploy` cascades them -- see
     // `add_cascaded_dependents`.
