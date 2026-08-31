@@ -78,6 +78,75 @@ pub fn exec_service_stdout(service: &str, cmd: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Same as `exec_service`, but pipes `input` to the command's stdin -- needed to talk to
+/// `jiji-agent`'s own control socket directly (`cron_spec_names_on`), which reads one JSON
+/// request from stdin per `jiji-agent request --socket ...` invocation.
+pub fn exec_service_with_stdin(service: &str, cmd: &[&str], input: &[u8]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut args = vec!["exec", "-T", service];
+    args.extend_from_slice(cmd);
+    let mut child = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(compose_file())
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn docker compose exec");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(input)
+        .expect("write request to child stdin");
+    child
+        .wait_with_output()
+        .expect("wait for docker compose exec")
+}
+
+/// Every cron spec a host's own `jiji-agent` genuinely has installed for `project`, queried
+/// directly through the agent's control socket (`jiji-agent request --socket ...`, the same
+/// `RequestBody::CronSpecList` mechanism `jiji-cli`'s own `agent_client::call` uses) rather than
+/// through `jiji service cron list/status`, which only ever show the *current* owner's state --
+/// this can see a stale spec left behind on a former owner that those commands would never
+/// surface.
+pub fn cron_spec_names_on(service_container: &str, project: &str) -> Vec<String> {
+    let paths = jiji_agent::AgentPaths::default_for_project(project);
+    let request = jiji_agent::api::Request {
+        idempotency_key: None,
+        body: jiji_agent::api::RequestBody::CronSpecList,
+    };
+    let input = serde_json::to_vec(&request).expect("serialize CronSpecList request");
+    let command = format!(
+        "{} request --socket {}",
+        paths.binary_path.display(),
+        paths.socket_path.display()
+    );
+    let output = exec_service_with_stdin(service_container, &["sh", "-c", &command], &input);
+    assert!(
+        output.status.success(),
+        "jiji-agent request --socket ... failed on {service_container}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: jiji_agent::api::ApiResult =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+            panic!("could not parse agent response on {service_container}: {error}\nraw: {stdout}")
+        });
+    match result.expect("agent rejected CronSpecList request") {
+        jiji_agent::api::ResponseBody::CronSpecs { specs } => specs
+            .into_iter()
+            .filter(|spec| spec.project == project)
+            .map(|spec| spec.cron_name)
+            .collect(),
+        other => panic!("expected CronSpecs, got: {other:?}"),
+    }
+}
+
 pub fn exec_vm1(cmd: &[&str]) -> Output {
     exec_service("vm1", cmd)
 }
@@ -618,6 +687,63 @@ ssh:
   keys_only: true
 "#,
             port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            marker = CRON_TEST_MARKER,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// Two hosts always present in the project's own top-level `servers:` (so jiji can always reach
+/// both, cron sweep included), but `web_servers` controls which of them the `web` *service*
+/// itself deploys to -- dropping a host from this narrower list, while it stays known to the
+/// project overall, is what actually moves cron ownership in this codebase's real placement
+/// algorithm (`placement::assignments_for` sorts servers alphabetically and assigns ordinals
+/// per-server; the lowest-ordinal Active/Healthy replica owns the cron, and that can only change
+/// if the server hosting it stops being desired for this service, not merely from a scale number
+/// change alone -- confirmed live).
+pub fn write_config_with_transferable_cron_service(
+    dir: &Path,
+    project: &str,
+    web_servers: &[&str],
+) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    let web_servers_yaml = format!("[{}]", web_servers.join(", "));
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: {vm1_host}
+    port: 22
+    keys:
+      - {key_path}
+  vm2:
+    host: {vm2_host}
+    port: 22
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: {web_servers_yaml}
+    crons:
+      ping:
+        schedule: "0 0 1 1 *"
+        command: ["echo", "{marker}"]
+ssh:
+  user: root
+  keys_only: true
+"#,
+            vm1_host = MESH_VM1_HOST,
+            vm2_host = MESH_VM2_HOST,
             key_path = ssh_key_path().display(),
             marker = CRON_TEST_MARKER,
         ),

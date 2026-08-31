@@ -16,5 +16,5 @@ filter = "binary(deploy_test) | binary(server_setup_test) | binary(remote_build_
 test-group = "heavy"
 
 [[profile.default.overrides]]
-filter = "binary(docker_server_lifecycle_test) | binary(docker_deploy_test) | binary(docker_build_deploy_test) | binary(docker_rolling_deploy_test) | binary(docker_mesh_deploy_test) | binary(docker_network_mode_test) | binary(docker_cron_test) | binary(docker_image_retention_test) | binary(docker_load_balancer_test)"
+filter = "binary(docker_server_lifecycle_test) | binary(docker_deploy_test) | binary(docker_build_deploy_test) | binary(docker_rolling_deploy_test) | binary(docker_mesh_deploy_test) | binary(docker_network_mode_test) | binary(docker_cron_test) | binary(docker_image_retention_test) | binary(docker_load_balancer_test) | binary(docker_cron_ownership_transfer_test)"
 test-group = "docker-integration"
