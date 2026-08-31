@@ -13,7 +13,7 @@ docker compose -f "$compose_file" up -d --build --wait
 
 # Each docker_*_test.rs file under crates/jiji-cli/tests/ is its own test binary; list new ones
 # here as the suite grows.
-docker_tests=(docker_server_lifecycle_test docker_deploy_test docker_build_deploy_test docker_rolling_deploy_test docker_mesh_deploy_test docker_network_mode_test docker_cron_test docker_image_retention_test docker_load_balancer_test docker_cron_ownership_transfer_test)
+docker_tests=(docker_server_lifecycle_test docker_deploy_test docker_build_deploy_test docker_rolling_deploy_test docker_mesh_deploy_test docker_network_mode_test docker_cron_test docker_image_retention_test docker_load_balancer_test docker_cron_ownership_transfer_test docker_scale_test docker_stop_first_test docker_service_restart_rollback_test)
 
 if command -v cargo-nextest >/dev/null 2>&1; then
     JIJI_DOCKER_TESTS=1 cargo nextest run -p jiji-cli "${docker_tests[@]/#/--test=}" --no-capture

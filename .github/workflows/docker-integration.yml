@@ -48,7 +48,7 @@ jobs:
       - name: Run docker integration tests
         env:
           JIJI_DOCKER_TESTS: "1"
-        run: cargo nextest run -p jiji-cli --test=docker_server_lifecycle_test --test=docker_deploy_test --test=docker_build_deploy_test --test=docker_rolling_deploy_test --test=docker_mesh_deploy_test --test=docker_network_mode_test --test=docker_cron_test --test=docker_image_retention_test --test=docker_load_balancer_test --test=docker_cron_ownership_transfer_test --no-capture
+        run: cargo nextest run -p jiji-cli --test=docker_server_lifecycle_test --test=docker_deploy_test --test=docker_build_deploy_test --test=docker_rolling_deploy_test --test=docker_mesh_deploy_test --test=docker_network_mode_test --test=docker_cron_test --test=docker_image_retention_test --test=docker_load_balancer_test --test=docker_cron_ownership_transfer_test --test=docker_scale_test --test=docker_stop_first_test --test=docker_service_restart_rollback_test --no-capture
 
       - name: Dump container logs on failure
         if: failure()

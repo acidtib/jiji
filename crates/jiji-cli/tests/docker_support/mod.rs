@@ -808,6 +808,165 @@ pub fn image_tags_for(project: &str, service: &str) -> Vec<String> {
 
 pub const LOAD_BALANCER_TEST_HOST: &str = "lb.jiji.test";
 
+pub const SCALE_TEST_HOST: &str = "scale.jiji.test";
+
+/// One host, `scale: 2`: two replicas of the same service on the *same* server, each serving its
+/// own container's hostname as its whole response body, same trick
+/// `write_config_with_load_balanced_service` uses across two hosts. Proves per-host multi-replica
+/// placement (distinct leased addresses, distinct containers, both routed by jiji-proxy) on a
+/// single node, which the two-host load-balancer fixture can't exercise since it only ever runs
+/// one replica per host.
+pub fn write_config_with_scalable_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: busybox:1.36
+    servers: [vm1]
+    scale: 2
+    command: ["sh", "-c", "mkdir -p /www && hostname > /www/index.html && httpd -f -p 80 -h /www"]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            proxy_host = SCALE_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+pub const STOP_FIRST_HOST_PORT: u16 = 8082;
+
+/// A service that binds a fixed host port directly (`ports: ["{STOP_FIRST_HOST_PORT}:80"]`, not
+/// `proxy:`), so two of its containers can never run at once: podman refuses to bind an
+/// already-claimed host port. `stop_first` controls whether the deploy transaction stops the
+/// previous container before starting the candidate (`stop_first: true`) or leases and starts the
+/// candidate first, health-gated, before ever touching the previous one (the default) -- see
+/// AGENTS.md's "Health-Gated Deployment Strategy". No `healthcheck:` is configured, so a
+/// candidate only needs to reach `running` state (`container_readiness_command`); the port bind
+/// happens at container-create time, before any health check runs, so proving this doesn't need a
+/// real HTTP probe.
+pub fn write_config_with_direct_port_service(
+    dir: &Path,
+    project: &str,
+    stop_first: bool,
+) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: busybox:1.36
+    servers: [vm1]
+    ports: ["{host_port}:80"]
+    stop_first: {stop_first}
+    command: ["sh", "-c", "httpd -f -p 80"]
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            host_port = STOP_FIRST_HOST_PORT,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+pub const RESTART_ROLLBACK_TEST_HOST: &str = "restart-rollback.jiji.test";
+
+/// Same shape as `write_config_with_build_service`, but the Dockerfile content is parameterized
+/// by `marker` so a test can build and push two genuinely distinct images under two distinct
+/// `--version` tags (an unchanged Dockerfile builds to the same image ID regardless of
+/// `--version`, confirmed live -- see `write_config_with_retained_build_service`'s doc comment),
+/// to exercise `jiji service rollback` between two real, already-pushed versions and `jiji
+/// service restart` against whatever ends up active.
+pub fn write_config_with_marked_build_service(dir: &Path, project: &str, marker: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+
+    let app_dir = dir.join("app");
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(
+        app_dir.join("Dockerfile"),
+        format!("FROM nginx:alpine\nRUN echo '{marker}' > /usr/share/nginx/html/index.html\n"),
+    )
+    .expect("write test app Dockerfile");
+
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    build: ./app
+    servers: [vm1]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            proxy_host = RESTART_ROLLBACK_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
 /// Two replicas of the same service, one per host, each serving its own container's hostname as
 /// its entire response body (computed once at container start via `hostname > index.html`) --
 /// the cheapest way to make two otherwise-identical `busybox` responses distinguishable, so a
