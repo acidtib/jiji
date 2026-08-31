@@ -113,6 +113,31 @@ pub fn all_container_ids_for_service(service: &str) -> Vec<String> {
     .collect()
 }
 
+/// The single running container ID for `jiji.service={service}` on vm1 -- panics if there isn't
+/// exactly one, since every network-mode scenario in this suite deploys with the default `scale:
+/// 1` and expects precisely one container per service.
+pub fn the_container_id_for_service(service: &str) -> String {
+    let ids = all_container_ids_for_service(service);
+    match ids.as_slice() {
+        [id] => id.clone(),
+        other => panic!("expected exactly one container for service '{service}', found: {other:?}"),
+    }
+}
+
+/// `podman inspect <container> --format '{{format}}'` on vm1, trimmed. `format` uses Go template
+/// syntax (`.HostConfig.NetworkMode`, `.NetworkSettings.SandboxKey`, ...).
+pub fn podman_inspect(container_id: &str, format: &str) -> String {
+    exec_vm1_stdout(&[
+        "podman",
+        "inspect",
+        container_id,
+        "--format",
+        &format!("{{{{{format}}}}}"),
+    ])
+    .trim()
+    .to_string()
+}
+
 /// Polls a compose service over `docker compose exec` until it accepts a trivial command, since
 /// `depends_on: condition: service_healthy` only proves compose brought the container up, not
 /// that systemd has finished booting sshd inside it.
@@ -475,4 +500,57 @@ pub fn dns_address_for(config_path: &Path, server: &str) -> std::net::Ipv4Addr {
         .get(server)
         .unwrap_or_else(|| panic!("server '{server}' not present in the computed network plan"))
         .dns_address
+}
+
+/// Single-host fixture exercising both non-bridge `network_mode` shapes at once: `webhost`
+/// (`network_mode: host`, sharing vm1's own network namespace directly -- no `proxy:`/`-p`,
+/// validation rejects both for `host` mode) and `dependent` (`network_mode: service:upstream`,
+/// joining `upstream`'s namespace instead of getting its own bridge address; deploying `upstream`
+/// automatically cascades `dependent` into the same deploy). `webhost` listens on 8081, not 80:
+/// `jiji-proxy` itself binds host ports 80/443 unconditionally once `server setup` has run
+/// (confirmed live), regardless of whether any service in this project actually configures
+/// `proxy:` -- matching AGENTS.md's "ports 80 and 443 remain reserved for HTTP ingress". Uses
+/// `busybox` with an explicit `httpd -p 8081`, not `nginx:alpine`: nginx's listen port is baked
+/// into its own config, not overridable via a bare `command:`.
+pub fn write_config_with_network_mode_services(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  webhost:
+    image: busybox:1.36
+    servers: [vm1]
+    network_mode: host
+    ports: ["8081"]
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8081 -h /www"]
+  upstream:
+    image: nginx:alpine
+    servers: [vm1]
+  dependent:
+    image: nginx:alpine
+    servers: [vm1]
+    network_mode: "service:upstream"
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
 }
