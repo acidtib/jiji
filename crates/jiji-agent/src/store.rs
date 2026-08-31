@@ -11,6 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::candidate_health::CandidateHealthCheckSpec;
 use crate::catalog::{CatalogApply, CatalogError, CatalogRecord, CatalogView};
 use crate::cron::{
     CronClaimOutcome, CronJobSpec, CronRun, CronRunCause, CronRunFilter, CronRunState,
@@ -344,6 +345,20 @@ const MIGRATIONS: &[Migration] = &[
         // `scale:`-is-per-server rework.
         sql: "DROP TABLE scale_overrides;
               DROP TABLE replica_assignments;",
+    },
+    Migration {
+        version: 12,
+        // Local-only, one row per still-`Candidate` deployment (see `candidate_health.rs`).
+        sql: "CREATE TABLE candidate_health_checks (
+                  deployment_id TEXT PRIMARY KEY,
+                  service TEXT NOT NULL,
+                  replica_id TEXT NOT NULL,
+                  command TEXT NOT NULL,
+                  interval_secs INTEGER NOT NULL,
+                  deploy_timeout_secs INTEGER NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  verification_failed_at INTEGER
+              );",
     },
 ];
 
@@ -1544,6 +1559,120 @@ impl AgentStore {
         rows.collect::<Result<_, _>>().map_err(StoreError::from)
     }
 
+    /// Idempotent upsert keyed by `deployment_id`: a redundant re-send from a retried
+    /// `CatalogCommit` call just refreshes the same row.
+    pub fn record_candidate_health_check(
+        &self,
+        spec: &CandidateHealthCheckSpec,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO candidate_health_checks
+                 (deployment_id, service, replica_id, command, interval_secs,
+                  deploy_timeout_secs, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(deployment_id) DO UPDATE SET
+               service = excluded.service,
+               replica_id = excluded.replica_id,
+               command = excluded.command,
+               interval_secs = excluded.interval_secs,
+               deploy_timeout_secs = excluded.deploy_timeout_secs,
+               updated_at = excluded.updated_at",
+            params![
+                spec.deployment_id,
+                spec.service,
+                spec.replica_id,
+                spec.command,
+                spec.interval_secs as i64,
+                spec.deploy_timeout_secs as i64,
+                now(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn candidate_health_check(
+        &self,
+        deployment_id: &str,
+    ) -> Result<Option<CandidateHealthCheckSpec>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT deployment_id, service, replica_id, command, interval_secs,
+                        deploy_timeout_secs
+                 FROM candidate_health_checks WHERE deployment_id = ?1",
+                params![deployment_id],
+                |row| {
+                    Ok(CandidateHealthCheckSpec {
+                        deployment_id: row.get(0)?,
+                        service: row.get(1)?,
+                        replica_id: row.get(2)?,
+                        command: row.get(3)?,
+                        interval_secs: row.get::<_, i64>(4)? as u64,
+                        deploy_timeout_secs: row.get::<_, i64>(5)? as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Marks that `deployment_id`'s health check has failed, so `restart_candidates` stops
+    /// treating it as worth resurrecting once stopped.
+    pub fn mark_candidate_health_check_failed(
+        &self,
+        deployment_id: &str,
+        timestamp: u64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE candidate_health_checks SET verification_failed_at = ?2 WHERE deployment_id = ?1",
+            params![deployment_id, timestamp as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Every `deployment_id` whose recorded health check has failed verification at least once.
+    /// Never needs `owner_node_id` scoping: this table is local-only and never replicated, so
+    /// every row already belongs exclusively to this node by construction.
+    pub fn failed_verification_candidates(
+        &self,
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT deployment_id FROM candidate_health_checks WHERE verification_failed_at IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<_, _>>().map_err(StoreError::from)
+    }
+
+    /// Deletes every recorded health-check plan whose `deployment_id` is no longer a
+    /// `Candidate`-state record owned by `owner_node_id`. Called every tick, since most deploys
+    /// never restart the agent to consume their own row any other way.
+    pub fn gc_candidate_health_checks(&self, owner_node_id: &str) -> Result<usize, StoreError> {
+        let live_candidates = self
+            .latest_catalog()?
+            .into_iter()
+            .filter(|record| {
+                record.owner_node_id == owner_node_id
+                    && record.state == crate::catalog::DeploymentState::Candidate
+            })
+            .map(|record| record.deployment_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut statement = self
+            .conn
+            .prepare("SELECT deployment_id FROM candidate_health_checks")?;
+        let stale = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|deployment_id| !live_candidates.contains(deployment_id))
+            .collect::<Vec<_>>();
+        for deployment_id in &stale {
+            self.conn.execute(
+                "DELETE FROM candidate_health_checks WHERE deployment_id = ?1",
+                params![deployment_id],
+            )?;
+        }
+        Ok(stale.len())
+    }
+
     /// Transactionally claims a due (scheduled) or requested (manual) cron run (see the plan's
     /// "Scheduler Rules" section). Checks an exact repeat of the same `(service, cron_name,
     /// scheduled_at)` first -- unconditionally returning the existing run, regardless of its own
@@ -2151,6 +2280,7 @@ mod tests {
                          FROM desired_operations_current;
                      DROP TABLE desired_operations_current;
                      DROP TABLE image_retention_specs;
+                     DROP TABLE candidate_health_checks;
                      CREATE TABLE scale_overrides (
                          service TEXT PRIMARY KEY,
                          replicas INTEGER NOT NULL,
@@ -2424,6 +2554,126 @@ mod tests {
         let store = AgentStore::open(&db_path).unwrap();
         assert_eq!(store.latest_catalog().unwrap().len(), 1);
         assert_eq!(store.catalog_operations().unwrap(), vec![record]);
+    }
+
+    fn health_check_spec(
+        deployment_id: &str,
+        service: &str,
+        replica_id: &str,
+    ) -> CandidateHealthCheckSpec {
+        CandidateHealthCheckSpec {
+            deployment_id: deployment_id.into(),
+            service: service.into(),
+            replica_id: replica_id.into(),
+            command: "true".into(),
+            interval_secs: 2,
+            deploy_timeout_secs: 30,
+        }
+    }
+
+    #[test]
+    fn record_candidate_health_check_upserts_idempotently() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        let spec = health_check_spec("deploy-1", "web", "replica-1");
+        store.record_candidate_health_check(&spec).unwrap();
+        assert_eq!(
+            store.candidate_health_check("deploy-1").unwrap(),
+            Some(spec.clone())
+        );
+
+        let changed = CandidateHealthCheckSpec {
+            command: "curl -fsS http://10.0.0.4:80/health".into(),
+            ..spec
+        };
+        store.record_candidate_health_check(&changed).unwrap();
+        assert_eq!(
+            store.candidate_health_check("deploy-1").unwrap(),
+            Some(changed)
+        );
+    }
+
+    #[test]
+    fn candidate_health_check_returns_none_when_absent() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        assert_eq!(store.candidate_health_check("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn gc_candidate_health_checks_keeps_live_candidates_and_prunes_the_rest() {
+        use crate::catalog::DeploymentState;
+
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        let membership = membership_view_for("node-a");
+        let live_candidate = CatalogRecord {
+            state: DeploymentState::Candidate,
+            deployment_id: "deploy-cand".into(),
+            ..catalog_record("r1", "node-a", 1)
+        };
+        store
+            .apply_catalog(
+                live_candidate,
+                RecordProvenance::Local,
+                "project",
+                1,
+                &membership,
+            )
+            .unwrap();
+
+        store
+            .record_candidate_health_check(&health_check_spec("deploy-cand", "web", "r1"))
+            .unwrap();
+        store
+            .record_candidate_health_check(&health_check_spec("deploy-stale", "web", "r2"))
+            .unwrap();
+
+        assert_eq!(store.gc_candidate_health_checks("node-a").unwrap(), 1);
+        assert!(store
+            .candidate_health_check("deploy-cand")
+            .unwrap()
+            .is_some());
+        assert!(store
+            .candidate_health_check("deploy-stale")
+            .unwrap()
+            .is_none());
+
+        // A second pass with nothing new to prune removes nothing further.
+        assert_eq!(store.gc_candidate_health_checks("node-a").unwrap(), 0);
+        assert!(store
+            .candidate_health_check("deploy-cand")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn failed_verification_candidates_tracks_only_marked_deployments() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::open(&dir.path().join("agent.sqlite3")).unwrap();
+        store
+            .record_candidate_health_check(&health_check_spec("deploy-1", "web", "r1"))
+            .unwrap();
+        store
+            .record_candidate_health_check(&health_check_spec("deploy-2", "web", "r2"))
+            .unwrap();
+        assert!(store.failed_verification_candidates().unwrap().is_empty());
+
+        store
+            .mark_candidate_health_check_failed("deploy-1", 100)
+            .unwrap();
+        assert_eq!(
+            store.failed_verification_candidates().unwrap(),
+            std::collections::BTreeSet::from(["deploy-1".to_string()])
+        );
+        // Marking an unrecorded deployment_id is a harmless no-op (nothing to update).
+        store
+            .mark_candidate_health_check_failed("no-such-deployment", 100)
+            .unwrap();
+        assert_eq!(
+            store.failed_verification_candidates().unwrap(),
+            std::collections::BTreeSet::from(["deploy-1".to_string()])
+        );
     }
 
     #[test]

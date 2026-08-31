@@ -15,6 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::candidate_health::CandidateHealthCheckSpec;
 use crate::catalog::{
     CatalogRecord, DeploymentState, HealthState, CATALOG_PROTOCOL_VERSION, CATALOG_SCHEMA_VERSION,
 };
@@ -162,6 +163,18 @@ pub enum RequestBody {
     },
     /// Every image-retention spec installed on this agent.
     ImageRetentionList,
+    /// Records a candidate's deploy-time health-check command for later replay (see
+    /// `candidate_health.rs`). Idempotent upsert by `deployment_id`, local-only. An older agent
+    /// that doesn't recognize this variant fails the request harmlessly; the caller treats it as
+    /// best-effort.
+    RecordCandidateHealthCheck {
+        deployment_id: String,
+        service: String,
+        replica_id: String,
+        command: String,
+        interval_secs: u64,
+        deploy_timeout_secs: u64,
+    },
 }
 
 // See `RequestBody`'s doc comment on the identical `large_enum_variant` allow.
@@ -260,6 +273,7 @@ pub enum ResponseBody {
     ImageRetentionSpecs {
         specs: Vec<ImageRetentionSpec>,
     },
+    CandidateHealthCheckRecorded,
 }
 
 pub type ApiResult = Result<ResponseBody, ApiError>;
@@ -841,6 +855,26 @@ impl AgentApi {
                     .image_retention_specs()
                     .map_err(|error| internal(&error))?,
             }),
+            RequestBody::RecordCandidateHealthCheck {
+                deployment_id,
+                service,
+                replica_id,
+                command,
+                interval_secs,
+                deploy_timeout_secs,
+            } => {
+                store
+                    .record_candidate_health_check(&CandidateHealthCheckSpec {
+                        deployment_id,
+                        service,
+                        replica_id,
+                        command,
+                        interval_secs,
+                        deploy_timeout_secs,
+                    })
+                    .map_err(|error| internal(&error))?;
+                Ok(ResponseBody::CandidateHealthCheckRecorded)
+            }
         }
     }
 

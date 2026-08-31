@@ -31,6 +31,14 @@ fn success(stdout: &str) -> CannedResponse {
     }
 }
 
+fn failure(stderr: &str) -> CannedResponse {
+    CannedResponse {
+        success: false,
+        stdout: String::new(),
+        stderr: stderr.to_string(),
+    }
+}
+
 fn default_response(command: &str) -> CannedResponse {
     let body = if command.contains("# jiji-request:catalog-list") {
         r#"{"Ok":{"type":"catalog_list","records":[]}}"#
@@ -86,6 +94,23 @@ fn gluetun_active_with_stuck_draining_catalog_response(
 ) -> CannedResponse {
     success(&format!(
         r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"gluetun-existing","owner_node_id":"{owner}","owner_epoch":1,"revision":2,"deployment_id":"{active_deployment_id}","address":"{active_address}","ports":[],"image":"docker.io/qmcgaw/gluetun:latest","state":"active","health":"healthy"}},{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"gluetun-existing","owner_node_id":"{owner}","owner_epoch":1,"revision":1,"deployment_id":"{stuck_deployment_id}","address":"{stuck_address}","ports":[],"image":"docker.io/qmcgaw/gluetun:latest","state":"draining","health":"unknown"}}]}}}}"#
+    ))
+}
+
+/// A `CatalogList` response reporting the same Active/Healthy `gluetun` record as
+/// `gluetun_active_catalog_response`, plus an Active/Healthy `qbittorrent` record of its own (the
+/// dependent's *own* previous generation, not the upstream's) -- so `deploy_shared_endpoint`
+/// finds a `previous` to retire and attempts to remove its container.
+fn gluetun_and_qbittorrent_active_catalog_response(
+    gluetun_deployment_id: &str,
+    gluetun_address: &str,
+    qbittorrent_replica_id: &str,
+    qbittorrent_deployment_id: &str,
+    qbittorrent_address: &str,
+    owner: &str,
+) -> CannedResponse {
+    success(&format!(
+        r#"{{"Ok":{{"type":"catalog_list","records":[{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"gluetun","replica_id":"gluetun-existing","owner_node_id":"{owner}","owner_epoch":1,"revision":2,"deployment_id":"{gluetun_deployment_id}","address":"{gluetun_address}","ports":[],"image":"docker.io/qmcgaw/gluetun:latest","state":"active","health":"healthy"}},{{"project_id":"demo","recovery_epoch":1,"protocol_version":1,"schema_version":2,"service":"qbittorrent","replica_id":"{qbittorrent_replica_id}","owner_node_id":"{owner}","owner_epoch":1,"revision":1,"deployment_id":"{qbittorrent_deployment_id}","address":"{qbittorrent_address}","ports":[],"image":"docker.io/linuxserver/qbittorrent:latest","state":"active","health":"healthy"}}]}}}}"#
     ))
 }
 
@@ -542,5 +567,77 @@ async fn dependent_redeploy_sweeps_a_stuck_draining_record_for_its_upstream() {
         catalog_commit_calls, 3,
         "expected qbittorrent's own Candidate+Active commits plus one Tombstoned commit \
          from the sweep: {received:?}"
+    );
+}
+
+/// `deploy_shared_endpoint` must tolerate a dependent-container error on *its own* previous
+/// container's removal, the same way `deploy_dynamic_endpoint` already does.
+#[tokio::test(flavor = "multi_thread")]
+async fn dependent_redeploy_tolerates_a_dependent_container_error_on_its_own_previous_container() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)));
+    let mut responses = base_responses(&generation);
+    let catalog_list_command = format!(
+        "/etc/jiji/agent/{}/bin/jiji-agent request --socket /etc/jiji/agent/{}/agent.sock # jiji-request:catalog-list",
+        slug(),
+        slug()
+    );
+    let qbittorrent_replica_id =
+        jiji_cli::placement::replica_id_for("demo", "qbittorrent", "app", 0);
+    // First 12 hex chars of the deployment id become the container name suffix
+    // (`container_runtime::dynamic_container_name`).
+    let old_qbittorrent_container = "demo-qbittorrent-qbitoldstuck";
+    responses.insert(
+        catalog_list_command,
+        gluetun_and_qbittorrent_active_catalog_response(
+            "aabbccddeeff001122",
+            "100.64.0.20",
+            &qbittorrent_replica_id,
+            "qbitoldstuck0000001",
+            "100.64.0.30",
+            "app",
+        ),
+    );
+    responses.insert(
+        format!("docker rm -f {old_qbittorrent_container}"),
+        failure(
+            "Error: container 0123456789ab has dependent containers which must be removed \
+             before it: consider using -f",
+        ),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_deploy(&config_path, &["-S", "qbittorrent"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a dependent-container error on the dependent's own previous container must not fail \
+         the whole redeploy: stderr: {stderr}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received
+            .iter()
+            .any(|c| c == &format!("docker rm -f {old_qbittorrent_container}")),
+        "should have attempted to remove the dependent's own previous container: {received:?}"
+    );
+    // Candidate + Active for the new generation, plus Draining for the deferred previous one --
+    // no Tombstoned commit, since removal never actually completed.
+    let catalog_commit_calls = received
+        .iter()
+        .filter(|c| c.contains("# jiji-request:catalog-commit"))
+        .count();
+    assert_eq!(
+        catalog_commit_calls, 3,
+        "the previous record should be left Draining, not advanced to Tombstoned: {received:?}"
+    );
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("# jiji-request:release-address")),
+        "a dependent never leases an address, so nothing should ever be released: {received:?}"
     );
 }

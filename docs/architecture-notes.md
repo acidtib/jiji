@@ -114,12 +114,79 @@ starting its replacement. Direct host-port bindings also prevent old and new
 containers from binding the same port concurrently. Neither case guarantees
 zero downtime.
 
+A `network_mode: service:<upstream>` dependent's own previous-container
+removal (`deploy_shared_endpoint`) tolerates a dependent-container error the
+same way the upstream's own removal already does (`is_dependent_container_error`
+in both), instead of hard-failing the redeploy and skipping the sweep that
+retries the upstream's own stuck `Draining` record.
+
+### Startup crash recovery
+
+If `jiji deploy` is interrupted after committing a deployment Candidate but
+before it resolves Active or is removed, the container can be left running
+with no further catalog transition. On its own startup, `jiji-agent`
+recomputes which of its own catalog rows are still Candidate
+(`main.rs`'s `startup_candidates`) and, for any one whose container is still
+observed running, decides whether to trust it enough to promote it.
+
+The agent has no access to a service's configured `healthcheck:` (that logic
+lives entirely in `jiji-cli`), and adding it to the replicated `CatalogRecord`
+would force a `CATALOG_SCHEMA_VERSION` bump that breaks mesh replication
+between an old and a new agent mid-rollout. Instead, `deploy_dynamic_endpoint`
+records the exact rendered health-check command (`health_check::plan_for_candidate`'s
+output) in an agent-local, non-replicated table
+(`crates/jiji-agent/src/candidate_health.rs`, same precedent as
+`ImageRetentionSpec` and `CronJobSpec`) at the same time it commits the
+Candidate row. `recover_startup_candidates` replays that exact command
+locally (no SSH needed -- the agent already runs on the target host) before
+promoting: a pass retires the true previous generation exactly as a live
+deploy would; a failure leaves the record Candidate and the previous
+generation untouched, retried every subsequent tick, rather than promoting on
+"container observed running" alone. No recorded command at all (an older
+`jiji-cli`, or a dependent/host-mode deploy, which only ever have the same
+generic container-readiness check this recovery path's own "observed
+running" gate already performs) falls back to that same "observed running"
+behavior. A tick-loop component (`gc_candidate_health_checks`) prunes rows
+once their deployment resolves out of Candidate one way or another.
+
+`verify_locally` makes exactly one attempt per call, bounded by the
+recorded `deploy_timeout_secs`, rather than polling internally until that
+timeout the way `jiji-cli`'s own `wait_until_healthy` does: `reconcile_once`
+already runs on a short backoff (seconds, not minutes), so that outer loop is
+the retry mechanism. A poll-until-timeout replay would otherwise block every
+later component in the same tick (`candidate_health_gc`, `draining_cleanup`,
+proxy route repair) behind one broken deployment's health check, every
+single tick, for as long as it stays unverified.
+
+A `Candidate` that fails verification is also marked in
+`candidate_health_checks` (`AgentStore::mark_candidate_health_check_failed`),
+and `restart_candidates` excludes any such deployment from its normal
+"resurrect a stopped catalog-managed container" repair. Without this, an
+operator stopping the zombie container to investigate -- the natural
+manual-recovery action `docs/bug-orphaned-candidate-containers.md` shows
+someone actually taking -- would just have it silently started back up by
+the very next tick's generic container repair, which runs before
+`deployment_recovery` in the same `reconcile_once` pass and has no health
+awareness of its own.
+
+A separate tick-loop component, `sweep_stuck_draining_records`
+(`local_reconcile.rs`, mirrors the CLI function of the same name/intent but
+engine-local), retries clearing every `Draining` record on every tick
+regardless of whether a deploy is in progress, so a record stuck behind a
+`network_mode: service:<this>` dependent no longer needs a perfectly-timed
+future deploy of exactly the right service to ever resolve.
+
+See `docs/bug-orphaned-candidate-containers.md` for the production incident
+this closes.
+
 Sources:
 
 - `crates/jiji-cli/src/deploy_transaction.rs`
 - `crates/jiji-cli/src/health_check.rs`
 - `crates/jiji-cli/src/placement.rs`
 - `crates/jiji-agent/src/leases.rs`
+- `crates/jiji-agent/src/candidate_health.rs`
+- `crates/jiji-agent/src/local_reconcile.rs`
 
 ## Project Networking
 
