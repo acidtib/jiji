@@ -8,15 +8,14 @@
 //! truth for what a given agent genuinely has installed, not just what the CLI's "current owner"
 //! lookup happens to report.
 //!
-//! Confirmed live, and asserted on below rather than assumed: dropping a host from a service's
-//! own `servers:` list (while that host stays in the project's top-level `servers:`, still fully
-//! reachable) does NOT sweep that host's stale cron spec. `cron_reconcile.rs::
-//! reconcile_service_crons` builds its sweep session set from `&service.servers` -- the service's
-//! own *current* list -- so once a host is no longer in it, the sweep loop structurally never
-//! visits it again, regardless of anything still installed there. AGENTS.md's own description of
-//! this sweep ("left by a previous owner after an ownership transfer") reads as if this exact
-//! case should be covered; in practice it silently isn't. This is a real, current gap, not a
-//! flaky assertion -- see AGENTS.md's "Docker-in-Docker integration suite" section for more.
+//! Also verifies a fix for a real gap found via this test: dropping a host from a service's own
+//! `servers:` list (while that host stays in the project's top-level `servers:`, still fully
+//! reachable) now still sweeps that host's stale cron spec. `cron_reconcile.rs::
+//! reconcile_service_crons` used to build its sweep session set from `&service.servers` alone --
+//! the service's own *current* list -- so once a host dropped out of it, the sweep loop
+//! structurally could never visit it again, regardless of anything still installed there. It now
+//! widens the sweep to every server in the project (`config.servers`) whenever the service has
+//! `crons:` configured, so a host that used to be eligible is still reached.
 //!
 //! Requires `JIJI_DOCKER_TESTS=1` and the compose stack already up (`mise test-docker` runs
 //! both); otherwise this test skips itself (`docker_support::skip_unless_enabled`).
@@ -108,17 +107,14 @@ fn cron_ownership_moves_but_a_host_dropped_from_servers_keeps_its_stale_spec() {
         specs_vm2_after.contains(&"ping".to_string()),
         "expected vm2's own agent to have 'ping' installed as the new owner, got: {specs_vm2_after:?}"
     );
-    // Confirmed live (see the module doc comment): vm1 is still in the project's top-level
-    // `servers:`, fully reachable, but no longer in `web`'s own `servers:` list -- the sweep in
-    // `reconcile_service_crons` only ever visits `&service.servers`, so it structurally cannot
-    // reach vm1 to remove this. This is real, current jiji behavior, not a bug in this test.
+    // vm1 is still in the project's top-level `servers:`, fully reachable, but no longer in
+    // `web`'s own `servers:` list. `reconcile_service_crons` now widens its sweep to every
+    // project server whenever `web` has `crons:` configured, so vm1's stale spec is still found
+    // and removed even though `web` no longer targets it.
     let specs_vm1_after = docker_support::cron_spec_names_on("vm1", project);
-    assert_eq!(
-        specs_vm1_after,
-        vec!["ping".to_string()],
-        "expected vm1's stale 'ping' spec to still be present (dropping a host from a service's \
-         own servers: does not sweep it, confirmed live) -- if this now fails, that gap may have \
-         been fixed and this assertion should flip to `assert!(specs_vm1_after.is_empty())`"
+    assert!(
+        specs_vm1_after.is_empty(),
+        "expected vm1's stale 'ping' spec to be swept once it dropped from web's servers:, got: {specs_vm1_after:?}"
     );
 
     let teardown = docker_support::run_jiji(&config_vm2_only, &["server", "teardown", "-y"]);

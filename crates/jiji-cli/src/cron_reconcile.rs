@@ -6,12 +6,15 @@
 //! and by `jiji service remove` (unconditional removal, no ownership computation needed).
 //!
 //! Cron specs are never replicated between agents (see `jiji_agent::cron`'s module doc comment),
-//! so finding a stale spec -- left on a former owner after an ownership transfer, or left behind
-//! entirely because its `crons:` entry was renamed or deleted -- requires actually connecting to
-//! every eligible agent and asking what it has installed; the CLI has no other way to discover it
-//! and no memory of what used to be configured. This module therefore connects to every server in
-//! a service's `servers:` list, not just whatever the current command's `-H`/`-S` filters
-//! selected, extending the caller's session map in place, and always sweeps every one of them
+//! so finding a stale spec -- left on a former owner after an ownership transfer, left behind
+//! because its `crons:` entry was renamed or deleted, or left behind on a host `servers:` itself
+//! dropped -- requires actually connecting to every eligible agent and asking what it has
+//! installed; the CLI has no other way to discover it and no memory of what used to be
+//! configured. `reconcile_service_crons` therefore connects to every server in the *project*
+//! (`config.servers`), not just the service's current `servers:` list or whatever the command's
+//! `-H`/`-S` filters selected -- a host a service's `servers:` no longer lists is still swept,
+//! leniently, since it can still have a stale spec installed -- extending the caller's session
+//! map in place, and always sweeps every one of them
 //! (`remove_specs_absent_from`) regardless of whether `service.crons` is empty.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -367,10 +370,13 @@ pub(crate) async fn close_newly_opened(
 
 /// Reconciles every `crons:` entry for one service: installs on the current owner, then sweeps
 /// every eligible host (owner included) for an installed spec that no longer belongs there --
-/// left by a previous owner after an ownership transfer, or left behind because its `crons:`
-/// entry was renamed or deleted. Always runs the sweep, even when `service.crons` is now empty
-/// (there may still be a spec installed from before the last edit) and even when installation
-/// itself failed (a broken owner shouldn't block cleanup on hosts that are still reachable).
+/// left by a previous owner after an ownership transfer, left behind because its `crons:` entry
+/// was renamed or deleted, or left behind on a host that `servers:` itself dropped (cron specs
+/// are never replicated, so a host missing from the service's *current* `servers:` is otherwise
+/// permanently unreachable by this sweep even though its stale spec is still installed and still
+/// running). Always runs the sweep, even when `service.crons` is now empty (there may still be a
+/// spec installed from before the last edit) and even when installation itself failed (a broken
+/// owner shouldn't block cleanup on hosts that are still reachable).
 ///
 /// Never returns an error the caller should fail its own command over: a service deployment that
 /// already succeeded must not be rolled back for a cron-only failure (Phase 5's "partial failure"
@@ -387,7 +393,7 @@ pub(crate) async fn reconcile_service_crons(
     let mut problems = Vec::new();
     let redeploy_hint = "Run `jiji deploy` again to retry cron installation.";
 
-    let (sessions, newly_opened) = match resolve_sessions(
+    let (service_sessions, mut newly_opened) = match resolve_sessions(
         ssh,
         config,
         &service.servers,
@@ -405,16 +411,40 @@ pub(crate) async fn reconcile_service_crons(
         }
     };
 
+    // Widen the sweep beyond `service.servers` to every server in the project, but only when this
+    // service actually has `crons:` configured right now: a service that has never used crons
+    // has nothing to sweep, and must never touch a server outside its own `servers:` (see
+    // `restart_without_hosts_filter_never_contacts_an_unrelated_server`). A service with
+    // `crons:` populated can still have a stale spec on a host `servers:` itself dropped, and
+    // `service.servers` is validated to be a subset of `config.servers`, so this only adds hosts
+    // that used to be eligible. Lenient, since an unrelated project host being briefly
+    // unreachable must not turn into a reported problem for this service.
+    let (sweep_sessions, sweep_newly_opened) = if service.crons.is_empty() {
+        (service_sessions.clone(), Vec::new())
+    } else {
+        let sweep_targets: Vec<String> = config.servers.keys().cloned().collect();
+        resolve_sessions(
+            ssh,
+            config,
+            &sweep_targets,
+            &service_sessions,
+            Some("cron sweep"),
+        )
+        .await
+        .unwrap_or_else(|_| (service_sessions.clone(), Vec::new()))
+    };
+    newly_opened.extend(sweep_newly_opened);
+
     let result = reconcile_service_crons_inner(
         config,
         plan,
         service_name,
         service,
-        &sessions,
+        &sweep_sessions,
         redeploy_hint,
     )
     .await;
-    close_newly_opened(&sessions, &newly_opened).await;
+    close_newly_opened(&sweep_sessions, &newly_opened).await;
     result
 }
 
