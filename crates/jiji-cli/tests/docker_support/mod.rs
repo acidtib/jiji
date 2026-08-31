@@ -430,6 +430,27 @@ pub fn wait_for_http_ok(host_header: &str, path: &str, timeout: Duration) -> Str
     }
 }
 
+/// Repeats a GET through the proxy up to `attempts` times (short pause between each, so
+/// jiji-proxy's own continuous DNS re-resolution has room to settle on all backends), collecting
+/// every distinct 200 response body seen. Used to prove genuine backend alternation, not just
+/// that a route is reachable: `docker_load_balancer_test.rs`'s fixture serves each replica's own
+/// hostname as its whole body, so more than one distinct value here means jiji-proxy actually
+/// picked different backends across the run, not just one.
+pub fn distinct_response_bodies(
+    host_header: &str,
+    path: &str,
+    attempts: u32,
+) -> std::collections::HashSet<String> {
+    let mut bodies = std::collections::HashSet::new();
+    for _ in 0..attempts {
+        if let Ok((200, body)) = http_get(PROXY_HTTP_PORT, host_header, path) {
+            bodies.insert(body);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    bodies
+}
+
 /// Static IPs on the `mesh` compose network (`test/docker/compose.yml`), reachable both from the
 /// test runner (a Linux Docker bridge is directly routable from the host, no published port
 /// needed) and from each other -- unlike vm1's `127.0.0.1:2201` published-port address, which
@@ -549,6 +570,164 @@ ssh:
 "#,
             port = VM1_SSH_PORT,
             key_path = ssh_key_path().display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// The command a scheduled cron in this suite's fixture runs; assert on this appearing in
+/// `jiji service cron run ... --follow`'s streamed output to prove the run actually executed in
+/// a real container, not just that the CLI accepted the request.
+pub const CRON_TEST_MARKER: &str = "jiji-docker-cron-marker";
+
+/// A service with one `crons:` entry, scheduled far enough in the future (`0 0 1 1 *`, next Jan
+/// 1st) that it can never fire on its own during a test run -- the test triggers it explicitly
+/// via `jiji service cron run`, so this is purely to prove installation (`jiji service cron
+/// list`) without a stray natural firing racing the explicit one. `command` is the array form,
+/// not a single string: `nginx:alpine`'s own entrypoint does `exec "$@"`, and a single-string
+/// command becomes one literal argv token ("echo foo" as one word, command-not-found), not two
+/// shell-split words (confirmed live).
+pub fn write_config_with_cron_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: [vm1]
+    crons:
+      ping:
+        schedule: "0 0 1 1 *"
+        command: ["echo", "{marker}"]
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            marker = CRON_TEST_MARKER,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// A `build:`-configured service with `retain: 2`, no proxy needed: only the number of image
+/// tags jiji's own local image cache ends up with after repeated redeploys is under test here.
+pub fn write_config_with_retained_build_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+
+    let app_dir = dir.join("app");
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(app_dir.join("Dockerfile"), "FROM nginx:alpine\n")
+        .expect("write test app Dockerfile");
+
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    build: ./app
+    servers: [vm1]
+    retain: 2
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// Every distinct image tag jiji's own local Podman cache has for `{project}-web`, in whatever
+/// order `podman images` lists them (newest first, per `prune.rs`'s own doc comment -- the same
+/// order `jiji service prune` relies on rather than parsing `CreatedAt`).
+pub fn image_tags_for(project: &str, service: &str) -> Vec<String> {
+    let needle = format!("{project}-{service}");
+    exec_vm1_stdout(&["podman", "images", "--format", "{{.Repository}}:{{.Tag}}"])
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .filter_map(|line| line.rsplit_once(':').map(|(_, tag)| tag.to_string()))
+        .collect()
+}
+
+pub const LOAD_BALANCER_TEST_HOST: &str = "lb.jiji.test";
+
+/// Two replicas of the same service, one per host, each serving its own container's hostname as
+/// its entire response body (computed once at container start via `hostname > index.html`) --
+/// the cheapest way to make two otherwise-identical `busybox` responses distinguishable, so a
+/// test can prove jiji-proxy is actually alternating between backends rather than just that both
+/// are independently reachable (`docker_mesh_deploy_test.rs` already covers the latter).
+pub fn write_config_with_load_balanced_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: {vm1_host}
+    port: 22
+    keys:
+      - {key_path}
+  vm2:
+    host: {vm2_host}
+    port: 22
+    keys:
+      - {key_path}
+services:
+  web:
+    image: busybox:1.36
+    servers: [vm1, vm2]
+    command: ["sh", "-c", "mkdir -p /www && hostname > /www/index.html && httpd -f -p 80 -h /www"]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            vm1_host = MESH_VM1_HOST,
+            vm2_host = MESH_VM2_HOST,
+            key_path = ssh_key_path().display(),
+            proxy_host = LOAD_BALANCER_TEST_HOST,
         ),
     )
     .expect("write test deploy.yml");
