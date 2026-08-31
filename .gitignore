@@ -58,3 +58,6 @@ temp/
 .jiji/
 
 .jiji/*.*
+
+# Generated SSH keypair for the docker-in-docker integration test fixtures
+/test/docker/.shared/
