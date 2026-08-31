@@ -43,7 +43,11 @@ fn deploy_routes_real_traffic_through_proxy() {
         String::from_utf8_lossy(&deploy.stderr),
     );
 
-    let body = docker_support::wait_for_http_ok("/", Duration::from_secs(30));
+    let body = docker_support::wait_for_http_ok(
+        docker_support::PROXY_TEST_HOST,
+        "/",
+        Duration::from_secs(30),
+    );
     assert!(
         body.contains("nginx"),
         "expected nginx's default page through jiji-proxy, got:\n{body}"

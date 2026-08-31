@@ -93,13 +93,16 @@ pub fn wait_for_vm1_ready(timeout: Duration) {
     }
 }
 
-/// Writes a `deploy.yml` fixture pointing at the real `vm1` container over its published SSH
+/// Writes a `{dir}/.jiji/deploy.yml` fixture (the real layout `jiji init` itself writes, not a
+/// bare `deploy.yml` at `dir`'s root) pointing at the real `vm1` container over its published SSH
 /// port, using the shared test keypair and `root` (matching how jiji actually connects to a
 /// fresh, unprovisioned host: AGENTS.md's "a host's trust boundary is 'this file was installed by
 /// root'"). `builder.engine: podman` drives `jiji server setup` to install real static Podman on
 /// vm1, the same install path a real Ubuntu droplet goes through.
 pub fn write_config(dir: &Path, project: &str) -> PathBuf {
-    let config_path = dir.join("deploy.yml");
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
     std::fs::write(
         &config_path,
         format!(
@@ -141,11 +144,13 @@ pub fn run_jiji(config_path: &Path, args: &[&str]) -> Output {
 pub const PROXY_TEST_HOST: &str = "app.jiji.test";
 pub const PROXY_HTTP_PORT: u16 = 8080;
 
-/// Same as `write_config`, plus one service (a stock `nginx:alpine` -- no build/registry
-/// involved, since this suite isn't exercising jiji's build pipeline yet) proxied over HTTP on
-/// `PROXY_TEST_HOST`, health-checked at `/` before `jiji deploy` will ever route traffic to it.
+/// Same as `write_config`, plus one service (a stock `nginx:alpine`, not `build:` -- see
+/// `write_config_with_build_service` for that) proxied over HTTP on `PROXY_TEST_HOST`,
+/// health-checked at `/` before `jiji deploy` will ever route traffic to it.
 pub fn write_config_with_proxied_web_service(dir: &Path, project: &str) -> PathBuf {
-    let config_path = dir.join("deploy.yml");
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
     std::fs::write(
         &config_path,
         format!(
@@ -176,6 +181,77 @@ ssh:
             port = VM1_SSH_PORT,
             key_path = ssh_key_path().display(),
             proxy_host = PROXY_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// Content the `docker_build_deploy_test` fixture's image bakes into its own index page, so a
+/// passing HTTP assertion proves the image was actually rebuilt and pulled through, not that a
+/// stale/cached image was already sitting there.
+pub const BUILD_TEST_MARKER: &str = "jiji-docker-build-test";
+
+/// Distinct from `PROXY_TEST_HOST`: this test runs under a different project name but on the
+/// same shared, host-global jiji-proxy, so giving it its own Host header avoids depending on
+/// `docker_deploy_test`'s own teardown having already cleared its route by the time this runs.
+pub const BUILD_PROXY_TEST_HOST: &str = "build.jiji.test";
+
+/// A service built from a real local Dockerfile and pushed through jiji's own build pipeline: no
+/// `registry:` block, so `Registry::is_local()` is true and jiji manages its own local registry
+/// container, builds and pushes to it, then opens a reverse SSH tunnel to vm1 during `jiji deploy
+/// --build` so vm1's Podman can pull from `localhost:{port}` as if the registry were local to it
+/// (see `crates/jiji-cli/src/registry.rs` and `commands/deploy.rs`'s `start_reverse_forward`
+/// call). Config lives at `{dir}/.jiji/deploy.yml`, not `{dir}/deploy.yml`: `build: ./app` resolves
+/// relative to the project root, which jiji derives as two directories above the config file
+/// (`env_resolution::project_root_from_config_path`) -- that only lines up with `{dir}/app` when
+/// the config actually sits under a `.jiji/` subdirectory, the real-world layout `jiji init`
+/// itself writes.
+pub fn write_config_with_build_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+
+    let app_dir = dir.join("app");
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(
+        app_dir.join("Dockerfile"),
+        format!(
+            "FROM nginx:alpine\nRUN echo '{BUILD_TEST_MARKER}' > /usr/share/nginx/html/index.html\n"
+        ),
+    )
+    .expect("write test app Dockerfile");
+
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    build: ./app
+    servers: [vm1]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            proxy_host = BUILD_PROXY_TEST_HOST,
         ),
     )
     .expect("write test deploy.yml");
@@ -216,10 +292,10 @@ fn http_get(port: u16, host_header: &str, path: &str) -> std::io::Result<(u16, S
 
 /// Polls `PROXY_HTTP_PORT` until it returns HTTP 200, since a successful `jiji deploy` still
 /// leaves a short window before jiji-proxy's route is actually reachable end-to-end.
-pub fn wait_for_http_ok(path: &str, timeout: Duration) -> String {
+pub fn wait_for_http_ok(host_header: &str, path: &str, timeout: Duration) -> String {
     let deadline = Instant::now() + timeout;
     loop {
-        let outcome = http_get(PROXY_HTTP_PORT, PROXY_TEST_HOST, path);
+        let outcome = http_get(PROXY_HTTP_PORT, host_header, path);
         if let Ok((200, body)) = outcome {
             return body;
         }
@@ -229,7 +305,7 @@ pub fn wait_for_http_ok(path: &str, timeout: Duration) -> String {
                 Err(err) => err.to_string(),
             };
             panic!(
-                "http://{PROXY_TEST_HOST}{path} via 127.0.0.1:{PROXY_HTTP_PORT} did not return 200 within {timeout:?}: {reason}"
+                "http://{host_header}{path} via 127.0.0.1:{PROXY_HTTP_PORT} did not return 200 within {timeout:?}: {reason}"
             );
         }
         std::thread::sleep(Duration::from_millis(500));
