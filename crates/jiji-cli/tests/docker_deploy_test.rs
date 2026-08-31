@@ -1,12 +1,13 @@
-//! Phase 1b of the Docker-in-Docker integration suite: `jiji server setup` -> `jiji deploy` of a
+//! Docker-in-Docker integration suite: `jiji server setup` -> `jiji deploy` of a
 //! proxied service -> a real HTTP request through jiji-proxy -> `jiji service remove`, against
 //! `vm1` (see `test/docker/compose.yml`). Proves the health-gated deploy transaction and
 //! jiji-proxy's nftables ingress actually route real traffic, not just that the right shell
 //! commands get rendered.
 //!
-//! Deliberately uses a stock `nginx:alpine` image rather than `build:`/a local registry: this
-//! suite isn't exercising jiji's build/push pipeline yet, only the deploy transaction and proxy
-//! routing (see AGENTS.md's "Docker-in-Docker integration suite" section for what's covered).
+//! Deliberately uses a stock `nginx:alpine` image rather than `build:`/a local registry, to keep
+//! the deploy-transaction/proxy-routing assertions here independent of the build pipeline; see
+//! `docker_build_deploy_test.rs` for that, and AGENTS.md's "Docker-in-Docker integration suite"
+//! section for the full current coverage.
 //!
 //! Requires `JIJI_DOCKER_TESTS=1` and the compose stack already up (`mise test-docker` runs
 //! both); otherwise this test skips itself (`docker_support::skip_unless_enabled`).

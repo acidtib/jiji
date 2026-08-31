@@ -1,4 +1,4 @@
-//! Phase 1a of the Docker-in-Docker integration suite: `jiji server setup` -> real state
+//! Docker-in-Docker integration suite: `jiji server setup` -> real state
 //! assertions -> `jiji server teardown`, against `vm1` (see `test/docker/compose.yml`), a
 //! privileged container running its own systemd. Nothing here is mocked: Podman is really
 //! installed by jiji's own static-binary install path, the `jiji-agent` systemd unit is really

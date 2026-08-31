@@ -77,6 +77,29 @@ pub fn exec_vm1_stdout(cmd: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// IDs of every container on vm1 labeled `jiji.service={service}` (`container_runtime.rs`'s
+/// `jiji.service=` label), running or not. Used to assert a failed candidate deploy leaves no
+/// stray container behind (`deploy_transaction.rs::release_candidate` removes it outright, it
+/// doesn't just stop it) and that the previously active container's ID is unchanged across a
+/// failed redeploy.
+pub fn all_container_ids_for_service(service: &str) -> Vec<String> {
+    let label_filter = format!("label=jiji.service={service}");
+    exec_vm1_stdout(&[
+        "podman",
+        "ps",
+        "-a",
+        "--filter",
+        label_filter.as_str(),
+        "--format",
+        "{{.ID}}",
+    ])
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
 /// Polls `vm1` over SSH until it accepts a trivial command, since `depends_on:
 /// condition: service_healthy` only proves compose brought the container up, not that systemd
 /// has finished booting sshd inside it.
@@ -181,6 +204,59 @@ ssh:
             port = VM1_SSH_PORT,
             key_path = ssh_key_path().display(),
             proxy_host = PROXY_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// Distinct from `PROXY_TEST_HOST`/`BUILD_PROXY_TEST_HOST`: gives the rolling-deploy fixture its
+/// own Host header so it never depends on another test's route already being cleared.
+pub const ROLLING_TEST_HOST: &str = "rolling.jiji.test";
+
+/// Same fixture service both times (same project, same `dir`, overwriting `{dir}/.jiji/
+/// deploy.yml`) so a second call models a real redeploy against an already-Active/Healthy
+/// service, not a fresh one. `healthy: false` points the healthcheck at a path nginx will always
+/// 404 on, with a short `deploy_timeout` so the health-gated deploy transaction fails fast and
+/// deterministically -- proving the "previous container keeps serving, only the candidate is torn
+/// down" invariant doesn't require literally racing a container kill mid-deploy.
+pub fn write_rolling_deploy_config(dir: &Path, project: &str, healthy: bool) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    let healthcheck_path = if healthy { "/" } else { "/definitely-missing" };
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: [vm1]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: {healthcheck_path}
+        interval: 1s
+        deploy_timeout: 5s
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            proxy_host = ROLLING_TEST_HOST,
         ),
     )
     .expect("write test deploy.yml");

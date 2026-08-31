@@ -1,4 +1,4 @@
-//! Phase 2 (build pipeline) of the Docker-in-Docker integration suite: `jiji server setup` ->
+//! Docker-in-Docker integration suite, build pipeline: `jiji server setup` ->
 //! `jiji deploy --build` of a service built from a real local Dockerfile -> a real HTTP request
 //! through jiji-proxy proving the freshly built image (not a cached/stock one) is what's actually
 //! running -> `jiji service remove` -> `jiji registry teardown` -> `jiji server teardown`.
