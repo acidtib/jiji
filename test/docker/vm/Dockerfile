@@ -1,14 +1,16 @@
 FROM ubuntu:24.04
 
 # Deliberately minimal: openssh-server (so jiji can reach it), systemd (so a real
-# `jiji-agent-*.service` unit can actually start), iproute2 (a bare `ubuntu:24.04` image ships
-# without it, unlike a real cloud droplet image -- `ip link`/`wg` need it). Everything jiji itself
-# needs on a target host (podman, wireguard-tools, nftables, dnsutils, ...) is installed by the
-# real `jiji server setup` run under test, not baked in here -- that install path is what this
+# `jiji-agent-*.service` unit can actually start), iproute2 and iputils-ping (a bare
+# `ubuntu:24.04` image ships without either, unlike a real cloud droplet image -- `ip link`/`wg`
+# need the former, and `jiji server setup`'s own WireGuard peer verification shells out to `ping`
+# between mesh hosts, confirmed live: it fails outright without this package). Everything jiji
+# itself needs on a target host (podman, wireguard-tools, nftables, dnsutils, ...) is installed by
+# the real `jiji server setup` run under test, not baked in here -- that install path is what this
 # suite exists to exercise.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        openssh-server systemd systemd-sysv iproute2 ca-certificates sudo && \
+        openssh-server systemd systemd-sysv iproute2 iputils-ping ca-certificates sudo && \
     rm -rf /var/lib/apt/lists/* && \
     mkdir -p /root/.ssh && \
     ln -s /shared/ssh/id_ed25519.pub /root/.ssh/authorized_keys && \

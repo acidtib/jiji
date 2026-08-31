@@ -60,21 +60,34 @@ fn compose(args: &[&str]) -> Output {
         .expect("run docker compose")
 }
 
-/// Runs a command inside `vm1` via `docker compose exec`, for asserting real post-`jiji`-run
-/// state (`systemctl is-active ...`, `wg show ...`, `podman info`, ...).
-pub fn exec_vm1(cmd: &[&str]) -> Output {
-    let mut args = vec!["exec", "-T", "vm1"];
+/// Runs a command inside the named compose service (`vm1`, `vm2`) via `docker compose exec`, for
+/// asserting real post-`jiji`-run state (`systemctl is-active ...`, `wg show ...`, `podman info`,
+/// `dig ...`, ...).
+pub fn exec_service(service: &str, cmd: &[&str]) -> Output {
+    let mut args = vec!["exec", "-T", service];
     args.extend_from_slice(cmd);
     compose(&args)
 }
 
+pub fn exec_service_ok(service: &str, cmd: &[&str]) -> bool {
+    exec_service(service, cmd).status.success()
+}
+
+pub fn exec_service_stdout(service: &str, cmd: &[&str]) -> String {
+    let output = exec_service(service, cmd);
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+pub fn exec_vm1(cmd: &[&str]) -> Output {
+    exec_service("vm1", cmd)
+}
+
 pub fn exec_vm1_ok(cmd: &[&str]) -> bool {
-    exec_vm1(cmd).status.success()
+    exec_service_ok("vm1", cmd)
 }
 
 pub fn exec_vm1_stdout(cmd: &[&str]) -> String {
-    let output = exec_vm1(cmd);
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    exec_service_stdout("vm1", cmd)
 }
 
 /// IDs of every container on vm1 labeled `jiji.service={service}` (`container_runtime.rs`'s
@@ -100,20 +113,24 @@ pub fn all_container_ids_for_service(service: &str) -> Vec<String> {
     .collect()
 }
 
-/// Polls `vm1` over SSH until it accepts a trivial command, since `depends_on:
-/// condition: service_healthy` only proves compose brought the container up, not that systemd
-/// has finished booting sshd inside it.
-pub fn wait_for_vm1_ready(timeout: Duration) {
+/// Polls a compose service over `docker compose exec` until it accepts a trivial command, since
+/// `depends_on: condition: service_healthy` only proves compose brought the container up, not
+/// that systemd has finished booting sshd inside it.
+pub fn wait_for_service_ready(service: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        if exec_vm1_ok(&["true"]) {
+        if exec_service_ok(service, &["true"]) {
             return;
         }
         if Instant::now() >= deadline {
-            panic!("vm1 did not become ready within {timeout:?}");
+            panic!("{service} did not become ready within {timeout:?}");
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+pub fn wait_for_vm1_ready(timeout: Duration) {
+    wait_for_service_ready("vm1", timeout);
 }
 
 /// Writes a `{dir}/.jiji/deploy.yml` fixture (the real layout `jiji init` itself writes, not a
@@ -386,4 +403,76 @@ pub fn wait_for_http_ok(host_header: &str, path: &str, timeout: Duration) -> Str
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// Static IPs on the `mesh` compose network (`test/docker/compose.yml`), reachable both from the
+/// test runner (a Linux Docker bridge is directly routable from the host, no published port
+/// needed) and from each other -- unlike vm1's `127.0.0.1:2201` published-port address, which
+/// only vm1 itself can be dialed on. WireGuard needs both directions to work.
+pub const MESH_VM1_HOST: &str = "172.30.0.11";
+pub const MESH_VM2_HOST: &str = "172.30.0.12";
+
+pub const MESH_TEST_HOST: &str = "mesh.jiji.test";
+
+/// Two-host fixture: `vm1` and `vm2` both in `servers:`, one replica of the same service on each
+/// (`servers: [vm1, vm2]`), addressed by their `mesh` network IPs rather than vm1's usual
+/// published-port address.
+pub fn write_config_with_two_host_service(dir: &Path, project: &str) -> PathBuf {
+    let jiji_dir = dir.join(".jiji");
+    std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
+    let config_path = jiji_dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: {vm1_host}
+    port: 22
+    keys:
+      - {key_path}
+  vm2:
+    host: {vm2_host}
+    port: 22
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: [vm1, vm2]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            vm1_host = MESH_VM1_HOST,
+            vm2_host = MESH_VM2_HOST,
+            key_path = ssh_key_path().display(),
+            proxy_host = MESH_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// The per-server reserved DNS address `jiji-agent` binds its `.jiji` resolver to
+/// (`jiji_network::planner::ServerPlan::dns_address`), computed the same deterministic way jiji
+/// itself does rather than guessed or discovered by inspecting a running host.
+pub fn dns_address_for(config_path: &Path, server: &str) -> std::net::Ipv4Addr {
+    let config = jiji_config::load_from_file(config_path).expect("load test config");
+    let plan = jiji_network::NetworkPlanner::new()
+        .plan(&config)
+        .expect("compute network plan");
+    plan.servers
+        .get(server)
+        .unwrap_or_else(|| panic!("server '{server}' not present in the computed network plan"))
+        .dns_address
 }
