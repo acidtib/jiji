@@ -146,9 +146,23 @@ pub async fn reconcile_once(
         component: "proxy_attachment",
         result: crate::proxy_bringup::reconcile(engine, config).await,
     });
+    // Shared by containers/deployment_recovery/draining_cleanup below, avoiding three separate
+    // `engine ps -a` spawns per tick.
+    let discovery_result: Result<Vec<crate::store::Observation>, String> =
+        match discovery::discover(engine, &config.project_id).await {
+            DiscoveryOutcome::Observed(observations) => Ok(observations),
+            DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
+                Err(error)
+            }
+        };
     outcomes.push(RepairOutcome {
         component: "containers",
-        result: reconcile_containers(store, engine, config, startup_candidates).await,
+        result: match &discovery_result {
+            Ok(observations) => {
+                reconcile_containers(store, engine, config, startup_candidates, observations).await
+            }
+            Err(error) => Err(error.clone()),
+        },
     });
     outcomes.push(RepairOutcome {
         component: "image_retention",
@@ -156,7 +170,26 @@ pub async fn reconcile_once(
     });
     outcomes.push(RepairOutcome {
         component: "deployment_recovery",
-        result: recover_startup_candidates(store, engine, config, startup_candidates).await,
+        result: match &discovery_result {
+            Ok(observations) => {
+                recover_startup_candidates(store, engine, config, startup_candidates, observations)
+                    .await
+            }
+            Err(error) => Err(error.clone()),
+        },
+    });
+    outcomes.push(RepairOutcome {
+        component: "candidate_health_gc",
+        result: gc_candidate_health_checks(store, config).await,
+    });
+    outcomes.push(RepairOutcome {
+        component: "draining_cleanup",
+        result: match &discovery_result {
+            Ok(observations) => {
+                sweep_stuck_draining_records(store, engine, config, observations).await
+            }
+            Err(error) => Err(error.clone()),
+        },
     });
     outcomes.push(RepairOutcome {
         component: "proxy_routes",
@@ -278,16 +311,11 @@ async fn recover_startup_candidates(
     engine: Engine,
     config: &MeshConfig,
     startup_candidates: &BTreeSet<String>,
+    observations: &[Observation],
 ) -> Result<(), String> {
     if startup_candidates.is_empty() {
         return Ok(());
     }
-    let observations = match discovery::discover(engine, &config.project_id).await {
-        DiscoveryOutcome::Observed(observations) => observations,
-        DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
-            return Err(error)
-        }
-    };
     let running = observations
         .iter()
         .filter(|observation| observation.state == "running")
@@ -309,22 +337,36 @@ async fn recover_startup_candidates(
         .map_err(|_| "local store lock poisoned".to_string())?
         .latest_catalog()
         .map_err(|error| error.to_string())?;
-    let missing_candidates = catalog
-        .iter()
-        .filter(|record| {
-            startup_candidates.contains(&record.deployment_id)
-                && record.owner_node_id == config.node_id
-                && record.state == DeploymentState::Candidate
-                && !running.contains_key(&record.deployment_id)
-        })
-        .map(|record| record.deployment_id.clone())
-        .collect::<Vec<_>>();
-    for candidate in catalog.iter().filter(|record| {
-        startup_candidates.contains(&record.deployment_id)
-            && record.owner_node_id == config.node_id
-            && record.state == DeploymentState::Candidate
-            && running.contains_key(&record.deployment_id)
-    }) {
+    let missing_candidates =
+        missing_startup_candidates(&catalog, &config.node_id, startup_candidates, &running);
+    let recoverable =
+        runnable_startup_candidates(&catalog, &config.node_id, startup_candidates, &running);
+
+    let mut unverified_candidates = Vec::new();
+    for candidate in &recoverable {
+        // No recorded plan (older jiji-cli, or a path with only the generic readiness check
+        // anyway) falls back to trusting "observed running".
+        let recorded_spec = store
+            .lock()
+            .map_err(|_| "local store lock poisoned".to_string())?
+            .candidate_health_check(&candidate.deployment_id)
+            .map_err(|error| error.to_string())?;
+        let verified = match recorded_spec {
+            Some(spec) => crate::candidate_health::verify_locally(&spec).await.is_ok(),
+            None => true,
+        };
+        if !verified {
+            // Fail-safe: leave the record Candidate and mark it known-failed so
+            // restart_candidates won't resurrect it if stopped.
+            store
+                .lock()
+                .map_err(|_| "local store lock poisoned".to_string())?
+                .mark_candidate_health_check_failed(&candidate.deployment_id, unix_timestamp())
+                .map_err(|error| error.to_string())?;
+            unverified_candidates.push(candidate.deployment_id.clone());
+            continue;
+        }
+
         // No explicit proxy push needed here: `reconcile_proxy_routes` (run every tick,
         // immediately after this function) keeps jiji-proxy's static route definitions applied
         // regardless, and jiji-proxy's own continuous DNS re-resolution against this project's
@@ -378,14 +420,155 @@ async fn recover_startup_candidates(
                 .map_err(|error| error.to_string())?;
         }
     }
-    if missing_candidates.is_empty() {
+    if missing_candidates.is_empty() && unverified_candidates.is_empty() {
         Ok(())
     } else {
+        let mut parts = Vec::new();
+        if !missing_candidates.is_empty() {
+            parts.push(format!("absent: {}", missing_candidates.join(", ")));
+        }
+        if !unverified_candidates.is_empty() {
+            parts.push(format!(
+                "failed health verification: {}",
+                unverified_candidates.join(", ")
+            ));
+        }
         Err(format!(
-            "startup candidate container(s) are absent and were preserved for operator recovery: {}",
-            missing_candidates.join(", ")
+            "startup candidate container(s) preserved for operator recovery ({})",
+            parts.join("; ")
         ))
     }
+}
+
+/// `Candidate` records this restart is responsible for recovering (see `main.rs`'s
+/// `startup_candidates` computation) whose container was not found running at all -- never
+/// destructive, just reported so an operator knows to look.
+fn missing_startup_candidates(
+    catalog: &[CatalogRecord],
+    local_node_id: &str,
+    startup_candidates: &BTreeSet<String>,
+    running: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    catalog
+        .iter()
+        .filter(|record| {
+            startup_candidates.contains(&record.deployment_id)
+                && record.owner_node_id == local_node_id
+                && record.state == DeploymentState::Candidate
+                && !running.contains_key(&record.deployment_id)
+        })
+        .map(|record| record.deployment_id.clone())
+        .collect()
+}
+
+/// `Candidate` records this restart is responsible for recovering whose container is observed
+/// running: candidates for promotion, pending the health-check replay in
+/// `recover_startup_candidates` above.
+fn runnable_startup_candidates(
+    catalog: &[CatalogRecord],
+    local_node_id: &str,
+    startup_candidates: &BTreeSet<String>,
+    running: &std::collections::BTreeMap<String, String>,
+) -> Vec<CatalogRecord> {
+    catalog
+        .iter()
+        .filter(|record| {
+            startup_candidates.contains(&record.deployment_id)
+                && record.owner_node_id == local_node_id
+                && record.state == DeploymentState::Candidate
+                && running.contains_key(&record.deployment_id)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Prunes recorded health-check plans (`candidate_health.rs`) that no longer correspond to a
+/// `Candidate`-state record owned by this node.
+async fn gc_candidate_health_checks(
+    store: &Arc<Mutex<AgentStore>>,
+    config: &MeshConfig,
+) -> Result<(), String> {
+    store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .gc_candidate_health_checks(&config.node_id)
+        .map(|_removed| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Retries clearing every `Draining` record owned by this node whose removal was deferred because
+/// a `network_mode: service:<this>` dependent was still attached (`is_dependent_container_error`
+/// below). Mirrors `jiji-cli`'s `deploy_transaction::sweep_stuck_draining_records`, but runs every
+/// tick instead of only after a deploy of the right service.
+async fn sweep_stuck_draining_records(
+    store: &Arc<Mutex<AgentStore>>,
+    engine: Engine,
+    config: &MeshConfig,
+    observations: &[Observation],
+) -> Result<(), String> {
+    let catalog = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .latest_catalog()
+        .map_err(|error| error.to_string())?;
+    let stuck = catalog
+        .iter()
+        .filter(|record| {
+            record.owner_node_id == config.node_id && record.state == DeploymentState::Draining
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if stuck.is_empty() {
+        return Ok(());
+    }
+    let present_deployments = observations
+        .iter()
+        .filter_map(|observation| {
+            let labels: Value = serde_json::from_str(&observation.labels_json).ok()?;
+            labels.get("jiji.deployment")?.as_str().map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut problems = Vec::new();
+    for record in &stuck {
+        let name =
+            dynamic_container_name(&config.project_id, &record.service, &record.deployment_id);
+        if present_deployments.contains(&record.deployment_id) {
+            let _ = command_required(engine.as_str(), &["stop", &name]).await;
+            if let Err(error) = command_required(engine.as_str(), &["rm", "-f", &name]).await {
+                if !is_dependent_container_error(&error) {
+                    problems.push(format!("{}: {error}", record.service));
+                }
+                continue;
+            }
+        }
+        apply_local_catalog_state(
+            store,
+            config,
+            record,
+            DeploymentState::Tombstoned,
+            crate::catalog::HealthState::Unknown,
+        )?;
+        store
+            .lock()
+            .map_err(|_| "local store lock poisoned".to_string())?
+            .quarantine_address_lease(
+                &record.deployment_id,
+                unix_timestamp().saturating_add(crate::leases::DEFAULT_QUARANTINE_SECONDS),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
+/// Whether `error` indicates removal failed only because a `network_mode: service:<this>`
+/// dependent is still attached. Mirrors `jiji-cli`'s copy; not shared, since `jiji-agent` never
+/// depends on `jiji-cli`.
+fn is_dependent_container_error(error: &str) -> bool {
+    error.to_lowercase().contains("dependent container")
 }
 
 fn apply_local_catalog_state(
@@ -608,19 +791,25 @@ async fn reconcile_containers(
     engine: Engine,
     config: &MeshConfig,
     startup_candidates: &BTreeSet<String>,
+    observations: &[Observation],
 ) -> Result<(), String> {
-    let observations = match discovery::discover(engine, &config.project_id).await {
-        DiscoveryOutcome::Observed(observations) => observations,
-        DiscoveryOutcome::EngineUnavailable(error) | DiscoveryOutcome::EngineError(error) => {
-            return Err(error)
-        }
-    };
     let catalog = store
         .lock()
         .map_err(|_| "local store lock poisoned".to_string())?
         .latest_catalog()
         .map_err(|error| error.to_string())?;
-    for name in restart_candidates(&config.node_id, &observations, &catalog, startup_candidates) {
+    let known_failed = store
+        .lock()
+        .map_err(|_| "local store lock poisoned".to_string())?
+        .failed_verification_candidates()
+        .map_err(|error| error.to_string())?;
+    for name in restart_candidates(
+        &config.node_id,
+        observations,
+        &catalog,
+        startup_candidates,
+        &known_failed,
+    ) {
         command_required(engine.as_str(), &["start", &name]).await?;
     }
     Ok(())
@@ -679,11 +868,14 @@ fn fold_retention_problems(results: Vec<(String, RetentionPruneResult)>) -> Resu
     }
 }
 
+/// `known_failed` excludes a `Candidate` whose recorded health check already failed, so a manual
+/// stop isn't silently undone. Never applies to an `Active` record.
 pub fn restart_candidates(
     local_node_id: &str,
     observations: &[Observation],
     catalog: &[CatalogRecord],
     startup_candidates: &BTreeSet<String>,
+    known_failed: &BTreeSet<String>,
 ) -> Vec<String> {
     observations
         .iter()
@@ -706,7 +898,8 @@ pub fn restart_candidates(
                         && record.deployment_id == deployment
                         && (record.state == DeploymentState::Active
                             || (record.state == DeploymentState::Candidate
-                                && startup_candidates.contains(deployment)))
+                                && startup_candidates.contains(deployment)
+                                && !known_failed.contains(deployment)))
                 })
                 .then(|| observation.name.clone())
         })
@@ -822,6 +1015,7 @@ mod tests {
                 &[observation("exited", "active")],
                 &[catalog(DeploymentState::Active)],
                 &BTreeSet::new(),
+                &BTreeSet::new(),
             ),
             vec!["demo-web-deploy-1"]
         );
@@ -830,12 +1024,14 @@ mod tests {
             &[observation("exited", "active")],
             &[catalog(DeploymentState::Active)],
             &BTreeSet::new(),
+            &BTreeSet::new(),
         )
         .is_empty());
         assert!(restart_candidates(
             "node-a",
             &[observation("exited", "candidate")],
             &[catalog(DeploymentState::Candidate)],
+            &BTreeSet::new(),
             &BTreeSet::new(),
         )
         .is_empty());
@@ -845,6 +1041,7 @@ mod tests {
                 &[observation("exited", "candidate")],
                 &[catalog(DeploymentState::Candidate)],
                 &BTreeSet::from(["deploy-1".to_string()]),
+                &BTreeSet::new(),
             ),
             vec!["demo-web-deploy-1"]
         );
@@ -853,6 +1050,7 @@ mod tests {
             &[observation("exited", "draining")],
             &[catalog(DeploymentState::Draining)],
             &BTreeSet::new(),
+            &BTreeSet::new(),
         )
         .is_empty());
         assert!(restart_candidates(
@@ -860,8 +1058,123 @@ mod tests {
             &[observation("running", "active")],
             &[catalog(DeploymentState::Active)],
             &BTreeSet::new(),
+            &BTreeSet::new(),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn known_failed_candidate_is_not_resurrected_once_stopped() {
+        // Already known-failed -> not restarted.
+        assert!(restart_candidates(
+            "node-a",
+            &[observation("exited", "candidate")],
+            &[catalog(DeploymentState::Candidate)],
+            &BTreeSet::from(["deploy-1".to_string()]),
+            &BTreeSet::from(["deploy-1".to_string()]),
+        )
+        .is_empty());
+        // known_failed never excludes an Active record.
+        assert_eq!(
+            restart_candidates(
+                "node-a",
+                &[observation("exited", "active")],
+                &[catalog(DeploymentState::Active)],
+                &BTreeSet::new(),
+                &BTreeSet::from(["deploy-1".to_string()]),
+            ),
+            vec!["demo-web-deploy-1"]
+        );
+    }
+
+    fn running_map(entries: &[&str]) -> std::collections::BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|id| (id.to_string(), format!("container-{id}")))
+            .collect()
+    }
+
+    #[test]
+    fn runnable_startup_candidates_requires_ownership_state_and_running_evidence() {
+        let candidate = catalog(DeploymentState::Candidate);
+        let startup = BTreeSet::from(["deploy-1".to_string()]);
+
+        assert_eq!(
+            runnable_startup_candidates(
+                std::slice::from_ref(&candidate),
+                "node-a",
+                &startup,
+                &running_map(&["deploy-1"]),
+            ),
+            vec![candidate.clone()]
+        );
+        // Not in startup_candidates at all.
+        assert!(runnable_startup_candidates(
+            std::slice::from_ref(&candidate),
+            "node-a",
+            &BTreeSet::new(),
+            &running_map(&["deploy-1"]),
+        )
+        .is_empty());
+        // Owned by a different node.
+        assert!(runnable_startup_candidates(
+            std::slice::from_ref(&candidate),
+            "node-b",
+            &startup,
+            &running_map(&["deploy-1"]),
+        )
+        .is_empty());
+        // Already resolved past Candidate.
+        assert!(runnable_startup_candidates(
+            &[catalog(DeploymentState::Active)],
+            "node-a",
+            &startup,
+            &running_map(&["deploy-1"]),
+        )
+        .is_empty());
+        // Not observed running.
+        assert!(
+            runnable_startup_candidates(&[candidate], "node-a", &startup, &running_map(&[]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn missing_startup_candidates_reports_only_absent_owned_candidates() {
+        let candidate = catalog(DeploymentState::Candidate);
+        let startup = BTreeSet::from(["deploy-1".to_string()]);
+
+        assert_eq!(
+            missing_startup_candidates(
+                std::slice::from_ref(&candidate),
+                "node-a",
+                &startup,
+                &running_map(&[])
+            ),
+            vec!["deploy-1".to_string()]
+        );
+        // Observed running -> not missing.
+        assert!(missing_startup_candidates(
+            std::slice::from_ref(&candidate),
+            "node-a",
+            &startup,
+            &running_map(&["deploy-1"]),
+        )
+        .is_empty());
+        // Owned by a different node -> not this node's problem to report.
+        assert!(
+            missing_startup_candidates(&[candidate], "node-b", &startup, &running_map(&[]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_dependent_container_error_matches_only_that_failure_shape() {
+        assert!(is_dependent_container_error(
+            "Error: container 123 has dependent containers which must be removed before it"
+        ));
+        assert!(!is_dependent_container_error("no such container"));
+        assert!(!is_dependent_container_error("permission denied"));
     }
 
     #[test]

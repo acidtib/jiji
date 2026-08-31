@@ -239,7 +239,22 @@ async fn deploy_shared_endpoint(
             capture_orphaned_static_image(ctx, ctx.service_name, Some(ctx.service), &old_name)
                 .await;
         let _ = container_ops::stop(ctx.session, ctx.engine, &old_name).await;
-        container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await?;
+        if let Err(error) =
+            container_ops::remove_if_present(ctx.session, ctx.engine, &old_name).await
+        {
+            if !is_dependent_container_error(&error) {
+                return Err(error);
+            }
+            // Same tolerance `deploy_dynamic_endpoint` already has: leave the previous record
+            // Draining rather than hard-failing a redeploy whose own candidate is already active.
+            tracing::warn!(
+                container = %old_name,
+                service = ctx.service_name,
+                "previous container still has a dependent attached; deferring its removal"
+            );
+            sweep_stuck_draining_records(ctx, upstream_service_name, None).await;
+            return Ok((deployment_id, upstream.address));
+        }
         finish_orphaned_static_image_cleanup(ctx, orphaned_image).await;
         // No lease was ever allocated for a dependent, so there is nothing to release here --
         // only its catalog record needs to settle to Tombstoned.
@@ -371,24 +386,7 @@ async fn deploy_dynamic_endpoint(
         .map(|target| target.port)
         .chain(tcp_targets.iter().map(|target| target.port))
         .collect();
-    commit_catalog(
-        ctx,
-        &replica_id,
-        &deployment_id,
-        address,
-        committed_ports.clone(),
-        DeploymentState::Candidate,
-        HealthState::Unknown,
-    )
-    .await?;
-
-    report_progress(ctx, "starting container");
-    if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
-        release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
-        restore_stop_first(ctx, previous.as_ref()).await;
-        return Err(error);
-    }
-
+    // Computed early so it can be recorded with the agent alongside the Candidate commit below.
     let (health_port, health_config) = targets
         .first()
         .map(|target| (target.port, target.healthcheck.as_ref()))
@@ -405,6 +403,40 @@ async fn deploy_dynamic_endpoint(
         health_port.into(),
         health_config,
     );
+    commit_catalog(
+        ctx,
+        &replica_id,
+        &deployment_id,
+        address,
+        committed_ports.clone(),
+        DeploymentState::Candidate,
+        HealthState::Unknown,
+    )
+    .await?;
+    // Best-effort: lets a crash-recovered agent replay this check later. An older agent that
+    // doesn't recognize the request just fails it harmlessly.
+    let _ = crate::agent_client::call(
+        ctx.session,
+        project,
+        Some(format!("health-plan:{deployment_id}")),
+        RequestBody::RecordCandidateHealthCheck {
+            deployment_id: deployment_id.clone(),
+            service: ctx.service_name.to_string(),
+            replica_id: replica_id.clone(),
+            command: health_plan.command.clone(),
+            interval_secs: health_plan.interval.as_secs(),
+            deploy_timeout_secs: health_plan.deploy_timeout.as_secs(),
+        },
+    )
+    .await;
+
+    report_progress(ctx, "starting container");
+    if let Err(error) = container_ops::create_and_start(ctx.session, &run).await {
+        release_candidate(ctx, &replica_id, &deployment_id, address, &candidate_name).await;
+        restore_stop_first(ctx, previous.as_ref()).await;
+        return Err(error);
+    }
+
     report_progress(
         ctx,
         &health_check_progress_detail(health_plan.deploy_timeout),

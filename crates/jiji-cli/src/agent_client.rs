@@ -38,6 +38,7 @@ pub async fn call(
         RequestBody::ImageRetentionApply { .. } => "image-retention-apply",
         RequestBody::ImageRetentionRemove { .. } => "image-retention-remove",
         RequestBody::ImageRetentionList => "image-retention-list",
+        RequestBody::RecordCandidateHealthCheck { .. } => "record-candidate-health-check",
     };
     let command = format!(
         "{} request --socket {} # jiji-request:{request_kind}",

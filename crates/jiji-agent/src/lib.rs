@@ -9,6 +9,7 @@
 pub mod api;
 pub mod backup;
 pub mod bridge_bringup;
+pub mod candidate_health;
 pub mod catalog;
 pub mod catalog_replication;
 pub mod cron;
