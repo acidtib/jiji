@@ -134,3 +134,104 @@ pub fn run_jiji(config_path: &Path, args: &[&str]) -> Output {
         .output()
         .expect("run jiji")
 }
+
+/// Host header the proxied fixture service routes on. No real DNS involved: tests reach vm1's
+/// published proxy port directly and set this as the `Host` header themselves, the same way
+/// Kamal's own integration suite constructs requests against its load balancer.
+pub const PROXY_TEST_HOST: &str = "app.jiji.test";
+pub const PROXY_HTTP_PORT: u16 = 8080;
+
+/// Same as `write_config`, plus one service (a stock `nginx:alpine` -- no build/registry
+/// involved, since this suite isn't exercising jiji's build pipeline yet) proxied over HTTP on
+/// `PROXY_TEST_HOST`, health-checked at `/` before `jiji deploy` will ever route traffic to it.
+pub fn write_config_with_proxied_web_service(dir: &Path, project: &str) -> PathBuf {
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+project: {project}
+builder:
+  engine: podman
+servers:
+  vm1:
+    host: 127.0.0.1
+    port: {port}
+    keys:
+      - {key_path}
+services:
+  web:
+    image: nginx:alpine
+    servers: [vm1]
+    proxy:
+      port: 80
+      ssl: false
+      hosts: [{proxy_host}]
+      healthcheck:
+        path: /
+ssh:
+  user: root
+  keys_only: true
+"#,
+            port = VM1_SSH_PORT,
+            key_path = ssh_key_path().display(),
+            proxy_host = PROXY_TEST_HOST,
+        ),
+    )
+    .expect("write test deploy.yml");
+    config_path
+}
+
+/// A bare-bones HTTP/1.0 GET over a raw `TcpStream`, since `jiji-cli`'s `reqwest` dependency
+/// isn't built with the `blocking` feature and pulling in a whole async runtime just to check one
+/// status code isn't worth it here. Returns `(status_code, body)`.
+fn http_get(port: u16, host_header: &str, path: &str) -> std::io::Result<(u16, String)> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+
+    let status_line = response
+        .lines()
+        .next()
+        .ok_or_else(|| std::io::Error::other("empty HTTP response"))?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| std::io::Error::other(format!("unparseable status line: {status_line}")))?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap_or_default();
+    Ok((status_code, body))
+}
+
+/// Polls `PROXY_HTTP_PORT` until it returns HTTP 200, since a successful `jiji deploy` still
+/// leaves a short window before jiji-proxy's route is actually reachable end-to-end.
+pub fn wait_for_http_ok(path: &str, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let outcome = http_get(PROXY_HTTP_PORT, PROXY_TEST_HOST, path);
+        if let Ok((200, body)) = outcome {
+            return body;
+        }
+        if Instant::now() >= deadline {
+            let reason = match outcome {
+                Ok((status, _)) => format!("got HTTP {status}"),
+                Err(err) => err.to_string(),
+            };
+            panic!(
+                "http://{PROXY_TEST_HOST}{path} via 127.0.0.1:{PROXY_HTTP_PORT} did not return 200 within {timeout:?}: {reason}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}

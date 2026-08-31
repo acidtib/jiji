@@ -12,9 +12,13 @@ trap cleanup EXIT
 docker compose -f "$compose_file" up -d --build --wait
 
 # Each docker_*_test.rs file under crates/jiji-cli/tests/ is its own test binary; list new ones
-# here as the suite grows (currently just Phase 1a's server-lifecycle test).
+# here as the suite grows.
+docker_tests=(docker_server_lifecycle_test docker_deploy_test)
+
 if command -v cargo-nextest >/dev/null 2>&1; then
-    JIJI_DOCKER_TESTS=1 cargo nextest run -p jiji-cli --test docker_server_lifecycle_test --no-capture
+    JIJI_DOCKER_TESTS=1 cargo nextest run -p jiji-cli "${docker_tests[@]/#/--test=}" --no-capture
 else
-    JIJI_DOCKER_TESTS=1 cargo test -p jiji-cli --test docker_server_lifecycle_test -- --nocapture
+    for test in "${docker_tests[@]}"; do
+        JIJI_DOCKER_TESTS=1 cargo test -p jiji-cli --test "$test" -- --nocapture
+    done
 fi
