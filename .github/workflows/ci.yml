@@ -69,6 +69,16 @@ jobs:
       - name: Build jiji
         run: cargo build -p jiji-cli --bin jiji
 
+      # `jiji server setup` prefers a jiji-agent binary sitting beside the `jiji` executable over
+      # downloading one from a GitHub release (see agent_install::find_local_agent_binary), the
+      # same mechanism `mise install-dev` uses for local testing. Building it here from the exact
+      # commit under test means this job never depends on a matching jiji-agent release already
+      # being published -- required on a release-please version-bump PR (no release exists for
+      # the bumped version yet) and when this workflow runs as the release pipelines' own
+      # pre-build gate (the release being built is what would need to exist).
+      - name: Build jiji-agent (local sibling binary, no release download needed)
+        run: cargo build -p jiji-agent --bin jiji-agent
+
       # docker_build_deploy_test.rs builds and pushes with the LOCAL machine's own Podman
       # (builder.engine: podman drives both the local build step and the remote install), not
       # just vm1's -- the runner image doesn't guarantee one, so make sure it's there.
