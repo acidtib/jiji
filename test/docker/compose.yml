@@ -1,0 +1,78 @@
+name: "jiji-docker-tests"
+
+volumes:
+  vm1_containers:
+  vm2_containers:
+
+# WireGuard needs vm1 and vm2 to dial each other directly, not through the host's own published
+# ports (those only map inbound to the container, one-directionally, from the host). A Linux
+# Docker bridge is directly routable from the host itself, though, so a dedicated network with
+# static IPs lets both the test runner (SSH) and vm1/vm2 (WireGuard, cross-host proxy/DNS) reach
+# either container by the same address -- no NAT, no separate "deployer" container needed.
+networks:
+  mesh:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  # Generates one shared SSH keypair used both by the test runner (on the GH Actions host, or a
+  # developer's machine) and by vm1's authorized_keys. A host bind mount (not a named volume) so
+  # the Rust test harness, which runs directly on the host rather than in a container, can read
+  # the private key file to build its config fixture.
+  sshkeys:
+    build:
+      context: sshkeys
+    volumes:
+      - ./.shared:/shared
+
+  # Stands in for a real remote server: privileged, its own systemd PID 1, so a real
+  # `jiji-agent-*.service` unit actually starts. `jiji server setup` installs everything else
+  # (Podman, wireguard-tools, nftables, dnsutils) itself -- that's the point of this suite.
+  vm1:
+    privileged: true
+    cgroup: host
+    build:
+      context: vm
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./.shared:/shared
+      # Podman's storage root gets its own volume, deliberately not part of vm1's own container
+      # filesystem: jiji's install path configures Podman for native overlay with no
+      # `mount_program`, and a native overlay mount can fail when nested directly on top of vm1's
+      # own overlay diff. A named volume gives Podman a non-overlay backing filesystem instead, so
+      # jiji's real production storage.conf works unmodified. If this alone turns out not to be
+      # enough, the fallback is a CI-only storage.conf override written by boot.sh, never a change
+      # to jiji's own install code.
+      - vm1_containers:/var/lib/containers
+    ports:
+      - "2201:22"
+      - "8080:80"
+      - "8443:443"
+    networks:
+      default:
+      mesh:
+        ipv4_address: 172.30.0.11
+    depends_on:
+      sshkeys:
+        condition: service_healthy
+
+  # Second stand-in host, for scenarios that need a real multi-host WireGuard mesh (peer
+  # handshake, cross-host catalog/DNS replication, cross-host proxy load balancing). Reachable
+  # directly at its mesh IP -- no published ports needed, unlike vm1.
+  vm2:
+    privileged: true
+    cgroup: host
+    build:
+      context: vm
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./.shared:/shared
+      - vm2_containers:/var/lib/containers
+    networks:
+      default:
+      mesh:
+        ipv4_address: 172.30.0.12
+    depends_on:
+      sshkeys:
+        condition: service_healthy

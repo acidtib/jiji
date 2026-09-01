@@ -5,7 +5,16 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # saturating the runner. Each integration binary spawns full russh servers.
 [test-groups]
 heavy = { max-threads = 4 }
+# docker_*_test.rs (crates/jiji-cli/tests/docker_support) all target the same single vm1
+# container (see test/docker/compose.yml). Running two `jiji server setup` invocations
+# concurrently against it risks a real dpkg/apt lock race inside vm1, not just resource
+# contention, so these must run one at a time.
+docker-integration = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = "binary(deploy_test) | binary(server_setup_test) | binary(remote_build_test) | binary(server_teardown_test)"
 test-group = "heavy"
+
+[[profile.default.overrides]]
+filter = "binary(docker_server_lifecycle_test) | binary(docker_deploy_test) | binary(docker_build_deploy_test) | binary(docker_rolling_deploy_test) | binary(docker_mesh_deploy_test) | binary(docker_network_mode_test) | binary(docker_cron_test) | binary(docker_image_retention_test) | binary(docker_load_balancer_test) | binary(docker_cron_ownership_transfer_test) | binary(docker_scale_test) | binary(docker_stop_first_test) | binary(docker_service_restart_rollback_test)"
+test-group = "docker-integration"
