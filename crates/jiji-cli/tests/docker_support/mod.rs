@@ -972,7 +972,13 @@ pub const RESTART_ROLLBACK_TEST_HOST: &str = "restart-rollback.jiji.test";
 /// `--version` tags (an unchanged Dockerfile builds to the same image ID regardless of
 /// `--version`, confirmed live -- see `write_config_with_retained_build_service`'s doc comment),
 /// to exercise `jiji service rollback` between two real, already-pushed versions and `jiji
-/// service restart` against whatever ends up active.
+/// service restart` against whatever ends up active. `deploy_timeout: 60s` widens both the
+/// container health check and `deploy_transaction.rs::activate_proxy_routes`'s own
+/// `verify_route_address` poll (jiji's internal wait for jiji-proxy to report the new backend
+/// healthy) past the 30s production default: this fixture runs alphabetically near the end of
+/// the docker suite, after 11 other tests have already churned real connections through the same
+/// shared jiji-proxy on the CI runner, and 30s isn't always enough there (confirmed live -- the
+/// production default itself is untouched, only this fixture's own config).
 pub fn write_config_with_marked_build_service(dir: &Path, project: &str, marker: &str) -> PathBuf {
     let jiji_dir = dir.join(".jiji");
     std::fs::create_dir_all(&jiji_dir).expect("create .jiji dir");
@@ -1009,6 +1015,7 @@ services:
       hosts: [{proxy_host}]
       healthcheck:
         path: /
+        deploy_timeout: 60s
 ssh:
   user: root
   keys_only: true
