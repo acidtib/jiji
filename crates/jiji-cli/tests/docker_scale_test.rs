@@ -56,11 +56,15 @@ fn scale_places_multiple_replicas_on_one_host_and_service_scale_shrinks_them() {
         "expected exactly two containers for service 'web' at scale: 2, got: {containers_at_scale_2:?}"
     );
 
-    let bodies_at_scale_2 =
-        docker_support::distinct_response_bodies(docker_support::SCALE_TEST_HOST, "/", 40);
+    let bodies_at_scale_2 = docker_support::distinct_response_bodies(
+        docker_support::SCALE_TEST_HOST,
+        "/",
+        2,
+        Duration::from_secs(30),
+    );
     assert!(
         bodies_at_scale_2.len() >= 2,
-        "expected jiji-proxy to alternate between both same-host replicas' distinct hostnames across 40 requests, only saw: {bodies_at_scale_2:?}"
+        "expected jiji-proxy to alternate between both same-host replicas' distinct hostnames within 30s, only saw: {bodies_at_scale_2:?}"
     );
 
     let scale_down =

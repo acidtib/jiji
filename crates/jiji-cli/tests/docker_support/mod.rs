@@ -500,25 +500,37 @@ pub fn wait_for_http_ok(host_header: &str, path: &str, timeout: Duration) -> Str
     }
 }
 
-/// Repeats a GET through the proxy up to `attempts` times (short pause between each, so
-/// jiji-proxy's own continuous DNS re-resolution has room to settle on all backends), collecting
-/// every distinct 200 response body seen. Used to prove genuine backend alternation, not just
-/// that a route is reachable: `docker_load_balancer_test.rs`'s fixture serves each replica's own
-/// hostname as its whole body, so more than one distinct value here means jiji-proxy actually
-/// picked different backends across the run, not just one.
+/// Repeats a GET through the proxy, pausing briefly between each, until at least
+/// `expected_min_distinct` distinct 200 response bodies have been seen or `timeout` elapses,
+/// whichever comes first. Used to prove genuine backend alternation, not just that a route is
+/// reachable: `docker_load_balancer_test.rs`'s/`docker_scale_test.rs`'s fixture serves each
+/// replica's own hostname as its whole body, so more than one distinct value means jiji-proxy
+/// actually picked different backends, not just one. A short fixed-count sample can race two
+/// separate convergence delays and see only one backend (confirmed live, not a one-off): a
+/// route's own `RouteApply` runs a synchronous re-resolve, but that resolve itself can still
+/// return a stale DNS answer if cross-host catalog anti-entropy hasn't reached the host serving
+/// jiji-proxy's DNS lookups yet (the same class of race `wait_for_dns_replica_count` closes for
+/// direct DNS queries); separately, `refresh_interval_secs` (default 5s) means jiji-proxy's own
+/// periodic re-resolution can lag a newly Active replica by several seconds even once catalog
+/// replication has caught up. Polling with a generous timeout gives both room to settle instead
+/// of asserting on whatever a fixed short window happened to catch.
 pub fn distinct_response_bodies(
     host_header: &str,
     path: &str,
-    attempts: u32,
+    expected_min_distinct: usize,
+    timeout: Duration,
 ) -> std::collections::HashSet<String> {
+    let deadline = Instant::now() + timeout;
     let mut bodies = std::collections::HashSet::new();
-    for _ in 0..attempts {
+    loop {
         if let Ok((200, body)) = http_get(PROXY_HTTP_PORT, host_header, path) {
             bodies.insert(body);
         }
+        if bodies.len() >= expected_min_distinct || Instant::now() >= deadline {
+            return bodies;
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
-    bodies
 }
 
 /// Static IPs on the `mesh` compose network (`test/docker/compose.yml`), reachable both from the

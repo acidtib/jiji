@@ -47,11 +47,15 @@ fn proxy_alternates_between_replicas_on_different_hosts() {
         Duration::from_secs(30),
     );
 
-    let bodies =
-        docker_support::distinct_response_bodies(docker_support::LOAD_BALANCER_TEST_HOST, "/", 40);
+    let bodies = docker_support::distinct_response_bodies(
+        docker_support::LOAD_BALANCER_TEST_HOST,
+        "/",
+        2,
+        Duration::from_secs(30),
+    );
     assert!(
         bodies.len() >= 2,
-        "expected jiji-proxy to alternate between both replicas' distinct hostnames across 40 requests, only saw: {bodies:?}"
+        "expected jiji-proxy to alternate between both replicas' distinct hostnames within 30s, only saw: {bodies:?}"
     );
 
     let remove = docker_support::run_jiji(&config_path, &["service", "remove", "-y", "-S", "web"]);
