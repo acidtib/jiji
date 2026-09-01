@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.1](https://github.com/acidtib/jiji/compare/v0.10.0...v0.10.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **cli:** sweep stale cron specs after a servers: shrink ([#101](https://github.com/acidtib/jiji/issues/101)) ([fc2b4cf](https://github.com/acidtib/jiji/commit/fc2b4cf16d2a7ecec372074913d39556c2d93b2e))
+* verify candidate health before trusting a recovered deploy ([#99](https://github.com/acidtib/jiji/issues/99)) ([805b507](https://github.com/acidtib/jiji/commit/805b507fe3ca1574d403e74eab662f37359f9dcb))
+
 ## [0.10.0](https://github.com/acidtib/jiji/compare/v0.9.0...v0.10.0) (2026-08-15)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/acidtib/jiji/compare/jiji-agent-v0.7.0...jiji-agent-v0.7.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* verify candidate health before trusting a recovered deploy ([#99](https://github.com/acidtib/jiji/issues/99)) ([805b507](https://github.com/acidtib/jiji/commit/805b507fe3ca1574d403e74eab662f37359f9dcb))
+
 ## [0.7.0](https://github.com/acidtib/jiji/compare/jiji-agent-v0.6.5...jiji-agent-v0.7.0) (2026-08-15)
 
 
