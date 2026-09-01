@@ -11,7 +11,6 @@
 
 mod docker_support;
 
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 fn wireguard_handshake_completed(service: &str, iface: &str) -> bool {
@@ -67,25 +66,15 @@ fn wireguard_mesh_connects_two_hosts_and_replicates_catalog_across_them() {
 
     let vm1_dns = docker_support::dns_address_for(&config_path, "vm1");
     let aggregate_name = format!("{project}-web.jiji");
-    let dig_output = docker_support::exec_service_stdout(
+    // Cross-host catalog/DNS anti-entropy converges asynchronously after `deploy` returns, so a
+    // single query right after success can race vm2's replica record not having propagated to
+    // vm1's own local catalog yet (confirmed live, not just a theoretical race).
+    let replica_addresses = docker_support::wait_for_dns_replica_count(
         "vm1",
-        &[
-            "dig",
-            "+short",
-            "+time=5",
-            "+tries=3",
-            &format!("@{vm1_dns}"),
-            &aggregate_name,
-        ],
-    );
-    let replica_addresses: Vec<Ipv4Addr> = dig_output
-        .lines()
-        .filter_map(|line| line.trim().parse().ok())
-        .collect();
-    assert_eq!(
-        replica_addresses.len(),
+        vm1_dns,
+        &aggregate_name,
         2,
-        "expected vm1's own DNS resolver to know both replicas for '{aggregate_name}' after a mesh-wide deploy, got: {dig_output:?}"
+        Duration::from_secs(30),
     );
 
     // Real cross-host L3 reachability, not just DNS knowledge: vm1 must be able to curl every

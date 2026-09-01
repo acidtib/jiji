@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use std::env;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -590,6 +591,48 @@ pub fn dns_address_for(config_path: &Path, server: &str) -> std::net::Ipv4Addr {
         .get(server)
         .unwrap_or_else(|| panic!("server '{server}' not present in the computed network plan"))
         .dns_address
+}
+
+/// Polls `dig +short` against `dns_addr` for `name` on `service` until it returns at least
+/// `expected` distinct addresses, since cross-host catalog/DNS anti-entropy (AGENTS.md's
+/// "continuous direct-only peer-to-peer anti-entropy") converges asynchronously after `deploy`
+/// succeeds: a single query right after a successful deploy can race a replica's record not
+/// having propagated to this host's own local catalog yet (confirmed live -- a real flake, not a
+/// mock-suite-only concern). Panics with the last `dig` output seen on timeout.
+pub fn wait_for_dns_replica_count(
+    service: &str,
+    dns_addr: Ipv4Addr,
+    name: &str,
+    expected: usize,
+    timeout: Duration,
+) -> Vec<Ipv4Addr> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let dig_output = exec_service_stdout(
+            service,
+            &[
+                "dig",
+                "+short",
+                "+time=5",
+                "+tries=3",
+                &format!("@{dns_addr}"),
+                name,
+            ],
+        );
+        let addresses: Vec<Ipv4Addr> = dig_output
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect();
+        if addresses.len() >= expected {
+            return addresses;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "expected {service}'s own DNS resolver to know at least {expected} replicas for '{name}' within {timeout:?}, got: {dig_output:?}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// Single-host fixture exercising both non-bridge `network_mode` shapes at once: `webhost`
