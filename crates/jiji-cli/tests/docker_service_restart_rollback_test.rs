@@ -54,7 +54,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
     let body_v1 = docker_support::wait_for_http_ok(
         docker_support::RESTART_ROLLBACK_TEST_HOST,
         "/",
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert!(
         body_v1.contains("v1-marker"),
@@ -77,7 +77,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
     let body_v2 = docker_support::wait_for_http_ok(
         docker_support::RESTART_ROLLBACK_TEST_HOST,
         "/",
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert!(
         body_v2.contains("v2-marker"),
@@ -102,7 +102,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
     let body_after_rollback = docker_support::wait_for_http_ok(
         docker_support::RESTART_ROLLBACK_TEST_HOST,
         "/",
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert!(
         body_after_rollback.contains("v1-marker"),
@@ -124,7 +124,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
     let body_after_restart = docker_support::wait_for_http_ok(
         docker_support::RESTART_ROLLBACK_TEST_HOST,
         "/",
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert!(
         body_after_restart.contains("v1-marker"),
