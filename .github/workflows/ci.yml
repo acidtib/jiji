@@ -106,6 +106,18 @@ jobs:
         if: failure()
         run: docker compose -f test/docker/compose.yml logs --no-color --tail 200
 
+      # `docker compose logs` above only covers vm1/vm2's own outer systemd boot output --
+      # jiji-proxy runs *inside* vm1/vm2's own nested Podman (started by jiji-agent under test),
+      # so its own logs (DNS discovery, health checks, refresh_interval activity) are otherwise
+      # invisible to CI on a failure. `|| true` on each: not every test that fails has actually
+      # brought up jiji-proxy on both hosts (or at all), and a missing container must not mask
+      # the real failure above.
+      - name: Dump jiji-proxy logs on failure
+        if: failure()
+        run: |
+          docker compose -f test/docker/compose.yml exec -T vm1 podman logs jiji-proxy || true
+          docker compose -f test/docker/compose.yml exec -T vm2 podman logs jiji-proxy || true
+
       - name: Tear down docker fixtures
         if: always()
         run: docker compose -f test/docker/compose.yml down -t 0 -v
