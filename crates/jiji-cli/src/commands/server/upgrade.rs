@@ -1,7 +1,7 @@
 //! `jiji server upgrade`: reads each selected host's actual `jiji-agent`/`jiji-proxy` versions,
 //! compares them against what this CLI was built against, and upgrades only what's outdated --
 //! collapsing the manual `jiji server setup` + `jiji proxy restart` + `jiji network diagnostics`
-//! sequence `docs/todo.md` used to document into one command. Reuses `server setup`'s own
+//! sequence into one command. Reuses `server setup`'s own
 //! enrollment machinery (`gather_membership_view`/`enroll_agent_targets`) and `agent_install`/
 //! `proxy`'s existing idempotent install primitives; introduces no new agent/proxy RPC.
 
