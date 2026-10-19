@@ -672,6 +672,7 @@ services:
             cap_add: Vec::new(),
             stop_first: false,
             restart: None,
+            pull: Default::default(),
             crons: Default::default(),
         }
     }

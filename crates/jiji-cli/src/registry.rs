@@ -255,6 +255,37 @@ pub struct LoginCredentials<'a> {
     pub username: &'a str,
 }
 
+/// Whether a normalized image reference (see `container_runtime::normalize_image_name`) is hosted
+/// on `registry`'s remote server and that registry has login credentials configured, i.e. whether
+/// deploy should log in with `builder.registry` before pulling it.
+pub fn authenticates_image(registry: &Registry, image: &str) -> bool {
+    let (Some(server), Some(_), Some(_)) = (
+        registry.server.as_deref(),
+        registry.username.as_deref(),
+        registry.password.as_deref(),
+    ) else {
+        return false;
+    };
+    let Some((image_host, _)) = image.split_once('/') else {
+        return false;
+    };
+    canonical_registry_host(server) == canonical_registry_host(image_host)
+}
+
+fn canonical_registry_host(host: &str) -> String {
+    let host = host
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    match host.as_str() {
+        "index.docker.io" | "registry-1.docker.io" | "registry.hub.docker.com" => {
+            "docker.io".to_string()
+        }
+        _ => host,
+    }
+}
+
 pub fn require_server(registry: &Registry) -> anyhow::Result<&str> {
     registry
         .server
@@ -426,6 +457,41 @@ mod tests {
             username: username.map(str::to_string),
             password: None,
         }
+    }
+
+    #[test]
+    fn authenticates_images_hosted_on_the_configured_registry() {
+        let mut ghcr = registry("ghcr.io", Some("me"));
+        ghcr.password = Some("TOKEN".into());
+        assert!(authenticates_image(&ghcr, "ghcr.io/me/app:latest"));
+        assert!(!authenticates_image(
+            &ghcr,
+            "docker.io/library/nginx:latest"
+        ));
+
+        let mut hub = registry("https://index.docker.io/", Some("me"));
+        hub.password = Some("TOKEN".into());
+        assert!(authenticates_image(&hub, "docker.io/me/app:latest"));
+
+        let mut port = registry("registry.example.com:5000", Some("me"));
+        port.password = Some("TOKEN".into());
+        assert!(authenticates_image(
+            &port,
+            "registry.example.com:5000/app:v1"
+        ));
+        assert!(!authenticates_image(&port, "registry.example.com/app:v1"));
+    }
+
+    #[test]
+    fn never_authenticates_without_complete_credentials() {
+        assert!(!authenticates_image(
+            &registry("ghcr.io", Some("me")),
+            "ghcr.io/me/app:latest"
+        ));
+        assert!(!authenticates_image(
+            &Registry::default(),
+            "ghcr.io/me/app:latest"
+        ));
     }
 
     #[test]

@@ -372,6 +372,17 @@ impl fmt::Display for RestartPolicy {
     }
 }
 
+/// When `jiji deploy` pulls a prebuilt `image:` service's image on each target host.
+/// `Always` re-pulls so a moving tag like `:latest` picks up the registry's current image;
+/// `Missing` only pulls when the host has no local copy (offline or air-gapped hosts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PullPolicy {
+    #[default]
+    Always,
+    Missing,
+}
+
 /// `overlap: forbid` skips a due run while the prior run is still active. Modeled as a
 /// single-variant enum (not `bool`) so a later release can add a queuing/allow variant without a
 /// schema-breaking change; any other value is rejected at parse time like `ContainerEngine`'s.
@@ -489,6 +500,8 @@ pub struct Service {
     pub stop_first: bool,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
+    #[serde(default)]
+    pub pull: PullPolicy,
     /// Stable map key is the cron name. `BTreeMap` (not `HashMap`, unlike `Config.services`)
     /// keeps iteration order deterministic for canonical spec hashing and `list` output.
     #[serde(default)]
