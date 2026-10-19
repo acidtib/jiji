@@ -3,6 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, closed]
     branches: [main, develop]
     paths-ignore:
       - "**.md"
@@ -15,11 +16,15 @@ on:
       - "docs/**"
       - "LICENSE"
 
-# A newer push to the same PR supersedes the running check. Pushes to main keep every run: the
-# release workflows gate on CI having passed for the exact tagged commit (require-ci.yml).
+# A newer run cancels the older one in its group: a new push to a PR, closing the PR (that run
+# itself has no jobs), or a new push to main. A release commit gets a group of its own so its run
+# is never cancelled: the release workflows gate on it (require-ci.yml).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number)
+    || startsWith(github.event.head_commit.message, 'chore: release') && format('ci-release-{0}', github.sha)
+    || format('ci-{0}', github.ref) }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +32,8 @@ env:
 
 jobs:
   lint:
+    # A release PR only bumps versions; its commit is fully tested on main before any release.
+    if: github.event.action != 'closed' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -53,6 +60,7 @@ jobs:
         run: cargo clippy --all-targets --all-features
 
   test:
+    if: github.event.action != 'closed' && github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -85,9 +93,12 @@ jobs:
 
   docker-integration:
     name: docker-in-docker tests
-    # A release PR only bumps versions; the push to main after merging it runs this suite, and the
-    # release workflows gate on that run.
-    if: github.head_ref != 'release-please--branches--main'
+    # The PR already ran this suite, so on main it only runs for release commits, which the
+    # release workflows gate on.
+    if: >-
+      github.event.action != 'closed'
+      && github.head_ref != 'release-please--branches--main'
+      && (github.event_name != 'push' || startsWith(github.event.head_commit.message, 'chore: release'))
     runs-on: ubuntu-latest
 
     steps:
