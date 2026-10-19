@@ -2,16 +2,32 @@ name: CI
 
 on:
   workflow_dispatch:
-  workflow_call:
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   push:
     branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+
+# A newer push to the same PR supersedes the running check. Pushes to main keep every run: the
+# release workflows gate on CI having passed for the exact tagged commit (require-ci.yml).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -21,36 +37,57 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Check formatting
         run: cargo fmt --all --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --all-features
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
 
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
+      # PRs can only restore caches saved from main, so only main saves one.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Run tests
         run: cargo nextest run --workspace
 
-      - name: Build
-        run: cargo build --workspace
-
+      # The integration tests already built target/debug/jiji.
       - name: Test CLI functionality
         run: |
-          cargo run --bin jiji -- --help
-          cargo run --bin jiji -- init --help
-          cargo run --bin jiji -- server --help
-          cargo run --bin jiji -- version
+          target/debug/jiji --help
+          target/debug/jiji init --help
+          target/debug/jiji server --help
+          target/debug/jiji version
 
   docker-integration:
     name: docker-in-docker tests
+    # A release PR only bumps versions; the push to main after merging it runs this suite, and the
+    # release workflows gate on that run.
+    if: github.head_ref != 'release-please--branches--main'
     runs-on: ubuntu-latest
 
     steps:
@@ -60,24 +97,24 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-
-      - name: Build jiji
-        run: cargo build -p jiji-cli --bin jiji
 
       # `jiji server setup` prefers a jiji-agent binary sitting beside the `jiji` executable over
       # downloading one from a GitHub release (see agent_install::find_local_agent_binary), the
       # same mechanism `mise install-dev` uses for local testing. Building it here from the exact
       # commit under test means this job never depends on a matching jiji-agent release already
-      # being published -- required on a release-please version-bump PR (no release exists for
-      # the bumped version yet) and when this workflow runs as the release pipelines' own
-      # pre-build gate (the release being built is what would need to exist).
-      - name: Build jiji-agent (local sibling binary, no release download needed)
-        run: cargo build -p jiji-agent --bin jiji-agent
+      # being published.
+      - name: Build jiji and jiji-agent
+        run: cargo build -p jiji-cli -p jiji-agent --bin jiji --bin jiji-agent
 
       # docker_build_deploy_test.rs builds and pushes with the LOCAL machine's own Podman
       # (builder.engine: podman drives both the local build step and the remote install), not

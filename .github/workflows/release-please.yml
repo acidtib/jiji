@@ -9,9 +9,9 @@ on:
     - cron: "0 */4 * * *"
   workflow_dispatch:
 
+# Every write goes through the release app's token, not GITHUB_TOKEN.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
@@ -20,26 +20,35 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # Tags and PRs created with the default GITHUB_TOKEN never trigger other workflows, so the
+      # release builds would never run. A GitHub App installation token does trigger them.
+      - name: Mint release app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Self-heal a release PR stuck on autorelease:pending
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: .github/scripts/self-heal-stuck-release.sh
 
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          # A PAT is required here: tags/releases created with the default
-          # GITHUB_TOKEN never trigger other workflows (GitHub's anti-recursion
-          # protection), which is why jiji-release.yml/jiji-agent-release.yml/
-          # jiji-proxy-release.yml never ran on any past tag. Falls back to
-          # GITHUB_TOKEN if the secret isn't configured, which keeps this
-          # workflow itself working (PR creation, tagging) but reproduces the
-          # same no-downstream-trigger gap until the secret is set.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # The PR body must stay as release-please wrote it (it is parsed again on merge), so the
+      # readable summary goes in a comment instead.
+      - name: Summarize the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: .github/scripts/release-pr-summary.py
