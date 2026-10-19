@@ -1,9 +1,13 @@
 name: jiji-agent release
 
+# Called by release.yml for a freshly tagged release, or dispatched by hand to rebuild an
+# existing tag.
 on:
-  push:
-    tags:
-      - "jiji-agent-v*"
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -13,18 +17,17 @@ on:
 jobs:
   release:
     permissions:
-      actions: read
       contents: write
     uses: ./.github/workflows/binary-release.yml
     with:
-      tag: ${{ inputs.tag || github.ref_name }}
+      tag: ${{ inputs.tag }}
       tag_prefix: "jiji-agent-v"
       bin_name: jiji-agent
       changelog_crate: jiji-agent
       checksum: true
       install_instructions: false
       notify_website: false
-      refresh_changelog_script: ${{ inputs.tag != '' }}
+      refresh_changelog_script: ${{ github.event_name == 'workflow_dispatch' }}
       matrix_json: >-
         [
           {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","artifact":"jiji-agent-linux-x86_64"},

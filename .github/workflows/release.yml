@@ -1,0 +1,113 @@
+name: release
+
+# Tags a merged release PR and builds what it released, but only once CI has passed on the release
+# commit. Triggered by CI completing, so nothing waits on CI. release-please.yml only manages the
+# release PR and never tags.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Manual retry, e.g. after fixing whatever made a release commit's CI fail.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    # Job-level, not workflow-level: a group keeps only one pending entry, so every CI completion's
+    # (mostly skipped) run would otherwise be able to displace a queued release.
+    concurrency:
+      group: release-tag
+      cancel-in-progress: false
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && startsWith(github.event.workflow_run.head_commit.message, 'chore: release'))
+    runs-on: ubuntu-latest
+    outputs:
+      jiji: ${{ steps.tags.outputs.jiji }}
+      jiji-agent: ${{ steps.tags.outputs.jiji-agent }}
+      jiji-proxy: ${{ steps.tags.outputs.jiji-proxy }}
+    steps:
+      - name: Mint release app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Self-heal a release PR stuck on autorelease:pending
+        id: heal
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: .github/scripts/self-heal-stuck-release.sh
+
+      - name: Tag and create GitHub releases
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+
+      - name: Collect tags to build
+        id: tags
+        env:
+          JIJI: ${{ steps.release.outputs['crates/jiji-cli--tag_name'] }}
+          JIJI_AGENT: ${{ steps.release.outputs['crates/jiji-agent--tag_name'] }}
+          JIJI_PROXY: ${{ steps.release.outputs['crates/jiji-proxy--tag_name'] }}
+          HEALED: ${{ steps.heal.outputs.tags }}
+        run: |
+          for tag in $HEALED; do
+            case "$tag" in
+              v[0-9]*) JIJI="${JIJI:-$tag}" ;;
+              jiji-agent-v[0-9]*) JIJI_AGENT="${JIJI_AGENT:-$tag}" ;;
+              jiji-proxy-v[0-9]*) JIJI_PROXY="${JIJI_PROXY:-$tag}" ;;
+            esac
+          done
+          echo "jiji=${JIJI} jiji-agent=${JIJI_AGENT} jiji-proxy=${JIJI_PROXY}"
+          {
+            echo "jiji=$JIJI"
+            echo "jiji-agent=$JIJI_AGENT"
+            echo "jiji-proxy=$JIJI_PROXY"
+          } >> "$GITHUB_OUTPUT"
+
+  jiji:
+    needs: tag
+    if: needs.tag.outputs.jiji != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/jiji-release.yml
+    with:
+      tag: ${{ needs.tag.outputs.jiji }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+  jiji-agent:
+    needs: tag
+    if: needs.tag.outputs.jiji-agent != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/jiji-agent-release.yml
+    with:
+      tag: ${{ needs.tag.outputs.jiji-agent }}
+
+  jiji-proxy:
+    needs: tag
+    if: needs.tag.outputs.jiji-proxy != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/jiji-proxy-release.yml
+    with:
+      tag: ${{ needs.tag.outputs.jiji-proxy }}

@@ -1,27 +1,20 @@
 name: release-please
 
+# Opens and updates the release PR only. Tagging and building happen in release.yml, once CI has
+# passed on the merged release commit.
+
 on:
   push:
     branches: [main]
-  schedule:
-    # Self-heals a stuck "autorelease: pending" PR even with no new push
-    # (see self-heal-stuck-release.sh).
-    - cron: "0 */4 * * *"
   workflow_dispatch:
 
-# Every write goes through the release app's token, not GITHUB_TOKEN.
 permissions:
   contents: read
 
 jobs:
-  release-please:
+  release-pr:
     runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      # Tags and PRs created with the default GITHUB_TOKEN never trigger other workflows, so the
-      # release builds would never run. A GitHub App installation token does trigger them.
       - name: Mint release app token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -31,20 +24,14 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Self-heal a release PR stuck on autorelease:pending
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: .github/scripts/self-heal-stuck-release.sh
-
       - uses: googleapis/release-please-action@v5
-        id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-release: true
 
       # The PR body must stay as release-please wrote it (it is parsed again on merge), so the
       # readable summary goes in a comment instead.

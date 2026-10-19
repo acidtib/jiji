@@ -18,7 +18,7 @@ on:
 
 # A newer run cancels the older one in its group: a new push to a PR, closing the PR (that run
 # itself has no jobs), or a new push to main. A release commit gets a group of its own so its run
-# is never cancelled: the release workflows gate on it (require-ci.yml).
+# is never cancelled: its success is what tags and builds the release (release.yml).
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number)
@@ -93,8 +93,8 @@ jobs:
 
   docker-integration:
     name: docker-in-docker tests
-    # The PR already ran this suite, so on main it only runs for release commits, which the
-    # release workflows gate on.
+    # The PR already ran this suite, so on main it only runs for release commits, which are only
+    # tagged and built once their CI passes.
     if: >-
       github.event.action != 'closed'
       && github.head_ref != 'release-please--branches--main'

@@ -1,9 +1,16 @@
 name: jiji release
 
+# Called by release.yml for a freshly tagged release, or dispatched by hand to rebuild an
+# existing tag.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: false
   workflow_dispatch:
     inputs:
       tag:
@@ -13,18 +20,17 @@ on:
 jobs:
   release:
     permissions:
-      actions: read
       contents: write
     uses: ./.github/workflows/binary-release.yml
     with:
-      tag: ${{ inputs.tag || github.ref_name }}
+      tag: ${{ inputs.tag }}
       tag_prefix: "v"
       bin_name: jiji
       changelog_crate: jiji-cli
       checksum: true
       install_instructions: true
       notify_website: true
-      refresh_changelog_script: ${{ inputs.tag != '' }}
+      refresh_changelog_script: ${{ github.event_name == 'workflow_dispatch' }}
       # Cross-compiling to x86_64 on Apple Silicon hardware rather than
       # using macos-13 (native Intel): confirmed live, macos-13 runners
       # can queue indefinitely waiting for a runner to be assigned,

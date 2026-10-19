@@ -53,13 +53,7 @@ on:
         required: false
 
 jobs:
-  test:
-    uses: ./.github/workflows/require-ci.yml
-    with:
-      tag: ${{ inputs.tag }}
-
   build:
-    needs: test
     strategy:
       fail-fast: false
       matrix:
