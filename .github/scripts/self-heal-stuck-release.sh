@@ -25,9 +25,13 @@
 # already exists" on the first one it reached, failing the whole job even
 # though every tag/release had, in fact, already been correctly created).
 #
+# Runs in release.yml right before release-please-action's tag step. Tags
+# created here are written to $GITHUB_OUTPUT as `tags`, so the same run
+# builds them: release-please-action finds nothing left to tag and reports
+# none of them.
+#
 # Requires: full history checkout (fetch-depth: 0) with a push-capable
-# token (default GITHUB_TOKEN can't trigger downstream release workflows),
-# and GH_TOKEN set for `gh`.
+# token, and GH_TOKEN set for `gh`.
 set -euo pipefail
 
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
@@ -40,6 +44,12 @@ if [ "$pending_count" -eq 0 ]; then
   echo "No release PRs stuck in autorelease: pending."
   exit 0
 fi
+
+created_tags=()
+report_created_tags() {
+  echo "tags=${created_tags[*]}" >> "${GITHUB_OUTPUT:-/dev/null}"
+}
+trap report_created_tags EXIT
 
 tag_for_package() {
   local path="$1" version="$2"
@@ -127,7 +137,6 @@ for i in $(seq 0 $((pending_count - 1))); do
     git tag "$tag" "$sha"
     git push origin "$tag"
 
-    dir="${path#crates/}"
     notes=$(git show "$sha:$path/CHANGELOG.md" 2>/dev/null | awk '/^## / { n++ } n==1' || true)
     if [ -z "$notes" ]; then
       notes="Release $tag."
@@ -139,7 +148,9 @@ for i in $(seq 0 $((pending_count - 1))); do
       --title "$tag" \
       --notes "$notes"
 
-    if ! tag_exists "$tag"; then
+    if tag_exists "$tag"; then
+      created_tags+=("$tag")
+    else
       fully_healed=0
     fi
   done
