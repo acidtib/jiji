@@ -15,7 +15,12 @@ env:
 
 jobs:
   test:
-    uses: ./.github/workflows/ci.yml
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/require-ci.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
 
   build:
     needs: test

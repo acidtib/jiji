@@ -13,6 +13,7 @@ on:
 jobs:
   release:
     permissions:
+      actions: read
       contents: write
     uses: ./.github/workflows/binary-release.yml
     with:
@@ -36,4 +37,4 @@ jobs:
           {"os":"macos-14","target":"aarch64-apple-darwin","artifact":"jiji-macos-arm64"}
         ]
     secrets:
-      JIJI_WEBSITE_DISPATCH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
