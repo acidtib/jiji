@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/acidtib/jiji/compare/v0.10.1...v0.11.0) (2026-10-19)
+
+
+### Features
+
+* **cli:** pull prebuilt images on every deploy ([#105](https://github.com/acidtib/jiji/issues/105)) ([9d8aff1](https://github.com/acidtib/jiji/commit/9d8aff156be0b746a4e158258115f2b9c8cdd0f4))
+
 ## [0.10.1](https://github.com/acidtib/jiji/compare/v0.10.0...v0.10.1) (2026-09-01)
 
 
