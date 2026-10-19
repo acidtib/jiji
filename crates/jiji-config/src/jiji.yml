@@ -1033,6 +1033,29 @@ services:
 #         image: myapp/worker:latest
 #         restart: on-failure
 #
+# pull: When `jiji deploy` pulls a prebuilt `image:` service's image
+#   - Type: string
+#   - Default: always
+#   - Values: always, missing
+#   - always: every deploy runs `docker pull`/`podman pull` on each target
+#     host before starting the new container, so a moving tag like :latest
+#     picks up the registry's current image. Cheap when nothing changed.
+#     A failed pull fails the deploy, even if the host has a local copy.
+#   - missing: only pull when the host has no local copy (offline or
+#     air-gapped hosts, or pinning whatever image a host already has)
+#   - Ignored for build-configured services (build:), which get a fresh tag
+#     on every `jiji deploy --build`
+#   - Only `jiji deploy` re-pulls. `jiji service restart`, `rollback`, and
+#     `scale` never do: they use the host's existing copy, pulling only when
+#     it is missing, so new replicas from `scale` match the ones already running
+#   - With `always`, a registry the host cannot reach fails the deploy
+#     where a cached copy used to be enough; use `missing` for such hosts
+#   - Example:
+#     services:
+#       seerr:
+#         image: ghcr.io/seerr-team/seerr:latest
+#         pull: missing
+#
 # crons: Scheduled commands, each run in its own one-off container
 #   - Type: map, keyed by a stable cron name (DNS-safe: lowercase alphanumeric
 #     and hyphens, no leading/trailing hyphen, max 63 characters)

@@ -706,6 +706,7 @@ services:
             cap_add: vec![],
             stop_first: false,
             restart: None,
+            pull: Default::default(),
             crons: Default::default(),
         };
         let server = |arch: Option<&str>| NamedServer {

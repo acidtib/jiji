@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use jiji_config::{validate_config, NamedServer};
+use jiji_config::{validate_config, ContainerEngine, NamedServer, PullPolicy};
 use jiji_network::{NetworkPlan, NetworkPlanner, ServiceEndpointPlan};
 use jiji_ssh::{RemoteForward, SshPool, SshSession};
 use jiji_tui::Ui;
@@ -14,8 +14,8 @@ use crate::cascade::{add_cascaded_dependents, compute_service_waves, deploy_serv
 use crate::deploy_transaction::EndpointOutcome;
 use crate::lock::{LockRequest, LockScope};
 use crate::{
-    build_engine, build_executor, build_plan, container_runtime, engine, env_resolution, proxy,
-    proxy_routes, registry, ssh_adapter, version_tag,
+    build_engine, build_executor, build_plan, container_ops, container_runtime, engine,
+    env_resolution, proxy, proxy_routes, registry, ssh_adapter, version_tag,
 };
 
 pub(crate) const DEFAULT_MAX_DIR_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
@@ -410,6 +410,23 @@ pub async fn run(
         images.insert(endpoint.service.clone(), resolved);
     }
 
+    let image_pulls = prebuilt_image_pulls(&config, &selected, &images);
+    let prebuilt_login_hosts: BTreeSet<String> = image_pulls
+        .keys()
+        .filter(|(_, image)| registry::authenticates_image(&config.builder.registry, image))
+        .map(|(server_name, _)| server_name.clone())
+        .collect();
+    if registry_password.is_none() && !prebuilt_login_hosts.is_empty() {
+        let raw_password = config
+            .builder
+            .registry
+            .password
+            .as_deref()
+            .expect("authenticates_image requires a password");
+        registry_password =
+            Some(registry::resolve_registry_password(raw_password, &loaded_env, host_env).await?);
+    }
+
     let shared_env = config.environment.clone().unwrap_or_default();
     let mut resolved_envs: BTreeMap<String, env_resolution::ResolvedEnvironment> = BTreeMap::new();
     for endpoint in &selected {
@@ -474,7 +491,8 @@ pub async fn run(
 
     if let Some(password) = registry_password.as_deref() {
         Ui::section("Registry Login:");
-        let hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
+        let mut hosts = hosts_serving_build_configured_services(&selected, &services_to_build);
+        hosts.extend(prebuilt_login_hosts.iter().cloned());
         for server_name in hosts {
             let session = sessions.get(&server_name).expect("connected above");
             if let Err(error) = registry::login_remote(
@@ -524,6 +542,28 @@ pub async fn run(
                 )));
             }
             Ui::say(&format!("{}: {image}", endpoint.server), 1);
+        }
+    }
+
+    if !image_pulls.is_empty() {
+        Ui::section("Pulling Images:");
+        for ((server_name, image), pull) in &image_pulls {
+            let session = sessions.get(server_name).expect("connected above");
+            let label = display_image(&pull.configured, image);
+            match pull_prebuilt_image(session, config.builder.engine, server_name, image).await {
+                Ok(outcome) => Ui::say(
+                    &format!("{server_name}: {}", describe_pull(&label, outcome)),
+                    1,
+                ),
+                Err(error) => {
+                    cancel_forwards(&sessions, &registry_forwards).await;
+                    return Err(error.context(format!(
+                        "Could not pull image {label} for service {} on deploy host '{server_name}'. Check the image reference. For a private image, deploy logs in only to `builder.registry.server`; log '{server_name}' in to any other registry yourself (`{} login` via `jiji server exec`). Or set `pull: missing` on the service to deploy the copy already on the host.",
+                        quoted_or_list(&pull.services),
+                        config.builder.engine
+                    )));
+                }
+            }
         }
     }
 
@@ -1195,6 +1235,104 @@ async fn report_peer_replication_ack(
     Ui::say(&summary, 1);
 }
 
+/// A pending pull: the services sharing one resolved image on one host, and the `image:` value
+/// as configured (before normalization), for messages an operator can grep their config for.
+struct PrebuiltPull {
+    services: Vec<String>,
+    configured: String,
+}
+
+/// Every `(server, image)` a prebuilt `image:` service with `pull: always` must re-pull before
+/// deploying, so a moving tag like `:latest` resolves to the registry's current image instead of
+/// whatever copy the host already has. Build-configured services are skipped: `--build` pulls its
+/// fresh tag separately, and without `--build` their image may live in the tunnel-only local
+/// registry.
+fn prebuilt_image_pulls(
+    config: &jiji_config::Config,
+    selected: &[ServiceEndpointPlan],
+    images: &BTreeMap<String, String>,
+) -> BTreeMap<(String, String), PrebuiltPull> {
+    let mut pulls: BTreeMap<(String, String), PrebuiltPull> = BTreeMap::new();
+    for endpoint in selected {
+        let service = &config.services[&endpoint.service];
+        if service.build.is_some() || service.pull != PullPolicy::Always {
+            continue;
+        }
+        let image = images.get(&endpoint.service).expect("resolved above");
+        let pull = pulls
+            .entry((endpoint.server.clone(), image.clone()))
+            .or_insert_with(|| PrebuiltPull {
+                services: Vec::new(),
+                configured: service.image.clone().unwrap_or_else(|| image.clone()),
+            });
+        if !pull.services.contains(&endpoint.service) {
+            pull.services.push(endpoint.service.clone());
+        }
+    }
+    pulls
+}
+
+/// Image IDs a reference resolved to before and after an explicit pull.
+struct PullOutcome {
+    before: Option<String>,
+    after: Option<String>,
+}
+
+async fn pull_prebuilt_image(
+    session: &SshSession,
+    engine: ContainerEngine,
+    server_name: &str,
+    image: &str,
+) -> anyhow::Result<PullOutcome> {
+    let before = container_ops::image_id(session, engine, image).await?;
+    let spinner = Ui::spinner(&format!("{server_name}: pulling {image}"));
+    let spinner_handle = spinner.handle();
+    let pull_result = container_ops::pull_image_with_progress(session, engine, image, |status| {
+        spinner_handle.set_message(&format!("{server_name}: {status}"))
+    })
+    .await;
+    drop(spinner);
+    pull_result?;
+    let after = container_ops::image_id(session, engine, image).await?;
+    Ok(PullOutcome { before, after })
+}
+
+fn display_image(configured: &str, resolved: &str) -> String {
+    if configured == resolved {
+        format!("'{resolved}'")
+    } else {
+        format!("'{configured}' ({resolved})")
+    }
+}
+
+fn quoted_or_list(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+fn describe_pull(label: &str, outcome: PullOutcome) -> String {
+    match (outcome.before.as_deref(), outcome.after.as_deref()) {
+        (Some(before), Some(after)) if before == after => {
+            format!(
+                "{label} up to date ({})",
+                container_ops::short_image_id(after)
+            )
+        }
+        (Some(before), Some(after)) => format!(
+            "{label} updated ({} -> {})",
+            container_ops::short_image_id(before),
+            container_ops::short_image_id(after)
+        ),
+        (None, Some(after)) => {
+            format!("{label} pulled ({})", container_ops::short_image_id(after))
+        }
+        (_, None) => format!("{label} pulled"),
+    }
+}
+
 fn hosts_serving_build_configured_services(
     selected: &[ServiceEndpointPlan],
     services_to_build: &BTreeSet<String>,
@@ -1204,4 +1342,64 @@ fn hosts_serving_build_configured_services(
         .filter(|endpoint| services_to_build.contains(&endpoint.service))
         .map(|endpoint| endpoint.server.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describes_each_pull_outcome() {
+        let outcome = |before: Option<&str>, after: Option<&str>| PullOutcome {
+            before: before.map(str::to_string),
+            after: after.map(str::to_string),
+        };
+        let label = "'seerr:latest'";
+        assert_eq!(
+            describe_pull(
+                label,
+                outcome(
+                    Some("sha256:aaaaaaaaaaaaffff"),
+                    Some("sha256:aaaaaaaaaaaaffff")
+                )
+            ),
+            format!("{label} up to date (aaaaaaaaaaaa)")
+        );
+        assert_eq!(
+            describe_pull(
+                label,
+                outcome(Some("aaaaaaaaaaaaffff"), Some("bbbbbbbbbbbbffff"))
+            ),
+            format!("{label} updated (aaaaaaaaaaaa -> bbbbbbbbbbbb)")
+        );
+        assert_eq!(
+            describe_pull(label, outcome(None, Some("sha256:cccccccccccc"))),
+            format!("{label} pulled (cccccccccccc)")
+        );
+        assert_eq!(
+            describe_pull(label, outcome(None, None)),
+            format!("{label} pulled")
+        );
+    }
+
+    #[test]
+    fn shows_the_configured_image_beside_the_normalized_one() {
+        assert_eq!(
+            display_image("nginx:latest", "docker.io/library/nginx:latest"),
+            "'nginx:latest' (docker.io/library/nginx:latest)"
+        );
+        assert_eq!(
+            display_image("ghcr.io/me/app:v1", "ghcr.io/me/app:v1"),
+            "'ghcr.io/me/app:v1'"
+        );
+    }
+
+    #[test]
+    fn joins_service_names_with_or() {
+        assert_eq!(quoted_or_list(&["web".into()]), "'web'");
+        assert_eq!(
+            quoted_or_list(&["web".into(), "api".into()]),
+            "'web' or 'api'"
+        );
+    }
 }

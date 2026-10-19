@@ -612,7 +612,12 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
   targeted host is stale. Prints the plan and prompts for confirmation
   before touching anything; `-y` skips it; no TTY and no `-y` bails
   actionably rather than hanging. `--wait-for-peers <N>` optionally,
-  non-blockingly checks other peers' catalogs after success.
+  non-blockingly checks other peers' catalogs after success. Explicitly
+  pulls each selected prebuilt `image:` service (`pull: always`, the
+  default) on its selected hosts before any transaction, so a moving tag
+  updates; a failed pull aborts before any mutation, even with a cached
+  copy (`pull: missing` opts out). `restart`/`rollback`/`scale` never
+  re-pull. See `docs/architecture-notes.md#health-gated-deployment-transaction`.
 - `jiji build` and `jiji deploy --build`: local Docker/Podman builds,
   multi-arch publishing, remote registries, a loopback-only local registry
   exposed via temporary reverse SSH tunnels. `builder.remote` runs the build

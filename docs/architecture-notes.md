@@ -89,6 +89,16 @@ A logical replica has a stable `replica_id`. Each replacement creates a new
 deployment with a unique `deployment_id`, container name, and dynamically
 leased address. Jiji does not use fixed A/B slots or a service VIP.
 
+Before any endpoint transaction starts, `jiji deploy` (only) explicitly pulls
+every selected prebuilt `image:` service whose `pull:` is `always` (the
+default) on each selected host (`prebuilt_image_pulls` in
+`commands/deploy.rs`), logging in first when the image is hosted on
+`builder.registry.server`. A failed pull aborts the whole deploy before any
+host is mutated, even with a cached copy present. Build-configured services
+are skipped, as are `service restart`/`rollback`/`scale`: those reach
+`deploy_endpoint`'s pull-if-missing `ensure_image` only, so a scale-up runs
+the same cached image as its existing replicas.
+
 For a rolling service, `deploy_dynamic_endpoint` performs this transaction:
 
 1. Read the current Active and Healthy deployment, if one exists.

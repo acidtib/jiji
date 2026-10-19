@@ -16,6 +16,29 @@ pub async fn image_exists(
     Ok(result.success)
 }
 
+/// The local image ID a reference currently resolves to, `None` when the host has no copy.
+pub async fn image_id(
+    session: &SshSession,
+    engine: ContainerEngine,
+    image: &str,
+) -> anyhow::Result<Option<String>> {
+    let command =
+        format!("{engine} image inspect {image} --format '{{{{.Id}}}}' 2>/dev/null || true");
+    let result = session.execute(&command).await?;
+    let trimmed = result.stdout.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+/// Docker prints image IDs as `sha256:<hex>`, Podman as bare hex; both shorten to 12 hex chars.
+pub fn short_image_id(id: &str) -> &str {
+    let hex = id.strip_prefix("sha256:").unwrap_or(id);
+    hex.get(..12).unwrap_or(hex)
+}
+
 pub async fn ensure_image(
     session: &SshSession,
     engine: ContainerEngine,
@@ -516,6 +539,13 @@ fn ensure_success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_image_id_truncates_without_panicking() {
+        assert_eq!(short_image_id("sha256:0123456789abcdef"), "0123456789ab");
+        assert_eq!(short_image_id("abc"), "abc");
+        assert_eq!(short_image_id("aéééééé"), "aéééééé");
+    }
 
     #[test]
     fn parses_a_fully_labeled_container_line() {

@@ -1782,8 +1782,284 @@ async fn podman_first_deployment_uses_podman_commands_only() {
     );
 
     let received = harness.received.lock().unwrap().clone();
+    assert!(received
+        .iter()
+        .any(|c| c == "podman pull docker.io/example/web:latest"));
     assert!(received.iter().any(|c| c.starts_with("podman run")));
     assert!(!received.iter().any(|c| c.starts_with("docker")));
+}
+
+fn image_id_command(engine: &str, image: &str) -> String {
+    format!("{engine} image inspect {image} --format '{{{{.Id}}}}' 2>/dev/null || true")
+}
+
+/// `config_yaml` with `services.web`'s `image:` line replaced by `service_lines` and an optional
+/// `builder:` body, for prebuilt-image pull tests.
+fn write_config_with_service_lines(
+    dir: &std::path::Path,
+    addr: SocketAddr,
+    key_path: &std::path::Path,
+    engine: &str,
+    builder: &str,
+    service_lines: &str,
+) -> std::path::PathBuf {
+    let yaml = config_yaml(addr, key_path, engine)
+        .replace(
+            &format!("builder: {{ engine: {engine} }}\n"),
+            &format!("builder:\n  engine: {engine}\n{builder}"),
+        )
+        .replace("    image: example/web:latest\n", service_lines);
+    let config_path = dir.join("deploy.yml");
+    std::fs::write(&config_path, yaml).expect("write test deploy.yml");
+    config_path
+}
+
+fn prebuilt_pull_responses(engine: &str, image: &str) -> HashMap<String, CannedResponse> {
+    let generation = plan_generation(SocketAddr::from(([127, 0, 0, 1], 0)), engine);
+    let mut responses = HashMap::new();
+    responses.insert(generation_path(), success(&format!("{generation}\n")));
+    responses.insert(
+        service_runtime_generation_path(),
+        current_service_runtime_generation(engine),
+    );
+    responses.insert(image_inspect_command(engine, image), success(""));
+    responses.insert(mktemp_command(), cutover_generation_path("pull01"));
+    responses
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_repulls_a_moving_tag_already_on_the_host_before_creating_the_candidate() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let mut responses = prebuilt_pull_responses("docker", image);
+    responses.insert(
+        format!("{}#1", image_id_command("docker", image)),
+        success("sha256:0123456789aaffffffff\n"),
+    );
+    responses.insert(
+        format!("{}#2", image_id_command("docker", image)),
+        success("sha256:9876543210bbffffffff\n"),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!(
+            "app: 'example/web:latest' ({image}) updated (0123456789aa -> 9876543210bb)"
+        )),
+        "stdout: {stdout}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let pull_index = received
+        .iter()
+        .position(|c| c == &format!("docker pull {image}"))
+        .unwrap_or_else(|| panic!("image should be pulled even though it exists: {received:?}"));
+    let run_index = received
+        .iter()
+        .position(|c| c.contains("docker run --name demo-web-"))
+        .expect("candidate should be created");
+    assert!(pull_index < run_index, "{received:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_reports_an_unchanged_tag_as_up_to_date() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let mut responses = prebuilt_pull_responses("docker", image);
+    responses.insert(
+        image_id_command("docker", image),
+        success("sha256:0123456789aaffffffff\n"),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!(
+            "app: 'example/web:latest' ({image}) up to date (0123456789aa)"
+        )),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_pull_stops_deploy_before_touching_the_host_even_with_a_local_copy() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let mut responses = prebuilt_pull_responses("docker", image);
+    responses.insert(
+        image_id_command("docker", image),
+        success("sha256:0123456789aaffffffff\n"),
+    );
+    responses.insert(
+        format!("docker pull {image}"),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "manifest unknown".to_string(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "deploy should fail");
+    assert!(
+        stderr.contains(&format!(
+            "Could not pull image 'example/web:latest' ({image}) for service 'web' on deploy host 'app'"
+        )) && stderr.contains("pull: missing"),
+        "stderr: {stderr}"
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains("docker run") || c.contains("jiji-request:allocate-address")),
+        "no candidate may be created after a failed pull: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_missing_skips_the_explicit_pull() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let responses = prebuilt_pull_responses("docker", image);
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_service_lines(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "",
+        "    image: example/web:latest\n    pull: missing\n",
+    );
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.starts_with("docker pull")),
+        "pull: missing must not pull an image already on the host: {received:?}"
+    );
+    assert!(received
+        .iter()
+        .any(|c| c.contains("docker run --name demo-web-")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn private_prebuilt_image_logs_in_with_the_configured_registry_before_pulling() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "ghcr.io/me/web:latest";
+    let responses = prebuilt_pull_responses("docker", image);
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_service_lines(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "  registry:\n    server: ghcr.io\n    username: me\n    password: literal-token\n",
+        &format!("    image: {image}\n"),
+    );
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    let login_index = received
+        .iter()
+        .position(|c| c == "docker login 'ghcr.io' --username 'me' --password-stdin")
+        .unwrap_or_else(|| panic!("deploy host should log in to ghcr.io: {received:?}"));
+    let pull_index = received
+        .iter()
+        .position(|c| c == &format!("docker pull {image}"))
+        .unwrap_or_else(|| panic!("image should be pulled: {received:?}"));
+    assert!(login_index < pull_index, "{received:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prebuilt_image_on_another_registry_never_logs_in() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let responses = prebuilt_pull_responses("docker", image);
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_service_lines(
+        dir.path(),
+        harness.addr,
+        &key_path,
+        "docker",
+        "  registry:\n    server: ghcr.io\n    username: me\n    password: literal-token\n",
+        "    image: example/web:latest\n",
+    );
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.starts_with("docker login")),
+        "{received:?}"
+    );
+    assert!(received
+        .iter()
+        .any(|c| c == &format!("docker pull {image}")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn build_configured_service_deployed_without_build_is_not_repulled() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let image = "docker.io/example/web:latest";
+    let responses = prebuilt_pull_responses("docker", image);
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_with_build(dir.path(), harness.addr, &key_path, "docker");
+
+    let output = run_jiji_deploy(&config_path, &[]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        !received.iter().any(|c| c.starts_with("docker pull")),
+        "{received:?}"
+    );
 }
 
 async fn run_local_registry_deploy(
