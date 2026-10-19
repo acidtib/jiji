@@ -719,8 +719,7 @@ Full detail: `docs/architecture-notes.md#container-engine-provisioning`.
 - External `SecretsAdapter` (e.g. a Doppler-style adapter), schema-only:
   `Config.secrets` parses but no runtime code path reads it, so configuring
   `secrets:` today changes nothing and produces no warning. `.env` files and
-  host-env fallback are implemented; no adapter implementations exist. See
-  `docs/todo.md` for the concrete integration plan.
+  host-env fallback are implemented; no adapter implementations exist.
 
 ## Testing
 

@@ -1,4 +1,4 @@
-//! Static coverage check for `docs/todo.md`'s "Complete audit coverage" item: every command file
+//! Static audit coverage check: every command file
 //! under `src/commands/` that mutates state reachable over SSH must reference `audit::record`/
 //! `audit::record_endpoints_by_server` somewhere in the file. This is a file-level check, not a
 //! function-level one -- a file with one audited command and one unaudited helper would pass --
