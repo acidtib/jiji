@@ -44,6 +44,7 @@ mise test               # cargo nextest run --workspace (falls back to cargo tes
 mise test-cli           # same, scoped to -p jiji-cli
 mise test-agent         # same, scoped to -p jiji-agent
 mise test-verbose       # mise test with --no-capture / -- --nocapture
+mise test-docker        # real Docker-in-Docker integration suite (needs Docker); see "Testing"
 mise fmt                # cargo fmt
 mise lint               # cargo clippy --all-targets --all-features && cargo fmt --check
 mise check              # cargo check
@@ -270,20 +271,25 @@ whether or not the service currently has `crons:` configured; `service
 remove` unconditionally removes every installed spec for the service. Cron
 specs and run history are agent-local and deliberately never replicated
 (unlike the catalog): finding a stale spec -- left on a former owner after
-an ownership transfer, or left behind because its `crons:` entry was
-renamed/deleted -- requires connecting to every eligible server's agent and
-asking what it actually has installed, which is why `cron_reconcile.rs`
-extends the caller's SSH session pool to the whole `servers:` list (not just
-whatever `-H`/`-S` selected) and always sweeps every one of them (list
-installed specs, remove whatever isn't in the current desired set), even
-when `service.crons` is now empty. The owning agent's own scheduler
-(`jiji-agent/src/scheduler.rs`) claims and runs jobs itself, in a fresh
-one-off container per run (`cron_exec.rs`), reusing the durable
-`AddressAllocator`/`address_leases` machinery (`cron_replica_id(service,
-cron_name)` naming) rather than any new leasing path. `missed_runs: skip`
-collapses any pile-up of missed ticks by comparing the schedule's natural
-next occurrence against "next after now" -- no separate startup-recovery
-pass needed.
+an ownership transfer, left behind because its `crons:` entry was
+renamed/deleted, or left behind on a host the service's own `servers:` no
+longer lists -- requires connecting to every eligible agent and asking what
+it actually has installed, which is why `cron_reconcile.rs` extends the
+caller's SSH session pool beyond whatever `-H`/`-S` selected: to the
+service's own `servers:` for installing, and, whenever the service has
+`crons:` configured, further out to every server in the *project*
+(`config.servers`) for the sweep, since a host dropped from `servers:` can
+still have a stale spec. A service with no `crons:` configured never
+widens beyond its own `servers:`, so it never touches a server outside
+them. The sweep always runs (list installed specs, remove whatever isn't in
+the current desired set), even when `service.crons` is now empty. The
+owning agent's own scheduler (`jiji-agent/src/scheduler.rs`) claims and runs
+jobs itself, in a fresh one-off container per run (`cron_exec.rs`), reusing
+the durable `AddressAllocator`/`address_leases` machinery
+(`cron_replica_id(service, cron_name)` naming) rather than any new leasing
+path. `missed_runs: skip` collapses any pile-up of missed ticks by
+comparing the schedule's natural next occurrence against "next after now"
+-- no separate startup-recovery pass needed.
 
 `jiji-agent`'s systemd unit needs `KillMode=process` (not the default
 `control-group`): Podman here runs `cgroup_manager = cgroupfs` (see
@@ -295,7 +301,10 @@ subnet-sensitive since `jiji-agent` spawns them directly, never over SSH.
 
 Full detail, including two regressions found by code review (a stale-spec
 sweep gap and a drift-check false positive) and the confirmed-live gotchas
-behind them: `docs/architecture-notes.md#scheduled-jobs`.
+behind them: `docs/architecture-notes.md#scheduled-jobs`. A third
+regression, the `servers:`-shrink sweep gap above, was found by real-host
+testing instead and is documented in the "Docker-in-Docker integration
+suite" section below; not yet folded into `docs/architecture-notes.md`.
 
 ### Image Retention Reconciliation (`image_retention_reconcile.rs`)
 
@@ -394,14 +403,33 @@ hard-fails on any workspace member using it, since it scans every
 own `packages` config). Tracked by
 [release-please](https://github.com/googleapis/release-please)
 (`release-please-config.json`, `.release-please-manifest.json`,
-`.github/workflows/release-please.yml`). There is no single repo-wide
-version, no manual bump command; never hand-edit a crate's `version` or
-the manifest outside a release-please PR.
+`.github/workflows/release-please.yml`, `.github/workflows/release.yml`).
+There is no single repo-wide version, no manual bump command; never
+hand-edit a crate's `version` or the manifest outside a release-please PR.
+
+The flow is split so nothing is tagged before CI passes on it.
+`release-please.yml` (every push to `main`) only opens/updates the release
+PR (action input `skip-github-release: true`, a per-run switch unrelated to
+the per-package config option in the gotcha below) and keeps a summary
+comment on it (`.github/scripts/release-pr-summary.py`); the PR body itself
+must stay as release-please wrote it, since release-please parses it again
+to create the tags. `release.yml` runs on CI completing (`workflow_run`)
+and only acts when CI succeeded on a push of a release commit (message
+starting `chore: release`): it self-heals, runs release-please in tag-only
+mode (`skip-github-pull-request: true`), then calls the build/publish
+workflow for each tag created, in the same run. Nothing triggers on tag
+pushes. While a merged release PR is still untagged (its CI running),
+release-please refuses to open or update a release PR; it catches up on the
+next push. If a release commit's CI fails, re-run it (a successful re-run
+triggers `release.yml` again) or dispatch `release.yml` by hand. Both
+workflows authenticate with a GitHub App (`RELEASE_APP_CLIENT_ID`
+variable, `RELEASE_APP_PRIVATE_KEY` secret), never a personal token.
 
 All 8 crates get an independent tag (`vX.Y.Z` for `jiji`, `{package}-vX.Y.Z`
 for the other 7) and a GitHub Release, but only `jiji`, `jiji-agent`, and
-`jiji-proxy` have a build/publish workflow attached to that tag
-(`jiji-release.yml`, `jiji-agent-release.yml`, `jiji-proxy-release.yml`).
+`jiji-proxy` have a build/publish workflow (`jiji-release.yml`,
+`jiji-agent-release.yml`, `jiji-proxy-release.yml`, called by `release.yml`
+or dispatched by hand to rebuild an existing tag).
 The other 5 are internal-only: their tag/release exists purely so
 release-please has an anchor for that package (see the loop gotcha below),
 not because anyone should consume them directly. `cargo-workspace`
@@ -444,9 +472,9 @@ via `env:`, never interpolate `${{ }}` directly into a `run:` block. It's
 free-text commit/PR content.
 
 **Gotcha (confirmed live, don't reintroduce):**
-`.github/scripts/self-heal-stuck-release.sh` (runs before the
-`googleapis/release-please-action` step, on every push and a 4h schedule)
-recovers a merged release PR release-please's own
+`.github/scripts/self-heal-stuck-release.sh` (runs in `release.yml` right
+before release-please-action's tag step, and reports the tags it creates as
+a step output so the same run builds them) recovers a merged release PR release-please's own
 `getBranchComponent`/`getComponent` bug (upstream #2214) drops the
 tag/release for -- but that bug only occurs when the PR released exactly
 one package, and that package has `include-component-in-tag: false` (only
@@ -739,17 +767,265 @@ systemd ownership, and teardown changes require real-host validation. See
 `docs/architecture-notes.md#testing-boundaries` for the constraints mock tests
 cannot cover.
 
+### Docker-in-Docker integration suite (`mise test-docker`)
+
+`crates/jiji-cli/tests/docker_*_test.rs` run the real `jiji` binary over real
+SSH against `vm1` (and, for the mesh test, `vm2` too), **privileged**
+containers defined in `test/docker/compose.yml` that boot their own real
+systemd (not the mock-SSH suite's in-process russh server). This is the
+layer the mock-SSH suite explicitly cannot cover: `jiji server setup` really
+installs Podman via its own static-binary path onto the host, the
+`jiji-agent-*.service` unit really starts under systemd, a WireGuard
+interface really comes up against the host kernel's `wireguard` module,
+`jiji deploy` really routes live HTTP traffic through jiji-proxy's real
+nftables DNAT table to a real container, and `jiji deploy --build` really
+builds and pushes through jiji's own locally managed registry container and
+a real reverse SSH tunnel. `docker_mesh_deploy_test.rs` goes further: two
+real hosts, a real WireGuard peer handshake between them, real cross-host
+catalog/DNS replication (`vm1`'s own `.jiji`-zone resolver ends up knowing
+both replicas' addresses after a deploy), and real cross-host L3
+reachability -- `vm1` directly curling `vm2`'s replica address over the
+WireGuard tunnel. All thirteen test binaries are pinned to nextest's
+`docker-integration` test group (`max-threads = 1` in `.config/nextest.toml`)
+since two concurrent `jiji server setup` runs against the same underlying OS
+risk a real `apt`/`dpkg` lock race, not just resource contention. Modeled on
+how [basecamp/kamal](https://github.com/basecamp/kamal)'s own CI runs
+privileged nested-Docker containers as fake remote hosts; real nested-KVM VMs
+were considered and rejected because `/dev/kvm` on standard GitHub-hosted
+runners is undocumented and unreliable.
+
+`vm1`/`vm2`'s image (`test/docker/vm/`) is deliberately minimal:
+openssh-server, systemd, `iproute2`, `iputils-ping` (both needed only because
+a bare `ubuntu:24.04` image ships without them, unlike a real cloud droplet
+image -- `ip link`/`wg` need the former, `jiji server setup`'s own WireGuard
+peer verification shells out to `ping` between mesh hosts and fails outright
+without the latter, confirmed live). It does **not** pre-install Podman,
+wireguard-tools, nftables, or dnsutils -- those come from the real `jiji
+server setup` run under test, exercising the actual install path rather than
+a stand-in for it. `test/docker/sshkeys/` generates one shared SSH keypair
+into a host bind mount (`test/docker/.shared/`, gitignored) both hosts and
+the Rust test harness (`crates/jiji-cli/tests/docker_support/mod.rs`) read.
+For the two-host mesh test, `vm1` and `vm2` address each other over a
+dedicated `mesh` compose network with static IPs (`172.30.0.11`/`.12`):
+WireGuard needs both directions to dial out, which vm1's usual
+`127.0.0.1:2201`-published-port address can't do (only the host machine can
+reach that, not `vm2`) -- a Linux Docker bridge is directly routable from
+the host itself, so no separate "deployer" container is needed the way
+Kamal's design requires one.
+
+Podman's storage root (`/var/lib/containers`) is a named Docker volume, not
+part of `vm1`'s own container filesystem: jiji's production `storage.conf`
+uses native overlay with no `mount_program`, and nesting a native overlay
+mount directly on `vm1`'s own overlay diff is the same class of failure
+Kamal hit with nested `dockerd` (they needed `fuse-overlayfs`). The volume
+gives Podman a non-overlay backing filesystem instead, so jiji's real
+production storage config works completely unmodified -- if that mitigation
+ever turns out to be insufficient in practice, the fallback is a CI-only
+`storage.conf` override written by `vm1`'s boot script *before* `jiji server
+setup` runs, never a change to jiji's own install code.
+
+Gated behind `JIJI_DOCKER_TESTS=1` (each test calls
+`docker_support::skip_unless_enabled()` and returns early otherwise), so
+plain `mise test`/`cargo nextest run --workspace` stays fast and
+dependency-free; `mise test-docker` brings the compose stack up, runs the
+suite, and tears it down. CI runs it as the `docker-integration` job inside
+`.github/workflows/ci.yml` (display name "docker-in-docker tests"),
+alongside the separate `lint` and mock-SSH `test` jobs. A release is only
+tagged and built after CI, including this suite, passes on the release
+commit (see "Version Management & Releases" above), so it is never cut on
+the strength of mocked SSH output alone. To keep runner usage down:
+release-please PRs skip CI entirely (they only bump versions); on `main`
+the docker job runs only for release commits (every other commit already
+ran it as a PR); a newer push cancels an older run, except a release
+commit's, which gets its own concurrency group; closing a PR cancels its
+in-flight run; and only `main` saves the cargo cache, since PRs can only
+restore caches from the default branch.
+
+**Scope, deliberately narrow for now:** single-host `server setup` -> real
+state assertions (`podman info`, `systemctl is-active`, `wg show`) ->
+`server teardown` (`docker_server_lifecycle_test.rs`); single-host `server
+setup` -> `deploy` of one `nginx:alpine`-image, HTTP-proxied service -> a
+real HTTP request through jiji-proxy -> `service remove` -> `server teardown`
+(`docker_deploy_test.rs`); and single-host `server setup` -> `deploy --build`
+of a service built from a real local Dockerfile (no `registry:` block, so
+jiji manages its own local registry container end to end) -> a real HTTP
+request proving the freshly built image is what's actually running ->
+`service remove` -> `registry teardown` -> `server teardown`
+(`docker_build_deploy_test.rs`); and a redeploy whose candidate never
+becomes healthy (a healthcheck path nginx always 404s on, short
+`deploy_timeout`) -> asserts the previously active container's ID is
+completely unchanged and the failed candidate leaves no stray container
+behind (`docker_rolling_deploy_test.rs`, the core non-negotiable invariant
+in "Health-Gated Deployment Strategy" above); and a two-host `server setup`
+-> real WireGuard peer handshake -> `deploy` of a two-replica service ->
+real cross-host catalog/DNS replication -> real cross-host L3 reachability
+over the tunnel -> `service remove` -> `server teardown`
+(`docker_mesh_deploy_test.rs`, cross-host reachability); a two-replica,
+two-host proxied service -> 40 requests through jiji-proxy on one host,
+asserting more than one distinct response body comes back (each replica
+serves its own container hostname) -> `service remove` -> `server teardown`
+(`docker_load_balancer_test.rs`, proves jiji-proxy's actual backend
+*selection* alternates across hosts, not just that both replicas are
+independently reachable -- what the mesh test above deliberately leaves
+unverified). And single-host `server setup` -> deploy
+of a `network_mode: host` service alongside a `network_mode: service:<name>`
+dependent -> real `podman inspect` state proving each actually landed in the
+namespace it was supposed to (`.HostConfig.NetworkMode`, and for the
+dependent, an exact `.NetworkSettings.SandboxKey` match with its upstream --
+the real shared-netns file, not just similarly-worded config) -> `server
+teardown` (`docker_network_mode_test.rs`). That test also confirmed
+something the mock-SSH suite couldn't have caught: `jiji-proxy` binds host
+ports 80/443 unconditionally once `server setup` has run, regardless of
+whether any service in the project actually configures `proxy:` --
+`network_mode: host` services in this suite must pick a different port.
+
+Single-host `server setup` -> `deploy` of a service with one `crons:` entry
+-> `jiji service cron list` confirms real installation on the owning
+replica's agent -> `jiji service cron run` triggers an immediate run ->
+`jiji service cron logs` (polled, not `run --follow`: an `echo` command
+finishes before `--follow` can attach in practice, confirmed live) confirms
+the run's real output -> `server teardown` (`docker_cron_test.rs`). And a
+`build:`-configured, `retain: 2` service redeployed 4 times with a
+genuinely distinct Dockerfile each time (an *unchanged* Dockerfile builds
+to the exact same image ID regardless of `--version`, leaving nothing
+prunable at all, confirmed live) -> asserts the real local image cache ends
+up at exactly 2 tags, the 2 most recent -> `server teardown`
+(`docker_image_retention_test.rs`; confirmed live that `jiji-agent`'s own
+continuous reconciliation, not just the explicit `jiji service prune`
+this test also calls, was already enforcing the count before that call
+ever ran).
+
+Two-host `server setup` -> `deploy` of a service (both hosts listed) with a
+`crons:` entry -> `jiji service cron status` confirms `owner=vm1` (lowest
+ordinal, alphabetically first) -> redeploy with vm1 dropped from *just the
+service's own* `servers:` (vm1 stays in the project's top-level `servers:`,
+still fully reachable) -> `cron status` confirms ownership really moved to
+`owner=vm2`, and each host's own `jiji-agent` control socket
+(`RequestBody::CronSpecList` -- ground truth independent of the CLI's
+"current owner" lookup) confirms vm1's now-stale spec was actually swept
+-> `server teardown` (`docker_cron_ownership_transfer_test.rs`). That
+redeploy originally surfaced a real gap this test caught: `cron_reconcile.
+rs::reconcile_service_crons` built its sweep session set from
+`&service.servers`, the service's own *current* list, so once a host
+dropped out of it the sweep loop structurally could never reach it again,
+regardless of anything still installed there -- distinct from the three
+already-fixed cron-sweep bugs `docs/architecture-notes.md#scheduled-jobs`
+documents (a renamed/deleted `crons:` entry, a drift-check hash mismatch,
+an old `-H`-scoping bug), none of which covered a host leaving the
+service's own `servers:` entirely. Fixed by widening the sweep to every
+server in the project (`config.servers`) whenever the service has `crons:`
+configured, gated on that so a service with no cron jobs never touches a
+server outside its own `servers:` (`restart_without_hosts_filter_never_
+contacts_an_unrelated_server` in `service_restart_test.rs` guards exactly
+this).
+
+Single-host `server setup` -> `deploy` of a service with `scale: 2` ->
+asserts two distinct containers exist and jiji-proxy alternates between
+both same-host replicas across 40 requests -> `jiji service scale 1 -S
+web -y` -> asserts the retired replica's container is actually removed,
+not just stopped -> `service remove` -> `server teardown`
+(`docker_scale_test.rs`; `docker_load_balancer_test.rs` above already
+proves proxy alternation across *hosts*, this proves it across replicas on
+the *same* host, which is what `scale:` actually means). And a service
+with a direct host-port binding (`ports: ["8082:80"]`, no `proxy:`) ->
+first deploy succeeds -> a second deploy with the same config (no
+`stop_first`) fails outright, because the candidate tries to bind the same
+host port the still-active previous container already holds, and the
+previous container is left completely untouched (the same rolling
+invariant `docker_rolling_deploy_test.rs` proves for a failed health check,
+here for a failed container start instead) -> the same redeploy with
+`stop_first: true` succeeds, since the previous container is stopped first
+to free the port before the candidate ever tries to bind it -> `service
+remove` -> `server teardown` (`docker_stop_first_test.rs`).
+
+Single-host `server setup` -> `deploy --build --version v1` of a service
+built from a Dockerfile baking in a "v1" marker -> `deploy --build
+--version v2` of the same service built from a genuinely different
+Dockerfile (an *unchanged* Dockerfile builds to the same image ID
+regardless of `--version`, confirmed live) -> `jiji service rollback -S
+web --version v1` -> asserts the v1 content is back and the container was
+actually replaced, not reused -> `jiji service restart -S web` -> asserts
+the currently-active (v1) image is reused unchanged but the container is
+still replaced -> `service remove` -> `registry teardown` -> `server
+teardown` (`docker_service_restart_rollback_test.rs`). Rollback needs no
+live reverse tunnel to pull v1 back: it's already resident in vm1's own
+Podman cache from the first build (`ensure_image` only pulls a missing
+image), so this doesn't need to reopen the tunnel `deploy --build` used.
+Every other docker test exercises the shared `deploy_endpoint` transaction
+only through plain `jiji deploy` reruns; this is the only one that invokes
+`jiji service restart`/`jiji service rollback` themselves.
+
+Not yet covered: Ubuntu 26.04's AppArmor local-include path (its guard only
+fires when the packaged `wg`/`wg-quick` profiles exist, which they don't on
+this suite's Ubuntu 24.04 base image); `service.stop_first` combined with
+`scale > 1` (rejected by validation, so nothing to exercise live);
+`builder.remote`; `jiji network backup/restore/recover`; jiji-proxy
+TLS/ACME and raw TCP (`listen_port`) relay mode; and `jiji server setup
+--rotate-key`/`--import`. Don't assume broader real-host coverage than
+this until that follow-up work lands.
+
 ## Writing style
 
 - Do not use emojis anywhere: code, comments, commit messages, or chat replies.
 - Do not use em-dashes. Use commas, colons, parentheses, or separate sentences.
 - Avoid filler "LLM-tell" phrasing. Write plainly and directly.
 
-## Code comments
+## Comments
 
-- Comment to explain why something is done or to flag a non-obvious constraint.
-- Do not write summary comments that just restate what the next line does.
-- Skip section-header and narration comments. Let the code speak for itself.
+Write comments the way a human working under deadline pressure would: short,
+and only when the line above genuinely needs it. Default to no comment.
+
+**One clause, not a paragraph.** If a comment needs three lines to justify
+itself, that's a sign to cut it down to the one fact that matters, not to
+keep the reasoning trail.
+
+Before:
+```ts
+// A fresh connection means this window's panel is open again, overriding
+// any pending exclusion from a previous disconnect (e.g. the
+// SIDE_PANEL_CLOSE blip can disconnect and reconnect a panel in another
+// window). Also re-syncs once the id is known, in case the very first
+// sync (right after onConnect, before this message arrives) ran while
+// getContexts() hadn't yet caught up to the new panel.
+closingWindowIds.delete(windowId)
+```
+After:
+```ts
+// A fresh connection means this window's panel is open again, overriding any pending exclusion.
+closingWindowIds.delete(windowId)
+```
+
+**Don't narrate what you just did or why you chose this fix.** A comment
+describes the code as it stands, not the story of the bug that led to it.
+Never write "fixed X because Y used to do Z"; that belongs in the commit
+message, not the source.
+
+Before:
+```ts
+function isFromPopup(sender: chrome.runtime.MessageSender): boolean {
+  // A message from the extension's OWN pages (the popup) carries a
+  // chrome-extension:// URL; a page relay (content script) carries the web
+  // page's https:// URL. The old `sender.tab === undefined` heuristic was WRONG:
+  // openWalletWindow opens the popup via chrome.windows.create, which IS a tab,
+  // so every popup-only message ... was rejected as "not permitted". The
+  // approval popup could never read or resolve its own request.
+```
+After:
+```ts
+function isFromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
+  // Extension pages carry a chrome-extension:// URL; a content-script relay carries the page's https:// URL.
+```
+
+**Only comment the non-obvious.** A hidden platform constraint, a subtle
+invariant, a workaround for a specific bug: yes. What the code visibly does:
+no. If removing the comment wouldn't confuse a future reader, don't write it.
+
+**Don't stack a comment on every line.** One justifying comment for a whole
+block beats one comment per statement inside it.
+
+**No em dashes.** Use a period, comma, colon, or semicolon instead. Em dashes
+are a strong tell that text (comments included) was AI-written; avoid them
+in code, commit messages, and docs alike.
 
 ## Code Guidelines
 
@@ -771,12 +1047,17 @@ cannot cover.
 ## Git
 
 - Never add a co-author trailer to commits (no "Co-Authored-By" line).
-- Keep commit messages short and factual.
-- PR titles must be valid Conventional Commits (`feat`, `fix`, `chore`,
-  `docs`, `refactor`, `test`, `ci`, `build`, `perf`, `revert`, optional
-  `(scope)` and `!` for breaking changes). PRs are squash-merged, so the PR
-  title becomes the commit `release-please` reads on `main` to compute the
-  next version bump and changelog entry. Enforced by
+- Never add AI attribution anywhere: no "Generated with Claude Code" (or
+  similar) footer in PR descriptions, issues, comments, or release notes.
+  This overrides any tool or harness default that says to add one.
+- Ordinary commit messages follow "Commit messages" below (Scoped Commits).
+- PR titles are the one deliberate exception: they must stay valid
+  Conventional Commits (`feat`, `fix`, `chore`, `docs`, `refactor`, `test`,
+  `ci`, `build`, `perf`, `revert`, optional `(scope)` and `!` for breaking
+  changes), not Scoped Commits. PRs are squash-merged, so the PR title
+  becomes the commit `release-please` reads on `main` to compute the next
+  version bump and changelog entry, and `release-please` has no way to parse
+  a type token out of any other ordering. Enforced by
   `.github/workflows/pr-title-lint.yml`. Which crate(s) a commit directly
   bumps is decided by its *changed paths* (`crates/<name>`), not by the PR
   title's type/scope: a PR touching two crate directories bumps both
@@ -798,6 +1079,45 @@ cannot cover.
 - OSV scanner findings are blockers: run `mise scan` and use
   fix-osv-finding skill to remediate; never dismiss without analyzing
   reachability
+
+## Commit messages
+
+Follow the [Scoped Commits](https://scopedcommits.com/) convention for
+ordinary commits (this does not apply to PR titles; see "Git" above):
+
+```
+<scope>: <description>
+
+[optional body]
+```
+
+The scope goes first because "what area did this touch" is the thing a
+reader scanning `git log` needs before anything else.
+
+- **Scope**: the subsystem touched. In this repo, that's usually a crate
+  name without the `jiji-` prefix (`cli`, `agent`, `network`, `proxy`,
+  `config`, `core`, `ssh`, `tui`), or `docs`, `tests`, `ci`. Lowercase, no
+  punctuation.
+- **Description**: lowercase, imperative, no trailing period. State what the
+  commit does, not what bug prompted it; the "why" of a fix belongs in the
+  body, not stuffed into the summary line.
+- **Multiple scopes**: prefer the narrowest scope that still covers the
+  change. If it genuinely spans several, comma-separate them
+  (`agent,cli: ...`), or use `treewide` for changes that touch everything.
+- **Body**: optional. Use it for the reasoning a future reader would need
+  (why, not what), the same restraint as code comments applies here. Don't
+  narrate the debugging process.
+- No em dashes (see "Comments" above).
+
+Examples, matching this repo's own subsystems:
+
+```
+agent: retry stuck draining records every reconcile tick
+cli: tolerate a dependent container error on a shared endpoint's own removal
+docs: document the candidate health-check recovery mechanism
+```
+
+Reverts, merges, and other special commits can ignore this format.
 
 ## Workflow
 
