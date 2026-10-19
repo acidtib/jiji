@@ -49,12 +49,14 @@ on:
         type: boolean
         default: false
     secrets:
-      JIJI_WEBSITE_DISPATCH_TOKEN:
+      RELEASE_APP_PRIVATE_KEY:
         required: false
 
 jobs:
   test:
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/require-ci.yml
+    with:
+      tag: ${{ inputs.tag }}
 
   build:
     needs: test
@@ -199,14 +201,24 @@ jobs:
             ${{ steps.body.outputs.body }}
 
       # A courtesy notification, not part of this repo's release: must never
-      # fail the job over it (confirmed live, an expired/misscoped
-      # JIJI_WEBSITE_DISPATCH_TOKEN red-flagged an otherwise fully
-      # successful binary release).
-      - name: Notify jiji-website of the new release
+      # fail the job over it.
+      - name: Mint jiji-website dispatch token
+        id: website-token
         if: ${{ inputs.notify_website }}
         continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: acidtib
+          repositories: jiji-website
+          permission-contents: write
+
+      - name: Notify jiji-website of the new release
+        if: ${{ inputs.notify_website && steps.website-token.outcome == 'success' }}
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.JIJI_WEBSITE_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.website-token.outputs.token }}
           TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
         run: |
           gh api repos/acidtib/jiji-website/dispatches \
