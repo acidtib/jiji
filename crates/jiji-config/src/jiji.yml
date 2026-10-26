@@ -370,6 +370,11 @@ ssh:
 # Shared Environment Configuration
 # Applied to all services, can be overridden per-service
 environment:
+  # JIJI_VERSION is automatically injected into service containers and passed as a
+  # build argument: --version, the Git SHA, or a timestamp when Git is unavailable.
+  # Restart and scaling preserve the deployed value; rollback uses its target version.
+  # Reserved: do not configure JIJI_VERSION in clear, secrets, build.args, or build.secrets.
+  # In a Dockerfile, declare ARG JIJI_VERSION to use it at build time.
   # Clear text environment variables
   clear:
     APP_ENV: production

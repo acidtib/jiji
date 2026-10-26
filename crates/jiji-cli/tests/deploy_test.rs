@@ -93,6 +93,7 @@ struct TestServer {
     /// Every command received, in order -- lets tests assert on absence/ordering, not just on
     /// the final canned outcome of one command.
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
     forwards: Arc<Mutex<Vec<(String, u32)>>>,
     cancelled_forwards: Arc<Mutex<Vec<(String, u32)>>>,
 }
@@ -123,6 +124,26 @@ impl server::Handler for TestServer {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self
+            .pending
+            .lock()
+            .unwrap()
+            .get(&channel)
+            .is_some_and(|command| {
+                command.contains("install -D -m 0600 /dev/stdin .jiji/demo/env/")
+            })
+        {
+            self.input.lock().unwrap().extend_from_slice(data);
+        }
         Ok(())
     }
 
@@ -220,6 +241,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
     forwards: Arc<Mutex<Vec<(String, u32)>>>,
     cancelled_forwards: Arc<Mutex<Vec<(String, u32)>>>,
 }
@@ -240,6 +262,7 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let input = Arc::new(Mutex::new(Vec::new()));
     let forwards = Arc::new(Mutex::new(Vec::new()));
     let cancelled_forwards = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
@@ -247,6 +270,7 @@ async fn spawn_test_server(
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        input: input.clone(),
         forwards: forwards.clone(),
         cancelled_forwards: cancelled_forwards.clone(),
     };
@@ -259,6 +283,7 @@ async fn spawn_test_server(
     Harness {
         addr,
         received,
+        input,
         forwards,
         cancelled_forwards,
     }
@@ -2464,4 +2489,51 @@ async fn first_deployment_with_a_tcp_route_applies_and_verifies_it() {
             .any(|c| c.contains("jiji-proxy route apply")),
         "a TCP-only target must not also produce an HTTP route apply: {received:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_injects_explicit_and_automatic_versions_into_the_environment_file() {
+    for explicit in [true, false] {
+        let (dir, key_path, client_key) = setup_test_dir();
+        let harness = spawn_test_server(
+            client_key.public_key().clone(),
+            base_healthcheck_deploy_responses(),
+        )
+        .await;
+        let config_path = write_config(dir.path(), harness.addr, &key_path, "docker");
+        if explicit {
+            let config = std::fs::read_to_string(&config_path).unwrap();
+            std::fs::write(
+                &config_path,
+                config.replace("example/web:latest", "example/web"),
+            )
+            .unwrap();
+        }
+        let args = if explicit {
+            vec!["--skip-proxy", "--version", "example123"]
+        } else {
+            vec!["--skip-proxy"]
+        };
+        let output = run_jiji_deploy(&config_path, &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let input = harness.input.lock().unwrap().clone();
+        let input = String::from_utf8_lossy(&input);
+        let version = input
+            .lines()
+            .find_map(|line| line.strip_prefix("JIJI_VERSION="))
+            .expect("injected JIJI_VERSION");
+        if explicit {
+            assert_eq!(version, "example123");
+        } else {
+            let git = Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .unwrap();
+            assert_eq!(version, String::from_utf8_lossy(&git.stdout).trim());
+        }
+    }
 }

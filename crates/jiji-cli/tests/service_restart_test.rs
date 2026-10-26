@@ -75,6 +75,7 @@ struct TestServer {
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
 }
 
 impl server::Server for TestServer {
@@ -103,6 +104,26 @@ impl server::Handler for TestServer {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self
+            .pending
+            .lock()
+            .unwrap()
+            .get(&channel)
+            .is_some_and(|command| {
+                command.contains("install -D -m 0600 /dev/stdin .jiji/demo/env/")
+            })
+        {
+            self.input.lock().unwrap().extend_from_slice(data);
+        }
         Ok(())
     }
 
@@ -158,6 +179,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn spawn_test_server(
@@ -176,11 +198,13 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let input = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        input: input.clone(),
     };
 
     tokio::spawn(async move {
@@ -188,7 +212,11 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        input,
+    }
 }
 
 /// A single service ("web", image "example/web:latest") on a single server ("app").
@@ -401,6 +429,11 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
         image_inspect_command("docker.io/example/web:latest"),
         success(""),
     );
+    responses.insert(
+        "docker inspect demo-web-olddeploymen --format '{{range .Config.Env}}{{println .}}{{end}}'"
+            .into(),
+        success("OTHER=value\nJIJI_VERSION=original123\n"),
+    );
     responses.insert(agent_catalog_command(), active_catalog_response());
     responses.insert(mktemp_command(), cutover_generation_path("abc123"));
 
@@ -416,6 +449,8 @@ async fn restart_cycles_to_the_inactive_slot_and_removes_the_old_container() {
         "stdout: {stdout}"
     );
 
+    assert!(String::from_utf8_lossy(&harness.input.lock().unwrap())
+        .contains("JIJI_VERSION=original123\n"));
     let received = harness.received.lock().unwrap().clone();
     assert!(
         received

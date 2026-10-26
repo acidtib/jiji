@@ -61,6 +61,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
         "expected v1's own content after the first build, got:\n{body_v1}"
     );
     let container_v1 = docker_support::the_container_id_for_service("web");
+    assert_version(&container_v1, "v1");
 
     // Same project, same server, a genuinely different Dockerfile: a distinct image under a
     // distinct pushed tag, not a relabeled build of the same content.
@@ -84,6 +85,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
         "expected v2's own content after the second build, got:\n{body_v2}"
     );
     let container_v2 = docker_support::the_container_id_for_service("web");
+    assert_version(&container_v2, "v2");
     assert_ne!(
         container_v2, container_v1,
         "expected a genuinely new container after redeploying with a new build"
@@ -109,6 +111,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
         "expected v1's content back after rollback, got:\n{body_after_rollback}"
     );
     let container_after_rollback = docker_support::the_container_id_for_service("web");
+    assert_version(&container_after_rollback, "v1");
     assert_ne!(
         container_after_rollback, container_v2,
         "expected rollback to replace the container, not reuse v2's"
@@ -131,6 +134,7 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
         "expected restart to reuse the currently active (v1) image unchanged, got:\n{body_after_restart}"
     );
     let container_after_restart = docker_support::the_container_id_for_service("web");
+    assert_version(&container_after_restart, "v1");
     assert_ne!(
         container_after_restart, container_after_rollback,
         "expected restart to replace the container even though the image didn't change"
@@ -159,4 +163,18 @@ fn rollback_reverts_to_a_previously_pushed_version_and_restart_replaces_the_cont
         String::from_utf8_lossy(&teardown.stdout),
         String::from_utf8_lossy(&teardown.stderr),
     );
+}
+
+fn assert_version(container: &str, expected: &str) {
+    let runtime =
+        docker_support::exec_vm1_stdout(&["podman", "exec", container, "printenv", "JIJI_VERSION"]);
+    assert_eq!(runtime.trim(), expected);
+    let built = docker_support::exec_vm1_stdout(&[
+        "podman",
+        "exec",
+        container,
+        "cat",
+        "/usr/share/nginx/html/revision",
+    ]);
+    assert_eq!(built.trim(), expected);
 }

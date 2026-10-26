@@ -15,7 +15,7 @@ pub fn resolve_version_tag(
     }
     if let Some(git) = git {
         let warning = git.has_uncommitted_changes.then(|| {
-            "The working tree has uncommitted changes; the image tag identifies the current commit, not those changes.".to_string()
+            "The working tree has uncommitted changes; the deployment version identifies the current commit, not those changes.".to_string()
         });
         return (git.short_sha.clone(), warning);
     }

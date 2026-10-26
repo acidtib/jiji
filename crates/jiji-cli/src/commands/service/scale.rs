@@ -246,6 +246,15 @@ pub async fn run(
         // former replica host whose route must be withdrawn on scale-to-zero.
         affected.extend(eligible.iter().cloned());
     }
+    if !additions.is_empty() {
+        if let Some(record) = catalog.iter().find(|record| {
+            record.service == *service_name
+                && record.state == DeploymentState::Active
+                && record.health == HealthState::Healthy
+        }) {
+            affected.insert(record.owner_node_id.clone());
+        }
+    }
     if affected.is_empty() {
         affected.insert(seed_name.clone());
     }
@@ -352,22 +361,19 @@ pub async fn run(
     crate::proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
     let mut resolved_env = env_resolution::resolve_environment(&merged, &loaded_env, host_env)?;
     crate::proxy_routes::mark_tls_control_secrets(service.proxy.as_ref(), &mut resolved_env);
-    let image = if let Some(image) = &service.image {
+    let active = catalog.iter().find(|record| record.service == *service_name
+        && record.state == DeploymentState::Active && record.health == HealthState::Healthy);
+    let image = if let Some(record) = active {
+        if !additions.is_empty() {
+            let owner = &sessions[&record.owner_node_id];
+            let version = crate::deploy_transaction::deployed_version(owner, config.builder.engine, record).await?;
+            resolved_env.values.insert("JIJI_VERSION".into(), version);
+        }
+        record.image.clone()
+    } else if let Some(image) = &service.image {
         container_runtime::resolve_image_reference(image, None)?
     } else {
-        catalog
-            .iter()
-            .find(|record| {
-                record.service == *service_name
-                    && record.state == DeploymentState::Active
-                    && record.health == HealthState::Healthy
-            })
-            .map(|record| record.image.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Build-only service '{service_name}' has no active deployment to copy an image from; deploy it with `jiji deploy --build` first"
-                )
-            })?
+        anyhow::bail!("Build-only service '{service_name}' has no active deployment to copy an image from; deploy it with `jiji deploy --build` first");
     };
 
     let add_progress = if !additions.is_empty() {

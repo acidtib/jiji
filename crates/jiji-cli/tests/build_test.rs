@@ -92,7 +92,7 @@ fn single_arch_no_push_build_renders_the_expected_local_docker_command() {
         .expect("expected a logged `docker build` invocation");
     assert_eq!(
         build_line,
-        "build -f Dockerfile -t localhost:31270/demo-web:v1.2.3 -t localhost:31270/demo-web:latest ."
+        "build -f Dockerfile --build-arg JIJI_VERSION=v1.2.3 -t localhost:31270/demo-web:v1.2.3 -t localhost:31270/demo-web:latest ."
     );
     assert!(
         !logged.lines().any(|line| line.starts_with("push ")),
@@ -220,7 +220,7 @@ fn single_arch_push_build_renders_build_then_push() {
     assert_eq!(
         lines,
         vec![
-            "build -f Dockerfile -t registry.example.com/demo-web:v1.2.3 -t registry.example.com/demo-web:latest .",
+            "build -f Dockerfile --build-arg JIJI_VERSION=v1.2.3 -t registry.example.com/demo-web:v1.2.3 -t registry.example.com/demo-web:latest .",
             "push registry.example.com/demo-web:v1.2.3",
             "push registry.example.com/demo-web:latest",
         ],

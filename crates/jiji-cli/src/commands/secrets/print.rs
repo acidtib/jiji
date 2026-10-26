@@ -304,6 +304,7 @@ fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<Secret
         }
     }
 
+    refs.retain(|reference| reference.name != "JIJI_VERSION");
     refs
 }
 
@@ -346,6 +347,15 @@ mod tests {
             secrets: None,
             environment: None,
         }
+    }
+
+    #[test]
+    fn deployment_version_is_not_a_missing_secret() {
+        let mut config = base_config();
+        let mut service: Service = serde_yaml::from_str("image: nginx\nservers: [app]").unwrap();
+        service.command = Some(CommandValue::Single("echo ${JIJI_VERSION}".into()));
+        config.services.insert("web".into(), service);
+        assert!(collect_secret_refs(&config, &[]).is_empty());
     }
 
     #[test]

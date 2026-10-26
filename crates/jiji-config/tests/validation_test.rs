@@ -1735,3 +1735,21 @@ services:
     let result = validate_yaml(&raw);
     assert!(result.valid, "{:?}", result.errors);
 }
+
+#[test]
+fn jiji_version_is_reserved_in_runtime_and_build_configuration() {
+    for section in [
+        "environment:\n  clear:\n    JIJI_VERSION: custom\n",
+        "environment:\n  secrets: [JIJI_VERSION]\n",
+        "services:\n  web:\n    servers: [app]\n    image: nginx\n    environment:\n      clear:\n        JIJI_VERSION: custom\n",
+        "services:\n  web:\n    servers: [app]\n    image: nginx\n    environment:\n      secrets: [JIJI_VERSION]\n",
+        "services:\n  web:\n    servers: [app]\n    build:\n      args:\n        JIJI_VERSION: custom\n",
+        "services:\n  web:\n    servers: [app]\n    build:\n      secrets: [JIJI_VERSION]\n",
+    ] {
+        let prefix = "project: demo\nbuilder: {engine: docker}\nservers:\n  app:\n    host: 10.0.0.1\n";
+        let services = if section.starts_with("services:") { "" } else { "services:\n  web:\n    servers: [app]\n    image: nginx\n" };
+        let result = validate_yaml(&parse(&format!("{prefix}{services}{section}")));
+        assert!(!result.valid, "{section}");
+        assert!(result.errors.iter().any(|error| error.code == "RESERVED_ENVIRONMENT_VARIABLE" && error.message.contains("JIJI_VERSION")), "{result:?}");
+    }
+}

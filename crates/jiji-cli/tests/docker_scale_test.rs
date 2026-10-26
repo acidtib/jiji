@@ -83,6 +83,34 @@ fn scale_places_multiple_replicas_on_one_host_and_service_scale_shrinks_them() {
         "expected the retired replica's container to be removed outright after scaling down to 1, got: {containers_at_scale_1:?}"
     );
 
+    let original_version = docker_support::exec_vm1_stdout(&[
+        "podman",
+        "exec",
+        &containers_at_scale_1[0],
+        "printenv",
+        "JIJI_VERSION",
+    ]);
+    assert!(!original_version.trim().is_empty());
+    let scale_up =
+        docker_support::run_jiji(&config_path, &["service", "scale", "2", "-S", "web", "-y"]);
+    assert!(
+        scale_up.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scale_up.stderr)
+    );
+    let scaled = docker_support::all_container_ids_for_service("web");
+    assert_eq!(scaled.len(), 2);
+    for container in scaled {
+        let version = docker_support::exec_vm1_stdout(&[
+            "podman",
+            "exec",
+            &container,
+            "printenv",
+            "JIJI_VERSION",
+        ]);
+        assert_eq!(version, original_version);
+    }
+
     let remove = docker_support::run_jiji(&config_path, &["service", "remove", "-y", "-S", "web"]);
     assert!(
         remove.status.success(),

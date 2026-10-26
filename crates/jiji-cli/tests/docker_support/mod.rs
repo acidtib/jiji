@@ -987,7 +987,7 @@ pub fn write_config_with_marked_build_service(dir: &Path, project: &str, marker:
     std::fs::create_dir_all(&app_dir).expect("create app dir");
     std::fs::write(
         app_dir.join("Dockerfile"),
-        format!("FROM nginx:alpine\nRUN echo '{marker}' > /usr/share/nginx/html/index.html\n"),
+        format!("FROM nginx:alpine\nARG JIJI_VERSION\nRUN echo '{marker}' > /usr/share/nginx/html/index.html && echo \"$JIJI_VERSION\" > /usr/share/nginx/html/revision\n"),
     )
     .expect("write test app Dockerfile");
 

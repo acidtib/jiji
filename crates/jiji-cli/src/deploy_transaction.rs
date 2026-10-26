@@ -14,6 +14,7 @@ use crate::{container_ops, container_runtime, health_check, mounts, proxy_routes
 
 pub type EndpointProgress = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+#[derive(Clone)]
 pub struct EndpointDeploymentContext<'a> {
     pub session: &'a SshSession,
     pub plan: &'a NetworkPlan,
@@ -39,20 +40,80 @@ pub enum EndpointOutcome {
 }
 
 pub async fn deploy_endpoint(ctx: &EndpointDeploymentContext<'_>) -> EndpointOutcome {
-    let result = if ctx.service.network_mode == "host" {
-        deploy_host_mode(ctx).await
-    } else {
-        match ctx.service.network_mode_dependency() {
-            Some(upstream_service_name) => deploy_shared_endpoint(ctx, upstream_service_name).await,
-            None => deploy_dynamic_endpoint(ctx).await,
-        }
-    };
+    let result = deploy_with_version(ctx).await;
     match result {
         Ok((deployment_id, _address)) => EndpointOutcome::Deployed { deployment_id },
         Err(error) => EndpointOutcome::Failed {
             error: error.to_string(),
         },
     }
+}
+
+async fn deploy_with_version(
+    ctx: &EndpointDeploymentContext<'_>,
+) -> anyhow::Result<(String, std::net::Ipv4Addr)> {
+    let mut resolved_env = ctx.resolved_env.clone();
+    if !resolved_env.values.contains_key("JIJI_VERSION") {
+        let catalog = crate::agent_client::catalog(ctx.session, &ctx.plan.project).await?;
+        let previous = catalog.iter().find(|record| {
+            record.replica_id == ctx.replica_id
+                && record.state == DeploymentState::Active
+                && record.health == HealthState::Healthy
+        });
+        let version = match previous {
+            Some(record) => deployed_version(ctx.session, ctx.engine, record).await?,
+            None => legacy_image_version(ctx.image),
+        };
+        resolved_env.values.insert("JIJI_VERSION".into(), version);
+    }
+    let ctx = &EndpointDeploymentContext {
+        resolved_env: &resolved_env,
+        ..ctx.clone()
+    };
+    if ctx.service.network_mode == "host" {
+        deploy_host_mode(ctx).await
+    } else {
+        match ctx.service.network_mode_dependency() {
+            Some(upstream_service_name) => deploy_shared_endpoint(ctx, upstream_service_name).await,
+            None => deploy_dynamic_endpoint(ctx).await,
+        }
+    }
+}
+
+/// Older deployments did not record a Jiji version; retain their image tag when available.
+fn legacy_image_version(image: &str) -> String {
+    image
+        .split('@')
+        .next()
+        .unwrap_or(image)
+        .rsplit('/')
+        .next()
+        .unwrap_or(image)
+        .rsplit_once(':')
+        .map(|(_, tag)| tag)
+        .unwrap_or("latest")
+        .into()
+}
+
+pub async fn deployed_version(
+    session: &SshSession,
+    engine: ContainerEngine,
+    record: &CatalogRecord,
+) -> anyhow::Result<String> {
+    let name = container_runtime::dynamic_container_name(
+        &record.project_id,
+        &record.service,
+        &record.deployment_id,
+    );
+    let result = session.execute(&format!("{engine} inspect {name} --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}'")).await?;
+    if !result.success {
+        anyhow::bail!("Could not read deployed JIJI_VERSION from container '{name}'");
+    }
+    Ok(result
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("JIJI_VERSION=").map(str::to_owned))
+        .unwrap_or_else(|| legacy_image_version(&record.image)))
 }
 
 /// Deploys a `network_mode: service:<upstream>` dependent: a container that shares another
@@ -1160,5 +1221,17 @@ mod tests {
             proxy_activation_progress_detail(&targets),
             "proxy route (60s)"
         );
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::legacy_image_version;
+
+    #[test]
+    fn legacy_version_uses_only_an_image_tag_not_a_registry_port_or_digest() {
+        assert_eq!(legacy_image_version("localhost:5000/app:v1"), "v1");
+        assert_eq!(legacy_image_version("localhost:5000/app"), "latest");
+        assert_eq!(legacy_image_version("app@sha256:123456"), "latest");
     }
 }

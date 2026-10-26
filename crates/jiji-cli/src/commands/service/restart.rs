@@ -273,14 +273,21 @@ pub async fn run(
                     .expect("connected above")
                     .clone();
                 let plan_for_image = plan.clone();
+                let replica_id = replica_ids[&identity].clone();
                 let service = config
                     .services
                     .get(&endpoint.service)
                     .expect("checked above")
                     .clone();
                 image_operations.push(move || async move {
-                    let result =
-                        resolve_restart_image(&session, &plan_for_image, &endpoint, &service).await;
+                    let result = resolve_restart_image(
+                        &session,
+                        &plan_for_image,
+                        &endpoint,
+                        &service,
+                        &replica_id,
+                    )
+                    .await;
                     (identity, result)
                 });
             }
@@ -506,16 +513,9 @@ async fn resolve_restart_image(
     plan: &NetworkPlan,
     endpoint: &ServiceEndpointPlan,
     service: &Service,
+    replica_id: &str,
 ) -> anyhow::Result<String> {
-    if let Some(image) = &service.image {
-        return container_runtime::resolve_image_reference(image, None);
-    }
-
-    // Every replica on a server for a service runs the same image, so local_index 0 is safe
-    // here regardless of `scale`.
-    let replica_id =
-        crate::placement::replica_id_for(&plan.project, &endpoint.service, &endpoint.server, 0);
-    crate::agent_client::catalog(session, &plan.project)
+    let active = crate::agent_client::catalog(session, &plan.project)
         .await?
         .into_iter()
         .find(|record| {
@@ -523,14 +523,17 @@ async fn resolve_restart_image(
                 && record.state == DeploymentState::Active
                 && record.health == HealthState::Healthy
         })
-        .map(|record| record.image)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Service '{}' has no `image:` configured and no healthy active deployment on '{}' to restart from. Deploy it first with `jiji deploy --build`.",
-                endpoint.service,
-                endpoint.server
-            )
-        })
+        .map(|record| record.image);
+    if let Some(image) = active {
+        return Ok(image);
+    }
+    if let Some(image) = &service.image {
+        return container_runtime::resolve_image_reference(image, None);
+    }
+    anyhow::bail!(
+        "Service '{}' has no `image:` configured and no healthy active deployment on '{}' to restart from. Deploy it first with `jiji deploy --build`.",
+        endpoint.service, endpoint.server
+    )
 }
 
 async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {

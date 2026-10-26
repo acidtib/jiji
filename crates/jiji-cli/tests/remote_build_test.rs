@@ -521,6 +521,8 @@ fn build_command(staging_root: &str, tags: &[&str]) -> String {
         "build".to_string(),
         "-f".to_string(),
         format!("{remote_context}/Dockerfile"),
+        "--build-arg".to_string(),
+        "JIJI_VERSION=v1".to_string(),
     ];
     for tag in tags {
         args.push("-t".to_string());
@@ -563,6 +565,8 @@ fn buildx_build_command(staging_root: &str, builder_name: &str, tags: &[&str]) -
         "linux/amd64,linux/arm64".to_string(),
         "-f".to_string(),
         format!("{remote_context}/Dockerfile"),
+        "--build-arg".to_string(),
+        "JIJI_VERSION=v1".to_string(),
     ];
     for tag in tags {
         args.push("-t".to_string());
@@ -594,6 +598,8 @@ fn podman_arch_build_command(staging_root: &str, platform: &str, manifest: &str)
             platform,
             "-f",
             &format!("{remote_context}/Dockerfile"),
+            "--build-arg",
+            "JIJI_VERSION=v1",
             "--manifest",
             manifest,
             &remote_context,
@@ -642,6 +648,8 @@ fn build_command_with_secret(
         "build".to_string(),
         "-f".to_string(),
         format!("{remote_context}/Dockerfile"),
+        "--build-arg".to_string(),
+        "JIJI_VERSION=v1".to_string(),
         "--secret".to_string(),
         format!("id={secret_name},src={secret_path}"),
     ];
@@ -1658,6 +1666,8 @@ exit 0
                     "build",
                     "-f",
                     &format!("{staging_root}/context/web/Dockerfile"),
+                    "--build-arg",
+                    "JIJI_VERSION=v1",
                     "-t",
                     "registry.example.com/demo-web:v1",
                     "-t",

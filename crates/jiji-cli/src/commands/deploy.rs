@@ -242,6 +242,14 @@ pub async fn run(
         );
     }
 
+    let git = version_tag::gather_git_status().await;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let (deployment_version, warning) = version_tag::resolve_version_tag(version, git.as_ref(), now);
+    if let Some(warning) = warning {
+        Ui::warn(&warning);
+    }
+    version_tag::validate_or_bail(&deployment_version)?;
+
     let mut images: BTreeMap<String, String> = BTreeMap::new();
     let selected_service_names: BTreeSet<String> = selected
         .iter()
@@ -266,16 +274,9 @@ pub async fn run(
         let is_remote_executor =
             matches!(executor_target, build_plan::ExecutorTarget::Remote { .. });
         let executor_identity = executor_target.identity();
-        let git = version_tag::gather_git_status().await;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let (build_version, warning) = version_tag::resolve_version_tag(version, git.as_ref(), now);
-        if let Some(warning) = warning {
-            Ui::warn(&warning);
-        }
-        version_tag::validate_or_bail(&build_version)?;
         let build_services: Vec<String> = services_to_build.iter().cloned().collect();
         let mut build_plan =
-            build_plan::compute_plan(&config, &config.project, &build_services, &build_version)?;
+            build_plan::compute_plan(&config, &config.project, &build_services, &deployment_version)?;
         build_plan::resolve_build_arg_references(
             &config,
             &mut build_plan,
@@ -446,6 +447,7 @@ pub async fn run(
                     endpoint.service
                 )
             })?;
+        resolved.values.insert("JIJI_VERSION".into(), deployment_version.clone());
         proxy_routes::mark_tls_control_secrets(service.proxy.as_ref(), &mut resolved);
         tracing::debug!(
             "{}: environment: {}",

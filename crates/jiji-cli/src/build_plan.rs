@@ -109,9 +109,13 @@ pub fn compute_plan(
                 .build
                 .as_ref()
                 .with_context(|| format!("Service '{name}' has no `build:` configuration"))?;
+            let mut resolved_build = build_engine::resolve_build_config(build);
+            resolved_build
+                .args
+                .insert("JIJI_VERSION".into(), version_tag.into());
             Ok(BuildPlanEntry {
                 service_name: name.clone(),
-                build: build_engine::resolve_build_config(build),
+                build: resolved_build,
                 platforms: build_engine::required_arches(config, service),
                 version_ref: registry::full_image_name(
                     &config.builder.registry,
@@ -142,11 +146,16 @@ pub fn resolve_build_arg_references(
     for entry in plan {
         let service = &config.services[&entry.service_name];
         let merged = env_resolution::merge_environment(&shared, &service.environment);
+        let deployment_version = entry.build.args["JIJI_VERSION"].clone();
         for (key, value) in &mut entry.build.args {
-            if !env_resolution::is_bare_all_caps_name(value) {
+            if key == "JIJI_VERSION" || !env_resolution::is_bare_all_caps_name(value) {
                 continue;
             }
             let reference = value.clone();
+            if reference == "JIJI_VERSION" {
+                *value = deployment_version.clone();
+                continue;
+            }
             let resolved = merged
                 .clear
                 .get(&reference)
@@ -256,6 +265,37 @@ mod tests {
 
     fn config(yaml: &str) -> Config {
         serde_yaml::from_str(yaml).expect("test fixture must be valid YAML")
+    }
+
+    #[test]
+    fn version_build_argument_and_references_use_the_resolved_version() {
+        let config = config(
+            r#"
+project: demo
+builder: {engine: docker}
+servers:
+  app:
+    host: 10.0.0.1
+services:
+  web:
+    servers: [app]
+    build:
+      args:
+        REVISION: JIJI_VERSION
+"#,
+        );
+        for version in ["EXAMPLE123", "abc123", "1793000000"] {
+            let mut plan = compute_plan(&config, "demo", &["web".into()], version).unwrap();
+            resolve_build_arg_references(
+                &config,
+                &mut plan,
+                &BTreeMap::from([("JIJI_VERSION".into(), "wrong".into())]),
+                false,
+            )
+            .unwrap();
+            assert_eq!(plan[0].build.args["JIJI_VERSION"], version);
+            assert_eq!(plan[0].build.args["REVISION"], version);
+        }
     }
 
     #[test]

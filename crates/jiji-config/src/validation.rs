@@ -90,6 +90,44 @@ pub fn validate_yaml(raw: &serde_yaml::Value) -> ValidationResult {
 pub fn validate_config(config: &Config) -> ValidationResult {
     let mut errors = Vec::new();
     let warnings = Vec::new();
+    let mut environments = Vec::new();
+    if let Some(environment) = &config.environment {
+        environments.push(("environment".to_string(), environment));
+    }
+    for (name, service) in &config.services {
+        environments.push((format!("services.{name}.environment"), &service.environment));
+        if let Some(BuildValue::Detailed(build)) = &service.build {
+            if build
+                .args
+                .as_ref()
+                .is_some_and(|args| args.contains_key("JIJI_VERSION"))
+            {
+                reserved_version_error(
+                    &mut errors,
+                    format!("services.{name}.build.args.JIJI_VERSION"),
+                );
+            }
+            if build
+                .secrets
+                .as_ref()
+                .is_some_and(|names| names.iter().any(|name| name == "JIJI_VERSION"))
+            {
+                reserved_version_error(&mut errors, format!("services.{name}.build.secrets"));
+            }
+        }
+    }
+    for (path, environment) in environments {
+        if environment.clear.contains_key("JIJI_VERSION") {
+            reserved_version_error(&mut errors, format!("{path}.clear.JIJI_VERSION"));
+        }
+        if environment
+            .secrets
+            .iter()
+            .any(|name| name == "JIJI_VERSION")
+        {
+            reserved_version_error(&mut errors, format!("{path}.secrets"));
+        }
+    }
 
     if config.servers.len() > MAX_NODES {
         errors.push(ValidationError {
@@ -803,4 +841,8 @@ fn command_is_empty(command: &CommandValue) -> bool {
             parts.is_empty() || parts.iter().all(|p| p.trim().is_empty())
         }
     }
+}
+
+fn reserved_version_error(errors: &mut Vec<ValidationError>, path: String) {
+    errors.push(ValidationError { path, message: "JIJI_VERSION is reserved and automatically set by Jiji to the deployment version; remove this entry and use --version to choose a version".into(), code: "RESERVED_ENVIRONMENT_VARIABLE" });
 }

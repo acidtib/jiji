@@ -72,6 +72,7 @@ struct TestServer {
     responses: Arc<HashMap<String, CannedResponse>>,
     pending: Arc<Mutex<HashMap<ChannelId, String>>>,
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
 }
 
 impl server::Server for TestServer {
@@ -100,6 +101,26 @@ impl server::Handler for TestServer {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self
+            .pending
+            .lock()
+            .unwrap()
+            .get(&channel)
+            .is_some_and(|command| {
+                command.contains("install -D -m 0600 /dev/stdin .jiji/demo/env/")
+            })
+        {
+            self.input.lock().unwrap().extend_from_slice(data);
+        }
         Ok(())
     }
 
@@ -155,6 +176,7 @@ impl server::Handler for TestServer {
 struct Harness {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<String>>>,
+    input: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn spawn_test_server(
@@ -173,11 +195,13 @@ async fn spawn_test_server(
     let addr = listener.local_addr().expect("read listener addr");
 
     let received = Arc::new(Mutex::new(Vec::new()));
+    let input = Arc::new(Mutex::new(Vec::new()));
     let mut test_server = TestServer {
         authorized_key,
         responses: Arc::new(responses),
         pending: Arc::new(Mutex::new(HashMap::new())),
         received: received.clone(),
+        input: input.clone(),
     };
 
     tokio::spawn(async move {
@@ -185,7 +209,11 @@ async fn spawn_test_server(
         drop(listener);
     });
 
-    Harness { addr, received }
+    Harness {
+        addr,
+        received,
+        input,
+    }
 }
 
 /// A single service ("web", untagged image "example/web") on a single server ("app") -- untagged
@@ -374,6 +402,9 @@ async fn rollback_deploys_the_requested_version_of_a_statically_imaged_service()
         "stdout: {stdout}"
     );
 
+    assert!(
+        String::from_utf8_lossy(&harness.input.lock().unwrap()).contains("JIJI_VERSION=v1.2.3\n")
+    );
     let received = harness.received.lock().unwrap().clone();
     assert!(
         received.iter().any(|c| c.contains("docker run")

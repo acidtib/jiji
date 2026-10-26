@@ -99,6 +99,16 @@ are skipped, as are `service restart`/`rollback`/`scale`: those reach
 `deploy_endpoint`'s pull-if-missing `ensure_image` only, so a scale-up runs
 the same cached image as its existing replicas.
 
+Every deploy resolves one version (`--version`, Git short SHA, or epoch seconds)
+and injects it as `JIJI_VERSION` into the staged service environment. Build
+plans pass the same value as a build argument. The name is reserved in shared
+and service environment declarations and in build argument/secret names.
+Restart reads the active container's environment per logical replica; scaling
+copies an active deployment's image and version; rollback injects its target
+version. Containers created before this feature fall back to their image tag
+(or `latest` for an untagged image). Inspect failures abort preservation rather
+than silently choosing a new revision.
+
 For a rolling service, `deploy_dynamic_endpoint` performs this transaction:
 
 1. Read the current Active and Healthy deployment, if one exists.

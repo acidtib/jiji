@@ -241,6 +241,9 @@ pub async fn run(
                     service.proxy.as_ref(),
                     &mut resolved,
                 );
+                resolved
+                    .values
+                    .insert("JIJI_VERSION".into(), version.into());
                 resolved_envs.insert(service_name.clone(), resolved);
             }
 
