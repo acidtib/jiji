@@ -140,7 +140,7 @@ impl client::Handler for ClientHandler {
     /// (connects with `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`).
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::PublicKey,
+        _server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -311,7 +311,7 @@ impl SshSession {
             .map_err(|source| SshError::Forward {
                 host: self.host.clone(),
                 action: format!("open reverse forward on {REMOTE_BIND}:{remote_port}"),
-                source,
+                source: Box::new(source),
             })?;
         let assigned = if assigned == 0 && remote_port != 0 {
             u32::from(remote_port)
@@ -344,7 +344,7 @@ impl SshSession {
             .map_err(|source| SshError::Forward {
                 host: self.host.clone(),
                 action: format!("cancel reverse forward on {REMOTE_BIND}:{}", forward.port),
-                source,
+                source: Box::new(source),
             })?;
         self.forward_targets
             .write()

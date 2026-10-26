@@ -66,7 +66,7 @@ pub enum SshError {
         host: String,
         action: String,
         #[source]
-        source: russh::Error,
+        source: Box<russh::Error>,
     },
 
     #[error(

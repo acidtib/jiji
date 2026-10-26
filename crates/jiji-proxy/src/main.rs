@@ -213,7 +213,14 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
         "jiji-proxy starting"
     );
 
-    let mut server = Server::new(None).map_err(|error| anyhow::anyhow!("{error}"))?;
+    // Jiji parses its own config; keep Pingora's legacy YAML parser out of startup.
+    let mut server = Server::new_with_opt_and_conf(
+        None,
+        pingora::server::configuration::ServerConf {
+            version: 1,
+            ..Default::default()
+        },
+    );
     server.bootstrap();
 
     let cert_store = if config.https_listen.is_some() {
