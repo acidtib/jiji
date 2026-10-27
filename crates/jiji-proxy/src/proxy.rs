@@ -82,8 +82,8 @@ impl ProxyHttp for JijiProxy {
 mod socket_compatibility_tests {
     #[tokio::test]
     async fn pingora_can_wrap_an_accepted_tcp_connection() {
-        // Tokio 1.54 rejects the zero-capacity buffer Pingora 0.9 creates here,
-        // panicking on every real HTTP connection despite route unit tests passing.
+        // Guards the workspace Tokio pin: 1.54 rejects the zero-capacity buffer Pingora 0.9
+        // creates here, panicking on every real HTTP connection despite route tests passing.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (client, server) =
