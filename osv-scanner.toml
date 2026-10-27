@@ -65,3 +65,7 @@ reason = "Jiji never calls zstd APIs. The only consumers are Pingora HTTP compre
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0410"
 reason = "This advisory affects zstd-sys's wasm32 allocator shim. Jiji's proxy targets native hosts (Linux containers), never WebAssembly, and never calls zstd: Pingora compression and caching remain disabled. The wasm32 allocator is not compiled on Jiji's supported targets."
+
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+reason = "block-buffer 0.10 remains only through blake2 0.10, used by pingora-cache for cache keys. JijiProxy never enables Session.cache, and blake2's block compression never panics, so the catch-a-panic-and-reuse-the-buffer sequence the advisory requires cannot occur. The fixed 0.12 line needs an upstream pingora-cache digest upgrade."
