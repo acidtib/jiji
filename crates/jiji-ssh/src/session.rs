@@ -136,7 +136,7 @@ struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    /// jiji does not verify host keys against a known_hosts file
+    /// jiji does not verify host keys or certificates against a known_hosts file
     /// (connects with `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`).
     async fn check_server_key(
         &mut self,
