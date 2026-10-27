@@ -843,7 +843,9 @@ mocked SSH output alone.
   .github/scripts/ci-changes.sh`).
 - `build` compiles once into a nextest archive plus `jiji-agent`. `test`
   and the three `docker-in-docker tests (N/3)` shards (`--partition
-  count:N/3`, one vm1/vm2 per runner) extract it into the workspace
+  slice:N/3`, one vm1/vm2 per runner; `count:` splits within each binary,
+  and every docker binary holds a single test, so it would put all of
+  them on shard 1) extract it into the workspace
   (`--extract-to "$PWD"`), so compile-time `env!("CARGO_BIN_EXE_jiji")`
   paths still resolve. The archive does not carry `jiji-agent`, so the
   docker shards get it as a separate artifact file next to `jiji`.

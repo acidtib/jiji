@@ -245,7 +245,7 @@ jobs:
         run: |
           cargo nextest run --archive-file nextest.tar.zst --workspace-remap "$PWD" --extract-to "$PWD" \
             --extract-overwrite --no-fail-fast --no-capture \
-            -E 'binary(/^docker_/)' --partition "count:$SHARD/3"
+            -E 'binary(/^docker_/)' --partition "slice:$SHARD/3"
 
       - name: Dump container logs on failure
         if: failure()
