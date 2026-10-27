@@ -517,6 +517,7 @@ services:
   #     args:                            # Build arguments. An ALL_CAPS value reads the matching
   #                                      # merged environment value, .env value, or host value
   #                                      # (the host value requires --host-env).
+  #                                      # JIJI_VERSION is always passed; never set it here.
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: BUILD_DATE

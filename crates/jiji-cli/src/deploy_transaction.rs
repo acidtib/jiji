@@ -105,7 +105,10 @@ pub async fn deployed_version(
         &record.service,
         &record.deployment_id,
     );
-    let result = session.execute(&format!("{engine} inspect {name} --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}'")).await?;
+    let env_format = "'{{range .Config.Env}}{{println .}}{{end}}'";
+    let result = session
+        .execute(&format!("{engine} inspect {name} --format {env_format}"))
+        .await?;
     if !result.success {
         anyhow::bail!("Could not read deployed JIJI_VERSION from container '{name}'");
     }
