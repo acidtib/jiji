@@ -861,6 +861,11 @@ mocked SSH output alone.
   `jiji-proxy` deadlocks: setup pulls an image that's only published after
   tagging, and tagging waits on this suite. `mise test-docker` builds and
   pushes the image the same way.
+- The docker shards pin `runs-on: ubuntu-24.04`. On an Ubuntu 26.04
+  runner, the runner kernel's own AppArmor `wg`/`wg-quick` profiles
+  confine `wg` inside the privileged vm1/vm2 (`wg-quick strip`: `fopen:
+  Permission denied`), and jiji's local-include fix can't reach the
+  runner's profiles (confirmed live).
 - `clippy` (`-D warnings`), `clippy-macos` (`jiji-cli`, a shipped
   target), `fmt`, `deps` (`cargo update --locked`, `cargo shear`,
   `osv-scanner` against `osv-scanner.toml`), and `workflows` (actionlint,

@@ -243,7 +243,9 @@ jobs:
       && needs.changes.outputs.run_docker == 'true'
       && needs.build.result == 'success'
       && (needs.proxy-image.result == 'success' || needs.proxy-image.result == 'skipped')
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: on an Ubuntu 26.04 runner the runner kernel's AppArmor wg/wg-quick
+    # profiles confine wg inside privileged vm1/vm2, and jiji can't add its local overrides there.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
