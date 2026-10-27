@@ -16,6 +16,16 @@ networks:
         - subnet: 172.30.0.0/24
 
 services:
+  # Serves the jiji-proxy image built from the checkout; vm1/vm2 mirror ghcr.io/acidtib/jiji-proxy
+  # to it (vm/registries.conf). Published on loopback so the runner can push to it.
+  registry:
+    image: registry:2.8.3
+    ports:
+      - "127.0.0.1:5099:5000"
+    networks:
+      mesh:
+        ipv4_address: 172.30.0.13
+
   # Generates one shared SSH keypair used both by the test runner (on the GH Actions host, or a
   # developer's machine) and by vm1's authorized_keys. A host bind mount (not a named volume) so
   # the Rust test harness, which runs directly on the host rather than in a container, can read

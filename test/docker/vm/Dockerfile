@@ -22,6 +22,8 @@ RUN apt-get update && \
     systemctl enable ssh && \
     ssh-keygen -A
 
+COPY registries.conf /etc/containers/registries.conf.d/50-jiji-proxy-mirror.conf
+
 WORKDIR /work
 COPY boot.sh .
 RUN chmod +x boot.sh
