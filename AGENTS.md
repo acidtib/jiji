@@ -827,18 +827,41 @@ Gated behind `JIJI_DOCKER_TESTS=1` (each test calls
 `docker_support::skip_unless_enabled()` and returns early otherwise), so
 plain `mise test`/`cargo nextest run --workspace` stays fast and
 dependency-free; `mise test-docker` brings the compose stack up, runs the
-suite, and tears it down. CI runs it as the `docker-integration` job inside
-`.github/workflows/ci.yml` (display name "docker-in-docker tests"),
-alongside the separate `lint` and mock-SSH `test` jobs. A release is only
-tagged and built after CI, including this suite, passes on the release
-commit (see "Version Management & Releases" above), so it is never cut on
-the strength of mocked SSH output alone. To keep runner usage down:
-release-please PRs skip CI entirely (they only bump versions); on `main`
-the docker job runs only for release commits (every other commit already
-ran it as a PR); a newer push cancels an older run, except a release
-commit's, which gets its own concurrency group; closing a PR cancels its
-in-flight run; and only `main` saves the cargo cache, since PRs can only
-restore caches from the default branch.
+suite, and tears it down. A release is only tagged and built after CI,
+including this suite, passes on the release commit (see "Version
+Management & Releases" above), so it is never cut on the strength of
+mocked SSH output alone.
+
+### CI (`.github/workflows/ci.yml`)
+
+- `changes` runs `.github/scripts/ci-changes.sh` first and decides what
+  the rest needs. On a PR, a change confined to crates runs `test` with a
+  nextest `rdeps(<crate>)` filter. A change to `Cargo.toml`/`Cargo.lock`,
+  `.config/`, `lib/`, `test/`, or CI itself runs everything, and so does
+  every push. Docs-only changes skip Rust work entirely. The script runs
+  locally too (`EVENT_NAME=pull_request BASE_REF=main
+  .github/scripts/ci-changes.sh`).
+- `build` compiles once into a nextest archive plus `jiji-agent`. `test`
+  and the three `docker-in-docker tests (N/3)` shards (`--partition
+  count:N/3`, one vm1/vm2 per runner) extract it into the workspace
+  (`--extract-to "$PWD"`), so compile-time `env!("CARGO_BIN_EXE_jiji")`
+  paths still resolve. The archive does not carry `jiji-agent`, so the
+  docker shards get it as a separate artifact file next to `jiji`.
+- `clippy` (`-D warnings`), `clippy-macos` (`jiji-cli`, a shipped
+  target), `fmt`, `deps` (`cargo update --locked`, `cargo shear`,
+  `osv-scanner` against `osv-scanner.toml`), and `workflows` (actionlint,
+  shellcheck, zizmor with `.github/zizmor.yml`) run alongside.
+- `ci-pass` is the single required check: it fails unless every job
+  succeeded or was skipped. Every job sets `timeout-minutes`, and every
+  third-party action is pinned to a commit SHA (`@<sha> # vX.Y.Z`).
+  `dtolnay/rust-toolchain` pinned by SHA needs an explicit `toolchain:`
+  input, since it normally reads the toolchain from the ref name.
+- To keep runner usage down: release-please PRs skip everything; on `main`
+  the docker shards run only for release commits (every other commit
+  already ran them as a PR); a newer push cancels an older run, except a
+  release commit's, which gets its own concurrency group; closing a PR
+  cancels its in-flight run; and only `main` saves the cargo cache, since
+  PRs can only restore caches from the default branch.
 
 **Scope, deliberately narrow for now:** single-host `server setup` -> real
 state assertions (`podman info`, `systemctl is-active`, `wg show`) ->

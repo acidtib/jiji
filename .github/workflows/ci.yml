@@ -5,16 +5,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
     branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
   push:
     branches: [main, develop]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
+
+permissions:
+  contents: read
 
 # A newer run cancels the older one in its group: a new push to a PR, closing the PR (that run
 # itself has no jobs), or a new push to main. A release commit gets a group of its own so its run
@@ -28,108 +23,211 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
 
 jobs:
-  lint:
-    # A release PR only bumps versions; its commit is fully tested on main before any release.
-    if: github.event.action != 'closed' && github.head_ref != 'release-please--branches--main'
+  # Decides which jobs below this change needs; see .github/scripts/ci-changes.sh.
+  changes:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_rust: ${{ steps.changes.outputs.run_rust }}
+      nextest_filter: ${{ steps.changes.outputs.nextest_filter }}
+      run_macos: ${{ steps.changes.outputs.run_macos }}
+      run_docker: ${{ steps.changes.outputs.run_docker }}
+      run_deps: ${{ steps.changes.outputs.run_deps }}
+      run_workflow_checks: ${{ steps.changes.outputs.run_workflow_checks }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+      - id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: .github/scripts/ci-changes.sh
 
-      - name: Install mold linker
-        uses: rui314/setup-mold@v1
+  fmt:
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - run: cargo fmt --all --check
+
+  clippy:
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
 
       # PRs can only restore caches saved from main, so only main saves one.
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Lint
-        run: cargo clippy --all-targets --all-features
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  # jiji ships macOS binaries but nothing else here builds for macOS.
+  clippy-macos:
+    needs: changes
+    if: needs.changes.outputs.run_macos == 'true'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - run: cargo clippy --locked -p jiji-cli --all-targets -- -D warnings
+
+  # Compiles every test binary once; `test` and each `docker` shard run them from the archive.
+  build:
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: nextest
+
+      # The archive only carries jiji-cli's own binaries; `jiji server setup` in the docker suite
+      # installs the jiji-agent sitting next to `jiji` (agent_install::find_local_agent_binary).
+      - run: cargo build --locked -p jiji-agent --bin jiji-agent
+
+      - run: cargo nextest archive --locked --workspace --archive-file nextest.tar.zst --zstd-level 3
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nextest-archive
+          path: |
+            nextest.tar.zst
+            target/debug/jiji-agent
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
 
   test:
-    if: github.event.action != 'closed' && github.head_ref != 'release-please--branches--main'
+    needs: [changes, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install mold linker
-        uses: rui314/setup-mold@v1
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          persist-credentials: false
 
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
 
-      - name: Run tests
-        run: cargo nextest run --workspace
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: nextest
 
-      # The integration tests already built target/debug/jiji.
-      - name: Test CLI functionality
+      # Extracting into the workspace puts target/ back where the build job compiled it, so paths
+      # baked in at compile time (env!("CARGO_BIN_EXE_jiji")) still resolve.
+      - env:
+          FILTER: ${{ needs.changes.outputs.nextest_filter }}
+        run: |
+          args=(--archive-file nextest.tar.zst --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite --no-fail-fast)
+          if [ -n "$FILTER" ]; then
+            args+=(-E "$FILTER")
+          fi
+          cargo nextest run "${args[@]}"
+
+      - name: Smoke-test the CLI
         run: |
           target/debug/jiji --help
           target/debug/jiji init --help
           target/debug/jiji server --help
           target/debug/jiji version
 
-  docker-integration:
-    name: docker-in-docker tests
-    # The PR already ran this suite, so on main it only runs for release commits, which are only
-    # tagged and built once their CI passes.
-    if: >-
-      github.event.action != 'closed'
-      && github.head_ref != 'release-please--branches--main'
-      && (github.event_name != 'push' || startsWith(github.event.head_commit.message, 'chore: release'))
+  # Privileged nested containers standing in for real remote hosts (see test/docker/compose.yml).
+  # Each shard gets its own runner and therefore its own vm1/vm2, so shards never race on vm1's
+  # apt lock; within a shard the docker-integration nextest group still runs one test at a time.
+  docker:
+    name: docker-in-docker tests (${{ matrix.shard }}/3)
+    needs: [changes, build]
+    if: needs.changes.outputs.run_docker == 'true'
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install mold linker
-        uses: rui314/setup-mold@v1
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          persist-credentials: false
 
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
 
-      # `jiji server setup` prefers a jiji-agent binary sitting beside the `jiji` executable over
-      # downloading one from a GitHub release (see agent_install::find_local_agent_binary), the
-      # same mechanism `mise install-dev` uses for local testing. Building it here from the exact
-      # commit under test means this job never depends on a matching jiji-agent release already
-      # being published.
-      - name: Build jiji and jiji-agent
-        run: cargo build -p jiji-cli -p jiji-agent --bin jiji --bin jiji-agent
+      - run: chmod +x target/debug/jiji-agent
 
-      # docker_build_deploy_test.rs builds and pushes with the LOCAL machine's own Podman
-      # (builder.engine: podman drives both the local build step and the remote install), not
-      # just vm1's -- the runner image doesn't guarantee one, so make sure it's there.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: nextest
+
+      # docker_build_deploy_test.rs builds and pushes with the local machine's own Podman
+      # (builder.engine: podman), and the runner image doesn't guarantee one.
       - name: Ensure local Podman is available
         run: |
           command -v podman >/dev/null || {
@@ -137,29 +235,24 @@ jobs:
             sudo apt-get install -y podman
           }
 
-      # Privileged nested containers standing in for real remote hosts (see
-      # test/docker/compose.yml): vm1 runs its own systemd and, once `jiji server setup` installs
-      # it under test, its own Podman. This proves jiji actually works against a real kernel
-      # (WireGuard module, cgroup v2, nftables) rather than only against the mock-SSH suite's
-      # canned command output.
       - name: Bring up docker fixtures
         run: docker compose -f test/docker/compose.yml up -d --build --wait
 
       - name: Run docker integration tests
         env:
           JIJI_DOCKER_TESTS: "1"
-        run: cargo nextest run -p jiji-cli --test=docker_server_lifecycle_test --test=docker_deploy_test --test=docker_build_deploy_test --test=docker_rolling_deploy_test --test=docker_mesh_deploy_test --test=docker_network_mode_test --test=docker_cron_test --test=docker_image_retention_test --test=docker_load_balancer_test --test=docker_cron_ownership_transfer_test --test=docker_scale_test --test=docker_stop_first_test --test=docker_service_restart_rollback_test --no-capture
+          SHARD: ${{ matrix.shard }}
+        run: |
+          cargo nextest run --archive-file nextest.tar.zst --workspace-remap "$PWD" --extract-to "$PWD" \
+            --extract-overwrite --no-fail-fast --no-capture \
+            -E 'binary(/^docker_/)' --partition "count:$SHARD/3"
 
       - name: Dump container logs on failure
         if: failure()
         run: docker compose -f test/docker/compose.yml logs --no-color --tail 200
 
-      # `docker compose logs` above only covers vm1/vm2's own outer systemd boot output --
-      # jiji-proxy runs *inside* vm1/vm2's own nested Podman (started by jiji-agent under test),
-      # so its own logs (DNS discovery, health checks, refresh_interval activity) are otherwise
-      # invisible to CI on a failure. `|| true` on each: not every test that fails has actually
-      # brought up jiji-proxy on both hosts (or at all), and a missing container must not mask
-      # the real failure above.
+      # jiji-proxy runs inside vm1/vm2's own nested Podman, so `compose logs` above can't see it.
+      # Not every failing test brings it up, so a missing container must not mask the failure.
       - name: Dump jiji-proxy logs on failure
         if: failure()
         run: |
@@ -169,3 +262,68 @@ jobs:
       - name: Tear down docker fixtures
         if: always()
         run: docker compose -f test/docker/compose.yml down -t 0 -v
+
+  deps:
+    needs: changes
+    if: needs.changes.outputs.run_deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-shear,osv-scanner
+
+      - name: Cargo.lock is up to date
+        run: cargo update --locked --workspace
+
+      - name: No unused dependencies
+        run: cargo shear
+
+      # Triage a finding with the fix-osv-finding skill; ignores live in osv-scanner.toml.
+      - name: No unaddressed advisories
+        run: osv-scanner -r .
+
+  workflows:
+    needs: changes
+    if: needs.changes.outputs.run_workflow_checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: shellcheck,zizmor
+
+      # The actionlint image bundles shellcheck for run: blocks.
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+          shellcheck .github/scripts/*.sh
+
+      - name: zizmor
+        run: zizmor --offline --min-severity medium .github/workflows
+
+  # The one check branch protection requires. Skipped jobs count as passing, so a change that
+  # needs no Rust work still reports green.
+  ci-pass:
+    needs: [changes, fmt, clippy, clippy-macos, build, test, docker, deps, workflows]
+    if: always() && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null
