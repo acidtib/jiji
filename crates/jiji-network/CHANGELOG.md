@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.9.2](https://github.com/acidtib/jiji/compare/jiji-network-v0.9.1...jiji-network-v0.9.2) (2026-10-27)
+
 ## [0.9.1](https://github.com/acidtib/jiji/compare/jiji-network-v0.9.0...jiji-network-v0.9.1) (2026-10-19)
 
 ## [0.9.0](https://github.com/acidtib/jiji/compare/jiji-network-v0.8.2...jiji-network-v0.9.0) (2026-08-15)

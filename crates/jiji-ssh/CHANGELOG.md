@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.6.2...jiji-ssh-v0.6.3) (2026-10-27)
+
+
+### Bug Fixes
+
+* remediate dependency advisories and clear ssh warnings ([#121](https://github.com/acidtib/jiji/issues/121)) ([e4e8630](https://github.com/acidtib/jiji/commit/e4e8630ca7c89d711823b38d73f975183505dabc))
+
 ## [0.6.2](https://github.com/acidtib/jiji/compare/jiji-ssh-v0.6.1...jiji-ssh-v0.6.2) (2026-08-10)
 
 
