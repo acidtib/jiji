@@ -134,8 +134,16 @@ impl server::Handler for TestServer {
         } else if command.contains("inspect jiji-proxy --format '{{.State.Status}}'") {
             success("running\n")
         } else {
+            let occurrence = self
+                .received
+                .lock()
+                .expect("received mutex poisoned")
+                .iter()
+                .filter(|received| *received == &command)
+                .count();
             self.responses
-                .get(&command)
+                .get(&format!("{command}#{occurrence}"))
+                .or_else(|| self.responses.get(&command))
                 .cloned()
                 .unwrap_or_else(|| success(""))
         };
@@ -1035,6 +1043,80 @@ async fn installs_a_missing_engine() {
     assert!(
         stdout.contains("docker installed (Docker version 99.0.0, build abcdef)"),
         "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_attach_accepts_a_concurrent_attach_by_the_agent() {
+    let client_key =
+        PrivateKey::random(&mut rng(), Algorithm::Ed25519).expect("generate client key");
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let key_path = dir.path().join("id_ed25519");
+    std::fs::write(
+        &key_path,
+        client_key
+            .to_openssh(LineEnding::LF)
+            .expect("encode key as openssh")
+            .as_bytes(),
+    )
+    .expect("write key file");
+
+    // Bridge and proxy addresses derive from the project, not the host, so a placeholder address
+    // is enough to compute them before the server (and its real port) exists.
+    let placeholder = write_config(dir.path(), "127.0.0.1:1".parse().unwrap(), &key_path);
+    let config: jiji_config::Config =
+        serde_yaml::from_str(&std::fs::read_to_string(&placeholder).unwrap()).unwrap();
+    let plan = jiji_network::NetworkPlanner::new().plan(&config).unwrap();
+    let server_plan = &plan.servers["web1"];
+
+    // jiji-agent attaches jiji-proxy between the CLI's inspect and its `network connect`.
+    let inspect = "docker inspect jiji-proxy --format '{{json .NetworkSettings.Networks}}'";
+    let connect = format!(
+        "docker network connect --ip {} {} jiji-proxy",
+        server_plan.proxy_address, server_plan.bridge_name
+    );
+    let mut responses = HashMap::new();
+    responses.insert(format!("{inspect}#1"), success("{}\n"));
+    responses.insert(
+        format!("{inspect}#2"),
+        success(&format!(
+            "{{\"{}\":{{\"IPAddress\":\"{}\"}}}}\n",
+            server_plan.bridge_name, server_plan.proxy_address
+        )),
+    );
+    responses.insert(
+        connect.clone(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: format!(
+                "Error: container is already connected to network {}: network is already connected\n",
+                server_plan.bridge_name
+            ),
+        },
+    );
+    let (addr, received, _stdin) =
+        spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), addr, &key_path);
+
+    let output = run_jiji_proxy_restart(&config_path);
+    assert!(
+        output.status.success(),
+        "a concurrent attach at the expected address must not fail: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let commands = received.lock().expect("received mutex poisoned");
+    assert!(
+        commands.iter().any(|command| command == &connect),
+        "{commands:?}"
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| *command == inspect)
+            .count(),
+        2,
+        "the attachment should be re-checked after the failed connect: {commands:?}"
     );
 }
 
