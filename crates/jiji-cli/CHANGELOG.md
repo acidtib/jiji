@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/acidtib/jiji/compare/v0.11.0...v0.12.0) (2026-10-27)
+
+
+### Features
+
+* **cli:** expose deployment version to application containers ([#120](https://github.com/acidtib/jiji/issues/120)) ([76bb831](https://github.com/acidtib/jiji/commit/76bb831d6f741485cda47e0dd5aa8c08d71781e5))
+
 ## [0.11.0](https://github.com/acidtib/jiji/compare/v0.10.1...v0.11.0) (2026-10-19)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.10.0...jiji-config-v0.11.0) (2026-10-27)
+
+
+### Features
+
+* **cli:** expose deployment version to application containers ([#120](https://github.com/acidtib/jiji/issues/120)) ([76bb831](https://github.com/acidtib/jiji/commit/76bb831d6f741485cda47e0dd5aa8c08d71781e5))
+
 ## [0.10.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.9.0...jiji-config-v0.10.0) (2026-10-19)
 
 
