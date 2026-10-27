@@ -209,6 +209,35 @@ async fn ensure_attached(
     engine: ContainerEngine,
     network: &ProxyNetwork,
 ) -> anyhow::Result<()> {
+    if attached_with_expected_address(session, engine, network).await? {
+        return Ok(());
+    }
+
+    let command = format!(
+        "{engine} network connect --ip {} {} {CONTAINER_NAME}",
+        network.proxy_address, network.bridge_name
+    );
+    let result = session.execute(&command).await?;
+    if !result.success {
+        // jiji-agent's own reconcile loop may have attached it since the check above.
+        if attached_with_expected_address(session, engine, network).await? {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Could not attach jiji-proxy to network '{}' on {}: {}. Run `jiji network setup` for this project and retry.",
+            network.bridge_name,
+            session.host(),
+            result.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+async fn attached_with_expected_address(
+    session: &SshSession,
+    engine: ContainerEngine,
+    network: &ProxyNetwork,
+) -> anyhow::Result<bool> {
     let command = format!(
         "{engine} inspect {CONTAINER_NAME} --format '{{{{json .NetworkSettings.Networks}}}}'"
     );
@@ -221,32 +250,16 @@ async fn ensure_attached(
         );
     }
 
-    if let Some(existing) = jiji_network::attached_address(&result.stdout, &network.bridge_name) {
-        if existing == network.proxy_address {
-            return Ok(());
-        }
-        anyhow::bail!(
+    match jiji_network::attached_address(&result.stdout, &network.bridge_name) {
+        None => Ok(false),
+        Some(existing) if existing == network.proxy_address => Ok(true),
+        Some(existing) => anyhow::bail!(
             "jiji-proxy on {} is already attached to network '{}' with address {existing}, expected {}. Remove the container with `{engine} rm -f {CONTAINER_NAME}` and retry, or investigate the address drift.",
             session.host(),
             network.bridge_name,
             network.proxy_address
-        );
+        ),
     }
-
-    let command = format!(
-        "{engine} network connect --ip {} {} {CONTAINER_NAME}",
-        network.proxy_address, network.bridge_name
-    );
-    let result = session.execute(&command).await?;
-    if !result.success {
-        anyhow::bail!(
-            "Could not attach jiji-proxy to network '{}' on {}: {}. Run `jiji network setup` for this project and retry.",
-            network.bridge_name,
-            session.host(),
-            result.stderr.trim()
-        );
-    }
-    Ok(())
 }
 
 async fn is_current_and_running(

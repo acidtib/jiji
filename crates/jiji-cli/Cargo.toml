@@ -52,3 +52,7 @@ toml = "0.8"
 [dev-dependencies]
 russh.workspace = true
 rand = "0.10"
+
+# toml is used by the include!'d lib/build-support/sibling_crate_version.rs, which cargo-shear can't see.
+[package.metadata.cargo-shear]
+ignored = ["toml"]

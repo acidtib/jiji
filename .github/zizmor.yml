@@ -1,0 +1,19 @@
+rules:
+  # Both are gated so untrusted PR code never runs with elevated access: release.yml acts only on
+  # CI success for a push to main, and pr-title-lint.yml reads the title without checking out code.
+  dangerous-triggers:
+    ignore:
+      - release.yml
+      - pr-title-lint.yml
+  # TODO: scope these app tokens with permission-* inputs once the exact set release-please and
+  # the self-heal script need has been verified against a real release.
+  github-app:
+    ignore:
+      - release.yml
+      - release-please.yml
+  # release.yml's self-heal script pushes tags over git; release-please.yml keeps its token on the
+  # checkout for release-please-action.
+  artipacked:
+    ignore:
+      - release.yml
+      - release-please.yml

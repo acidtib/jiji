@@ -61,27 +61,36 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --bin ${{ inputs.bin_name }} --target ${{ matrix.target }}
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --bin "$BIN_NAME" --target "$TARGET"
 
       - name: Package binary
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          TARGET: ${{ matrix.target }}
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ inputs.bin_name }} dist/${{ matrix.artifact }}
+          cp "target/$TARGET/release/$BIN_NAME" "dist/$ARTIFACT"
 
       # macOS runners have shasum but no sha256sum. Fail loudly rather than publish an empty file.
       - name: Generate checksum
@@ -104,14 +113,14 @@ jobs:
 
       - name: Upload artifact
         if: ${{ !inputs.checksum }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
       - name: Upload artifact with checksum
         if: ${{ inputs.checksum }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -125,8 +134,9 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
@@ -142,10 +152,11 @@ jobs:
         id: get_tag_version
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "TAG_VERSION=${TAG#${{ inputs.tag_prefix }}}" >> "$GITHUB_OUTPUT"
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+        run: echo "TAG_VERSION=${TAG#"$TAG_PREFIX"}" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
@@ -157,11 +168,13 @@ jobs:
       # this job twice for the same tag duplicated the whole release body.
       - name: Extract this release's changelog section
         id: changelog
+        env:
+          CHANGELOG_CRATE: ${{ inputs.changelog_crate }}
         run: |
           delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
           {
             echo "body<<$delimiter"
-            awk '/^## / { n++ } n==1' crates/${{ inputs.changelog_crate }}/CHANGELOG.md
+            awk '/^## / { n++ } n==1' "crates/$CHANGELOG_CRATE/CHANGELOG.md"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
@@ -169,12 +182,13 @@ jobs:
         id: expanded
         env:
           CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
+          CHANGELOG_CRATE: ${{ inputs.changelog_crate }}
         run: |
           delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
           {
             echo "body<<$delimiter"
             printf '%s' "$CHANGELOG_BODY" | \
-              .github/scripts/expand-dependency-changelog.sh ${{ inputs.changelog_crate }}
+              .github/scripts/expand-dependency-changelog.sh "$CHANGELOG_CRATE"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
@@ -198,7 +212,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ inputs.tag_prefix }}${{ steps.get_tag_version.outputs.TAG_VERSION }}
@@ -215,7 +229,7 @@ jobs:
         id: website-token
         if: ${{ inputs.notify_website }}
         continue-on-error: true
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

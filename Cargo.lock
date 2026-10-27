@@ -2162,7 +2162,6 @@ dependencies = [
  "jiff-cron",
  "jiji-core",
  "serde",
- "tempfile",
  "thiserror 1.0.69",
  "yaml_serde",
 ]

@@ -17,3 +17,7 @@ toml = "0.8"
 
 [dev-dependencies]
 serde_yaml.workspace = true
+
+# toml is used by the include!'d lib/build-support/sibling_crate_version.rs, which cargo-shear can't see.
+[package.metadata.cargo-shear]
+ignored = ["toml"]
