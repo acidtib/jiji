@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/acidtib/jiji/compare/v0.12.1...v0.12.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* prune images by tag so multi-tag images are not refused ([#131](https://github.com/acidtib/jiji/issues/131)) ([79950af](https://github.com/acidtib/jiji/commit/79950af67f92a467c362414f56fe4b973add44df))
+
 ## [0.12.1](https://github.com/acidtib/jiji/compare/v0.12.0...v0.12.1) (2026-10-28)
 
 
