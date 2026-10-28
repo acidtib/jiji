@@ -849,6 +849,23 @@ mocked SSH output alone.
   (`--extract-to "$PWD"`), so compile-time `env!("CARGO_BIN_EXE_jiji")`
   paths still resolve. The archive does not carry `jiji-agent`, so the
   docker shards get it as a separate artifact file next to `jiji`.
+- `proxy-image` builds `jiji-proxy` from the checkout whenever the docker
+  suite runs and either the change touches `crates/jiji-proxy/`,
+  `Cargo.toml`/`Cargo.lock`, or `test/docker/`, or the proxy version isn't
+  on ghcr.io yet. Each shard pushes it to the compose `registry` service
+  (`127.0.0.1:5099`), and vm1/vm2 mirror `ghcr.io/acidtib/jiji-proxy` to it
+  (`test/docker/vm/registries.conf`), falling back to ghcr.io on a miss.
+  **Gotcha (confirmed live, don't reintroduce):** `jiji-cli` pins the
+  sibling `jiji-proxy` version at build time and setup/agent always
+  `pull` it, so without the mirror a release commit that bumps
+  `jiji-proxy` deadlocks: setup pulls an image that's only published after
+  tagging, and tagging waits on this suite. `mise test-docker` builds and
+  pushes the image the same way.
+- The docker shards pin `runs-on: ubuntu-24.04`. On an Ubuntu 26.04
+  runner, the runner kernel's own AppArmor `wg`/`wg-quick` profiles
+  confine `wg` inside the privileged vm1/vm2 (`wg-quick strip`: `fopen:
+  Permission denied`), and jiji's local-include fix can't reach the
+  runner's profiles (confirmed live).
 - `clippy` (`-D warnings`), `clippy-macos` (`jiji-cli`, a shipped
   target), `fmt`, `deps` (`cargo update --locked`, `cargo shear`,
   `osv-scanner` against `osv-scanner.toml`), and `workflows` (actionlint,

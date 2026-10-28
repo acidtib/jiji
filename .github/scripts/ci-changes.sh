@@ -7,6 +7,8 @@
 #                        their reverse deps; empty means the full suite
 #   run_macos            clippy jiji-cli on macOS (a shipped release target)
 #   run_docker           docker-in-docker integration suite
+#   build_proxy_image    build jiji-proxy from the checkout for the docker suite
+#                        (its version is unpublished, or the change touches it)
 #   run_deps             lockfile, unused-dependency, and OSV checks
 #   run_workflow_checks  actionlint and zizmor
 #
@@ -30,6 +32,16 @@ emit() {
   out run_docker "$4"
   out run_deps "$5"
   out run_workflow_checks "$6"
+  out build_proxy_image "$7"
+}
+
+proxy_published() {
+  local version token
+  version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/jiji-proxy/Cargo.toml | head -1)"
+  token="$(curl -fsSL "https://ghcr.io/token?scope=repository:acidtib/jiji-proxy:pull" | jq -r .token)" || return 1
+  curl -fsIo /dev/null -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+    "https://ghcr.io/v2/acidtib/jiji-proxy/manifests/v$version"
 }
 
 EVENT_NAME="${EVENT_NAME:?EVENT_NAME is required}"
@@ -37,7 +49,7 @@ EVENT_NAME="${EVENT_NAME:?EVENT_NAME is required}"
 # A release PR only bumps versions; its merge commit runs the full suite on main.
 if [ "${HEAD_REF:-}" = "release-please--branches--main" ]; then
   echo "Release PR, skipping everything"
-  emit false "" false false false false
+  emit false "" false false false false false
   exit 0
 fi
 
@@ -58,14 +70,14 @@ elif [ "$EVENT_NAME" = "push" ] && [ -n "${BEFORE_SHA:-}" ] \
   compare="$BEFORE_SHA"
 else
   echo "No comparable base ($EVENT_NAME), running everything"
-  emit true "" true true true true
+  emit true "" true true true true true
   exit 0
 fi
 
 changed="$(git diff --name-only "$compare" HEAD)"
 if [ -z "$changed" ]; then
   echo "No changed files"
-  emit false "" false false false false
+  emit false "" false false false false false
   exit 0
 fi
 echo "Changed files since ${compare:0:12}:"
@@ -85,7 +97,7 @@ fi
 non_code='\.md$|^docs/|^LICENSE|^\.gitignore$|^\.release-please-manifest\.json$|^release-please-config\.json$|^\.github/(?!workflows/ci\.yml$|scripts/ci-)'
 if ! echo "$changed" | grep -qvP "$non_code"; then
   echo "No code changes"
-  emit false "" false false "$run_deps" "$run_workflow_checks"
+  emit false "" false false "$run_deps" "$run_workflow_checks" false
   exit 0
 fi
 
@@ -95,9 +107,19 @@ if [ "$EVENT_NAME" = "push" ] && [ "$is_release_push" = false ]; then
   run_docker=false
 fi
 
+build_proxy_image=false
+if [ "$run_docker" = true ]; then
+  if has '^crates/jiji-proxy/|^Cargo\.(toml|lock)$|^test/docker/'; then
+    build_proxy_image=true
+  elif ! proxy_published; then
+    echo "jiji-proxy's version is not published yet"
+    build_proxy_image=true
+  fi
+fi
+
 full() {
   echo "$1, running the full suite"
-  emit true "" true "$run_docker" "$run_deps" "$run_workflow_checks"
+  emit true "" true "$run_docker" "$run_deps" "$run_workflow_checks" "$build_proxy_image"
   exit 0
 }
 
@@ -138,4 +160,4 @@ done
 
 filter="$(for pkg in $packages; do echo "rdeps($pkg)"; done | paste -sd'|' | sed 's/|/ | /g')"
 echo "Changed packages:$packages"
-emit true "$filter" "$run_macos" "$run_docker" "$run_deps" "$run_workflow_checks"
+emit true "$filter" "$run_macos" "$run_docker" "$run_deps" "$run_workflow_checks" "$build_proxy_image"
