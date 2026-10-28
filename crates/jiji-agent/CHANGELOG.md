@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.4](https://github.com/acidtib/jiji/compare/jiji-agent-v0.7.3...jiji-agent-v0.7.4) (2026-10-28)
+
+
+### Bug Fixes
+
+* keep each project's TCP routes in its own nftables tables ([#129](https://github.com/acidtib/jiji/issues/129)) ([0190d55](https://github.com/acidtib/jiji/commit/0190d5559a9bd84034dbec051492a26a224e20d4))
+* never replace a newer shared jiji-proxy ([#128](https://github.com/acidtib/jiji/issues/128)) ([597ad3a](https://github.com/acidtib/jiji/commit/597ad3abae0af1c3313a6f7b473c5a508f8528a2))
+
 ## [0.7.3](https://github.com/acidtib/jiji/compare/jiji-agent-v0.7.2...jiji-agent-v0.7.3) (2026-10-27)
 
 ## [0.7.2](https://github.com/acidtib/jiji/compare/jiji-agent-v0.7.1...jiji-agent-v0.7.2) (2026-10-19)
