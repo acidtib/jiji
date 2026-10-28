@@ -341,7 +341,7 @@ jobs:
       - name: No unused dependencies
         run: cargo shear
 
-      # Triage a finding with the fix-osv-finding skill; ignores live in osv-scanner.toml.
+      # Ignores live in osv-scanner.toml; each needs a reason the affected code path is unreachable.
       - name: No unaddressed advisories
         run: osv-scanner -r .
 
