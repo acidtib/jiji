@@ -3,7 +3,7 @@
 This document records current architectural invariants and the reasoning that
 is easy to lose when changing Jiji. Use the source files linked in each
 section for implementation detail. User-facing behavior belongs in the docs
-site at `~/Code/jiji-website/app/docs/`.
+site (https://jiji.run/docs).
 
 Do not add release history, phase-by-phase migration notes, or closed incident
 reports here. Preserve a past bug only when it establishes a constraint that
@@ -443,6 +443,14 @@ must recompute a spec's expected hash using the same absolutized
 form reports every installed job as permanently `drifted`, regardless of
 whether anything actually changed.
 
+A third, found by real-host testing (`docker_cron_ownership_transfer_test.rs`):
+the sweep built its session set from the service's own current `servers:`,
+so a host dropped from that list could never be swept again. Whenever the
+service has `crons:` configured, the sweep now reaches every server in the
+project (`config.servers`). A service with no `crons:` never widens beyond
+its own `servers:` (`restart_without_hosts_filter_never_contacts_an_unrelated_server`
+in `service_restart_test.rs`).
+
 Two gotchas confirmed live, both because `jiji-agent` spawns cron containers
 directly via `tokio::process::Command`, never over SSH:
 
@@ -606,7 +614,10 @@ preflight. Debian and Ubuntu use the pinned, checksum-verified static Podman
 bundle. Fedora and RHEL use `dnf`. An installed Podman below the required
 version is upgraded.
 
-The managed static Podman configuration uses crun and cgroupfs. Podman exec
+The managed static Podman configuration uses crun and cgroupfs. Its
+`storage.conf` `mountopt` must never include `fsync=0`: it is not a valid
+kernel overlayfs option and fails every container mount with EINVAL
+(confirmed live on Ubuntu 24.04). Podman exec
 commands pass `--no-session` to avoid a PAM session for every health probe or
 proxy command. Network bootstrap enables linger for the SSH user so systemd
 does not terminate rootful containers when the SSH session closes.
