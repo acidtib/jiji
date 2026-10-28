@@ -32,7 +32,7 @@ pub struct ImageRetentionSpec {
 /// `retain_n == 0` loses this property, which already carries the same risk today via manual
 /// `jiji service prune --retain 0`.
 ///
-/// Returns only per-image failures as `(image_id, error)` pairs: removals and retained skips are
+/// Returns only per-image failures as `(image, error)` pairs: removals and retained skips are
 /// not surfaced, since the sole caller (`local_reconcile::fold_retention_problems`) only reports
 /// what went wrong.
 pub async fn prune_repo(
@@ -62,8 +62,9 @@ async fn prune_repo_with_binary(
         if in_use.contains(&name) {
             continue;
         }
-        if let Some(error) = remove_image(binary, engine, &id).await {
-            failures.push((id, error));
+        let target = removal_target(id, name);
+        if let Some(error) = remove_image(binary, engine, &target).await {
+            failures.push((target, error));
         }
     }
     Ok(failures)
@@ -115,12 +116,22 @@ async fn list_container_images(binary: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Removes by `repo:tag` so an image ID shared by several tags is untagged rather than refused;
+/// the image itself goes once its last tag does. Untagged entries can only be removed by ID.
+fn removal_target(id: String, name: String) -> String {
+    if name.ends_with(":<none>") {
+        id
+    } else {
+        name
+    }
+}
+
 /// `None` when the image was removed or already absent; `Some(error)` only for a real removal
 /// failure worth reporting.
-async fn remove_image(binary: &str, engine: Engine, image_id: &str) -> Option<String> {
+async fn remove_image(binary: &str, engine: Engine, image: &str) -> Option<String> {
     let output = tokio::process::Command::new(binary)
         .arg("rmi")
-        .arg(image_id)
+        .arg(image)
         .output()
         .await;
     match output {
@@ -134,7 +145,7 @@ async fn remove_image(binary: &str, engine: Engine, image_id: &str) -> Option<St
             }
         }
         Err(error) => {
-            warn!(%error, %engine, image_id, "could not run image removal");
+            warn!(%error, %engine, image, "could not run image removal");
             Some(error.to_string())
         }
     }
@@ -230,7 +241,28 @@ fi
                 .await
                 .unwrap();
         assert!(failures.is_empty());
-        assert_eq!(rmi_log(dir.path()), "img3\n");
+        assert_eq!(rmi_log(dir.path()), "demo/web:v3\n");
+    }
+
+    #[tokio::test]
+    async fn an_image_shared_by_several_tags_is_removed_tag_by_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = logging_engine(
+            dir.path(),
+            &[
+                "img1 demo/web:v3",
+                "img2 demo/web:v2",
+                "img2 demo/web:v1",
+                "img3 demo/web:<none>",
+            ],
+            &[],
+        );
+        let failures =
+            prune_repo_with_binary(engine.to_str().unwrap(), Engine::Podman, "demo/web", 1)
+                .await
+                .unwrap();
+        assert!(failures.is_empty());
+        assert_eq!(rmi_log(dir.path()), "demo/web:v2\ndemo/web:v1\nimg3\n");
     }
 
     #[tokio::test]
@@ -262,7 +294,7 @@ fi
                 .await
                 .unwrap();
         assert!(failures.is_empty());
-        assert_eq!(rmi_log(dir.path()), "img3\n");
+        assert_eq!(rmi_log(dir.path()), "demo/web:v3\n");
     }
 
     #[tokio::test]
@@ -288,7 +320,7 @@ fi
         assert_eq!(
             failures,
             vec![(
-                "img2".to_string(),
+                "demo/web:v2".to_string(),
                 "image is referenced in multiple repositories".to_string()
             )]
         );
