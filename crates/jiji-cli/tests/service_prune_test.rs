@@ -222,13 +222,15 @@ fn run_jiji_service_prune(
 }
 
 const IMAGES_LIST_COMMAND: &str =
-    "docker images --format '{{.ID}}' --filter reference=localhost:31270/demo-web";
+    "docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' --filter reference=localhost:31270/demo-web";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn prune_removes_images_past_the_retained_count() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(IMAGES_LIST_COMMAND.to_string(), success("id3\nid2\nid1\n"));
+    responses.insert(IMAGES_LIST_COMMAND.to_string(), success(
+            "id3 localhost:31270/demo-web:v3\nid2 localhost:31270/demo-web:v2\nid2 localhost:31270/demo-web:v1\nid1 localhost:31270/demo-web:<none>\n",
+        ));
 
     let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
     let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path, 2));
@@ -238,18 +240,20 @@ async fn prune_removes_images_past_the_retained_count() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.contains("demo:web:app: 1 image(s) removed"),
+        stdout.contains("demo:web:app: 2 image(s) removed"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("Pruned 1 image(s) across 1 server(s) in "),
+        stdout.contains("Pruned 2 image(s) across 1 server(s) in "),
         "stdout: {stdout}"
     );
 
+    // id2 carries two tags: the old one is untagged by name, never removed by the shared ID.
     let received = harness.received.lock().unwrap().clone();
+    assert!(received.contains(&"docker rmi localhost:31270/demo-web:v1".to_string()));
     assert!(received.contains(&"docker rmi id1".to_string()));
     assert!(!received.contains(&"docker rmi id2".to_string()));
-    assert!(!received.contains(&"docker rmi id3".to_string()));
+    assert!(!received.contains(&"docker rmi localhost:31270/demo-web:v2".to_string()));
     assert!(
         received
             .iter()
@@ -262,7 +266,10 @@ async fn prune_removes_images_past_the_retained_count() {
 async fn prune_retains_an_image_still_referenced_by_a_container() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();
-    responses.insert(IMAGES_LIST_COMMAND.to_string(), success("id2\nid1\n"));
+    responses.insert(
+        IMAGES_LIST_COMMAND.to_string(),
+        success("id2 localhost:31270/demo-web:v2\nid1 localhost:31270/demo-web:<none>\n"),
+    );
     responses.insert(
         "docker ps -a --filter ancestor=id1 --format '{{.Names}}'".to_string(),
         success("demo-web-a\n"),

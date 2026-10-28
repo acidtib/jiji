@@ -305,8 +305,9 @@ pub async fn run(
     Ok(())
 }
 
-/// Lists image IDs for `repo` and removes every one after the first `retain_n`, skipping any
-/// still referenced by a container. Deliberately relies on the engine's own `images` listing
+/// Lists images for `repo` and removes every one after the first `retain_n`, skipping any
+/// still referenced by a container. Removes by `repo:tag` so an ID shared by several tags is
+/// untagged instead of refused; untagged entries can only be removed by ID. Deliberately relies on the engine's own `images` listing
 /// order (newest first for both Docker and Podman) rather than parsing `CreatedAt` -- that field's
 /// format is not reliably sortable and differs subtly between the two engines.
 async fn prune_service_images(
@@ -315,7 +316,9 @@ async fn prune_service_images(
     repo: &str,
     retain_n: usize,
 ) -> anyhow::Result<Vec<(String, PruneStepResult)>> {
-    let command = format!("{engine} images --format '{{{{.ID}}}}' --filter reference={repo}");
+    let command = format!(
+        "{engine} images --format '{{{{.ID}}}} {{{{.Repository}}}}:{{{{.Tag}}}}' --filter reference={repo}"
+    );
     let result = session.execute(&command).await?;
     if !result.success {
         anyhow::bail!(
@@ -324,16 +327,28 @@ async fn prune_service_images(
             result.stderr.trim()
         );
     }
-    let ids: Vec<String> = result
+    let mut images = Vec::new();
+    for line in result
         .stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect();
+    {
+        let Some((id, name)) = line.split_once(' ') else {
+            anyhow::bail!(
+                "Unexpected `{engine} images` output on {}: {line:?}. Check the engine with `{engine} images` and retry.",
+                session.host()
+            );
+        };
+        images.push(if name.ends_with(":<none>") {
+            id.to_string()
+        } else {
+            name.to_string()
+        });
+    }
 
     let mut steps = Vec::new();
-    for id in ids.into_iter().skip(retain_n) {
+    for id in images.into_iter().skip(retain_n) {
         let referenced = container_ops::image_referenced_elsewhere(session, engine, &id).await?;
         if !referenced.is_empty() {
             steps.push((
