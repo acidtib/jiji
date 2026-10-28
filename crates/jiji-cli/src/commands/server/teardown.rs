@@ -661,6 +661,17 @@ async fn execute_host_teardown(
         ));
     }
 
+    let tcp_tables_step = "jiji-proxy TCP route tables".to_string();
+    match crate::proxy_ingress::remove_project_tcp_tables(session, engine, project).await {
+        Ok(()) => steps.push((tcp_tables_step, TeardownStepResult::Removed)),
+        Err(error) => steps.push((
+            tcp_tables_step,
+            TeardownStepResult::Failed {
+                error: error.to_string(),
+            },
+        )),
+    }
+
     match network_teardown::remove_bridge_and_engine_network(session, engine, project).await {
         Ok(network_teardown::NetworkRemovalOutcome::Removed) => steps.push((
             "jiji bridge network".to_string(),

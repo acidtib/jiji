@@ -689,7 +689,6 @@ async fn apply_connected(
                             server_plan.proxy_address,
                             public_host,
                             true,
-                            &[],
                         )
                         .await
                     }
@@ -1559,7 +1558,6 @@ async fn rollback_transaction(
                                     address,
                                     public_host,
                                     true,
-                                    &[],
                                 )
                                 .await
                             }

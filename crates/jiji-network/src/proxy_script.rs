@@ -94,6 +94,7 @@ pub const INTERNAL_HTTPS_PORT: u16 = 8443;
 /// doesn't depend on the jiji-proxy binary crate).
 pub const INTERNAL_TCP_RELAY_PORT: u16 = 39100;
 pub const INGRESS_TABLE: &str = "jiji_proxy_ingress";
+pub const INGRESS_RULES_DIR: &str = "/etc/jiji/proxy-ingress";
 
 /// The one project bridge jiji-proxy should be attached to as its *primary* network at creation
 /// time (every other project's bridge is attached afterward via `network connect`, additive).
@@ -230,6 +231,7 @@ pub fn is_missing_container_error(stderr: &str) -> bool {
 /// of problem -- see `bridge_script::render_restore_script`'s identical `ensure_rule` use for
 /// WireGuard<->bridge forwarding).
 pub fn render_nftables(
+    table: &str,
     address: Ipv4Addr,
     public_host: Ipv4Addr,
     include_http: bool,
@@ -249,8 +251,8 @@ pub fn render_nftables(
         ));
     }
     format!(
-        "delete table ip {INGRESS_TABLE}\n\
-         table ip {INGRESS_TABLE} {{\n\
+        "delete table ip {table}\n\
+         table ip {table} {{\n\
          \tchain prerouting {{\n\
          \t\ttype nat hook prerouting priority dstnat - 5; policy accept;\n\
          {rules}\
@@ -259,11 +261,8 @@ pub fn render_nftables(
     )
 }
 
-/// Table name for the second-stage NAT applied *inside* jiji-proxy's own container network
-/// namespace (see `render_relay_netns_apply_script`) -- distinct from `INGRESS_TABLE`, which lives
-/// in the host's namespace, so the two can never collide or be confused for one another when
-/// inspecting either namespace independently.
-pub const RELAY_NAT_TABLE: &str = "jiji_tcp_relay";
+/// The pre-per-project relay table every project's agent used to overwrite with only its own ports.
+const LEGACY_RELAY_NAT_TABLE: &str = "jiji_tcp_relay";
 
 /// Renders the in-container-netns NAT ruleset that remaps each TCP route's own public port to
 /// jiji-proxy's fixed internal relay listener (`INTERNAL_TCP_RELAY_PORT`). This is the second half
@@ -277,7 +276,7 @@ pub const RELAY_NAT_TABLE: &str = "jiji_tcp_relay";
 /// rather than nothing at all, keeping this namespace's table converged to exactly the current
 /// route set on every call, the same "unconditionally re-render the whole table" pattern used
 /// throughout this module.
-fn render_relay_netns_nftables(tcp_ports: &[u16]) -> String {
+fn render_relay_netns_nftables(table: &str, tcp_ports: &[u16]) -> String {
     let mut rules = String::new();
     for port in tcp_ports {
         rules.push_str(&format!(
@@ -285,8 +284,8 @@ fn render_relay_netns_nftables(tcp_ports: &[u16]) -> String {
         ));
     }
     format!(
-        "delete table ip {RELAY_NAT_TABLE}\n\
-         table ip {RELAY_NAT_TABLE} {{\n\
+        "delete table ip {table}\n\
+         table ip {table} {{\n\
          \tchain prerouting {{\n\
          \t\ttype nat hook prerouting priority dstnat - 5; policy accept;\n\
          {rules}\
@@ -311,10 +310,11 @@ fn render_relay_netns_nftables(tcp_ports: &[u16]) -> String {
 /// installed inside the container. Pre-creating the table (ignoring failure) mirrors the host-side
 /// ingress table's own idempotent bring-up, tolerating a cold boot where the table doesn't exist yet
 /// and the ruleset's own leading `delete table` line would otherwise fail.
-pub fn render_relay_netns_apply_script(pid: u32, tcp_ports: &[u16]) -> String {
-    let ruleset = render_relay_netns_nftables(tcp_ports);
+pub fn render_relay_netns_apply_script(pid: u32, table: &str, tcp_ports: &[u16]) -> String {
+    let ruleset = render_relay_netns_nftables(table, tcp_ports);
     format!(
-        "nsenter --net=/proc/{pid}/ns/net -- nft add table ip {RELAY_NAT_TABLE} 2>/dev/null || true\n\
+        "nsenter --net=/proc/{pid}/ns/net -- nft delete table ip {LEGACY_RELAY_NAT_TABLE} 2>/dev/null || true\n\
+         nsenter --net=/proc/{pid}/ns/net -- nft add table ip {table} 2>/dev/null || true\n\
          nsenter --net=/proc/{pid}/ns/net -- nft -f - <<'JIJI_RELAY_NFT'\n\
          {ruleset}\
          JIJI_RELAY_NFT\n"
@@ -533,12 +533,14 @@ mod tests {
     #[test]
     fn nftables_dnats_both_public_ports_to_the_given_address_in_prerouting_only() {
         let rendered = render_nftables(
+            INGRESS_TABLE,
             "100.107.192.4".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
             true,
             &[],
         );
         assert!(rendered.starts_with(&format!("delete table ip {INGRESS_TABLE}\n")));
+        assert!(rendered.contains(&format!("table ip {INGRESS_TABLE} {{")));
         assert_eq!(
             rendered
                 .matches("ip daddr 203.0.113.10 tcp dport 80 dnat to 100.107.192.4:8080")
@@ -565,6 +567,7 @@ mod tests {
         // namespace (`render_relay_netns_nftables`) -- see `render_nftables`'s own doc comment for
         // why (SO_ORIGINAL_DST only recovers a rewrite from the same namespace it happened in).
         let rendered = render_nftables(
+            INGRESS_TABLE,
             "100.107.192.4".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
             true,
@@ -596,6 +599,7 @@ mod tests {
         // dynamic public port has no such native alternative on either engine, so it's always
         // included regardless.
         let rendered = render_nftables(
+            INGRESS_TABLE,
             "100.107.192.4".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
             false,
@@ -608,8 +612,8 @@ mod tests {
 
     #[test]
     fn relay_netns_nftables_maps_every_route_port_to_the_shared_internal_relay_port() {
-        let rendered = render_relay_netns_nftables(&[5432, 6379]);
-        assert!(rendered.starts_with(&format!("delete table ip {RELAY_NAT_TABLE}\n")));
+        let rendered = render_relay_netns_nftables("jiji_tcp_relay_demo", &[5432, 6379]);
+        assert!(rendered.starts_with("delete table ip jiji_tcp_relay_demo\n"));
         assert_eq!(rendered.matches("tcp dport 5432 dnat to :39100").count(), 1);
         assert_eq!(rendered.matches("tcp dport 6379 dnat to :39100").count(), 1);
         // No address restriction here: this table lives inside jiji-proxy's own netns, where every
@@ -619,17 +623,19 @@ mod tests {
 
     #[test]
     fn relay_netns_nftables_still_clears_the_table_when_there_are_no_routes() {
-        let rendered = render_relay_netns_nftables(&[]);
-        assert!(rendered.starts_with(&format!("delete table ip {RELAY_NAT_TABLE}\n")));
+        let rendered = render_relay_netns_nftables("jiji_tcp_relay_demo", &[]);
+        assert!(rendered.starts_with("delete table ip jiji_tcp_relay_demo\n"));
         assert!(!rendered.contains("dnat to"));
     }
 
     #[test]
     fn relay_netns_apply_script_nsenters_into_the_given_pid_and_embeds_the_ruleset() {
-        let script = render_relay_netns_apply_script(4242, &[5432]);
-        assert!(
-            script.contains("nsenter --net=/proc/4242/ns/net -- nft add table ip jiji_tcp_relay")
-        );
+        let script = render_relay_netns_apply_script(4242, "jiji_tcp_relay_demo", &[5432]);
+        assert!(script
+            .contains("nsenter --net=/proc/4242/ns/net -- nft add table ip jiji_tcp_relay_demo"));
+        assert!(script.contains(
+            "nsenter --net=/proc/4242/ns/net -- nft delete table ip jiji_tcp_relay 2>/dev/null"
+        ));
         assert!(script.contains("nsenter --net=/proc/4242/ns/net -- nft -f - <<'JIJI_RELAY_NFT'"));
         assert!(script.contains("tcp dport 5432 dnat to :39100"));
         assert!(script.trim_end().ends_with("JIJI_RELAY_NFT"));
@@ -642,6 +648,7 @@ mod tests {
         // a later chain's own verdict at the same hook, so this table never even tries; see
         // render_forward_accept_script for the fix that actually works.
         let rendered = render_nftables(
+            INGRESS_TABLE,
             "100.107.192.4".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
             false,
@@ -691,6 +698,7 @@ mod tests {
         // cross-host mesh traffic on port 80/443 gets silently hijacked back to this host's own
         // proxy instead of ever reaching its real destination (confirmed live, kamal-proxy era).
         let rendered = render_nftables(
+            INGRESS_TABLE,
             "100.107.192.4".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
             true,

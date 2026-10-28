@@ -118,6 +118,23 @@ pub fn service_nat_table_name(project: &str) -> String {
     )
 }
 
+/// Host nftables table holding this project's TCP-route DNAT rules. Per project so one project's
+/// agent never rewrites another project's ports on a shared host.
+pub fn tcp_ingress_table_name(project: &str) -> String {
+    format!(
+        "jiji_tcp_ingress_{}",
+        systemd_unit_slug(project).replace('-', "_")
+    )
+}
+
+/// nftables table inside jiji-proxy's network namespace holding this project's TCP relay remaps.
+pub fn tcp_relay_table_name(project: &str) -> String {
+    format!(
+        "jiji_tcp_relay_{}",
+        systemd_unit_slug(project).replace('-', "_")
+    )
+}
+
 /// Deterministic TCP port for the agent's catalog/desired-state anti-entropy listener, one per
 /// project (not per server, same rationale as [`wireguard_port`]). A distinct range from
 /// `wireguard_port`'s `51820..=55819` keeps the two purposes visibly non-overlapping even though
@@ -198,6 +215,22 @@ mod tests {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
             assert!(!slug.starts_with('-') && !slug.ends_with('-'));
         }
+    }
+
+    #[test]
+    fn tcp_table_names_are_bare_nftables_identifiers_unique_per_project() {
+        for project in adversarial_inputs() {
+            for table in [
+                tcp_ingress_table_name(project),
+                tcp_relay_table_name(project),
+            ] {
+                assert!(table
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'));
+            }
+        }
+        assert_ne!(tcp_ingress_table_name("a"), tcp_ingress_table_name("b"));
+        assert_ne!(tcp_relay_table_name("a"), tcp_relay_table_name("b"));
     }
 
     #[test]
