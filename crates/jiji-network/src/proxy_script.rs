@@ -28,7 +28,55 @@ pub const PROXY_VERSION: &str = env!("JIJI_PROXY_BUILD_VERSION");
 /// function rather than a `const` since it's assembled from
 /// `PROXY_VERSION` at runtime.
 pub fn image() -> String {
-    format!("ghcr.io/acidtib/jiji-proxy:v{PROXY_VERSION}")
+    format!("{IMAGE_REPOSITORY}:v{PROXY_VERSION}")
+}
+
+const IMAGE_REPOSITORY: &str = "ghcr.io/acidtib/jiji-proxy";
+
+/// What a reconciler should do with the jiji-proxy container it inspected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyState {
+    Current,
+    /// Running a newer jiji-proxy than this build pairs with. Another project on the host
+    /// upgraded it; replacing it would downgrade every project sharing it.
+    Newer,
+    Replace,
+}
+
+/// `inspect` is the `{{.State.Status}} {{jiji.proxy-config label}} {{.Config.Image}}` line, or
+/// `None` when the container could not be inspected.
+pub fn classify_proxy(inspect: Option<&str>, fingerprint: &str) -> ProxyState {
+    let Some(inspect) = inspect else {
+        return ProxyState::Replace;
+    };
+    let mut fields = inspect.split_whitespace();
+    let (Some(status), Some(label), Some(running_image), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return ProxyState::Replace;
+    };
+    if status != "running" {
+        return ProxyState::Replace;
+    }
+    if label == fingerprint && running_image == image() {
+        return ProxyState::Current;
+    }
+    let running_version = running_image
+        .strip_prefix(IMAGE_REPOSITORY)
+        .and_then(|tag| tag.strip_prefix(":v"))
+        .and_then(parse_release_version);
+    match (running_version, parse_release_version(PROXY_VERSION)) {
+        (Some(running), Some(own)) if running > own => ProxyState::Newer,
+        _ => ProxyState::Replace,
+    }
+}
+
+fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((major, minor, patch))
 }
 
 pub const CERTS_DIR: &str = "/etc/jiji/certs";
@@ -357,6 +405,57 @@ pub fn surviving_proxy_address(output: &str) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bump_major(version: &str) -> String {
+        let (major, _, _) = parse_release_version(version).expect("build version parses");
+        format!("{}.0.0", major + 1)
+    }
+
+    #[test]
+    fn classify_proxy_accepts_its_own_image_and_fingerprint() {
+        let inspect = format!("running v1-docker {}", image());
+        assert_eq!(
+            classify_proxy(Some(&inspect), "v1-docker"),
+            ProxyState::Current
+        );
+    }
+
+    #[test]
+    fn classify_proxy_never_replaces_a_newer_running_proxy() {
+        let newer = format!("{IMAGE_REPOSITORY}:v{}", bump_major(PROXY_VERSION));
+        assert_eq!(
+            classify_proxy(Some(&format!("running v1-docker {newer}")), "v1-docker"),
+            ProxyState::Newer
+        );
+        assert_eq!(
+            classify_proxy(Some(&format!("running v2-docker {newer}")), "v1-docker"),
+            ProxyState::Newer
+        );
+    }
+
+    #[test]
+    fn classify_proxy_replaces_an_older_stopped_foreign_or_missing_proxy() {
+        let older = format!("{IMAGE_REPOSITORY}:v0.0.1");
+        let newer = format!("{IMAGE_REPOSITORY}:v{}", bump_major(PROXY_VERSION));
+        for inspect in [
+            Some(format!("running v1-docker {older}")),
+            Some(format!("exited v1-docker {newer}")),
+            Some(format!(
+                "running v1-docker example.com/other:v{}",
+                bump_major(PROXY_VERSION)
+            )),
+            Some(format!("running v1-docker {IMAGE_REPOSITORY}:latest")),
+            Some(format!("running v2-docker {}", image())),
+            Some(String::new()),
+            None,
+        ] {
+            assert_eq!(
+                classify_proxy(inspect.as_deref(), "v1-docker"),
+                ProxyState::Replace,
+                "{inspect:?}"
+            );
+        }
+    }
 
     #[test]
     fn docker_run_omits_network_when_none_given_and_needs_no_exec_privileges() {

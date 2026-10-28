@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use jiji_network::{image, BridgeEngineKind, ProxyRunNetwork, CONTAINER_NAME};
+use jiji_network::{
+    classify_proxy, image, BridgeEngineKind, ProxyRunNetwork, ProxyState, CONTAINER_NAME,
+};
 
 use crate::engine::Engine;
 use crate::host_lease;
@@ -30,24 +32,25 @@ fn engine_kind(engine: Engine) -> BridgeEngineKind {
 }
 
 pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String> {
-    // No per-host state, so it's always safe to re-render and overwrite -- and it must be in
-    // place before `recreate` ever starts a fresh container, which mounts CONFIG_DIR read-only.
-    upload_daemon_config()?;
-
     let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
-    let is_current = is_current_and_running(engine, &fingerprint).await?;
+    let state = proxy_state(engine, &fingerprint).await?;
+    // A newer proxy belongs to another project's newer agent; its config is not ours to rewrite.
+    // Otherwise the config must be in place before `recreate` mounts CONFIG_DIR read-only.
+    if state != ProxyState::Newer {
+        upload_daemon_config()?;
+    }
     // Attempt the lease even when the proxy is current. This lets an upgraded agent recover an
     // old lock inode retained by a Podman helper after a CLI-driven restart. A healthy proxy would
     // otherwise never enter the replacement branch, so the stale lease would remain indefinitely.
     let lease = host_lease::try_acquire(Path::new(host_lease::DEFAULT_PATH))
         .map_err(|error| format!("could not acquire the host proxy lease: {error}"))?;
-    if !is_current {
+    if state == ProxyState::Replace {
         let Some(_guard) = lease.as_ref() else {
             return Ok(()); // another project's agent is already handling it this tick
         };
         // Re-check now that the lease is held: another project's agent may have already
         // created/recreated it between the check above and acquiring the lease.
-        if !is_current_and_running(engine, &fingerprint).await? {
+        if proxy_state(engine, &fingerprint).await? == ProxyState::Replace {
             recreate(engine, &fingerprint, config).await?;
         }
     }
@@ -113,7 +116,7 @@ pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String
 
 /// jiji-proxy's own container PID as seen from the host -- the PID `nsenter --net=/proc/{pid}/ns/net`
 /// needs to join its network namespace. Only ever called once `reconcile` has already confirmed the
-/// container is running (via `is_current_and_running`/`wait_until_running` above).
+/// container is running (via `proxy_state`/`wait_until_running` above).
 async fn container_pid(engine: Engine) -> Result<u32, String> {
     let output = Command::new(engine.as_str())
         .args(["inspect", CONTAINER_NAME, "--format", "{{.State.Pid}}"])
@@ -143,7 +146,7 @@ fn upload_daemon_config() -> Result<(), String> {
     std::fs::write(&path, jiji_network::render_daemon_config()).map_err(|error| error.to_string())
 }
 
-async fn is_current_and_running(engine: Engine, fingerprint: &str) -> Result<bool, String> {
+async fn proxy_state(engine: Engine, fingerprint: &str) -> Result<ProxyState, String> {
     let output = Command::new(engine.as_str())
         .args([
             "inspect",
@@ -154,9 +157,11 @@ async fn is_current_and_running(engine: Engine, fingerprint: &str) -> Result<boo
         .output()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(output.status.success()
-        && String::from_utf8_lossy(&output.stdout).trim()
-            == format!("running {fingerprint} {}", image()))
+    let inspect = String::from_utf8_lossy(&output.stdout);
+    Ok(classify_proxy(
+        output.status.success().then_some(inspect.trim()),
+        fingerprint,
+    ))
 }
 
 async fn recreate(engine: Engine, fingerprint: &str, config: &MeshConfig) -> Result<(), String> {
