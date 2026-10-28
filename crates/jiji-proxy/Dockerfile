@@ -6,7 +6,7 @@
 
 # 1.85 (phase 1's original pin) is no longer enough once phase 4 pulled in
 # instant-acme's dependency tree (rcgen 0.14/time 0.3/icu_* need 1.86-1.88).
-FROM rust:1.90-bookworm AS builder
+FROM lukemathwalker/cargo-chef:0.1.73-rust-1.90-bookworm AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
     cmake \
@@ -14,6 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY lib ./lib
+RUN cargo chef prepare --recipe-path recipe.json
+
+# The recipe only changes with manifests or Cargo.lock, so a source-only change
+# reuses the cached dependency layer.
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release -p jiji-proxy --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY lib ./lib

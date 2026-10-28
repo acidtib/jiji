@@ -109,7 +109,7 @@ fi
 
 build_proxy_image=false
 if [ "$run_docker" = true ]; then
-  if has '^crates/jiji-proxy/|^Cargo\.(toml|lock)$|^test/docker/'; then
+  if has '^crates/jiji-proxy/(src/|Cargo\.toml$|Dockerfile$)|^Cargo\.(toml|lock)$|^test/docker/'; then
     build_proxy_image=true
   elif ! proxy_published; then
     echo "jiji-proxy's version is not published yet"
