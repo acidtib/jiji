@@ -18,6 +18,7 @@ use tokio::process::Command;
 
 use jiji_network::{
     classify_proxy, image, BridgeEngineKind, ProxyRunNetwork, ProxyState, CONTAINER_NAME,
+    INGRESS_RULES_DIR, INGRESS_TABLE,
 };
 
 use crate::engine::Engine;
@@ -75,19 +76,36 @@ pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String
     // TCP routes were pushed into jiji-proxy's own route table successfully but were never actually
     // reachable from outside the host at all, since nothing ever published or forwarded the public
     // port to jiji-proxy's internal TCP relay listener.
-    if engine == Engine::Docker || !tcp_ports.is_empty() {
+    // HTTP lines go in the host-global table; TCP ports go in this project's own table so other
+    // projects' agents never overwrite them.
+    let tcp_table = jiji_network::tcp_ingress_table_name(&config.project_id);
+    let include_http = engine == Engine::Docker;
+    if include_http || !tcp_ports.is_empty() {
         let public_host: Ipv4Addr = config
             .local_runtime
             .public_host
             .parse()
             .map_err(|error| format!("public_host is not a valid IPv4 address: {error}"))?;
-        apply_ingress_rule(
-            config.local_runtime.proxy_address,
-            public_host,
-            engine == Engine::Docker,
-            &tcp_ports,
+        let address = config.local_runtime.proxy_address;
+        if include_http {
+            apply_ingress_table(
+                INGRESS_TABLE,
+                &jiji_network::render_nftables(INGRESS_TABLE, address, public_host, true, &[]),
+            )
+            .await?;
+        }
+        apply_ingress_table(
+            &tcp_table,
+            &jiji_network::render_nftables(&tcp_table, address, public_host, false, &tcp_ports),
         )
         .await?;
+    } else {
+        // Best effort: absent when this project never had TCP routes.
+        let _ = run("nft", &["delete", "table", "ip", &tcp_table]).await;
+    }
+    if !include_http {
+        // Podman never uses the global table; older agents left TCP ports in it.
+        let _ = run("nft", &["delete", "table", "ip", INGRESS_TABLE]).await;
     }
 
     // Unconditional on every engine, unlike the DNAT table above: jiji-proxy always listens on its
@@ -110,7 +128,8 @@ pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String
     // which just clears the table) so a route removed since the last tick doesn't leave a stale
     // in-netns rewrite behind.
     let pid = container_pid(engine).await?;
-    apply_relay_netns_nat(pid, &tcp_ports).await?;
+    let relay_table = jiji_network::tcp_relay_table_name(&config.project_id);
+    apply_relay_netns_nat(pid, &relay_table, &tcp_ports).await?;
     Ok(())
 }
 
@@ -135,8 +154,8 @@ async fn container_pid(engine: Engine) -> Result<u32, String> {
         .map_err(|error| format!("jiji-proxy reported a non-numeric PID: {error}"))
 }
 
-async fn apply_relay_netns_nat(pid: u32, tcp_ports: &[u16]) -> Result<(), String> {
-    let script = jiji_network::render_relay_netns_apply_script(pid, tcp_ports);
+async fn apply_relay_netns_nat(pid: u32, table: &str, tcp_ports: &[u16]) -> Result<(), String> {
+    let script = jiji_network::render_relay_netns_apply_script(pid, table, tcp_ports);
     crate::bridge_bringup::run_script(&script).await
 }
 
@@ -253,24 +272,14 @@ async fn ensure_attached(engine: Engine, config: &MeshConfig) -> Result<(), Stri
     .await
 }
 
-async fn apply_ingress_rule(
-    address: Ipv4Addr,
-    public_host: Ipv4Addr,
-    include_http: bool,
-    tcp_ports: &[u16],
-) -> Result<(), String> {
-    let rules_dir = "/etc/jiji/proxy-ingress";
-    std::fs::create_dir_all(rules_dir).map_err(|error| error.to_string())?;
-    let rules_path = format!("{rules_dir}/rules.nft");
-    std::fs::write(
-        &rules_path,
-        jiji_network::render_nftables(address, public_host, include_http, tcp_ports),
-    )
-    .map_err(|error| error.to_string())?;
+async fn apply_ingress_table(table: &str, ruleset: &str) -> Result<(), String> {
+    std::fs::create_dir_all(INGRESS_RULES_DIR).map_err(|error| error.to_string())?;
+    let rules_path = format!("{INGRESS_RULES_DIR}/{table}.nft");
+    std::fs::write(&rules_path, ruleset).map_err(|error| error.to_string())?;
     // Pre-creating the table tolerates a cold boot, when it doesn't exist yet and the ruleset's own
     // leading `delete table` line would otherwise fail -- always ignored, matching the CLI's own
     // `2>/dev/null || true` for the identical case.
-    let _ = run("nft", &["add", "table", "ip", jiji_network::INGRESS_TABLE]).await;
+    let _ = run("nft", &["add", "table", "ip", table]).await;
     run("nft", &["--file", &rules_path]).await?;
     Ok(())
 }

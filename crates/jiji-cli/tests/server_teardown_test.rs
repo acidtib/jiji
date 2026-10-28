@@ -396,6 +396,38 @@ async fn removes_the_jiji_agent_scoped_to_this_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn removes_only_this_projects_tcp_route_tables() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let responses = one_container_responses("docker");
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config_str(dir.path(), &config_yaml(addr, &key_path, "docker"));
+
+    let output = run_jiji_teardown(&config_path, &["-y"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let ingress_table = jiji_network::tcp_ingress_table_name("demo");
+    let relay_table = jiji_network::tcp_relay_table_name("demo");
+    let received = harness.received.lock().unwrap().clone();
+    assert!(
+        received.iter().any(
+            |c| c.contains(&format!("nft delete table ip {ingress_table} "))
+                && c.contains(&format!("nft delete table ip {relay_table} "))
+        ),
+        "this project's TCP route tables should be removed: {received:?}"
+    );
+    assert!(
+        !received
+            .iter()
+            .any(|c| c.contains(&jiji_network::tcp_ingress_table_name("some-other-project"))),
+        "teardown must never touch another project's TCP route table: {received:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn dry_run_sends_zero_mutating_commands() {
     let (dir, key_path, client_key) = setup_test_dir();
     let responses = one_container_responses("docker");

@@ -108,17 +108,14 @@ pub async fn ensure_proxy(
         .await?;
         // Docker only: see `proxy_ingress` for why `--publish` alone isn't enough on jiji's
         // bridge networks. Re-applied on every call, from any project sharing this host, so it
-        // self-heals and always targets a currently-attached address. TCP-route ports are always
-        // `&[]` here (this is only the one-time synchronous priming step) -- see
-        // `ensure_ingress_rule`'s own doc comment for why the ongoing source of truth is
-        // jiji-agent's own reconcile tick instead.
+        // self-heals and always targets a currently-attached address. TCP-route ports are each
+        // project agent's own table, never written here.
         if engine == ContainerEngine::Docker {
             crate::proxy_ingress::ensure_ingress_rule(
                 session,
                 network.proxy_address,
                 network.public_host,
                 true,
-                &[],
             )
             .await?;
         }

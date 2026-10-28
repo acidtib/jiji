@@ -13,7 +13,8 @@ pub use cidr::Ipv4Cidr;
 pub use error::NetworkPlanError;
 pub use naming::{
     bridge_interface_name, bridge_network_name, catalog_replication_port, project_cidrs,
-    service_nat_table_name, systemd_unit_slug, wireguard_interface_name, wireguard_port,
+    service_nat_table_name, systemd_unit_slug, tcp_ingress_table_name, tcp_relay_table_name,
+    wireguard_interface_name, wireguard_port,
 };
 pub use planner::{
     FirewallPlan, NetworkPlan, NetworkPlanner, RoutePlan, ServerPlan, ServiceEndpointPlan,
@@ -23,7 +24,7 @@ pub use proxy_script::{
     attached_address, classify_proxy, config_fingerprint, image, is_missing_container_error,
     render_daemon_config, render_forward_accept_script, render_nftables,
     render_relay_netns_apply_script, render_run_command, surviving_proxy_address, ProxyRunNetwork,
-    ProxyState, CERTS_DIR, CONFIG_DIR, CONTAINER_NAME, INGRESS_TABLE, INTERNAL_HTTPS_PORT,
-    INTERNAL_HTTP_PORT, PROXY_VERSION, RELAY_NAT_TABLE,
+    ProxyState, CERTS_DIR, CONFIG_DIR, CONTAINER_NAME, INGRESS_RULES_DIR, INGRESS_TABLE,
+    INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT, PROXY_VERSION,
 };
 pub use service_runtime::{NetworkTarget, NetworkedContainerRun};

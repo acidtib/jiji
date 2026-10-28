@@ -33,49 +33,34 @@
 use std::net::Ipv4Addr;
 
 use jiji_config::ContainerEngine;
-use jiji_network::INGRESS_TABLE;
+use jiji_network::{CONTAINER_NAME, INGRESS_TABLE};
 use jiji_ssh::SshSession;
 
-const RULES_DIR: &str = "/etc/jiji/proxy-ingress";
+const RULES_DIR: &str = jiji_network::INGRESS_RULES_DIR;
 const RULES_PATH: &str = "/etc/jiji/proxy-ingress/rules.nft";
 const RESTORE_SCRIPT_PATH: &str = "/etc/jiji/proxy-ingress/restore.sh";
 const UNIT_PATH: &str = "/etc/systemd/system/jiji-proxy-ingress-restore.service";
 const UNIT_NAME: &str = "jiji-proxy-ingress-restore.service";
 
-/// Idempotent: safe to call on every `ensure_proxy`, from any project sharing this host.
+/// Idempotent: safe to call on every `ensure_proxy`, from any project sharing this host. Only the
+/// host-global HTTP table; TCP-route ports live in each project's own table, which only that
+/// project's agent writes.
 ///
-/// `include_http`: whether to also DNAT 80/443 here -- `false` on Podman, whose own bridges
-/// already publish those ports natively (see `render_nftables`'s own doc comment for why adding a
-/// redundant DNAT rule for the same ports risks an unpredictable interaction between two competing
-/// `prerouting` chains). Only gates the DNAT table itself, not the `FORWARD`-chain authorization
-/// below: that's unconditional on every engine, since jiji-proxy always listens on both internal
-/// HTTP ports regardless of which mechanism -- ours or the engine's own native `--publish` --
-/// delivered a packet there (see `render_forward_accept_script`'s own doc comment). `tcp_ports`:
-/// public ports for currently-configured raw TCP routes, always included regardless of engine,
-/// since `--publish` can't add a route's port to an already-running container -- see
-/// `render_nftables`. `ensure_proxy`'s own callers pass an empty slice here -- this is only the
-/// one-time synchronous priming step (`jiji server setup`/`jiji proxy restart`), not the ongoing
-/// source of truth for TCP ports, which is jiji-agent's own continuous reconcile tick
-/// (`jiji-agent/src/proxy_bringup.rs`, driven from its live TCP route list); this call converging
-/// on the right rule immediately and the agent's next tick adding any TCP ports shortly after is
-/// consistent with the same "synchronous priming plus continuous background reconciliation"
-/// pattern this module already uses for bridge/WireGuard bring-up. `ensure_proxy` itself only
-/// calls this at all when `engine == Docker` -- on Podman, the FORWARD-chain opening for HTTP is
-/// primed by the agent's own reconcile tick instead, which starts moments after `server setup`
-/// completes.
+/// `include_http`: whether to DNAT 80/443 at all -- `false` on Podman, whose own bridges already
+/// publish those ports natively. The `FORWARD`-chain authorization is unconditional on every
+/// engine, since jiji-proxy always listens on both internal HTTP ports.
 pub async fn ensure_ingress_rule(
     session: &SshSession,
     address: Ipv4Addr,
     public_host: Ipv4Addr,
     include_http: bool,
-    tcp_ports: &[u16],
 ) -> anyhow::Result<()> {
     write_remote_file(
         session,
         &format!("mkdir -p {RULES_DIR}"),
         "0644",
         RULES_PATH,
-        &jiji_network::render_nftables(address, public_host, include_http, tcp_ports),
+        &jiji_network::render_nftables(INGRESS_TABLE, address, public_host, include_http, &[]),
     )
     .await?;
 
@@ -91,7 +76,7 @@ pub async fn ensure_ingress_rule(
     )
     .await?;
 
-    let forward_script = jiji_network::render_forward_accept_script(address, tcp_ports);
+    let forward_script = jiji_network::render_forward_accept_script(address, &[]);
     run_required(
         session,
         &forward_script,
@@ -118,6 +103,31 @@ pub async fn remove_ingress_rule(session: &SshSession) -> anyhow::Result<()> {
     .await
 }
 
+/// Removes this project's TCP-route tables from the host and, when jiji-proxy is still running
+/// for other projects, from its network namespace. Tolerates either being absent.
+pub async fn remove_project_tcp_tables(
+    session: &SshSession,
+    engine: ContainerEngine,
+    project: &str,
+) -> anyhow::Result<()> {
+    let ingress_table = jiji_network::tcp_ingress_table_name(project);
+    let relay_table = jiji_network::tcp_relay_table_name(project);
+    let command = format!(
+        "nft delete table ip {ingress_table} 2>/dev/null || true; \
+         rm -f {RULES_DIR}/{ingress_table}.nft; \
+         pid=$({engine} inspect {CONTAINER_NAME} --format '{{{{.State.Pid}}}}' 2>/dev/null || true); \
+         if [ -n \"$pid\" ] && [ \"$pid\" != 0 ]; then \
+         nsenter --net=/proc/$pid/ns/net -- nft delete table ip {relay_table} 2>/dev/null || true; \
+         fi"
+    );
+    run_required(
+        session,
+        &command,
+        "remove this project's jiji-proxy TCP route tables",
+    )
+    .await
+}
+
 pub async fn refresh_from_surviving_attachment(
     session: &SshSession,
     engine: ContainerEngine,
@@ -134,7 +144,7 @@ pub async fn refresh_from_surviving_attachment(
     let address = jiji_network::surviving_proxy_address(&result.stdout);
     if let Some(address) = address {
         // Only ever reached when `engine == Docker` (checked above), so the HTTP lines belong here.
-        ensure_ingress_rule(session, address, public_host, true, &[]).await?;
+        ensure_ingress_rule(session, address, public_host, true).await?;
         return Ok(true);
     }
     Ok(false)
