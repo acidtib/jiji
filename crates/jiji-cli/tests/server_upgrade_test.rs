@@ -324,7 +324,7 @@ fn proxy_fingerprint_command() -> String {
     "docker inspect jiji-proxy --format '{{.State.Status}} {{index .Config.Labels \"jiji.proxy-config\"}} {{.Config.Image}}'".to_string()
 }
 
-/// The exact output `proxy::is_current_and_running` expects when the running container already
+/// The exact output `proxy::proxy_state` classifies as current when the running container already
 /// matches this engine's fingerprint and the current `PROXY_VERSION` image tag -- registering this
 /// is what makes `ensure_proxy(force: false)` treat an already-current proxy as a no-op.
 fn proxy_fingerprint_current_response() -> CannedResponse {

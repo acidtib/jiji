@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use jiji_config::ContainerEngine;
-use jiji_network::CONTAINER_NAME;
+use jiji_network::{classify_proxy, ProxyState, CONTAINER_NAME};
 use jiji_ssh::SshSession;
 
 fn engine_kind(engine: ContainerEngine) -> jiji_network::BridgeEngineKind {
@@ -57,7 +57,7 @@ pub struct ProxyNetwork {
 /// container, routes namespaced per project, serving every project on a host at once. Under that
 /// design it must become **multi-homed** -- attached to every project's bridge that has routes on
 /// this host, not just the most recent one. That means "does the container need replacing"
-/// (image/engine drift, decided by `config_fingerprint`/`is_current_and_running`) and "is this
+/// (image/engine drift, decided by `config_fingerprint`/`proxy_state`) and "is this
 /// project's network attached" (`ensure_attached`, additive, idempotent) have to be two
 /// independent steps: recreating the container just because a *different* project's `ensure_proxy`
 /// call ran would tear down every other project's attachment too.
@@ -77,12 +77,21 @@ pub async fn ensure_proxy(
     force: bool,
 ) -> anyhow::Result<ProxyStatus> {
     let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
-    upload_daemon_config(session).await?;
-    let status = if !force && is_current_and_running(session, engine, &fingerprint).await? {
-        ProxyStatus::AlreadyRunning
+    let state = if force {
+        ProxyState::Replace
     } else {
+        proxy_state(session, engine, &fingerprint).await?
+    };
+    // A newer proxy was installed by another project on this host; replacing it, or rewriting
+    // its config, would downgrade every project sharing it.
+    if state != ProxyState::Newer {
+        upload_daemon_config(session).await?;
+    }
+    let status = if state == ProxyState::Replace {
         recreate(session, engine, &fingerprint, network.as_ref()).await?;
         ProxyStatus::Started
+    } else {
+        ProxyStatus::AlreadyRunning
     };
 
     // Always idempotent, even right after `recreate` attached this exact network as primary --
@@ -262,18 +271,20 @@ async fn attached_with_expected_address(
     }
 }
 
-async fn is_current_and_running(
+async fn proxy_state(
     session: &SshSession,
     engine: ContainerEngine,
     fingerprint: &str,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<ProxyState> {
     let result = session
         .execute(&format!(
             "{engine} inspect {CONTAINER_NAME} --format '{{{{.State.Status}}}} {{{{index .Config.Labels \"jiji.proxy-config\"}}}} {{{{.Config.Image}}}}'"
         ))
         .await?;
-    Ok(result.success
-        && result.stdout.trim() == format!("running {fingerprint} {}", jiji_network::image()))
+    Ok(classify_proxy(
+        result.success.then_some(result.stdout.trim()),
+        fingerprint,
+    ))
 }
 
 async fn wait_until_running(session: &SshSession, engine: ContainerEngine) -> anyhow::Result<()> {
