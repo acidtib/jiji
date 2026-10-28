@@ -115,14 +115,14 @@ jobs:
         if: ${{ !inputs.checksum }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ inputs.bin_name }}--${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
       - name: Upload artifact with checksum
         if: ${{ inputs.checksum }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ inputs.bin_name }}--${{ matrix.artifact }}
           path: |
             dist/${{ matrix.artifact }}
             dist/${{ matrix.artifact }}.sha256
@@ -158,6 +158,8 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          # A release.yml run builds several binaries; take only this one's.
+          pattern: ${{ inputs.bin_name }}--*
           path: dist
           merge-multiple: true
 
