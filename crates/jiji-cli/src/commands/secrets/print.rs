@@ -511,8 +511,10 @@ mod tests {
                         }),
                         path_prefix: None,
                         healthcheck: None,
+                        forward_headers: false,
                         listen_port: None,
                     }]),
+                    forward_headers: false,
                     listen_port: None,
                 }),
                 ..default_service()

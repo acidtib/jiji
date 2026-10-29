@@ -72,6 +72,9 @@ pub struct RouteConfig {
     /// static file in `cert_dir`, or ACME-issued if `acme:` is configured).
     #[serde(default)]
     pub tls: bool,
+    /// See `RouteEntry::forward_headers`.
+    #[serde(default)]
+    pub forward_headers: bool,
     /// Active health-checking (see route_manager.rs); omitted means
     /// backends are only ever evicted by DNS re-resolution.
     #[serde(default)]

@@ -501,6 +501,9 @@ services:
     #   #   - www.myproject.example.com
     #   #   - myproject.example.com
     #   path_prefix: /api                      # Optional: Path-based routing
+    #   forward_headers: false                 # Optional: keep client X-Forwarded-* and append
+    #                                          #   the connecting IP. Enable only behind a CDN
+    #                                          #   (e.g. Cloudflare); otherwise clients can spoof it.
     #   healthcheck:
     #     path: /health              # HTTP health check endpoint
     #     interval: 10s

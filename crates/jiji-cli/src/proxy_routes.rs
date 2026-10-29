@@ -36,6 +36,7 @@ pub struct RouteTarget {
     pub name: String,
     pub port: u16,
     pub ssl: Option<SslValue>,
+    pub forward_headers: bool,
     pub healthcheck: Option<HealthcheckConfig>,
 }
 
@@ -186,6 +187,7 @@ pub fn targets_for_service(
                     name: name.clone(),
                     port,
                     ssl: target.ssl.clone(),
+                    forward_headers: target.forward_headers,
                     healthcheck: target.healthcheck.clone(),
                 });
             }
@@ -216,6 +218,7 @@ pub fn targets_for_service(
             name: name.clone(),
             port,
             ssl: proxy.ssl.clone(),
+            forward_headers: proxy.forward_headers,
             healthcheck: proxy.healthcheck.clone(),
         })
         .collect())
@@ -223,7 +226,7 @@ pub fn targets_for_service(
 
 /// The subset of `jiji-proxy route apply`'s arguments that don't identify
 /// *which* route this is (host/dns-server/name/port/path-prefix) -- just how
-/// it should behave (TLS, health-checking). Split out so
+/// it should behave (TLS, forwarded headers, health-checking). Split out so
 /// `runtime_specs_for_service` can hand these to the agent's own
 /// `ProxyRouteSpec::apply_args`, which the agent appends to identity args it
 /// computes itself (its own `dns_bind_address`, not whatever `dns_server`
@@ -239,6 +242,9 @@ fn policy_args(target: &RouteTarget) -> Vec<String> {
     let mut args = Vec::new();
     if target.tls() {
         args.push("--tls".to_string());
+    }
+    if target.forward_headers {
+        args.push("--forward-headers".to_string());
     }
     if let Some(check) = &target.healthcheck {
         args.push("--health-check".to_string());
@@ -1114,6 +1120,30 @@ targets:
         let command = render_apply_command(ContainerEngine::Docker, target);
         assert!(command.contains("--path-prefix=/api"));
         assert!(command.contains("--tls"));
+        assert!(!command.contains("--forward-headers"));
+    }
+
+    #[test]
+    fn forward_headers_is_emitted_only_when_set() {
+        let proxy: ProxyConfig = serde_yaml::from_str(
+            "targets:\n  - { port: 3000, hosts: [cdn.example.com], forward_headers: true }\n  - { port: 3000, hosts: [direct.example.com] }\n",
+        )
+        .unwrap();
+        let targets = targets_for_service("demo", "web", Some(&proxy), dns_server()).unwrap();
+        assert!(render_apply_command(ContainerEngine::Docker, &targets[0])
+            .contains("--forward-headers"));
+        assert!(!render_apply_command(ContainerEngine::Docker, &targets[1])
+            .contains("--forward-headers"));
+
+        let specs = runtime_specs_for_service("demo", "web", Some(&proxy)).unwrap();
+        assert!(specs[0]
+            .apply_args
+            .iter()
+            .any(|arg| arg == "--forward-headers"));
+        assert!(!specs[1]
+            .apply_args
+            .iter()
+            .any(|arg| arg == "--forward-headers"));
     }
 
     #[test]

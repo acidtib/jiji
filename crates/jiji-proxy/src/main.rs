@@ -85,6 +85,10 @@ enum RouteCommand {
         /// Preserve TLS state when this route already exists.
         #[arg(long)]
         preserve_existing_tls: bool,
+        /// Append the peer address to client-supplied forwarding headers
+        /// instead of replacing them. Only for routes behind a trusted CDN.
+        #[arg(long)]
+        forward_headers: bool,
         /// Enables active health-checking against this HTTP path; omit
         /// `--health-check-path` (but pass this flag) for a TCP-only check,
         /// or omit the whole group to rely on DNS-driven eviction only.
@@ -249,6 +253,7 @@ fn run(config_path: PathBuf) -> anyhow::Result<()> {
             route.discovery.port,
             route.discovery.refresh_interval_secs,
             route.tls,
+            route.forward_headers,
             route.healthcheck.clone().map(HealthCheckSpec::from),
         ))?;
         tracing::info!(host = %route.host, name = %route.discovery.name, "seed route applied");
@@ -329,6 +334,7 @@ fn route_command(command: RouteCommand) -> anyhow::Result<()> {
                 tls,
                 reload_certificate,
                 preserve_existing_tls,
+                forward_headers,
                 health_check,
                 health_check_path,
                 health_check_interval_secs,
@@ -347,6 +353,7 @@ fn route_command(command: RouteCommand) -> anyhow::Result<()> {
                     tls,
                     reload_certificate,
                     preserve_existing_tls,
+                    forward_headers,
                     health_check: health_check.then_some(HealthCheckRequest {
                         path: health_check_path,
                         interval_secs: health_check_interval_secs,
