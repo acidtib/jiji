@@ -1233,6 +1233,33 @@ services:
 }
 
 #[test]
+fn tcp_listen_port_with_forward_headers_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  web: { host: 10.0.0.1 }
+services:
+  db:
+    image: postgres:18
+    servers: [web]
+    proxy: { port: 5432, listen_port: 5432, forward_headers: true }
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.code == "PROXY_TCP_HTTP_FIELDS_CONFLICT"),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn tcp_listen_port_with_ssl_is_rejected() {
     let raw = parse(
         r#"

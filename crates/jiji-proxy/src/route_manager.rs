@@ -55,6 +55,10 @@ pub struct RouteEntry {
     /// property: if sibling routes on the same host disagree, any `true`
     /// wins (see `tls_hosts`).
     pub tls: bool,
+    /// Append the peer address to a client-supplied `X-Forwarded-For` and keep
+    /// its `X-Forwarded-Proto`/`-Host`, for routes behind a trusted CDN.
+    /// Otherwise all three are replaced with what jiji-proxy itself saw.
+    pub forward_headers: bool,
     refresh_interval: Duration,
     last_refresh_millis: AtomicU64,
     health_check_interval: Option<Duration>,
@@ -271,10 +275,14 @@ impl RouteManager {
     /// An exact-host route always wins over a wildcard for the same
     /// request, since the exact lookup is always tried first.
     pub fn lookup(&self, host: &str, path: &str) -> Option<Arc<LoadBalancer<RoundRobin>>> {
+        self.lookup_route(host, path).map(|entry| entry.lb.clone())
+    }
+
+    pub fn lookup_route(&self, host: &str, path: &str) -> Option<Arc<RouteEntry>> {
         let routes = self.routes.read().expect("route table lock poisoned");
         if let Some(entries) = routes.get(host) {
-            if let Some(lb) = select_entry(entries, path) {
-                return Some(lb);
+            if let Some(entry) = select_entry(entries, path) {
+                return Some(entry);
             }
         }
         let wildcard_key = crate::wildcard::parent_wildcard_key(host)?;
@@ -300,6 +308,7 @@ impl RouteManager {
         port: u16,
         refresh_interval_secs: u64,
         tls: bool,
+        forward_headers: bool,
         health_check: Option<HealthCheckSpec>,
     ) -> anyhow::Result<()> {
         let discovery = JijiDnsDiscovery::new(dns_server, name.clone(), port)?;
@@ -328,6 +337,7 @@ impl RouteManager {
             port,
             path_prefix: path_prefix.clone(),
             tls,
+            forward_headers,
             refresh_interval: Duration::from_secs(refresh_interval_secs.max(1)),
             last_refresh_millis: AtomicU64::new(now_millis()),
             health_check_interval,
@@ -488,14 +498,14 @@ impl RouteManager {
 /// The first entry (already sorted longest-prefix-first, see
 /// `sort_by_prefix_length_descending`) whose `path_prefix` matches `path`,
 /// or the catch-all (`None`) entry if one exists and no sibling matched.
-fn select_entry(entries: &[Arc<RouteEntry>], path: &str) -> Option<Arc<LoadBalancer<RoundRobin>>> {
+fn select_entry(entries: &[Arc<RouteEntry>], path: &str) -> Option<Arc<RouteEntry>> {
     entries
         .iter()
         .find(|entry| match &entry.path_prefix {
             Some(prefix) => path.starts_with(prefix.as_str()),
             None => true,
         })
-        .map(|entry| entry.lb.clone())
+        .cloned()
 }
 
 /// Longest prefix first; the catch-all (`None`) entry always sorts last,
@@ -601,6 +611,7 @@ mod tests {
             port: 80,
             path_prefix: path_prefix.map(str::to_string),
             tls: false,
+            forward_headers: false,
             refresh_interval: Duration::from_secs(60),
             last_refresh_millis: AtomicU64::new(0),
             health_check_interval: None,
@@ -647,6 +658,7 @@ mod tests {
                 name.to_string(),
                 80,
                 60,
+                false,
                 false,
                 None,
             )
@@ -769,6 +781,7 @@ mod tests {
                 80,
                 60,
                 true,
+                false,
                 None,
             )
             .await
@@ -782,6 +795,7 @@ mod tests {
                 80,
                 60,
                 true,
+                false,
                 None,
             )
             .await

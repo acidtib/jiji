@@ -319,6 +319,11 @@ pub struct ProxyTarget {
     pub path_prefix: Option<String>,
     #[serde(default)]
     pub healthcheck: Option<HealthcheckConfig>,
+    /// Append the connecting address to client-supplied `X-Forwarded-*`
+    /// headers instead of replacing them. Only safe when every request
+    /// arrives through a trusted proxy such as a CDN.
+    #[serde(default)]
+    pub forward_headers: bool,
     /// Presence selects raw TCP mode instead of HTTP Host-header routing:
     /// the public port jiji-proxy exposes this target on, distinct from
     /// `port` (the backend container port). Mutually exclusive with
@@ -344,6 +349,9 @@ pub struct ProxyConfig {
     pub healthcheck: Option<HealthcheckConfig>,
     #[serde(default)]
     pub targets: Option<Vec<ProxyTarget>>,
+    /// See `ProxyTarget::forward_headers`.
+    #[serde(default)]
+    pub forward_headers: bool,
     /// See `ProxyTarget::listen_port`.
     #[serde(default)]
     pub listen_port: Option<u16>,

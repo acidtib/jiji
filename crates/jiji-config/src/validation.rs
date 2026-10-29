@@ -546,7 +546,7 @@ fn validate_hosts_and_ssl(
 
 /// A `listen_port` selects raw TCP proxying instead of HTTP Host-header
 /// routing (see `ProxyTarget::listen_port`): no Host header exists to route
-/// by, so `path_prefix`/`ssl` (HTTP-only concepts) cannot be combined with
+/// by, so `path_prefix`/`ssl`/`forward_headers` (HTTP-only concepts) cannot be combined with
 /// it, ports 80/443 stay reserved for HTTP ingress, and each TCP route
 /// needs a public port not already claimed by another service in this same
 /// project (a *different* project sharing the same host can still collide
@@ -568,6 +568,7 @@ fn validate_tcp_targets(config: &Config, errors: &mut Vec<ValidationError>) {
                     target.listen_port,
                     target.path_prefix.as_deref(),
                     &target.ssl,
+                    target.forward_headers,
                     &mut seen_listen_ports,
                     errors,
                 );
@@ -579,6 +580,7 @@ fn validate_tcp_targets(config: &Config, errors: &mut Vec<ValidationError>) {
                 proxy.listen_port,
                 proxy.path_prefix.as_deref(),
                 &proxy.ssl,
+                proxy.forward_headers,
                 &mut seen_listen_ports,
                 errors,
             );
@@ -593,17 +595,18 @@ fn validate_tcp_target(
     listen_port: Option<u16>,
     path_prefix: Option<&str>,
     ssl: &Option<SslValue>,
+    forward_headers: bool,
     seen_listen_ports: &mut std::collections::HashMap<u16, String>,
     errors: &mut Vec<ValidationError>,
 ) {
     let Some(listen_port) = listen_port else {
         return;
     };
-    if path_prefix.is_some() || ssl.is_some() {
+    if path_prefix.is_some() || ssl.is_some() || forward_headers {
         errors.push(ValidationError {
             path: path.to_string(),
             message: format!(
-                "Service '{service_name}' proxy target sets 'listen_port' (raw TCP mode) alongside 'path_prefix'/'ssl', which only apply to HTTP routing. Remove 'listen_port' for an HTTP route, or remove 'path_prefix'/'ssl' for a TCP route."
+                "Service '{service_name}' proxy target sets 'listen_port' (raw TCP mode) alongside 'path_prefix'/'ssl'/'forward_headers', which only apply to HTTP routing. Remove 'listen_port' for an HTTP route, or remove those fields for a TCP route."
             ),
             code: "PROXY_TCP_HTTP_FIELDS_CONFLICT",
         });

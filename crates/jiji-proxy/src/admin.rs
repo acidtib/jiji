@@ -50,6 +50,9 @@ pub enum AdminRequest {
         /// so it cannot overwrite a newer deploy-time policy.
         #[serde(default)]
         preserve_existing_tls: bool,
+        /// See `RouteEntry::forward_headers`.
+        #[serde(default)]
+        forward_headers: bool,
         /// Active health-checking (see route_manager.rs). Omitted means
         /// backends are only ever evicted by DNS re-resolution, not by
         /// jiji-proxy's own probing.
@@ -268,6 +271,7 @@ async fn handle_request(
             tls,
             reload_certificate,
             preserve_existing_tls,
+            forward_headers,
             health_check,
         } => {
             if reload_certificate {
@@ -293,6 +297,7 @@ async fn handle_request(
                     port,
                     refresh_interval_secs,
                     tls,
+                    forward_headers,
                     health_check.map(HealthCheckSpec::from),
                 )
                 .await

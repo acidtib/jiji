@@ -1215,6 +1215,7 @@ mod tests {
             name: "demo-web.jiji".to_string(),
             port: 3000,
             ssl: None,
+            forward_headers: false,
             healthcheck: Some(
                 serde_yaml::from_str::<HealthcheckConfig>("deploy_timeout: 60s\n").unwrap(),
             ),
