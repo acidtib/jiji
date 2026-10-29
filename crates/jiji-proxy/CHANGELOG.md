@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/acidtib/jiji/compare/jiji-proxy-v0.6.2...jiji-proxy-v0.7.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **proxy:** set X-Forwarded-* from the connecting peer instead of the client ([#133](https://github.com/acidtib/jiji/issues/133))
+
+### Bug Fixes
+
+* **proxy:** set X-Forwarded-* from the connecting peer instead of the client ([#133](https://github.com/acidtib/jiji/issues/133)) ([76a8581](https://github.com/acidtib/jiji/commit/76a85811ca8581aa94114856f9f7ccefc8d37aae))
+
 ## [0.6.2](https://github.com/acidtib/jiji/compare/jiji-proxy-v0.6.1...jiji-proxy-v0.6.2) (2026-10-27)
 
 

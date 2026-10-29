@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-agent"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-cli"
-version = "0.12.2"
+version = "0.13.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-config"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "jiff",
  "jiff-cron",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-network"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "jiji-config",
  "jiji-core",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "jiji-proxy"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
