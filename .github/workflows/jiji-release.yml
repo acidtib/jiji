@@ -34,13 +34,13 @@ jobs:
       # Cross-compiling to x86_64 on Apple Silicon hardware rather than
       # using macos-13 (native Intel): confirmed live, macos-13 runners
       # can queue indefinitely waiting for a runner to be assigned,
-      # while macos-14 gets one immediately.
+      # while macos-15 gets one immediately.
       matrix_json: >-
         [
           {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","artifact":"jiji-linux-x86_64"},
           {"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","artifact":"jiji-linux-arm64"},
-          {"os":"macos-14","target":"x86_64-apple-darwin","artifact":"jiji-macos-x86_64"},
-          {"os":"macos-14","target":"aarch64-apple-darwin","artifact":"jiji-macos-arm64"}
+          {"os":"macos-15","target":"x86_64-apple-darwin","artifact":"jiji-macos-x86_64"},
+          {"os":"macos-15","target":"aarch64-apple-darwin","artifact":"jiji-macos-arm64"}
         ]
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

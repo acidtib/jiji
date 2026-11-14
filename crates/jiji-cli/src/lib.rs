@@ -33,6 +33,7 @@ mod proxy_teardown;
 mod recovery_epoch;
 mod registry;
 mod remote_build;
+mod secret_source;
 mod self_update;
 mod ssh_adapter;
 mod teardown_plan;
@@ -695,7 +696,9 @@ pub async fn run() {
                     cli.services.as_deref(),
                     cli.host_env,
                     *show_values,
-                ) {
+                )
+                .await
+                {
                     println!();
                     jiji_tui::Ui::error(&format!("Secrets print failed: {err}"));
                     jiji_tui::Ui::say("Fix the configuration error above and retry", 1);

@@ -14,7 +14,7 @@ use jiji_network::NetworkPlanner;
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
-use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session};
+use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -109,8 +109,12 @@ impl server::Server for TestServer {
 impl server::Handler for TestServer {
     type Error = russh::Error;
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if *key == self.authorized_key {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(if *key.public_key == self.authorized_key {
             Auth::Accept
         } else {
             Auth::reject()
@@ -2536,4 +2540,80 @@ async fn deploy_injects_explicit_and_automatic_versions_into_the_environment_fil
             assert_eq!(version, String::from_utf8_lossy(&git.stdout).trim());
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doppler_adapter_values_are_staged_once_and_dotenv_is_ignored() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let harness = spawn_test_server(
+        client_key.public_key().clone(),
+        base_healthcheck_deploy_responses(),
+    )
+    .await;
+    let config = config_yaml(harness.addr, &key_path, "docker")
+        .replace(&key_path.display().to_string(), "SSH_KEY_PATH")
+        .replace(
+            "    servers: [app]\n",
+            "    servers: [app]\n    environment:\n      secrets: [API_TOKEN]\n",
+        )
+        + "secrets:\n  adapter: doppler\n  project: my-app\n  config: prd\n";
+    std::fs::create_dir(dir.path().join(".jiji")).unwrap();
+    let config_path = dir.path().join(".jiji/deploy.yml");
+    std::fs::write(&config_path, config).unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        format!(
+            "API_TOKEN=token-from-dotenv\nSSH_KEY_PATH={}\n",
+            key_path.display()
+        ),
+    )
+    .unwrap();
+
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let log = dir.path().join("doppler.log");
+    let fake = bin.join("doppler");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nprintf '%s' '{{\"API_TOKEN\":\"token-from-doppler\",\"SSH_KEY_PATH\":\"{key}\"}}'\n",
+            log = log.display(),
+            key = key_path.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&current_path));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .args(["deploy", "-c"])
+        .arg(&config_path)
+        .args(["--yes", "--skip-proxy"])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .output()
+        .expect("run jiji deploy");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "secrets download --no-file --format json --project my-app --config prd\n"
+    );
+    assert!(
+        stdout.contains("Secrets loaded from: doppler (project my-app, config prd)"),
+        "stdout: {stdout}"
+    );
+    let input = harness.input.lock().unwrap().clone();
+    let input = String::from_utf8_lossy(&input);
+    assert!(
+        input
+            .lines()
+            .any(|line| line == "API_TOKEN=token-from-doppler"),
+        "staged env: {input}"
+    );
+    assert!(!input.contains("token-from-dotenv"), "staged env: {input}");
+    assert!(!stdout.contains("token-from-doppler"), "stdout: {stdout}");
 }

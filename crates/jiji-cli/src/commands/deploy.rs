@@ -233,14 +233,9 @@ pub async fn run(
     crate::commands::network::setup::reconcile_for_deploy(&config, &plan).await?;
 
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded_env, loaded_from) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
-    if let Some(loaded_from) = &loaded_from {
-        Ui::say(
-            &format!("Environment loaded from: {}", loaded_from.display()),
-            1,
-        );
-    }
+    let loaded_env =
+        crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+    loaded_env.say_loaded();
 
     let git = version_tag::gather_git_status().await;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();

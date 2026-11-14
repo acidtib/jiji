@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 
 use jiji_config::Config;
 
+use crate::secret_source::{self, LoadedSecrets};
 use crate::{env_resolution, ssh_adapter};
 
 fn resolve_server_host_references(
     config: &mut Config,
-    loaded: &std::collections::BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<()> {
     for (name, server) in &mut config.servers {
@@ -14,10 +15,11 @@ fn resolve_server_host_references(
             continue;
         }
         let reference = server.host.clone();
-        let host = env_resolution::resolve_secret_name(&reference, loaded, allow_host_env)
+        let host = env_resolution::resolve_secret_name(&reference, &loaded.values, allow_host_env)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Server host variable '{reference}' for `servers.{name}.host` was not found. Add it to the selected .env file or pass --host-env."
+                    "Server host variable '{reference}' for `servers.{name}.host` was not found. Add it to {} or pass --host-env.",
+                    loaded.source.location()
                 )
             })?;
         if host.trim().is_empty() {
@@ -38,8 +40,9 @@ pub async fn load_config_for_ssh(
         return Ok((config, path));
     }
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded, _) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
+    let needed = secret_source::references_ssh_secret(&config);
+    let loaded =
+        secret_source::load_secrets_if(&project_root, environment, &config, needed).await?;
     let allow_host_env = crate::ssh_host_env_enabled();
     resolve_server_host_references(&mut config, &loaded, allow_host_env)?;
     ssh_adapter::resolve_key_references(&mut config, &loaded, allow_host_env).await?;

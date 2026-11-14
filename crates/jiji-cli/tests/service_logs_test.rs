@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
-use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session};
+use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
 use tokio::net::TcpListener;
 
@@ -49,8 +50,12 @@ impl server::Server for TestServer {
 impl server::Handler for TestServer {
     type Error = russh::Error;
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if *key == self.authorized_key {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(if *key.public_key == self.authorized_key {
             Auth::Accept
         } else {
             Auth::reject()
@@ -373,4 +378,50 @@ fn follow_rejects_multiple_targets_before_connecting() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("requires exactly one"), "{stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_with_literal_hosts_and_keys_never_calls_the_secrets_adapter() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(agent_catalog_command(), active_catalog_response());
+    responses.insert(
+        "docker logs --timestamps --tail=100 demo-web-abcdef123456".to_string(),
+        success("hello from web\n"),
+    );
+    let (harness, addr) = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config = config_yaml(addr, &key_path).replace(
+        "    servers: [app]\n",
+        "    servers: [app]\n    environment:\n      secrets: [API_TOKEN]\n",
+    ) + "secrets:\n  adapter: doppler\n";
+    let config_path = write_config_str(dir.path(), &config);
+
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let marker = dir.path().join("doppler-called");
+    let fake = bin.join("doppler");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let current_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&current_path));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jiji"))
+        .args(["service", "logs", "-c"])
+        .arg(&config_path)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .output()
+        .expect("run jiji service logs");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!marker.exists(), "doppler must not be invoked");
+    assert!(!harness.received.lock().unwrap().is_empty());
 }

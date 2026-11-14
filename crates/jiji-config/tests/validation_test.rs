@@ -1780,3 +1780,57 @@ fn jiji_version_is_reserved_in_runtime_and_build_configuration() {
         assert!(result.errors.iter().any(|error| error.code == "RESERVED_ENVIRONMENT_VARIABLE" && error.message.contains("JIJI_VERSION")), "{result:?}");
     }
 }
+
+#[test]
+fn unknown_secrets_adapter_is_rejected_and_lists_supported_adapters() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  app: { host: 10.0.0.1 }
+services:
+  web: { image: nginx, servers: [app] }
+secrets:
+  adapter: vault
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("vault") && e.message.contains("doppler")),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn secrets_path_with_a_secrets_adapter_is_rejected() {
+    let raw = parse(
+        r#"
+project: demo
+builder: { engine: podman }
+servers:
+  app: { host: 10.0.0.1 }
+services:
+  web: { image: nginx, servers: [app] }
+secrets_path: .secrets
+secrets:
+  adapter: doppler
+"#,
+    );
+    let result = validate_yaml(&raw);
+    assert!(!result.valid);
+    let error = result
+        .errors
+        .iter()
+        .find(|e| e.code == "CONFLICTING_SECRETS_SOURCE")
+        .expect("conflict error");
+    assert_eq!(error.path, "secrets_path");
+    assert!(error
+        .message
+        .contains("Remove secrets_path or the secrets: block"));
+}

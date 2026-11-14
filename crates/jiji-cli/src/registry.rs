@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use anyhow::Context;
 use jiji_config::{ContainerEngine, Registry};
 use jiji_ssh::SshSession;
@@ -329,7 +327,7 @@ pub fn render_logout_args(server: &str) -> Vec<String> {
 
 pub async fn resolve_registry_password(
     raw: &str,
-    loaded: &BTreeMap<String, String>,
+    loaded: &crate::secret_source::LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<String> {
     if let Some(command) = env_resolution::is_command_expression(raw) {
@@ -338,9 +336,10 @@ pub async fn resolve_registry_password(
     if !env_resolution::is_bare_all_caps_name(raw) {
         return Ok(raw.to_string());
     }
-    env_resolution::resolve_secret_name(raw, loaded, allow_host_env).ok_or_else(|| {
+    env_resolution::resolve_secret_name(raw, &loaded.values, allow_host_env).ok_or_else(|| {
         anyhow::anyhow!(
-            "Registry password variable '{raw}' was not found. Add it to the selected .env file, pass --host-env, or configure a literal password."
+            "Registry password variable '{raw}' was not found. Add it to {}, pass --host-env, or configure a literal password.",
+            loaded.source.location()
         )
     })
 }
@@ -450,6 +449,8 @@ pub async fn logout_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret_source::LoadedSecrets;
+    use std::collections::BTreeMap;
     fn registry(server: &str, username: Option<&str>) -> Registry {
         Registry {
             port: 443,
@@ -586,34 +587,50 @@ mod tests {
     async fn password_resolution_distinguishes_names_from_literals() {
         let loaded = BTreeMap::from([("TOKEN".into(), "secret".into())]);
         assert_eq!(
-            resolve_registry_password("TOKEN", &loaded, false)
+            resolve_registry_password("TOKEN", &LoadedSecrets::from_env_map(loaded.clone()), false)
                 .await
                 .unwrap(),
             "secret"
         );
         assert_eq!(
-            resolve_registry_password("literal-value", &loaded, false)
-                .await
-                .unwrap(),
+            resolve_registry_password(
+                "literal-value",
+                &LoadedSecrets::from_env_map(loaded.clone()),
+                false
+            )
+            .await
+            .unwrap(),
             "literal-value"
         );
-        assert!(resolve_registry_password("MISSING", &loaded, false)
-            .await
-            .is_err());
+        assert!(resolve_registry_password(
+            "MISSING",
+            &LoadedSecrets::from_env_map(loaded.clone()),
+            false
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
     async fn password_resolution_runs_command_expressions() {
         let loaded = BTreeMap::new();
         assert_eq!(
-            resolve_registry_password("$(echo -n secret-token)", &loaded, false)
-                .await
-                .unwrap(),
+            resolve_registry_password(
+                "$(echo -n secret-token)",
+                &LoadedSecrets::from_env_map(loaded.clone()),
+                false
+            )
+            .await
+            .unwrap(),
             "secret-token"
         );
-        assert!(resolve_registry_password("$(exit 1)", &loaded, false)
-            .await
-            .is_err());
+        assert!(resolve_registry_password(
+            "$(exit 1)",
+            &LoadedSecrets::from_env_map(loaded.clone()),
+            false
+        )
+        .await
+        .is_err());
     }
 
     #[test]

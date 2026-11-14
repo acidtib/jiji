@@ -144,12 +144,12 @@ pub struct ResolvedEnvironment {
     pub control_keys: BTreeSet<String>,
 }
 
-/// `clear` values are used as-is; `secrets` are resolved from `loaded` (the parsed `.env` map),
+/// `clear` values are used as-is; `secrets` are resolved from `loaded` (`.env` or adapter values),
 /// falling back to the host environment only when `allow_host_env` is set. Any secret resolved
 /// from neither source is a hard error that lists every missing name, not just the first.
 pub fn resolve_environment(
     env: &Environment,
-    loaded: &BTreeMap<String, String>,
+    loaded: &crate::secret_source::LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<ResolvedEnvironment> {
     let mut values = BTreeMap::new();
@@ -160,7 +160,7 @@ pub fn resolve_environment(
     let mut secret_keys = BTreeSet::new();
     let mut missing = Vec::new();
     for name in &env.secrets {
-        if let Some(value) = resolve_secret_name(name, loaded, allow_host_env) {
+        if let Some(value) = resolve_secret_name(name, &loaded.values, allow_host_env) {
             values.insert(name.clone(), value);
             secret_keys.insert(name.clone());
         } else {
@@ -169,6 +169,13 @@ pub fn resolve_environment(
     }
 
     if !missing.is_empty() {
+        if loaded.source.is_adapter() {
+            anyhow::bail!(
+                "Missing required secrets: {}. Add them to {}, or pass --host-env to read from the host environment.",
+                missing.join(", "),
+                loaded.source.location()
+            );
+        }
         anyhow::bail!(
             "Missing required secrets: {}. Create a .env file with these secrets, or pass --host-env to read from the host environment.",
             missing.join(", ")
@@ -333,6 +340,7 @@ pub async fn stage_env_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret_source::LoadedSecrets;
 
     #[test]
     fn skips_blank_and_comment_lines() {
@@ -406,7 +414,8 @@ mod tests {
             clear: Default::default(),
             secrets: vec!["A".to_string(), "B".to_string()],
         };
-        let err = resolve_environment(&env, &BTreeMap::new(), false).unwrap_err();
+        let err = resolve_environment(&env, &LoadedSecrets::from_env_map(BTreeMap::new()), false)
+            .unwrap_err();
         assert!(err.to_string().contains('A'));
         assert!(err.to_string().contains('B'));
     }
@@ -418,8 +427,12 @@ mod tests {
             clear: Default::default(),
             secrets: vec!["JIJI_TEST_SECRET_ENV_RESOLUTION".to_string()],
         };
-        assert!(resolve_environment(&env, &BTreeMap::new(), false).is_err());
-        let resolved = resolve_environment(&env, &BTreeMap::new(), true).unwrap();
+        assert!(
+            resolve_environment(&env, &LoadedSecrets::from_env_map(BTreeMap::new()), false)
+                .is_err()
+        );
+        let resolved =
+            resolve_environment(&env, &LoadedSecrets::from_env_map(BTreeMap::new()), true).unwrap();
         assert_eq!(
             resolved.values.get("JIJI_TEST_SECRET_ENV_RESOLUTION"),
             Some(&"host-value".to_string())
@@ -440,7 +453,8 @@ mod tests {
         };
         let mut loaded = BTreeMap::new();
         loaded.insert("SECRET".to_string(), "top-secret".to_string());
-        let resolved = resolve_environment(&env, &loaded, false).unwrap();
+        let resolved =
+            resolve_environment(&env, &LoadedSecrets::from_env_map(loaded.clone()), false).unwrap();
         let summary = redacted_summary(&resolved).join("\n");
         assert!(summary.contains("PLAIN=visible"));
         assert!(summary.contains("SECRET=<redacted>"));
@@ -587,5 +601,70 @@ mod tests {
     async fn command_value_resolution_trims_trailing_newline_and_reports_failures() {
         assert_eq!(resolve_command_value("echo hello").await.unwrap(), "hello");
         assert!(resolve_command_value("exit 1").await.is_err());
+    }
+
+    fn adapter_secrets(values: &[(&str, &str)]) -> LoadedSecrets {
+        LoadedSecrets {
+            values: values
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            source: crate::secret_source::SecretSource::Adapter {
+                settings: jiji_config::SecretsAdapter {
+                    adapter: jiji_config::SecretsAdapterKind::Doppler,
+                    project: Some("my-app".into()),
+                    config: Some("prd".into()),
+                },
+                fetched: true,
+            },
+        }
+    }
+
+    #[test]
+    fn adapter_value_wins_over_host_env() {
+        let name = "JIJI_TEST_ADAPTER_PRECEDENCE";
+        std::env::set_var(name, "from-host");
+        let env = Environment {
+            clear: Default::default(),
+            secrets: vec![name.to_string()],
+        };
+        let loaded = adapter_secrets(&[(name, "from-adapter")]);
+        let resolved = resolve_environment(&env, &loaded, true).unwrap();
+        assert_eq!(resolved.values[name], "from-adapter");
+        std::env::remove_var(name);
+    }
+
+    #[test]
+    fn host_env_fills_adapter_gaps_only_with_host_env_flag() {
+        let name = "JIJI_TEST_ADAPTER_HOST_FALLBACK";
+        std::env::set_var(name, "from-host");
+        let env = Environment {
+            clear: Default::default(),
+            secrets: vec![name.to_string()],
+        };
+        let loaded = adapter_secrets(&[]);
+        assert!(resolve_environment(&env, &loaded, false).is_err());
+        let resolved = resolve_environment(&env, &loaded, true).unwrap();
+        assert_eq!(resolved.values[name], "from-host");
+        std::env::remove_var(name);
+    }
+
+    #[test]
+    fn missing_adapter_secrets_are_reported_together_with_the_adapter_hint() {
+        let env = Environment {
+            clear: Default::default(),
+            secrets: vec!["ONE_MISSING".into(), "PRESENT".into(), "TWO_MISSING".into()],
+        };
+        let loaded = adapter_secrets(&[("PRESENT", "x")]);
+        let message = resolve_environment(&env, &loaded, false)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("ONE_MISSING, TWO_MISSING"), "{message}");
+        assert!(
+            message.contains("doppler (project my-app, config prd)"),
+            "{message}"
+        );
+        assert!(message.contains("--host-env"), "{message}");
+        assert!(!message.contains(".env file"), "{message}");
     }
 }

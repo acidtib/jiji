@@ -14,6 +14,13 @@ pub struct LocalCommandResult {
     pub code: Option<i32>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Command '{program}' timed out after {seconds}s")]
+pub struct CommandTimedOut {
+    pub program: String,
+    pub seconds: u64,
+}
+
 pub async fn run_captured(
     program: &str,
     args: &[String],
@@ -63,11 +70,9 @@ pub async fn run_captured_with_timeout(
     let output = match timeout {
         Some(duration) => tokio::time::timeout(duration, wait)
             .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Command '{program}' timed out after {}s",
-                    duration.as_secs()
-                )
+            .map_err(|_| CommandTimedOut {
+                program: program.to_string(),
+                seconds: duration.as_secs(),
             })?
             .with_context(|| format!("Could not wait for '{program}'"))?,
         None => wait

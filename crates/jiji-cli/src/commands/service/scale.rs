@@ -352,8 +352,8 @@ pub async fn run(
     }
 
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded_env, _) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
+    let loaded_env =
+        crate::secret_source::load_secrets(&project_root, environment, &config).await?;
     let mut merged = env_resolution::merge_environment(
         &config.environment.clone().unwrap_or_default(),
         &service.environment,

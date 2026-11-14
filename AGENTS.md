@@ -88,7 +88,6 @@ cargo test -p jiji-cli --test deploy_test   # one test file
   never stops at the first.
 - `jiji server setup` absorbs assess, import, decommission, endpoint update,
   and key rotation. Do not add standalone commands for them.
-- `Config.secrets` parses but nothing reads it; no secrets adapter exists.
 
 ## Critical landmines
 

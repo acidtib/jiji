@@ -5,6 +5,7 @@ use anyhow::Context;
 use jiji_config::{Config, ContainerEngine};
 use jiji_ssh::ConnectOptions;
 
+use crate::secret_source::LoadedSecrets;
 use crate::{build_engine, env_resolution, registry, ssh_adapter};
 
 pub struct BuildPlanEntry {
@@ -139,7 +140,7 @@ pub fn compute_plan(
 pub fn resolve_build_arg_references(
     config: &Config,
     plan: &mut [BuildPlanEntry],
-    loaded: &BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<()> {
     let shared = config.environment.clone().unwrap_or_default();
@@ -161,12 +162,13 @@ pub fn resolve_build_arg_references(
                 .get(&reference)
                 .map(ToString::to_string)
                 .or_else(|| {
-                    env_resolution::resolve_secret_name(&reference, loaded, allow_host_env)
+                    env_resolution::resolve_secret_name(&reference, &loaded.values, allow_host_env)
                 })
                 .with_context(|| {
                     format!(
-                        "Build argument 'services.{}.build.args.{key}' references '{reference}', but that environment value is missing. Define it in environment.clear or the selected .env file. To use the host environment, pass --host-env.",
-                        entry.service_name
+                        "Build argument 'services.{}.build.args.{key}' references '{reference}', but that environment value is missing. Define it in environment.clear or {}. To use the host environment, pass --host-env.",
+                        entry.service_name,
+                        loaded.source.location()
                     )
                 })?;
             *value = resolved;
@@ -187,7 +189,7 @@ pub fn resolve_build_secrets(
     // there is currently no config-derived value this resolver needs.
     _config: &Config,
     plan: &[BuildPlanEntry],
-    loaded: &BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<BTreeMap<String, BTreeMap<String, String>>> {
     let mut resolved = BTreeMap::new();
@@ -195,7 +197,7 @@ pub fn resolve_build_secrets(
     for entry in plan {
         let mut values = BTreeMap::new();
         for name in &entry.build.secrets {
-            match env_resolution::resolve_secret_name(name, loaded, allow_host_env) {
+            match env_resolution::resolve_secret_name(name, &loaded.values, allow_host_env) {
                 Some(value) => {
                     values.insert(name.clone(), value);
                 }
@@ -210,8 +212,9 @@ pub fn resolve_build_secrets(
 
     if !missing.is_empty() {
         anyhow::bail!(
-            "{}. Define them in .env or pass --host-env.",
-            missing.join("; ")
+            "{}. Define them in {} or pass --host-env.",
+            missing.join("; "),
+            loaded.source.location()
         );
     }
 
@@ -261,6 +264,7 @@ pub async fn build_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret_source::LoadedSecrets;
     use jiji_config::Config;
 
     fn config(yaml: &str) -> Config {
@@ -289,7 +293,10 @@ services:
             resolve_build_arg_references(
                 &config,
                 &mut plan,
-                &BTreeMap::from([("JIJI_VERSION".into(), "wrong".into())]),
+                &LoadedSecrets::from_env_map(BTreeMap::from([(
+                    "JIJI_VERSION".into(),
+                    "wrong".into(),
+                )])),
                 false,
             )
             .unwrap();
@@ -418,7 +425,13 @@ services:
         let mut plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
         let loaded = BTreeMap::from([("BUILD_SHA".into(), "abc123".into())]);
 
-        resolve_build_arg_references(&config, &mut plan, &loaded, false).expect("resolve");
+        resolve_build_arg_references(
+            &config,
+            &mut plan,
+            &LoadedSecrets::from_env_map(loaded.clone()),
+            false,
+        )
+        .expect("resolve");
 
         assert_eq!(
             plan[0].build.args["PUBLIC_URL"],
@@ -446,8 +459,13 @@ services:
         );
         let mut plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
 
-        let error = resolve_build_arg_references(&config, &mut plan, &BTreeMap::new(), false)
-            .expect_err("missing reference must fail");
+        let error = resolve_build_arg_references(
+            &config,
+            &mut plan,
+            &LoadedSecrets::from_env_map(BTreeMap::new()),
+            false,
+        )
+        .expect_err("missing reference must fail");
 
         assert!(error
             .to_string()
@@ -480,8 +498,13 @@ services:
 
         // NPM_TOKEN is only in environment.clear, never in the .env file or host env, so
         // resolution must fail rather than silently pick up the clear-text value.
-        let error = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false)
-            .expect_err("must not fall back to environment.clear");
+        let error = resolve_build_secrets(
+            &config,
+            &plan,
+            &LoadedSecrets::from_env_map(BTreeMap::new()),
+            false,
+        )
+        .expect_err("must not fall back to environment.clear");
         assert!(error.to_string().contains("missing NPM_TOKEN"));
     }
 
@@ -508,7 +531,13 @@ services:
             "from-env-file".into(),
         )]);
 
-        let resolved = resolve_build_secrets(&config, &plan, &loaded, false).expect("resolve");
+        let resolved = resolve_build_secrets(
+            &config,
+            &plan,
+            &LoadedSecrets::from_env_map(loaded.clone()),
+            false,
+        )
+        .expect("resolve");
         assert_eq!(
             resolved["app"]["JIJI_TEST_BUILD_SECRET_TOKEN"],
             "from-env-file"
@@ -517,7 +546,12 @@ services:
         // Without --host-env, a name absent from the .env file must fail even if present in the
         // host environment.
         std::env::set_var("JIJI_TEST_BUILD_SECRET_TOKEN", "from-host-env");
-        let resolved = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false);
+        let resolved = resolve_build_secrets(
+            &config,
+            &plan,
+            &LoadedSecrets::from_env_map(BTreeMap::new()),
+            false,
+        );
         std::env::remove_var("JIJI_TEST_BUILD_SECRET_TOKEN");
         assert!(resolved.is_err());
     }
@@ -542,8 +576,13 @@ services:
         );
         let plan = compute_plan(&config, "demo", &["app".into()], "v1").expect("plan");
 
-        let error = resolve_build_secrets(&config, &plan, &BTreeMap::new(), false)
-            .expect_err("missing reference must fail");
+        let error = resolve_build_secrets(
+            &config,
+            &plan,
+            &LoadedSecrets::from_env_map(BTreeMap::new()),
+            false,
+        )
+        .expect_err("missing reference must fail");
 
         let message = error.to_string();
         assert!(message.contains("services.app.build.secrets: missing NPM_TOKEN"));

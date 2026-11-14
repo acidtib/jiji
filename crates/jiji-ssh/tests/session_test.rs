@@ -9,7 +9,7 @@ use std::time::Duration;
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
-use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session};
+use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId};
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -39,8 +39,12 @@ impl server::Server for TestServer {
 impl server::Handler for TestServer {
     type Error = russh::Error;
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if *key == self.authorized_key {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(if *key.public_key == self.authorized_key {
             Auth::Accept
         } else {
             Auth::reject()
