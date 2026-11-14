@@ -68,14 +68,8 @@ pub async fn run(
     };
 
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded, loaded_from) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
-    if let Some(loaded_from) = loaded_from {
-        Ui::say(
-            &format!("Environment loaded from: {}", loaded_from.display()),
-            1,
-        );
-    }
+    let loaded = crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+    loaded.say_loaded();
     let password = registry::resolve_registry_password(raw_password, &loaded, host_env).await?;
 
     let mut outcomes = Vec::new();

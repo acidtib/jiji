@@ -129,6 +129,14 @@ pub fn validate_config(config: &Config) -> ValidationResult {
         }
     }
 
+    if config.secrets.is_some() && config.secrets_path.is_some() {
+        errors.push(ValidationError {
+            path: "secrets_path".to_string(),
+            message: "secrets_path has no effect when secrets: names an adapter, because the .env file is not read. Remove secrets_path or the secrets: block".to_string(),
+            code: "CONFLICTING_SECRETS_SOURCE",
+        });
+    }
+
     if config.servers.len() > MAX_NODES {
         errors.push(ValidationError {
             path: "servers".to_string(),

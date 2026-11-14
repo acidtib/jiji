@@ -65,7 +65,7 @@ pub struct Cli {
     #[arg(
         long = "host-env",
         global = true,
-        help = "Fallback to host environment variables when secrets are not found in .env files"
+        help = "Fallback to host environment variables when secrets are not found in .env files or the secrets adapter"
     )]
     pub host_env: bool,
 

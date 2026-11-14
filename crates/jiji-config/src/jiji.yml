@@ -43,7 +43,7 @@ builder:
     # server: docker.io
     # username: myuser
     # password can be a literal value, an ALL_CAPS secret name resolved
-    # from .env/host-env, or $(a local command) for short-lived tokens
+    # from .env, the secrets adapter, or host-env, or $(a local command) for short-lived tokens
     # (see Example 4 below, AWS ECR)
     # password: REGISTRY_PASSWORD
 
@@ -100,7 +100,7 @@ builder:
 # Each server must have:
 # - Unique name (DNS-safe: alphanumeric + hyphens, no start/end hyphen, max 63 chars)
 # - Unique hostname/IP address (no duplicate hosts across servers)
-# - An ALL_CAPS host value resolves from the selected .env file or host environment
+# - An ALL_CAPS host value resolves from the selected .env file (or the secrets adapter) or host environment
 #
 # Per-server SSH overrides (all optional, inherit from global ssh section if not specified):
 # - user: SSH username for this specific server
@@ -331,7 +331,8 @@ ssh:
 
 # Secrets Configuration
 # ====================
-# Secrets are loaded from .env files in your project root.
+# Secrets are loaded from .env files in your project root, or from an
+# external adapter when `secrets:` is set (see below).
 #
 # File Loading Priority:
 # 1. .env.{environment} - When using -e/--environment flag (e.g., .env.staging)
@@ -341,31 +342,41 @@ ssh:
 # secrets_path: .secrets  # Will load .secrets.{environment} or .secrets
 #
 # Host Environment Fallback:
-# By default, jiji ONLY reads from .env files. Use --host-env flag to allow
-# fallback to host environment variables when secrets are not found in .env files.
+# By default, jiji ONLY reads from .env files (or the secrets adapter). Use --host-env
+# to allow fallback to host environment variables when a secret is not found there.
 #
 # Example: jiji -e production --host-env deploy
 #
-# External Secret Adapters (NOT YET IMPLEMENTED):
-# The schema below parses, but no runtime code path reads it today --
-# configuring `secrets:` is currently a silent no-op. For a live
-# equivalent today, use a $(...) command value
-# instead (see "password can be a literal value..." above and the
-# jiji-website docs' Registry Reference page), e.g.
-# $(doppler secrets get API_KEY --plain).
+# External Secret Adapters:
+# With `secrets:` set, secret values come from the adapter instead of the
+# .env file, which is not read at all. Every ALL_CAPS reference resolves
+# through it: environment.secrets, build.secrets and build.args, an ALL_CAPS
+# builder.registry.password, servers.*.host, ssh.keys / servers.*.keys, and
+# proxy.ssl certificate_pem / private_key_pem. --host-env still fills names
+# the adapter does not have. `secrets_path` cannot be combined with `secrets:`.
+#
+# Supported adapters: doppler
 #
 # secrets:
 #   adapter: doppler
-#   project: my-app        # Optional: Doppler project name
-#   config: prd            # Optional: Doppler config/environment name
+#   project: my-app        # Optional: Doppler project; omitted uses `doppler setup`
+#   config: prd            # Optional: Doppler config; omitted uses `doppler setup`
+#
+# Doppler runs the local CLI once per jiji command:
+#   doppler secrets download --no-file --format json [--project ...] [--config ...]
+# Install the Doppler CLI and authenticate it with `doppler login` or a
+# DOPPLER_TOKEN service token; jiji passes its environment through to it.
+# jiji only calls Doppler when the command resolves a secret, so commands
+# such as `jiji service logs` with literal hosts and keys do not need a login.
 #
 # Debug Secrets:
 # Use 'jiji secrets print' to see which secrets are configured and their status.
 # Use 'jiji secrets print --show-values' to reveal actual secret values (use with caution).
 #
 # Error Handling:
-# If secrets are defined but cannot be resolved (not in .env or host env),
-# the command will fail with an error listing the missing secrets.
+# If secrets are defined but cannot be resolved (not in .env or the adapter,
+# and not in the host env with --host-env), the command fails with an error
+# listing every missing secret.
 
 # Shared Environment Configuration
 # Applied to all services, can be overridden per-service
@@ -380,8 +391,8 @@ environment:
     APP_ENV: production
     LOG_LEVEL: info
     DEBUG: "false"
-  # Secrets loaded from .env files (or host environment with --host-env)
-  # List secret names that must be provided in .env.{environment} or .env file
+  # Secrets loaded from .env files or the secrets adapter (or host environment with --host-env)
+  # List secret names that must be provided in .env.{environment}, .env, or the adapter
   secrets:
     - DATABASE_PASSWORD
     - API_SECRET_KEY
@@ -518,14 +529,14 @@ services:
   #                                       #   no ./api prefix; defaults to "Dockerfile")
   #     target: production               # Build target for multi-stage Dockerfiles
   #     args:                            # Build arguments. An ALL_CAPS value reads the matching
-  #                                      # merged environment value, .env value, or host value
+  #                                      # merged environment value, .env/adapter value, or host value
   #                                      # (the host value requires --host-env).
   #                                      # JIJI_VERSION is always passed; never set it here.
   #       NODE_ENV: production
   #       API_VERSION: "2.1.0"
   #       BUILD_DATE: BUILD_DATE
   #     secrets:                          # Names resolved the same way environment.secrets is
-  #                                        # (.env, then host env with --host-env), but mounted
+  #                                        # (.env or adapter, then host env with --host-env), but mounted
   #                                        # into the build via --secret id=<NAME>,src=<path>
   #                                        # instead of --build-arg, so the value never lands in
   #                                        # `docker history` or image metadata. Never read from

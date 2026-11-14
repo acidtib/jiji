@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -7,6 +6,8 @@ use std::time::Duration;
 use anyhow::Context;
 use jiji_config::{Config, NamedServer, RemoteBuilder, Ssh, SshConfigFiles};
 use jiji_ssh::{ConnectOptions, SshKey};
+
+use crate::secret_source::LoadedSecrets;
 use ssh2_config::{HostParams, ParseRule, SshConfig};
 
 const DEFAULT_PORT: u16 = 22;
@@ -14,7 +15,7 @@ const DEFAULT_CONNECT_TIMEOUT: u32 = 30;
 
 pub async fn resolve_key_references(
     config: &mut Config,
-    loaded: &BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<()> {
     if let Some(ssh) = config.ssh.as_mut() {
@@ -35,7 +36,7 @@ pub async fn resolve_key_references(
 async fn resolve_keys(
     values: &mut Option<Vec<String>>,
     source: &str,
-    loaded: &BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<()> {
     if let Some(values) = values {
@@ -51,7 +52,7 @@ async fn resolve_keys(
 async fn resolve_key_reference(
     raw: &str,
     source: &str,
-    loaded: &BTreeMap<String, String>,
+    loaded: &LoadedSecrets,
     allow_host_env: bool,
 ) -> anyhow::Result<String> {
     if let Some(command) = crate::env_resolution::is_command_expression(raw) {
@@ -63,11 +64,13 @@ async fn resolve_key_reference(
     if !crate::env_resolution::is_bare_all_caps_name(raw) {
         return Ok(raw.to_string());
     }
-    let value = crate::env_resolution::resolve_secret_name(raw, loaded, allow_host_env).ok_or_else(|| {
-        anyhow::anyhow!(
-            "SSH key path variable '{raw}' from `{source}` was not found. Add it to the selected .env file or pass --host-env."
-        )
-    })?;
+    let value = crate::env_resolution::resolve_secret_name(raw, &loaded.values, allow_host_env)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "SSH key path variable '{raw}' from `{source}` was not found. Add it to {} or pass --host-env.",
+                loaded.source.location()
+            )
+        })?;
     require_key_path(value, source)
 }
 
@@ -378,7 +381,9 @@ fn expand_tilde(path: impl AsRef<Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret_source::LoadedSecrets;
     use jiji_config::SshConfigFiles;
+    use std::collections::BTreeMap;
 
     fn server(host: &str) -> NamedServer {
         NamedServer {
@@ -624,9 +629,13 @@ services: {}
             ("SERVER_KEY_PATH".to_string(), "/tmp/server-key".to_string()),
         ]);
 
-        resolve_key_references(&mut config, &loaded, false)
-            .await
-            .expect("resolve");
+        resolve_key_references(
+            &mut config,
+            &LoadedSecrets::from_env_map(loaded.clone()),
+            false,
+        )
+        .await
+        .expect("resolve");
 
         assert_eq!(
             config.ssh.unwrap().keys.unwrap(),
@@ -655,9 +664,13 @@ services: {}
         )
         .expect("parse config");
 
-        let error = resolve_key_references(&mut config, &BTreeMap::new(), false)
-            .await
-            .expect_err("missing reference");
+        let error = resolve_key_references(
+            &mut config,
+            &LoadedSecrets::from_env_map(BTreeMap::new()),
+            false,
+        )
+        .await
+        .expect_err("missing reference");
         assert!(error.to_string().contains("MISSING_KEY_PATH"));
         assert!(error.to_string().contains("--host-env"));
     }

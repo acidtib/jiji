@@ -4,8 +4,9 @@ use jiji_config::{BuildValue, CommandValue, Config, SslValue};
 use jiji_tui::Ui;
 
 use crate::env_resolution::{self, is_bare_all_caps_name};
+use crate::secret_source::SecretSource;
 
-pub fn run(
+pub async fn run(
     environment: Option<&str>,
     config_file: Option<&str>,
     services: Option<&str>,
@@ -27,8 +28,15 @@ pub fn run(
     }
 
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let (loaded_env, loaded_from) =
-        env_resolution::load_env_file(&project_root, environment, config.secrets_path.as_deref())?;
+    let service_filter = split_comma_trimmed(services);
+    let refs = collect_secret_refs(&config, &service_filter);
+    let loaded = crate::secret_source::load_secrets_if(
+        &project_root,
+        environment,
+        &config,
+        !refs.is_empty(),
+    )
+    .await?;
 
     Ui::say(
         &format!("Environment: {}", environment.unwrap_or("default")),
@@ -36,9 +44,16 @@ pub fn run(
     );
     Ui::say(&format!("Config file: {}", path.display()), 1);
     Ui::say(&format!("Project root: {}", project_root.display()), 1);
-    match &loaded_from {
-        Some(loaded_from) => Ui::say(&format!("Secrets file: {}", loaded_from.display()), 1),
-        None => Ui::say("Secrets file: not found", 1),
+    match &loaded.source {
+        SecretSource::EnvFile(path) => Ui::say(&format!("Secrets file: {}", path.display()), 1),
+        SecretSource::NoEnvFile => Ui::say("Secrets file: not found", 1),
+        SecretSource::Adapter { settings, .. } => Ui::say(
+            &format!(
+                "Secrets adapter: {}",
+                crate::secret_source::describe_adapter(settings)
+            ),
+            1,
+        ),
     }
     Ui::say(
         &format!(
@@ -47,9 +62,6 @@ pub fn run(
         ),
         1,
     );
-
-    let service_filter = split_comma_trimmed(services);
-    let refs = collect_secret_refs(&config, &service_filter);
 
     if refs.is_empty() {
         Ui::say("No secret references found in configuration.", 0);
@@ -62,7 +74,7 @@ pub fn run(
         for secret_ref in group {
             informational_only |= !secret_ref.runtime_resolved;
             let resolved =
-                env_resolution::resolve_secret_name(&secret_ref.name, &loaded_env, host_env);
+                env_resolution::resolve_secret_name(&secret_ref.name, &loaded.values, host_env);
             let (status, is_ok) = match (&resolved, show_values) {
                 (Some(value), true) => (value.clone(), true),
                 (Some(_), false) => ("[SET]".to_string(), true),
@@ -83,7 +95,9 @@ pub fn run(
         .collect();
     let missing_count = required_names
         .iter()
-        .filter(|name| env_resolution::resolve_secret_name(name, &loaded_env, host_env).is_none())
+        .filter(|name| {
+            env_resolution::resolve_secret_name(name, &loaded.values, host_env).is_none()
+        })
         .count();
 
     println!();
@@ -135,14 +149,14 @@ fn service_matches(name: &str, filters: &[String]) -> bool {
 
 /// A secret-shaped reference found in the configuration, with context about where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SecretRef {
-    name: String,
-    source: String,
+pub(crate) struct SecretRef {
+    pub(crate) name: String,
+    pub(crate) source: String,
     /// Whether this config field is actually resolved from `.env`/host-env by any runtime code
     /// path today (`environment.secrets`, build arguments, `builder.registry.password`, proxy SSL certificates),
     /// versus reported here only for visibility because it looks like a secret reference but is
     /// currently used literally (SSH key passphrases and command interpolation).
-    runtime_resolved: bool,
+    pub(crate) runtime_resolved: bool,
 }
 
 fn push_if_env_ref(
@@ -195,7 +209,7 @@ fn command_var_refs(command: &str) -> Vec<String> {
 /// Scans the entire configuration for secret-shaped references (see the module doc on
 /// `SecretRef::runtime_resolved` for which of these are actually resolved from `.env`/host-env
 /// today versus reported for visibility only), matching the POC's `secrets print` coverage.
-fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<SecretRef> {
+pub(crate) fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<SecretRef> {
     let mut refs = Vec::new();
 
     let mut server_names: Vec<&String> = config.servers.keys().collect();

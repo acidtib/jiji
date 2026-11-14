@@ -189,9 +189,23 @@ pub fn default_dns_forwarders() -> Vec<Ipv4Addr> {
     vec![Ipv4Addr::new(1, 1, 1, 1), Ipv4Addr::new(8, 8, 8, 8)]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretsAdapterKind {
+    Doppler,
+}
+
+impl fmt::Display for SecretsAdapterKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SecretsAdapterKind::Doppler => write!(f, "doppler"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecretsAdapter {
-    pub adapter: String,
+    pub adapter: SecretsAdapterKind,
     #[serde(default)]
     pub project: Option<String>,
     #[serde(default)]
