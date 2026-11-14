@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/acidtib/jiji/compare/v0.13.0...v0.14.0) (2026-11-14)
+
+
+### Features
+
+* **config:** resolve secrets through a doppler adapter ([#135](https://github.com/acidtib/jiji/issues/135)) ([7b6213d](https://github.com/acidtib/jiji/commit/7b6213db1246fc02e9ead7815df8efed3acec70f))
+
+
+### Bug Fixes
+
+* **cli:** scope doppler fetches to the project root and selected work ([#137](https://github.com/acidtib/jiji/issues/137)) ([04f34c7](https://github.com/acidtib/jiji/commit/04f34c7257ff47129c515f090e7cd5bb40c96f26))
+
 ## [0.13.0](https://github.com/acidtib/jiji/compare/v0.12.2...v0.13.0) (2026-10-29)
 
 

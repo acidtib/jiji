@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.12.0...jiji-config-v0.13.0) (2026-11-14)
+
+
+### Features
+
+* **config:** resolve secrets through a doppler adapter ([#135](https://github.com/acidtib/jiji/issues/135)) ([7b6213d](https://github.com/acidtib/jiji/commit/7b6213db1246fc02e9ead7815df8efed3acec70f))
+
 ## [0.12.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.11.0...jiji-config-v0.12.0) (2026-10-29)
 
 
