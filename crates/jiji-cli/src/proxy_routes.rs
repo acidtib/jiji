@@ -49,7 +49,7 @@ impl RouteTarget {
     }
 }
 
-fn is_pem(value: &str) -> bool {
+pub(crate) fn is_pem(value: &str) -> bool {
     value.trim_start().starts_with("-----BEGIN ")
 }
 

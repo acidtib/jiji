@@ -353,13 +353,19 @@ pub async fn run(
 
     let project_root = env_resolution::project_root_from_config_path(&path);
     let loaded_env =
-        crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+        crate::secret_source::SecretValues::open(&project_root, environment, &config)?;
     let mut merged = env_resolution::merge_environment(
         &config.environment.clone().unwrap_or_default(),
         &service.environment,
     );
     crate::proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
-    let mut resolved_env = env_resolution::resolve_environment(&merged, &loaded_env, host_env)?;
+    let mut resolved_env = env_resolution::resolve_environment(
+            &merged,
+            &loaded_env
+                .get(crate::secret_source::environment_references_secret(&merged))
+                .await?,
+            host_env,
+        )?;
     crate::proxy_routes::mark_tls_control_secrets(service.proxy.as_ref(), &mut resolved_env);
     let active = catalog.iter().find(|record| record.service == *service_name
         && record.state == DeploymentState::Active && record.health == HealthState::Healthy);

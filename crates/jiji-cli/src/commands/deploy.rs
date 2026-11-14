@@ -234,7 +234,7 @@ pub async fn run(
 
     let project_root = env_resolution::project_root_from_config_path(&path);
     let loaded_env =
-        crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+        crate::secret_source::SecretValues::open(&project_root, environment, &config)?;
     loaded_env.say_loaded();
 
     let git = version_tag::gather_git_status().await;
@@ -272,14 +272,12 @@ pub async fn run(
         let build_services: Vec<String> = services_to_build.iter().cloned().collect();
         let mut build_plan =
             build_plan::compute_plan(&config, &config.project, &build_services, &deployment_version)?;
-        build_plan::resolve_build_arg_references(
-            &config,
-            &mut build_plan,
-            &loaded_env,
-            host_env,
-        )?;
+        let loaded = loaded_env
+            .get(build_plan::plan_references_secrets(&config, &build_plan))
+            .await?;
+        build_plan::resolve_build_arg_references(&config, &mut build_plan, &loaded, host_env)?;
         let resolved_secrets =
-            build_plan::resolve_build_secrets(&config, &build_plan, &loaded_env, host_env)?;
+            build_plan::resolve_build_secrets(&config, &build_plan, &loaded, host_env)?;
         for entry in &build_plan {
             if let Some(error) = build_engine::multi_arch_requires_push(&entry.platforms, true) {
                 anyhow::bail!("Service '{}': {error}", entry.service_name);
@@ -300,8 +298,11 @@ pub async fn run(
                     "`jiji deploy --build` requires `builder.registry.username` so deploy hosts can pull the built image."
                 );
             }
-            let password = registry::resolve_registry_password(raw_password, &loaded_env, host_env)
+            let loaded = loaded_env
+                .get(registry::password_references_secret(raw_password))
                 .await?;
+            let password =
+                registry::resolve_registry_password(raw_password, &loaded, host_env).await?;
             registry_password = Some(password);
         }
         let mut executor = build_executor::BuildExecutor::prepare(
@@ -420,7 +421,16 @@ pub async fn run(
             .as_deref()
             .expect("authenticates_image requires a password");
         registry_password =
-            Some(registry::resolve_registry_password(raw_password, &loaded_env, host_env).await?);
+            Some(
+                registry::resolve_registry_password(
+                    raw_password,
+                    &loaded_env
+                        .get(registry::password_references_secret(raw_password))
+                        .await?,
+                    host_env,
+                )
+                .await?,
+            );
     }
 
     let shared_env = config.environment.clone().unwrap_or_default();
@@ -435,7 +445,13 @@ pub async fn run(
             .expect("checked above");
         let mut merged = env_resolution::merge_environment(&shared_env, &service.environment);
         proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
-        let mut resolved = env_resolution::resolve_environment(&merged, &loaded_env, host_env)
+        let mut resolved = env_resolution::resolve_environment(
+            &merged,
+            &loaded_env
+                .get(crate::secret_source::environment_references_secret(&merged))
+                .await?,
+            host_env,
+        )
             .with_context(|| {
                 format!(
                     "Could not resolve environment for service '{}'",

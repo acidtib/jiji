@@ -10,7 +10,8 @@ use crate::env_resolution;
 
 const DOPPLER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Successful adapter fetches, keyed by adapter settings, so one process calls the adapter once.
+/// Successful adapter fetches, keyed by project root and adapter settings, so one process calls
+/// the adapter once.
 static ADAPTER_CACHE: Mutex<BTreeMap<String, BTreeMap<String, String>>> =
     Mutex::const_new(BTreeMap::new());
 
@@ -18,10 +19,7 @@ static ADAPTER_CACHE: Mutex<BTreeMap<String, BTreeMap<String, String>>> =
 pub enum SecretSource {
     EnvFile(PathBuf),
     NoEnvFile,
-    Adapter {
-        settings: SecretsAdapter,
-        fetched: bool,
-    },
+    Adapter(SecretsAdapter),
 }
 
 impl SecretSource {
@@ -31,25 +29,12 @@ impl SecretSource {
             SecretSource::EnvFile(_) | SecretSource::NoEnvFile => {
                 "the selected .env file".to_string()
             }
-            SecretSource::Adapter { settings, .. } => describe_adapter(settings),
+            SecretSource::Adapter(settings) => describe_adapter(settings),
         }
     }
 
     pub fn is_adapter(&self) -> bool {
-        matches!(self, SecretSource::Adapter { .. })
-    }
-
-    /// The `... loaded from: ...` line commands print, or `None` when nothing was loaded.
-    pub fn loaded_line(&self) -> Option<String> {
-        match self {
-            SecretSource::EnvFile(path) => {
-                Some(format!("Environment loaded from: {}", path.display()))
-            }
-            SecretSource::NoEnvFile => None,
-            SecretSource::Adapter { settings, fetched } => {
-                fetched.then(|| format!("Secrets loaded from: {}", describe_adapter(settings)))
-            }
-        }
+        matches!(self, SecretSource::Adapter(_))
     }
 }
 
@@ -65,12 +50,6 @@ impl LoadedSecrets {
         LoadedSecrets {
             values,
             source: SecretSource::NoEnvFile,
-        }
-    }
-
-    pub fn say_loaded(&self) {
-        if let Some(line) = self.source.loaded_line() {
-            jiji_tui::Ui::say(&line, 1);
         }
     }
 }
@@ -95,81 +74,94 @@ pub fn describe_adapter(settings: &SecretsAdapter) -> String {
     }
 }
 
-/// Loads secret values for a command body. With an adapter configured, the adapter is called
-/// only when the config references at least one secret.
-pub async fn load_secrets(
-    project_root: &Path,
-    environment: Option<&str>,
-    config: &Config,
-) -> anyhow::Result<LoadedSecrets> {
-    load_secrets_if(
-        project_root,
-        environment,
-        config,
-        references_any_secret(config),
-    )
-    .await
+/// A command's secret source. `.env` is read when opened; an adapter is called only by
+/// [`SecretValues::get`] with `needed` set, at most once per process.
+#[derive(Debug, Clone)]
+pub struct SecretValues {
+    project_root: PathBuf,
+    loaded: LoadedSecrets,
 }
 
-/// Same as [`load_secrets`], with the caller deciding whether an adapter fetch is needed.
-/// `.env` files are always read when no adapter is configured.
-pub async fn load_secrets_if(
-    project_root: &Path,
-    environment: Option<&str>,
-    config: &Config,
-    adapter_needed: bool,
-) -> anyhow::Result<LoadedSecrets> {
-    let Some(settings) = &config.secrets else {
-        let (values, path) = env_resolution::load_env_file(
-            project_root,
-            environment,
-            config.secrets_path.as_deref(),
-        )?;
-        let source = path.map_or(SecretSource::NoEnvFile, SecretSource::EnvFile);
-        return Ok(LoadedSecrets { values, source });
-    };
-    if !adapter_needed {
-        return Ok(LoadedSecrets {
-            values: BTreeMap::new(),
-            source: SecretSource::Adapter {
-                settings: settings.clone(),
-                fetched: false,
+impl SecretValues {
+    pub fn open(
+        project_root: &Path,
+        environment: Option<&str>,
+        config: &Config,
+    ) -> anyhow::Result<Self> {
+        let loaded = match &config.secrets {
+            Some(settings) => LoadedSecrets {
+                values: BTreeMap::new(),
+                source: SecretSource::Adapter(settings.clone()),
             },
-        });
+            None => {
+                let (values, path) = env_resolution::load_env_file(
+                    project_root,
+                    environment,
+                    config.secrets_path.as_deref(),
+                )?;
+                let source = path.map_or(SecretSource::NoEnvFile, SecretSource::EnvFile);
+                LoadedSecrets { values, source }
+            }
+        };
+        Ok(SecretValues {
+            project_root: project_root.to_path_buf(),
+            loaded,
+        })
     }
-    let values = fetch_cached(settings).await?;
-    Ok(LoadedSecrets {
-        values,
-        source: SecretSource::Adapter {
-            settings: settings.clone(),
-            fetched: true,
-        },
-    })
+
+    /// Prints the `.env` path; the adapter line prints when the adapter is first called.
+    pub fn say_loaded(&self) {
+        if let SecretSource::EnvFile(path) = &self.loaded.source {
+            jiji_tui::Ui::say(&format!("Environment loaded from: {}", path.display()), 1);
+        }
+    }
+
+    /// Values for a resolution step. `needed` is whether that step looks up any name; without
+    /// it an adapter is not called and the values are empty.
+    pub async fn get(&self, needed: bool) -> anyhow::Result<LoadedSecrets> {
+        match &self.loaded.source {
+            SecretSource::Adapter(settings) if needed => Ok(LoadedSecrets {
+                values: fetch_cached(settings, &self.project_root).await?,
+                source: self.loaded.source.clone(),
+            }),
+            _ => Ok(self.loaded.clone()),
+        }
+    }
 }
 
-/// True when any runtime-resolved field in `config` names a secret.
-pub fn references_any_secret(config: &Config) -> bool {
-    crate::commands::secrets::print::collect_secret_refs(config, &[])
-        .iter()
-        .any(|reference| reference.runtime_resolved)
+/// True when a server host is an ALL_CAPS reference.
+pub fn references_host_secret(config: &Config) -> bool {
+    config
+        .servers
+        .values()
+        .any(|server| env_resolution::is_bare_all_caps_name(&server.host))
 }
 
-/// True when a server host or SSH key entry is an ALL_CAPS reference.
-pub fn references_ssh_secret(config: &Config) -> bool {
+/// True when an `ssh.keys` or `servers.*.keys` entry is an ALL_CAPS reference.
+pub fn references_ssh_key_secret(config: &Config) -> bool {
     let is_reference = |value: &String| env_resolution::is_bare_all_caps_name(value);
     config
         .servers
         .values()
-        .any(|server| is_reference(&server.host) || server.keys.iter().flatten().any(is_reference))
+        .any(|server| server.keys.iter().flatten().any(is_reference))
         || config
             .ssh
             .as_ref()
             .is_some_and(|ssh| ssh.keys.iter().flatten().any(is_reference))
 }
 
-async fn fetch_cached(settings: &SecretsAdapter) -> anyhow::Result<BTreeMap<String, String>> {
+/// True when resolving `environment` (after TLS refs are added) looks up any name.
+pub fn environment_references_secret(environment: &jiji_config::Environment) -> bool {
+    !environment.secrets.is_empty()
+}
+
+async fn fetch_cached(
+    settings: &SecretsAdapter,
+    project_root: &Path,
+) -> anyhow::Result<BTreeMap<String, String>> {
     let key = format!(
-        "{}\0{}\0{}",
+        "{}\0{}\0{}\0{}",
+        project_root.display(),
         settings.adapter,
         settings.project.as_deref().unwrap_or_default(),
         settings.config.as_deref().unwrap_or_default()
@@ -178,7 +170,11 @@ async fn fetch_cached(settings: &SecretsAdapter) -> anyhow::Result<BTreeMap<Stri
     if let Some(values) = cache.get(&key) {
         return Ok(values.clone());
     }
-    let values = fetch_from_adapter(settings).await?;
+    let values = fetch_from_adapter(settings, project_root).await?;
+    jiji_tui::Ui::say(
+        &format!("Secrets loaded from: {}", describe_adapter(settings)),
+        1,
+    );
     cache.insert(key, values.clone());
     Ok(values)
 }
@@ -188,11 +184,15 @@ trait SecretsProvider {
     async fn fetch(&self) -> anyhow::Result<BTreeMap<String, String>>;
 }
 
-async fn fetch_from_adapter(settings: &SecretsAdapter) -> anyhow::Result<BTreeMap<String, String>> {
+async fn fetch_from_adapter(
+    settings: &SecretsAdapter,
+    project_root: &Path,
+) -> anyhow::Result<BTreeMap<String, String>> {
     match settings.adapter {
         SecretsAdapterKind::Doppler => {
             Doppler {
                 settings: settings.clone(),
+                project_root: project_root.to_path_buf(),
             }
             .fetch()
             .await
@@ -202,6 +202,8 @@ async fn fetch_from_adapter(settings: &SecretsAdapter) -> anyhow::Result<BTreeMa
 
 struct Doppler {
     settings: SecretsAdapter,
+    /// The CLI's `doppler setup` scope is per directory, so it runs from the jiji project root.
+    project_root: PathBuf,
 }
 
 impl Doppler {
@@ -225,7 +227,7 @@ impl SecretsProvider for Doppler {
             "doppler",
             &self.args(),
             None,
-            None,
+            Some(&self.project_root),
             Some(DOPPLER_TIMEOUT),
         )
         .await
@@ -304,6 +306,7 @@ mod tests {
         let base = ["secrets", "download", "--no-file", "--format", "json"];
         let both = Doppler {
             settings: settings(Some("app"), Some("prd")),
+            project_root: PathBuf::from("."),
         };
         let mut expected: Vec<&str> = base.to_vec();
         expected.extend(["--project", "app", "--config", "prd"]);
@@ -311,6 +314,7 @@ mod tests {
 
         let neither = Doppler {
             settings: settings(None, None),
+            project_root: PathBuf::from("."),
         };
         assert_eq!(neither.args(), base);
     }
@@ -353,20 +357,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unfetched_adapter_prints_no_loaded_line() {
-        let source = SecretSource::Adapter {
-            settings: settings(Some("app"), None),
-            fetched: false,
-        };
-        assert!(source.loaded_line().is_none());
-        let source = SecretSource::Adapter {
-            settings: settings(Some("app"), Some("prd")),
-            fetched: true,
-        };
-        assert_eq!(
-            source.loaded_line().unwrap(),
-            "Secrets loaded from: doppler (project app, config prd)"
-        );
+    #[tokio::test]
+    async fn adapter_is_not_called_when_nothing_is_needed() {
+        let config: Config = serde_yaml::from_str(
+            r#"
+project: demo
+builder: { engine: docker }
+servers: {}
+services: {}
+secrets: { adapter: doppler, project: app }
+"#,
+        )
+        .unwrap();
+        let secrets = SecretValues::open(Path::new("/nonexistent"), None, &config).unwrap();
+        let loaded = secrets.get(false).await.unwrap();
+        assert!(loaded.values.is_empty());
+        assert!(loaded.source.is_adapter());
     }
 }

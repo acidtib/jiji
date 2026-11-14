@@ -135,6 +135,27 @@ pub fn compute_plan(
         .collect()
 }
 
+/// True when resolving `plan`'s build args or build secrets looks up any secret name, matching
+/// what `resolve_build_arg_references` and `resolve_build_secrets` read.
+pub fn plan_references_secrets(config: &Config, plan: &[BuildPlanEntry]) -> bool {
+    let shared = config.environment.clone().unwrap_or_default();
+    plan.iter().any(|entry| {
+        if !entry.build.secrets.is_empty() {
+            return true;
+        }
+        let Some(service) = config.services.get(&entry.service_name) else {
+            return false;
+        };
+        let merged = env_resolution::merge_environment(&shared, &service.environment);
+        entry.build.args.iter().any(|(key, value)| {
+            key != "JIJI_VERSION"
+                && value != "JIJI_VERSION"
+                && env_resolution::is_bare_all_caps_name(value)
+                && !merged.clear.contains_key(value)
+        })
+    })
+}
+
 /// Resolves explicit ALL_CAPS build-argument references. A service's merged clear environment
 /// takes precedence over the selected `.env` file and the optional host environment.
 pub fn resolve_build_arg_references(

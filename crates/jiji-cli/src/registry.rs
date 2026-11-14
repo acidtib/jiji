@@ -325,6 +325,12 @@ pub fn render_logout_args(server: &str) -> Vec<String> {
     vec!["logout".into(), server.into()]
 }
 
+/// True when `resolve_registry_password` would look `raw` up as a secret name.
+pub fn password_references_secret(raw: &str) -> bool {
+    env_resolution::is_command_expression(raw).is_none()
+        && env_resolution::is_bare_all_caps_name(raw)
+}
+
 pub async fn resolve_registry_password(
     raw: &str,
     loaded: &crate::secret_source::LoadedSecrets,

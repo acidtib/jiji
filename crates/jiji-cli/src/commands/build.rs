@@ -32,11 +32,13 @@ pub async fn run(
         anyhow::bail!("Configuration is invalid; fix the errors above and try again");
     }
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let loaded_env =
-        crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+    let loaded_env = crate::secret_source::SecretValues::open(&project_root, environment, &config)?;
     loaded_env.say_loaded();
     if config.builder.remote.is_some() {
-        crate::ssh_adapter::resolve_key_references(&mut config, &loaded_env, host_env).await?;
+        let loaded = loaded_env
+            .get(crate::secret_source::references_ssh_key_secret(&config))
+            .await?;
+        crate::ssh_adapter::resolve_key_references(&mut config, &loaded, host_env).await?;
     }
 
     let filters: Vec<String> = services
@@ -61,9 +63,11 @@ pub async fn run(
     }
     version_tag::validate_or_bail(&version)?;
     let mut plan = build_plan::compute_plan(&config, &config.project, &services, &version)?;
-    build_plan::resolve_build_arg_references(&config, &mut plan, &loaded_env, host_env)?;
-    let resolved_secrets =
-        build_plan::resolve_build_secrets(&config, &plan, &loaded_env, host_env)?;
+    let loaded = loaded_env
+        .get(build_plan::plan_references_secrets(&config, &plan))
+        .await?;
+    build_plan::resolve_build_arg_references(&config, &mut plan, &loaded, host_env)?;
+    let resolved_secrets = build_plan::resolve_build_secrets(&config, &plan, &loaded, host_env)?;
     Ui::say(&format!("Executor: {executor_identity}"), 1);
     Ui::say(&build_plan::render_plan_summary(&plan), 1);
 
@@ -87,7 +91,12 @@ pub async fn run(
                 ) {
                     (Some(_), Some(raw)) => {
                         resolved_password =
-                            Some(registry::resolve_registry_password(raw, &loaded_env, host_env).await?);
+                            Some(registry::resolve_registry_password(
+                            raw,
+                            &loaded_env.get(registry::password_references_secret(raw)).await?,
+                            host_env,
+                        )
+                        .await?);
                     }
                     _ => Ui::warn(
                         "Registry credentials are incomplete; skipping login. This is only safe for a public registry.",

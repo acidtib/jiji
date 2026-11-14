@@ -30,13 +30,9 @@ pub async fn run(
     let project_root = env_resolution::project_root_from_config_path(&path);
     let service_filter = split_comma_trimmed(services);
     let refs = collect_secret_refs(&config, &service_filter);
-    let loaded = crate::secret_source::load_secrets_if(
-        &project_root,
-        environment,
-        &config,
-        !refs.is_empty(),
-    )
-    .await?;
+    let loaded = crate::secret_source::SecretValues::open(&project_root, environment, &config)?
+        .get(!refs.is_empty())
+        .await?;
 
     Ui::say(
         &format!("Environment: {}", environment.unwrap_or("default")),
@@ -47,7 +43,7 @@ pub async fn run(
     match &loaded.source {
         SecretSource::EnvFile(path) => Ui::say(&format!("Secrets file: {}", path.display()), 1),
         SecretSource::NoEnvFile => Ui::say("Secrets file: not found", 1),
-        SecretSource::Adapter { settings, .. } => Ui::say(
+        SecretSource::Adapter(settings) => Ui::say(
             &format!(
                 "Secrets adapter: {}",
                 crate::secret_source::describe_adapter(settings)
@@ -149,14 +145,14 @@ fn service_matches(name: &str, filters: &[String]) -> bool {
 
 /// A secret-shaped reference found in the configuration, with context about where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SecretRef {
-    pub(crate) name: String,
-    pub(crate) source: String,
+struct SecretRef {
+    name: String,
+    source: String,
     /// Whether this config field is actually resolved from `.env`/host-env by any runtime code
     /// path today (`environment.secrets`, build arguments, `builder.registry.password`, proxy SSL certificates),
     /// versus reported here only for visibility because it looks like a secret reference but is
     /// currently used literally (SSH key passphrases and command interpolation).
-    pub(crate) runtime_resolved: bool,
+    runtime_resolved: bool,
 }
 
 fn push_if_env_ref(
@@ -182,8 +178,16 @@ fn push_ssl_ref(refs: &mut Vec<SecretRef>, ssl: Option<&SslValue>, source: &str)
         private_key_pem,
     }) = ssl
     {
-        push_if_env_ref(refs, Some(certificate_pem), source, true);
-        push_if_env_ref(refs, Some(private_key_pem), source, true);
+        // Deployment treats every non-PEM value as a secret name, whatever its case.
+        for value in [certificate_pem, private_key_pem] {
+            if !crate::proxy_routes::is_pem(value) {
+                refs.push(SecretRef {
+                    name: value.clone(),
+                    source: source.to_string(),
+                    runtime_resolved: true,
+                });
+            }
+        }
     }
 }
 
@@ -209,7 +213,7 @@ fn command_var_refs(command: &str) -> Vec<String> {
 /// Scans the entire configuration for secret-shaped references (see the module doc on
 /// `SecretRef::runtime_resolved` for which of these are actually resolved from `.env`/host-env
 /// today versus reported for visibility only), matching the POC's `secrets print` coverage.
-pub(crate) fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<SecretRef> {
+fn collect_secret_refs(config: &Config, service_filter: &[String]) -> Vec<SecretRef> {
     let mut refs = Vec::new();
 
     let mut server_names: Vec<&String> = config.servers.keys().collect();

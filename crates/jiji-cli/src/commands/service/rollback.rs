@@ -213,7 +213,7 @@ pub async fn run(
 
             let project_root = env_resolution::project_root_from_config_path(&path);
             let loaded_env =
-                crate::secret_source::load_secrets(&project_root, environment, &config).await?;
+                crate::secret_source::SecretValues::open(&project_root, environment, &config)?;
             loaded_env.say_loaded();
 
             let shared_env = config.environment.clone().unwrap_or_default();
@@ -224,11 +224,16 @@ pub async fn run(
                 let mut merged =
                     env_resolution::merge_environment(&shared_env, &service.environment);
                 crate::proxy_routes::add_tls_secret_refs(service.proxy.as_ref(), &mut merged);
-                let mut resolved =
-                    env_resolution::resolve_environment(&merged, &loaded_env, host_env)
-                        .with_context(|| {
-                            format!("Could not resolve environment for service '{service_name}'")
-                        })?;
+                let mut resolved = env_resolution::resolve_environment(
+                    &merged,
+                    &loaded_env
+                        .get(crate::secret_source::environment_references_secret(&merged))
+                        .await?,
+                    host_env,
+                )
+                .with_context(|| {
+                    format!("Could not resolve environment for service '{service_name}'")
+                })?;
                 crate::proxy_routes::mark_tls_control_secrets(
                     service.proxy.as_ref(),
                     &mut resolved,
