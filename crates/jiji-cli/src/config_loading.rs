@@ -40,9 +40,13 @@ pub async fn load_config_for_ssh(
         return Ok((config, path));
     }
     let project_root = env_resolution::project_root_from_config_path(&path);
-    let needed = secret_source::references_ssh_secret(&config);
-    let loaded =
-        secret_source::load_secrets_if(&project_root, environment, &config, needed).await?;
+    let secrets = secret_source::SecretValues::open(&project_root, environment, &config)?;
+    let loaded = secrets
+        .get(
+            secret_source::references_host_secret(&config)
+                || secret_source::references_ssh_key_secret(&config),
+        )
+        .await?;
     let allow_host_env = crate::ssh_host_env_enabled();
     resolve_server_host_references(&mut config, &loaded, allow_host_env)?;
     ssh_adapter::resolve_key_references(&mut config, &loaded, allow_host_env).await?;

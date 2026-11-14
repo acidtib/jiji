@@ -512,3 +512,54 @@ services:
         "the engine must never run when a required build secret is missing: {logged}"
     );
 }
+
+#[test]
+fn building_a_service_without_secrets_never_calls_the_secrets_adapter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("deploy.yml");
+    std::fs::write(
+        &config,
+        r#"
+project: demo
+builder:
+  engine: docker
+servers:
+  app:
+    host: 127.0.0.1
+    user: root
+services:
+  web:
+    build: .
+    servers: [app]
+  worker:
+    build:
+      context: .
+      secrets: [NPM_TOKEN]
+    servers: [app]
+secrets:
+  adapter: doppler
+"#,
+    )
+    .expect("write config");
+    let bin = write_fake_docker(dir.path());
+    let marker = dir.path().join("doppler-called");
+    let doppler = bin.join("doppler");
+    std::fs::write(
+        &doppler,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .expect("write doppler");
+    let mut permissions = std::fs::metadata(&doppler).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&doppler, permissions).expect("chmod");
+    let log = dir.path().join("log.txt");
+
+    let output = run_build(&config, &bin, &log, &["--no-push", "-S", "web"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!marker.exists(), "doppler must not be invoked");
+}

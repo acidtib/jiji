@@ -609,14 +609,11 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
-            source: crate::secret_source::SecretSource::Adapter {
-                settings: jiji_config::SecretsAdapter {
-                    adapter: jiji_config::SecretsAdapterKind::Doppler,
-                    project: Some("my-app".into()),
-                    config: Some("prd".into()),
-                },
-                fetched: true,
-            },
+            source: crate::secret_source::SecretSource::Adapter(jiji_config::SecretsAdapter {
+                adapter: jiji_config::SecretsAdapterKind::Doppler,
+                project: Some("my-app".into()),
+                config: Some("prd".into()),
+            }),
         }
     }
 

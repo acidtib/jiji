@@ -12,12 +12,8 @@ struct Project {
 
 impl Project {
     fn new(secrets_block: &str) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(dir.path().join(".jiji")).expect("create .jiji");
-        std::fs::write(
-            dir.path().join(".jiji/deploy.yml"),
-            format!(
-                r#"
+        Self::with_config(&format!(
+            r#"
 project: demo
 builder: {{ engine: docker }}
 servers:
@@ -31,9 +27,13 @@ services:
 ssh: {{ user: root }}
 {secrets_block}
 "#
-            ),
-        )
-        .expect("write config");
+        ))
+    }
+
+    fn with_config(config: &str) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join(".jiji")).expect("create .jiji");
+        std::fs::write(dir.path().join(".jiji/deploy.yml"), config).expect("write config");
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).expect("create bin");
         Project { dir, bin }
@@ -55,8 +55,9 @@ ssh: {{ user: root }}
         let stdout_path = self.dir.path().join("doppler.stdout");
         std::fs::write(&stdout_path, stdout).expect("write canned stdout");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncat '{stdout}'\nprintf '%s' '{stderr}' >&2\nexit {exit_code}\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\npwd -P > '{cwd}'\ncat '{stdout}'\nprintf '%s' '{stderr}' >&2\nexit {exit_code}\n",
             log = self.log_path().display(),
+            cwd = self.cwd_path().display(),
             stdout = stdout_path.display(),
         );
         let path = self.bin.join("doppler");
@@ -65,7 +66,15 @@ ssh: {{ user: root }}
             .expect("chmod fake doppler");
     }
 
+    fn cwd_path(&self) -> PathBuf {
+        self.dir.path().join("doppler.cwd")
+    }
+
     fn run(&self, args: &[&str], path: Option<&Path>) -> Output {
+        self.run_in(self.dir.path(), args, path)
+    }
+
+    fn run_in(&self, cwd: &Path, args: &[&str], path: Option<&Path>) -> Output {
         let search_path = match path {
             Some(path) => path.as_os_str().to_owned(),
             None => {
@@ -77,7 +86,7 @@ ssh: {{ user: root }}
         };
         Command::new(env!("CARGO_BIN_EXE_jiji"))
             .args(args)
-            .current_dir(self.dir.path())
+            .current_dir(cwd)
             .env("PATH", search_path)
             .env_remove("DOPPLER_TOKEN")
             .output()
@@ -223,4 +232,58 @@ fn non_string_value_names_the_key() {
     assert!(!output.status.success());
     assert!(text.contains("'DATABASE_URL' is not a string"), "{text}");
     assert!(!text.contains("12345"), "{text}");
+}
+
+#[test]
+fn doppler_runs_from_the_selected_project_root_not_the_callers_directory() {
+    let project = Project::new("secrets:\n  adapter: doppler\n");
+    project.write_fake_doppler(r#"{"API_TOKEN":"a","DATABASE_URL":"b"}"#, "", 0);
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let config = project.dir.path().join(".jiji/deploy.yml");
+
+    let output = project.run_in(
+        elsewhere.path(),
+        &["secrets", "print", "-c", config.to_str().unwrap()],
+        None,
+    );
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let root = project.dir.path().canonicalize().unwrap();
+    let cwd = std::fs::read_to_string(project.cwd_path()).unwrap();
+    assert_eq!(cwd.trim(), root.display().to_string());
+}
+
+#[test]
+fn lowercase_tls_references_resolve_through_the_adapter() {
+    let project = Project::with_config(
+        r#"
+project: demo
+builder: { engine: docker }
+servers:
+  app: { host: 192.0.2.10 }
+services:
+  web:
+    image: example/web:latest
+    servers: [app]
+    proxy:
+      hosts: [web.example.com]
+      port: 3000
+      ssl:
+        certificate_pem: tls_cert
+        private_key_pem: tls_key
+ssh: { user: root }
+secrets: { adapter: doppler }
+"#,
+    );
+    project.write_fake_doppler(r#"{"tls_cert":"cert","tls_key":"key"}"#, "", 0);
+
+    let output = project.run(&["secrets", "print"], None);
+    let text = combined(&output);
+
+    assert!(output.status.success(), "{text}");
+    assert_eq!(project.invocations().len(), 1, "{text}");
+    for name in ["tls_cert", "tls_key"] {
+        let line = text.lines().find(|line| line.contains(name)).unwrap();
+        assert!(line.contains("[SET]"), "{text}");
+    }
 }
