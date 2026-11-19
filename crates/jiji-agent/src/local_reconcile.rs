@@ -5,6 +5,7 @@
 //! bounded exponential backoff.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,7 +15,7 @@ use tokio::process::Command;
 use crate::catalog::{CatalogRecord, DeploymentState};
 use crate::discovery::{self, DiscoveryOutcome};
 use crate::engine::Engine;
-use crate::runtime::MeshConfig;
+use crate::runtime::{MeshConfig, RouteSpecs};
 use crate::store::{AgentStore, Observation};
 
 const MIN_BACKOFF: Duration = Duration::from_secs(2);
@@ -55,10 +56,12 @@ pub async fn run_loop(
     engine: Engine,
     config: MeshConfig,
     startup_candidates: BTreeSet<String>,
+    routes_path: PathBuf,
 ) {
     let mut backoff = Backoff::new();
     loop {
-        let outcomes = reconcile_once(&store, engine, &config, &startup_candidates).await;
+        let outcomes =
+            reconcile_once(&store, engine, &config, &startup_candidates, &routes_path).await;
         let failed = outcomes.iter().any(|outcome| outcome.result.is_err());
         let delay = if failed {
             backoff.failure()
@@ -117,8 +120,19 @@ pub async fn reconcile_once(
     engine: Engine,
     config: &MeshConfig,
     startup_candidates: &BTreeSet<String>,
+    routes_path: &Path,
 ) -> Vec<RepairOutcome> {
     let mut outcomes = Vec::new();
+    let routes = match load_route_specs(routes_path, config) {
+        Ok(routes) => routes,
+        Err(error) => {
+            outcomes.push(RepairOutcome {
+                component: "proxy_route_specs",
+                result: Err(error),
+            });
+            startup_route_specs(config)
+        }
+    };
     outcomes.push(RepairOutcome {
         component: "wireguard",
         result: ensure_link(
@@ -144,7 +158,7 @@ pub async fn reconcile_once(
     }
     outcomes.push(RepairOutcome {
         component: "proxy_attachment",
-        result: crate::proxy_bringup::reconcile(engine, config).await,
+        result: crate::proxy_bringup::reconcile(engine, config, &routes.tcp_routes).await,
     });
     // Shared by containers/deployment_recovery/draining_cleanup below, avoiding three separate
     // `engine ps -a` spawns per tick.
@@ -193,20 +207,43 @@ pub async fn reconcile_once(
     });
     outcomes.push(RepairOutcome {
         component: "proxy_routes",
-        result: reconcile_proxy_routes(engine, config).await,
+        result: reconcile_proxy_routes(engine, config, &routes.proxy_routes).await,
     });
     outcomes.push(RepairOutcome {
         component: "tcp_proxy_routes",
-        result: reconcile_tcp_routes(engine, config).await,
+        result: reconcile_tcp_routes(engine, config, &routes.tcp_routes).await,
     });
     outcomes
+}
+
+fn startup_route_specs(config: &MeshConfig) -> RouteSpecs {
+    RouteSpecs {
+        proxy_routes: config.local_runtime.proxy_routes.clone(),
+        tcp_routes: config.local_runtime.tcp_routes.clone(),
+    }
+}
+
+/// Falls back to the startup `mesh.json` lists until a routes file has been written.
+pub fn load_route_specs(path: &Path, config: &MeshConfig) -> Result<RouteSpecs, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| format!("could not parse {}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(startup_route_specs(config))
+        }
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
 }
 
 /// Repairs routes that are absent from jiji-proxy. The setup-time config is a fallback, not the
 /// authority for an existing route: deploy can change its backend port or policy after setup.
 /// Reapplying the stale fallback on every tick would overwrite that newer deploy-time route.
-async fn reconcile_proxy_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
-    for route in &config.local_runtime.proxy_routes {
+async fn reconcile_proxy_routes(
+    engine: Engine,
+    config: &MeshConfig,
+    routes: &[crate::runtime::ProxyRouteSpec],
+) -> Result<(), String> {
+    for route in routes {
         if !proxy_route_exists(engine, route).await? {
             deploy_proxy_route(engine, config, route).await?;
         }
@@ -255,8 +292,12 @@ async fn deploy_proxy_route(
 
 /// Mirrors `reconcile_proxy_routes` for raw TCP routes. An existing route can contain newer
 /// deploy-time config, so the setup-time fallback repairs only an absent route.
-async fn reconcile_tcp_routes(engine: Engine, config: &MeshConfig) -> Result<(), String> {
-    for route in &config.local_runtime.tcp_routes {
+async fn reconcile_tcp_routes(
+    engine: Engine,
+    config: &MeshConfig,
+    routes: &[crate::runtime::TcpRouteSpec],
+) -> Result<(), String> {
+    for route in routes {
         if !tcp_route_exists(engine, route.listen_port).await? {
             deploy_tcp_route(engine, config, route).await?;
         }
@@ -973,6 +1014,58 @@ mod tests {
             })
             .to_string(),
         }
+    }
+
+    fn proxy_route(host: &str) -> crate::runtime::ProxyRouteSpec {
+        crate::runtime::ProxyRouteSpec {
+            host: host.into(),
+            path_prefix: None,
+            name: "demo-web.jiji".into(),
+            port: 80,
+            apply_args: vec![],
+        }
+    }
+
+    #[test]
+    fn route_specs_fall_back_to_the_startup_config_without_a_routes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::runtime::tests::config();
+        config.local_runtime.proxy_routes = vec![proxy_route("startup.example.com")];
+
+        let routes = load_route_specs(&dir.path().join("proxy-routes.json"), &config).unwrap();
+
+        assert_eq!(
+            routes.proxy_routes,
+            vec![proxy_route("startup.example.com")]
+        );
+    }
+
+    #[test]
+    fn a_routes_file_replaces_the_startup_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-routes.json");
+        let mut config = crate::runtime::tests::config();
+        config.local_runtime.proxy_routes = vec![proxy_route("startup.example.com")];
+        let written = RouteSpecs {
+            proxy_routes: vec![
+                proxy_route("startup.example.com"),
+                proxy_route("deployed-later.example.com"),
+            ],
+            tcp_routes: vec![],
+        };
+        std::fs::write(&path, serde_json::to_vec(&written).unwrap()).unwrap();
+
+        assert_eq!(load_route_specs(&path, &config).unwrap(), written);
+    }
+
+    #[test]
+    fn an_unreadable_routes_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy-routes.json");
+        std::fs::write(&path, "not json").unwrap();
+
+        let error = load_route_specs(&path, &crate::runtime::tests::config()).unwrap_err();
+        assert!(error.contains("could not parse"), "{error}");
     }
 
     #[test]

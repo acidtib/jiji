@@ -161,6 +161,16 @@ pub async fn ensure_agent(
     )
     .await?;
     write_remote_text(session, "0644", &paths.unit_path, &unit).await?;
+    write_remote_text(
+        session,
+        "0600",
+        &paths.proxy_routes_path,
+        &serde_json::to_string(&jiji_agent::runtime::RouteSpecs {
+            proxy_routes: mesh_config.local_runtime.proxy_routes.clone(),
+            tcp_routes: mesh_config.local_runtime.tcp_routes.clone(),
+        })?,
+    )
+    .await?;
 
     let result = session
         .execute(&start_agent_command(&paths, project))

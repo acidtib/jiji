@@ -32,7 +32,11 @@ fn engine_kind(engine: Engine) -> BridgeEngineKind {
     }
 }
 
-pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String> {
+pub async fn reconcile(
+    engine: Engine,
+    config: &MeshConfig,
+    tcp_routes: &[crate::runtime::TcpRouteSpec],
+) -> Result<(), String> {
     let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
     let state = proxy_state(engine, &fingerprint).await?;
     // A newer proxy belongs to another project's newer agent; its config is not ours to rewrite.
@@ -61,12 +65,7 @@ pub async fn reconcile(engine: Engine, config: &MeshConfig) -> Result<(), String
     // `local_reconcile::reconcile_tcp_routes` (run every tick, same as this function) keeps
     // jiji-proxy's actual TCP routes converged to this exact same config-derived list, so it's
     // already the correct source of truth for which public ports need a DNAT rule.
-    let tcp_ports: Vec<u16> = config
-        .local_runtime
-        .tcp_routes
-        .iter()
-        .map(|route| route.listen_port)
-        .collect();
+    let tcp_ports: Vec<u16> = tcp_routes.iter().map(|route| route.listen_port).collect();
     // The HTTP 80/443 DNAT lines are Docker-only (Podman's own bridges already publish those
     // natively -- see `render_nftables`'s doc comment), but a TCP route's public port has no such
     // native alternative on either engine: `--publish` can only ever publish a fixed port set

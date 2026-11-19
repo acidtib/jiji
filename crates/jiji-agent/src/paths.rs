@@ -12,6 +12,9 @@ use jiji_network::systemd_unit_slug;
 /// jiji-proxy ingress rules (`proxy_ingress.rs`) rather than splitting state across `/var/lib`.
 pub const DEFAULT_ROOT: &str = "/etc/jiji/agent";
 
+/// Sits next to `mesh.json`, so the agent finds it from the `--mesh-config` path alone.
+pub const PROXY_ROUTES_FILE: &str = "proxy-routes.json";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPaths {
     /// `{root}/{slug}`
@@ -28,6 +31,8 @@ pub struct AgentPaths {
     pub mesh_config_path: PathBuf,
     /// `{root}/{slug}/membership-bootstrap.json`
     pub membership_bootstrap_path: PathBuf,
+    /// `{root}/{slug}/proxy-routes.json`
+    pub proxy_routes_path: PathBuf,
     /// `jiji-agent-{slug}.service`
     pub unit_name: String,
     /// `/etc/systemd/system/jiji-agent-{slug}.service`
@@ -46,6 +51,7 @@ impl AgentPaths {
             socket_path: project_dir.join("agent.sock"),
             mesh_config_path: project_dir.join("mesh.json"),
             membership_bootstrap_path: project_dir.join("membership-bootstrap.json"),
+            proxy_routes_path: project_dir.join(PROXY_ROUTES_FILE),
             unit_path: Path::new("/etc/systemd/system").join(&unit_name),
             unit_name,
             project_dir,
@@ -85,6 +91,10 @@ mod tests {
             assert!(a.socket_path.starts_with(&a.project_dir));
             assert!(a.mesh_config_path.starts_with(&a.project_dir));
             assert!(a.membership_bootstrap_path.starts_with(&a.project_dir));
+            assert_eq!(
+                a.proxy_routes_path,
+                a.mesh_config_path.with_file_name(PROXY_ROUTES_FILE)
+            );
             assert!(a.unit_path.starts_with("/etc/systemd/system"));
             assert!(a.unit_name.starts_with("jiji-agent-"));
             assert!(a.unit_name.ends_with(".service"));

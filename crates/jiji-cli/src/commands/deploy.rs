@@ -761,7 +761,7 @@ pub async fn run(
                 )
             })
             .collect();
-        proxy_routes::reconcile_catalog_routes(
+        match proxy_routes::reconcile_catalog_routes(
             &sessions,
             &dns_servers,
             &plan.project,
@@ -770,7 +770,10 @@ pub async fn run(
             &resolved_envs,
         )
         .await
-        .err()
+        {
+            Ok(()) => save_route_specs(&sessions, &config).await.err(),
+            Err(error) => Some(error),
+        }
     } else {
         None
     };
@@ -1148,6 +1151,19 @@ pub(crate) fn split_comma_trimmed(value: Option<&str>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Saves every route this config wants on each connected host for its jiji-agent, not only the
+/// services deployed this run, so the file stays the complete list.
+async fn save_route_specs(
+    sessions: &BTreeMap<String, Arc<SshSession>>,
+    config: &jiji_config::Config,
+) -> anyhow::Result<()> {
+    for (server, session) in sessions {
+        let specs = proxy_routes::runtime_route_specs_for_server(config, server)?;
+        proxy_routes::write_route_specs(session, &config.project, &specs).await?;
+    }
+    Ok(())
 }
 
 async fn close_all(sessions: &BTreeMap<String, Arc<SshSession>>) {
