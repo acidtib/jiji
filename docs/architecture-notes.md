@@ -269,9 +269,31 @@ route resolves the aggregate service DNS name and load-balances across healthy
 backends mesh-wide. Reapplying a route forces immediate resolution during a
 deployment; the proxy also refreshes and health-checks backends continuously.
 
-The agent uses setup-time route specs only to repair missing routes. It does
+The agent uses its saved route specs only to repair missing routes. It does
 not overwrite an existing route because a later deploy can change its port or
 policy. The deploy-time configuration is authoritative for an existing route.
+The specs live in `proxy-routes.json` next to `mesh.json`. `server setup` and
+every deploy that reconciles routes rewrite it, and the agent re-reads it on
+each tick. Before a routes file exists, the agent falls back to the lists in
+`mesh.json`, which it reads only at startup.
+
+### Proxy version on a shared host
+
+Each agent reconciles jiji-proxy to the image its own build pairs with, with
+two limits:
+
+- It never replaces a newer proxy (`ProxyState::Newer`, jiji-agent v0.7.4 and
+  later), so among current agents the newest image wins and stays.
+- Agents older than v0.7.4 replace any proxy that differs from theirs. Next to
+  a newer agent, that flips the container between two images on every tick.
+  A newer agent that has replaced a running proxy 3 times within 10 minutes
+  stops replacing a running proxy until it restarts and reports the conflict
+  as a `proxy_attachment` component failure. A stopped or missing proxy is
+  still recreated.
+
+`server upgrade` and `network diagnostics` list other projects' agent units on
+each host (`co_resident.rs`) and flag ones older than v0.7.4 or not running.
+Diagnostics also counts jiji-proxy `create` events in the last 10 minutes.
 
 ### HTTP and HTTPS routes
 
