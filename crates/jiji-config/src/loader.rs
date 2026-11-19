@@ -81,10 +81,46 @@ pub fn load_from_file(path: &Path) -> Result<Config, ConfigError> {
     if !value.is_mapping() {
         return Err(ConfigError::NotAnObject);
     }
+    let removed = removed_service_keys(&value);
+    if !removed.is_empty() {
+        return Err(ConfigError::RemovedKeys {
+            path: path.display().to_string(),
+            details: removed.join("\n"),
+        });
+    }
     serde_yaml::from_value(value).map_err(|source| ConfigError::Load {
         path: path.display().to_string(),
         source,
     })
+}
+
+/// Keys removed in v0.10.0 whose replacement has different semantics, so they get a targeted
+/// message instead of serde's generic `unknown field`.
+fn removed_service_keys(value: &serde_yaml::Value) -> Vec<String> {
+    let Some(services) = value
+        .get("services")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    for (name, service) in services {
+        let name = name.as_str().unwrap_or("<non-string key>");
+        if service.get("replicas").is_some() {
+            messages.push(format!(
+                "  services.{name}.replicas: replaced by `scale:` in jiji v0.10.0. `scale: N` runs \
+                 N replicas on every server in `servers:`, while `replicas:` was a total spread \
+                 across them. Replace `replicas:` with `scale:` set to the per-server count."
+            ));
+        }
+        if service.get("placement").is_some() {
+            messages.push(format!(
+                "  services.{name}.placement: removed in jiji v0.10.0. List the exact servers to \
+                 deploy to in `servers:` and delete `placement:`."
+            ));
+        }
+    }
+    messages
 }
 
 /// Loads config either from an explicit path or by searching upward from `start`.
@@ -126,4 +162,50 @@ pub fn get_available_configs(search_path: &Path) -> Vec<PathBuf> {
     }
     configs.sort();
     configs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_config(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jiji-config-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("deploy.yml");
+        fs::write(&path, body).expect("write config");
+        path
+    }
+
+    #[test]
+    fn replicas_gets_a_targeted_rename_error() {
+        let path = write_config(
+            "replicas",
+            "project: demo\nbuilder:\n  engine: docker\nservers:\n  web1:\n    host: 10.0.0.1\n\
+             services:\n  app:\n    image: nginx\n    servers: [web1]\n    replicas: 2\n",
+        );
+        let error = load_from_file(&path).expect_err("replicas must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("services.app.replicas"), "{message}");
+        assert!(message.contains("`scale:`"), "{message}");
+        assert!(!message.contains("unknown field"), "{message}");
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn placement_gets_a_targeted_removal_error() {
+        let value: serde_yaml::Value = serde_yaml::from_str(
+            "services:\n  app:\n    placement:\n      spread: true\n  api:\n    scale: 2\n",
+        )
+        .unwrap();
+        let messages = removed_service_keys(&value);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("services.app.placement"));
+    }
+
+    #[test]
+    fn a_config_without_removed_keys_has_no_messages() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("services:\n  app:\n    scale: 2\n").unwrap();
+        assert!(removed_service_keys(&value).is_empty());
+    }
 }
