@@ -619,3 +619,69 @@ fn tcp_route_command(command: TcpRouteCommand) -> anyhow::Result<()> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One jiji-proxy container serves every project on a host, so agents and CLIs from older
+    /// releases run these exact commands against a newer proxy. Never remove or rename a flag
+    /// listed here.
+    #[test]
+    fn flags_sent_by_released_agents_and_clis_stay_accepted() {
+        let commands: &[&[&str]] = &[
+            &["version"],
+            &[
+                "route",
+                "apply",
+                "--host=app.example.com",
+                "--path-prefix=/api",
+                "--dns-server=100.64.0.2:53",
+                "--name=demo-web.jiji",
+                "--port=3000",
+                "--tls",
+                "--reload-certificate",
+                "--preserve-existing-tls",
+                "--forward-headers",
+                "--health-check",
+                "--health-check-path=/up",
+                "--health-check-interval-secs=5",
+                "--health-check-timeout-secs=2",
+            ],
+            &[
+                "route",
+                "status",
+                "--host=app.example.com",
+                "--path-prefix=/api",
+            ],
+            &[
+                "route",
+                "remove",
+                "--host=app.example.com",
+                "--path-prefix=/api",
+            ],
+            &["route", "list"],
+            &[
+                "tcp-route",
+                "apply",
+                "--listen-port=5432",
+                "--dns-server=100.64.0.2:53",
+                "--name=demo-db.jiji",
+                "--port=5432",
+                "--health-check",
+            ],
+            &["tcp-route", "status", "--listen-port=5432"],
+            &["tcp-route", "remove", "--listen-port=5432"],
+            &["tcp-route", "list"],
+        ];
+        for args in commands {
+            let argv = std::iter::once("jiji-proxy").chain(args.iter().copied());
+            if let Err(error) = Cli::try_parse_from(argv) {
+                panic!(
+                    "`jiji-proxy {}` is no longer accepted: {error}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
+}
