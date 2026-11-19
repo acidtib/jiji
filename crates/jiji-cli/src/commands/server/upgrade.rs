@@ -20,6 +20,7 @@ use jiji_tui::Ui;
 use crate::agent_distribution::{self, AgentBinarySource};
 use crate::agent_install;
 use crate::audit::{self, AuditStatus};
+use crate::co_resident;
 use crate::commands::deploy::split_comma_trimmed;
 use crate::commands::server::setup::{
     connect_for_setup, enroll_agent_targets, gather_membership_view,
@@ -302,12 +303,32 @@ pub async fn run(
                             read_proxy_version(&session, engine).await,
                             jiji_network::PROXY_VERSION,
                         );
-                        (name, agent, proxy)
+                        let neighbors = co_resident::inspect(&session, &project).await;
+                        (name, agent, proxy, neighbors)
                     }
                 }
             })
             .collect();
-        for (name, agent, proxy) in pool.execute_concurrent(read_operations).await {
+        let mut neighbor_warnings: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut downgrade_risk_hosts: Vec<String> = Vec::new();
+        for (name, agent, proxy, neighbors) in pool.execute_concurrent(read_operations).await {
+            match neighbors {
+                Ok(neighbors) => {
+                    if neighbors
+                        .iter()
+                        .any(co_resident::CoResidentAgent::downgrades_shared_proxy)
+                    {
+                        downgrade_risk_hosts.push(name.clone());
+                    }
+                    neighbor_warnings.insert(name.clone(), co_resident::warnings(&neighbors));
+                }
+                Err(error) => {
+                    neighbor_warnings.insert(
+                        name.clone(),
+                        vec![format!("could not check other projects' agents: {error}")],
+                    );
+                }
+            }
             Ui::say(
                 &format!(
                     "{name}: jiji-agent {} ({}), jiji-proxy {} ({})",
@@ -350,8 +371,23 @@ pub async fn run(
                 ),
                 2,
             );
+            for warning in neighbor_warnings.get(name).into_iter().flatten() {
+                Ui::result_warn(name, warning);
+            }
         }
 
+        let fight_warning = (!downgrade_risk_hosts.is_empty() && any_outdated).then(|| {
+            format!(
+                "An older jiji-agent from another project shares jiji-proxy on {}. After this \
+                 upgrade the two agents replace jiji-proxy back and forth, dropping every route \
+                 on the host each time, until the newer agent stops after 3 replacements or that \
+                 project is upgraded. Upgrade that project first.",
+                downgrade_risk_hosts.join(", ")
+            )
+        });
+        if let Some(warning) = &fight_warning {
+            Ui::warn(warning);
+        }
         if !any_outdated {
             Ui::say(
                 "Nothing is outdated. Refreshing configuration on already-current hosts.",
@@ -363,7 +399,10 @@ pub async fn run(
                     "Refusing to prompt for confirmation without a terminal attached. Pass --yes to confirm the upgrade when running non-interactively (e.g. CI/CD)."
                 );
             }
-            let confirmed = Ui::confirm("Proceed with upgrading these components?", true)?;
+            let confirmed = match &fight_warning {
+                Some(_) => Ui::confirm("Upgrade anyway, before the other project's agents?", false)?,
+                None => Ui::confirm("Proceed with upgrading these components?", true)?,
+            };
             if !confirmed {
                 anyhow::bail!("Server upgrade cancelled: not confirmed.");
             }

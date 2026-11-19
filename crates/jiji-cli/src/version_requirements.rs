@@ -50,6 +50,10 @@ pub const MIN_PROXY_VERSION: &str = "0.4.9";
 /// pushing/sweeping retention there (never fails the deploy) when an agent is too old for it.
 pub const MIN_RETENTION_AGENT_VERSION: &str = "0.6.5";
 
+/// The oldest jiji-agent that never replaces a newer shared jiji-proxy. An older co-resident agent
+/// keeps putting its own older proxy back, so the host's proxy flips between versions.
+pub const MIN_PROXY_DOWNGRADE_GUARD_AGENT_VERSION: &str = "0.7.4";
+
 /// Fails open (`Ok(())`) on an unparseable `found`/`min`, matching
 /// `engine::check_min_version`'s own precedent: never block an operator
 /// over a version string this can't understand. `fix_hint` is the exact
