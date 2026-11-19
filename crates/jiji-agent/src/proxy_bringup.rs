@@ -10,9 +10,11 @@
 //! currently-attached address (jiji-proxy listens on every attached interface as one process, so
 //! any attached address reaches it) -- never a merged view of every project's routes.
 
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
@@ -32,13 +34,66 @@ fn engine_kind(engine: Engine) -> BridgeEngineKind {
     }
 }
 
+const RECREATION_WINDOW: Duration = Duration::from_secs(600);
+const RECREATION_LIMIT: usize = 3;
+
+/// This agent's own recent replacements of a running shared proxy. Hitting `RECREATION_LIMIT` within
+/// `RECREATION_WINDOW` means another project's agent keeps putting a different image back, so a
+/// running proxy is left alone until this agent restarts.
+static RECREATIONS: Mutex<RecreationGuard> = Mutex::new(RecreationGuard::new());
+
+#[derive(Debug)]
+struct RecreationGuard {
+    recent: VecDeque<Instant>,
+    tripped: bool,
+}
+
+impl RecreationGuard {
+    const fn new() -> Self {
+        Self {
+            recent: VecDeque::new(),
+            tripped: false,
+        }
+    }
+
+    fn record(&mut self, now: Instant) {
+        self.recent.push_back(now);
+        while self
+            .recent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > RECREATION_WINDOW)
+        {
+            self.recent.pop_front();
+        }
+        if self.recent.len() >= RECREATION_LIMIT {
+            self.tripped = true;
+        }
+    }
+
+    /// A stopped or missing proxy is always recreated: leaving it down serves nothing.
+    fn allows_replacing(&self, running: bool) -> bool {
+        !(self.tripped && running)
+    }
+}
+
+fn recreation_conflict(running_image: &str) -> String {
+    format!(
+        "jiji-proxy was replaced {RECREATION_LIMIT} times within {} minutes and now runs \
+         {running_image}, not {}: another project's jiji-agent on this host keeps reconciling it \
+         to a different version. This agent stopped replacing it so routes stay up. Run `jiji \
+         server upgrade` for every project on this host; that also restarts this agent.",
+        RECREATION_WINDOW.as_secs() / 60,
+        image()
+    )
+}
+
 pub async fn reconcile(
     engine: Engine,
     config: &MeshConfig,
     tcp_routes: &[crate::runtime::TcpRouteSpec],
 ) -> Result<(), String> {
     let fingerprint = jiji_network::config_fingerprint(engine_kind(engine));
-    let state = proxy_state(engine, &fingerprint).await?;
+    let state = proxy_state(engine, &fingerprint).await?.state;
     // A newer proxy belongs to another project's newer agent; its config is not ours to rewrite.
     // Otherwise the config must be in place before `recreate` mounts CONFIG_DIR read-only.
     if state != ProxyState::Newer {
@@ -49,14 +104,30 @@ pub async fn reconcile(
     // otherwise never enter the replacement branch, so the stale lease would remain indefinitely.
     let lease = host_lease::try_acquire(Path::new(host_lease::DEFAULT_PATH))
         .map_err(|error| format!("could not acquire the host proxy lease: {error}"))?;
+    let mut conflict = None;
     if state == ProxyState::Replace {
         let Some(_guard) = lease.as_ref() else {
             return Ok(()); // another project's agent is already handling it this tick
         };
         // Re-check now that the lease is held: another project's agent may have already
         // created/recreated it between the check above and acquiring the lease.
-        if proxy_state(engine, &fingerprint).await? == ProxyState::Replace {
-            recreate(engine, &fingerprint, config).await?;
+        let inspected = proxy_state(engine, &fingerprint).await?;
+        if inspected.state == ProxyState::Replace {
+            let allowed = RECREATIONS
+                .lock()
+                .map_err(|_| "proxy recreation guard lock poisoned".to_string())?
+                .allows_replacing(inspected.running);
+            if allowed {
+                recreate(engine, &fingerprint, config).await?;
+                if inspected.running {
+                    RECREATIONS
+                        .lock()
+                        .map_err(|_| "proxy recreation guard lock poisoned".to_string())?
+                        .record(Instant::now());
+                }
+            } else {
+                conflict = Some(recreation_conflict(&inspected.image));
+            }
         }
     }
     drop(lease);
@@ -129,7 +200,10 @@ pub async fn reconcile(
     let pid = container_pid(engine).await?;
     let relay_table = jiji_network::tcp_relay_table_name(&config.project_id);
     apply_relay_netns_nat(pid, &relay_table, &tcp_ports).await?;
-    Ok(())
+    match conflict {
+        Some(conflict) => Err(conflict),
+        None => Ok(()),
+    }
 }
 
 /// jiji-proxy's own container PID as seen from the host -- the PID `nsenter --net=/proc/{pid}/ns/net`
@@ -164,7 +238,13 @@ fn upload_daemon_config() -> Result<(), String> {
     std::fs::write(&path, jiji_network::render_daemon_config()).map_err(|error| error.to_string())
 }
 
-async fn proxy_state(engine: Engine, fingerprint: &str) -> Result<ProxyState, String> {
+struct InspectedProxy {
+    state: ProxyState,
+    running: bool,
+    image: String,
+}
+
+async fn proxy_state(engine: Engine, fingerprint: &str) -> Result<InspectedProxy, String> {
     let output = Command::new(engine.as_str())
         .args([
             "inspect",
@@ -176,10 +256,13 @@ async fn proxy_state(engine: Engine, fingerprint: &str) -> Result<ProxyState, St
         .await
         .map_err(|error| error.to_string())?;
     let inspect = String::from_utf8_lossy(&output.stdout);
-    Ok(classify_proxy(
-        output.status.success().then_some(inspect.trim()),
-        fingerprint,
-    ))
+    let inspect = output.status.success().then_some(inspect.trim());
+    let mut fields = inspect.unwrap_or_default().split_whitespace();
+    Ok(InspectedProxy {
+        state: classify_proxy(inspect, fingerprint),
+        running: fields.next() == Some("running"),
+        image: fields.nth(1).unwrap_or("an unknown image").to_string(),
+    })
 }
 
 async fn recreate(engine: Engine, fingerprint: &str, config: &MeshConfig) -> Result<(), String> {
@@ -313,6 +396,46 @@ async fn run_shell(command: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_few_recreations_do_not_trip_the_guard() {
+        let mut guard = RecreationGuard::new();
+        let start = Instant::now();
+        guard.record(start);
+        guard.record(start + Duration::from_secs(15));
+        assert!(guard.allows_replacing(true));
+    }
+
+    #[test]
+    fn repeated_recreations_stop_replacing_a_running_proxy() {
+        let mut guard = RecreationGuard::new();
+        let start = Instant::now();
+        for seconds in [0, 15, 30] {
+            guard.record(start + Duration::from_secs(seconds));
+        }
+        assert!(!guard.allows_replacing(true));
+        assert!(
+            guard.allows_replacing(false),
+            "a stopped proxy is still recreated"
+        );
+    }
+
+    #[test]
+    fn recreations_outside_the_window_do_not_count() {
+        let mut guard = RecreationGuard::new();
+        let start = Instant::now();
+        guard.record(start);
+        guard.record(start + Duration::from_secs(400));
+        guard.record(start + Duration::from_secs(800));
+        assert!(guard.allows_replacing(true));
+    }
+
+    #[test]
+    fn the_conflict_message_names_the_running_image_and_the_fix() {
+        let message = recreation_conflict("ghcr.io/acidtib/jiji-proxy:v0.6.1");
+        assert!(message.contains("v0.6.1"));
+        assert!(message.contains("jiji server upgrade"));
+    }
 
     #[test]
     fn engine_kind_maps_agent_engine_to_bridge_engine_kind() {
