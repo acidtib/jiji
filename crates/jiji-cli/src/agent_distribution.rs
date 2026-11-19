@@ -186,7 +186,9 @@ pub async fn resolve_agent_binary_source(
 /// matching artifact and its `.sha256` sidecar from the release, verifies the hash, and installs
 /// the binary -- skipping the download when the installed binary already matches (same
 /// fingerprint-and-skip shape as `agent_install::ensure_agent`). Mirrors `engine.rs`'s
-/// podman-static remote-install precedent.
+/// podman-static remote-install precedent. Either way the binary must pass
+/// `agent_install::SELF_TEST_FUNCTION` on the host; a new one is staged, tested, and only then
+/// swapped in, keeping the old one for `ensure_agent`'s rollback.
 ///
 /// Prints `JIJI_AGENT_BINARY_CHANGED=0`/`=1` as its last line of stdout: `ensure_agent` is always
 /// called with `binary_path: None` afterward (this script already did any real install work), so
@@ -204,6 +206,7 @@ pub fn remote_install_script(
 ) -> String {
     format!(
         "set -eu; \
+{self_test}\
 arch=$(uname -m); \
 case \"$arch\" in \
 x86_64|amd64) asset=jiji-agent-linux-x86_64 ;; \
@@ -214,13 +217,17 @@ tmp=$(mktemp -d); \
 trap 'rm -rf \"$tmp\"' EXIT; \
 curl -fsSL --retry 3 \"{base}/releases/download/jiji-agent-v{version}/$asset.sha256\" -o \"$tmp/$asset.sha256\"; \
 expected=$(awk '{{print $1}}' \"$tmp/$asset.sha256\"); \
-if [ -f {binary} ] && [ \"$(sha256sum {binary} | awk '{{print $1}}')\" = \"$expected\" ]; then echo JIJI_AGENT_BINARY_CHANGED=0; exit 0; fi; \
+if [ -f {binary} ] && [ \"$(sha256sum {binary} | awk '{{print $1}}')\" = \"$expected\" ]; then jiji_agent_self_test {binary}; echo JIJI_AGENT_BINARY_CHANGED=0; exit 0; fi; \
 curl -fsSL --retry 3 \"{base}/releases/download/jiji-agent-v{version}/$asset\" -o \"$tmp/$asset\"; \
 actual=$(sha256sum \"$tmp/$asset\" | awk '{{print $1}}'); \
 if [ \"$expected\" != \"$actual\" ]; then echo \"jiji-agent: sha256 mismatch for $asset (expected $expected, got $actual)\" >&2; exit 1; fi; \
 install -d -m 0700 {project_dir} {bin_dir} {state_dir}; \
-install -m 0755 \"$tmp/$asset\" {binary}; \
+install -m 0755 \"$tmp/$asset\" {staged}; \
+{promote}; \
 echo JIJI_AGENT_BINARY_CHANGED=1",
+        self_test = crate::agent_install::SELF_TEST_FUNCTION,
+        staged = crate::agent_install::staged_binary_path(binary_path).display(),
+        promote = crate::agent_install::promote_staged_binary_command(binary_path),
         base = base_url,
         version = version,
         project_dir = project_dir.display(),
@@ -269,6 +276,11 @@ mod tests {
         assert!(script.contains("/etc/jiji/agent/demo/bin/jiji-agent"));
         assert!(script.contains("JIJI_AGENT_BINARY_CHANGED=0"));
         assert!(script.contains("JIJI_AGENT_BINARY_CHANGED=1"));
+        assert!(script.contains("jiji_agent_self_test /etc/jiji/agent/demo/bin/jiji-agent.new"));
+        assert!(script.contains("jiji_agent_self_test /etc/jiji/agent/demo/bin/jiji-agent;"));
+        assert!(script.contains(
+            "cp -p /etc/jiji/agent/demo/bin/jiji-agent /etc/jiji/agent/demo/bin/jiji-agent.previous"
+        ));
     }
 
     #[test]

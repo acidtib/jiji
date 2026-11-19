@@ -338,7 +338,7 @@ fn proxy_fingerprint_current_response() -> CannedResponse {
 fn agent_binary_install_command() -> String {
     let paths = AgentPaths::default_for_project("testproject");
     format!(
-        "install -D -m 0755 /dev/stdin {}",
+        "install -D -m 0755 /dev/stdin {}.new",
         paths.binary_path.display()
     )
 }
