@@ -25,7 +25,7 @@ on:
         required: true
         type: string
       matrix_json:
-        description: "JSON-encoded build matrix: [{os, target, artifact}, ...]"
+        description: "JSON-encoded build matrix: [{os, target, artifact, linux?}, ...]; linux builds in the Debian 12 container"
         required: true
         type: string
       checksum:
@@ -59,7 +59,16 @@ jobs:
       matrix:
         include: ${{ fromJson(inputs.matrix_json) }}
     runs-on: ${{ matrix.os }}
+    # Linux builds run in a pinned Debian 12 container so the glibc floor (2.36) and the C
+    # compiler's default -march don't move with the runner image. An empty value runs on the host.
+    container: ${{ matrix.linux && 'rust:1-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea' || '' }}
     steps:
+      - name: Install build dependencies
+        if: ${{ matrix.linux }}
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake qemu-user
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,10 +86,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # Bundled C code (SQLite) otherwise inherits the compiler's default -march, which was
+      # x86-64-v3 on the ubuntu-26.04 runner image and SIGILLs on older CPUs.
       - name: Build release binary
         env:
           BIN_NAME: ${{ inputs.bin_name }}
           TARGET: ${{ matrix.target }}
+          CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64
         run: cargo build --release --bin "$BIN_NAME" --target "$TARGET"
 
       - name: Package binary
@@ -91,6 +105,31 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/$TARGET/release/$BIN_NAME" "dist/$ARTIFACT"
+
+      # qemu64 is a baseline x86-64 CPU (no SSE4.2, BMI or AVX). The agent check opens a SQLite
+      # store, since `version` alone never reaches the bundled C code.
+      - name: Check the binary runs on a baseline x86-64 CPU
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          ARTIFACT: dist/${{ matrix.artifact }}
+        run: |
+          run() { qemu-x86_64 -cpu qemu64 "$ARTIFACT" "$@"; }
+          case "$BIN_NAME" in
+            jiji-agent)
+              run version
+              state_dir=$(mktemp -d)
+              run membership-export --state-dir "$state_dir" >/dev/null
+              rm -rf "$state_dir"
+              ;;
+            jiji)
+              run version
+              ;;
+            *)
+              echo "::error::No baseline CPU check is defined for $BIN_NAME; add one."
+              exit 1
+              ;;
+          esac
 
       # macOS runners have shasum but no sha256sum. Fail loudly rather than publish an empty file.
       - name: Generate checksum
