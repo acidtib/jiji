@@ -48,6 +48,28 @@ called by `release.yml` or dispatched by hand to rebuild an existing tag).
 The other 5 are internal-only; their tag exists purely as a release-please
 anchor.
 
+### Native binary builds
+
+`binary-release.yml` builds the Linux `jiji` and `jiji-agent` binaries in a
+digest-pinned `rust:1-bookworm` container (matrix entries with
+`"linux": true`), never directly on the runner image. That fixes two things
+the runner image otherwise decides:
+
+- **glibc floor.** Binaries link against Debian 12's glibc 2.36, so they run
+  on any host with glibc 2.36 or newer. Building on a newer image raises the
+  floor silently.
+- **CPU baseline.** x86_64 builds pass `-march=x86-64` to C code
+  (`CFLAGS_x86_64_unknown_linux_gnu`, used by `cc` for the bundled SQLite)
+  and `-C target-cpu=x86-64` to rustc. The `ubuntu-26.04` image's gcc
+  defaults to `x86-64-v3`, which produced a `jiji-agent` that died with
+  SIGILL on Sandy Bridge and Ivy Bridge CPUs.
+
+After packaging, the x86_64 job runs the binary under `qemu-x86_64 -cpu
+qemu64` (a baseline x86-64 CPU without SSE4.2, BMI, or AVX). For
+`jiji-agent` it also runs `membership-export` against an empty state
+directory, because `version` never reaches the bundled SQLite code. A
+failure there fails the release before anything is published.
+
 `cargo-workspace` patch-bumps every crate that depends on whatever bumped, so
 a `fix:` to `jiji-core` cascades through `jiji-network` into
 `jiji-cli`/`jiji-agent` with no `Release-As:` footer. `jiji-proxy` has no
