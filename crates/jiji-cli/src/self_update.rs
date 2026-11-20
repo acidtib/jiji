@@ -31,7 +31,7 @@ pub(crate) fn release_api_base_url() -> String {
         .unwrap_or_else(|| DEFAULT_RELEASE_API_BASE_URL.to_string())
 }
 
-/// Maps `std::env::consts::OS` / `std::env::consts::ARCH` to `jiji-release.yml`'s release
+/// Maps `std::env::consts::OS` / `std::env::consts::ARCH` to `binary-release.yml`'s release
 /// artifact names.
 pub(crate) fn artifact_name(os: &str, arch: &str) -> anyhow::Result<&'static str> {
     match (os, arch) {

@@ -37,7 +37,10 @@ enum VersionStatus {
     Outdated,
     Ahead,
     Unknown,
+    /// The host could not be reached at all.
     Unavailable,
+    /// The host is reachable but the component did not answer its version read.
+    NotResponding,
 }
 
 impl VersionStatus {
@@ -48,14 +51,15 @@ impl VersionStatus {
             VersionStatus::Ahead => "ahead",
             VersionStatus::Unknown => "unknown",
             VersionStatus::Unavailable => "unavailable",
+            VersionStatus::NotResponding => "not responding",
         }
     }
 }
 
 /// `found < required` -> `Outdated`, `found > required` -> `Ahead`, equal -> `Current`; either
 /// string failing to parse -> `Unknown` (fails open, same posture as
-/// `version_requirements::check_min_version`). Never returns `Unavailable`: that status is decided
-/// by the read step itself (connection/command failure), not by this pure comparison.
+/// `version_requirements::check_min_version`). Never returns `Unavailable`/`NotResponding`: those
+/// are decided by the read step itself (connection/command failure), not by this pure comparison.
 fn compare_versions(found: &str, required: &str) -> VersionStatus {
     match (
         engine::parse_version(found),
@@ -85,7 +89,7 @@ fn classify(read: Result<String, String>, required: &str) -> ComponentRead {
         }
         Err(_) => ComponentRead {
             found: None,
-            status: VersionStatus::Unavailable,
+            status: VersionStatus::NotResponding,
         },
     }
 }
@@ -115,10 +119,10 @@ async fn read_proxy_version(
     }
 }
 
-fn describe_found(found: &Option<String>) -> String {
-    match found {
+fn describe_found(read: &ComponentRead) -> String {
+    match &read.found {
         Some(version) => format!("v{version}"),
-        None => "unavailable".to_string(),
+        None => read.status.label().to_string(),
     }
 }
 
@@ -307,9 +311,9 @@ pub async fn run(
             Ui::say(
                 &format!(
                     "{name}: jiji-agent {} ({}), jiji-proxy {} ({})",
-                    describe_found(&agent.found),
+                    describe_found(&agent),
                     agent.status.label(),
-                    describe_found(&proxy.found),
+                    describe_found(&proxy),
                     proxy.status.label()
                 ),
                 1,
@@ -320,8 +324,10 @@ pub async fn run(
         Ui::section("Plan:");
         let mut any_outdated = false;
         for (name, read) in &reads {
-            if matches!(read.agent.status, VersionStatus::Outdated)
-                || matches!(read.proxy.status, VersionStatus::Outdated)
+            if matches!(
+                read.agent.status,
+                VersionStatus::Outdated | VersionStatus::NotResponding
+            ) || matches!(read.proxy.status, VersionStatus::Outdated)
             {
                 any_outdated = true;
             }
@@ -329,7 +335,7 @@ pub async fn run(
             Ui::say(
                 &format!(
                     "jiji-agent: {} -> required v{} [{}]",
-                    describe_found(&read.agent.found),
+                    describe_found(&read.agent),
                     crate::version_requirements::AGENT_BUILD_VERSION,
                     plan_action(read.agent.status, true)
                 ),
@@ -338,7 +344,7 @@ pub async fn run(
             Ui::say(
                 &format!(
                     "jiji-proxy: {} -> required v{} [{}]",
-                    describe_found(&read.proxy.found),
+                    describe_found(&read.proxy),
                     jiji_network::PROXY_VERSION,
                     plan_action(read.proxy.status, false)
                 ),
@@ -367,7 +373,8 @@ pub async fn run(
         // all (`docs`'s "ahead of required -> never touched, reported as such"), and
         // `ensure_agent` unconditionally stops the unit / rewrites its config / re-imports
         // membership regardless of `binary_path`, so the only way to honor that is to keep an
-        // ahead-of-required host out of `upgrade_agents`'s target list entirely.
+        // ahead-of-required host out of `upgrade_agents`'s target list entirely. A
+        // `NotResponding` agent is a target: reinstalling and restarting it is the repair.
         let agent_reads: BTreeMap<String, ComponentRead> = reads
             .iter()
             .filter(|(_, read)| {
@@ -417,7 +424,7 @@ pub async fn run(
                 Ok(format!(
                     "is ahead of required v{} (found {}); not touched",
                     crate::version_requirements::AGENT_BUILD_VERSION,
-                    describe_found(&read.agent.found)
+                    describe_found(&read.agent)
                 ))
             });
         }
@@ -431,7 +438,12 @@ pub async fn run(
         Ui::section("Upgrading Jiji Proxy:");
         let proxy_status: BTreeMap<String, VersionStatus> = reads
             .iter()
-            .filter(|(_, read)| !matches!(read.proxy.status, VersionStatus::Unavailable))
+            .filter(|(_, read)| {
+                !matches!(
+                    read.proxy.status,
+                    VersionStatus::Unavailable | VersionStatus::NotResponding
+                )
+            })
             .map(|(name, read)| (name.clone(), read.proxy.status))
             .collect();
         let proxy_targets: Vec<(String, NamedServer)> = reachable
@@ -498,7 +510,15 @@ pub async fn run(
         if matches!(read.agent.status, VersionStatus::Unavailable) {
             failed = true;
         }
-        if matches!(read.proxy.status, VersionStatus::Unavailable) {
+        if matches!(
+            read.proxy.status,
+            VersionStatus::Unavailable | VersionStatus::NotResponding
+        ) {
+            failed = true;
+        }
+        if matches!(read.agent.status, VersionStatus::NotResponding)
+            && !matches!(agent_outcomes.get(name), Some(Ok(_)))
+        {
             failed = true;
         }
         if matches!(agent_outcomes.get(name), Some(Err(_))) {
@@ -511,7 +531,7 @@ pub async fn run(
         Ui::say(
             &format!(
                 "jiji-agent: {} (required v{}) -> {}",
-                describe_found(&read.agent.found),
+                describe_found(&read.agent),
                 crate::version_requirements::AGENT_BUILD_VERSION,
                 summary_result(read.agent.status, agent_outcomes.get(name))
             ),
@@ -520,7 +540,7 @@ pub async fn run(
         Ui::say(
             &format!(
                 "jiji-proxy: {} (required v{}) -> {}",
-                describe_found(&read.proxy.found),
+                describe_found(&read.proxy),
                 jiji_network::PROXY_VERSION,
                 summary_result(read.proxy.status, proxy_outcomes.get(name))
             ),
@@ -578,6 +598,9 @@ async fn audit_component(
         _ => match outcome {
             Some(Ok(detail)) => format!("{component} {detail}"),
             Some(Err(error)) => format!("{component} failed: {error}"),
+            None if matches!(status, VersionStatus::NotResponding) => {
+                format!("{component} not responding")
+            }
             None => format!("{component} not attempted"),
         },
     };
@@ -585,7 +608,10 @@ async fn audit_component(
         session,
         project,
         "server_upgrade",
-        if matches!(outcome, Some(Err(_))) || matches!(status, VersionStatus::Unavailable) {
+        if matches!(outcome, Some(Err(_)))
+            || matches!(status, VersionStatus::Unavailable)
+            || (matches!(status, VersionStatus::NotResponding) && outcome.is_none())
+        {
             AuditStatus::Failed
         } else {
             AuditStatus::Success
@@ -605,6 +631,7 @@ fn summary_result(status: VersionStatus, outcome: Option<&Result<String, String>
     match outcome {
         Some(Ok(detail)) => detail.clone(),
         Some(Err(error)) => format!("failed: {error}"),
+        None if matches!(status, VersionStatus::NotResponding) => "not responding".to_string(),
         None => "not attempted".to_string(),
     }
 }
@@ -616,6 +643,8 @@ fn plan_action(status: VersionStatus, is_agent: bool) -> &'static str {
         (VersionStatus::Unknown, _) => "refresh config (unparseable version)",
         (VersionStatus::Ahead, true) => "refresh config (ahead of required, binary not touched)",
         (VersionStatus::Ahead, false) => "skip (ahead of required, would downgrade)",
+        (VersionStatus::NotResponding, true) => "repair (reinstall and restart)",
+        (VersionStatus::NotResponding, false) => "skip (not responding)",
         (VersionStatus::Unavailable, _) => "skip (unavailable)",
     }
 }
@@ -624,8 +653,8 @@ fn plan_action(status: VersionStatus, is_agent: bool) -> &'static str {
 /// non-`Unavailable`-agent hosts): resolves a binary source the same way `server setup` does,
 /// enrolls every target through the shared `gather_membership_view`/`enroll_agent_targets`
 /// machinery, then calls `agent_install::ensure_agent` per host -- passing a real binary path only
-/// for `Current`/`Outdated` (an `Ahead`/`Unknown` host always gets `binary_path: None`, refreshing
-/// config/unit/membership without ever touching its binary).
+/// for `Current`/`Outdated`/`NotResponding` (an `Ahead`/`Unknown` host always gets
+/// `binary_path: None`, refreshing config/unit/membership without ever touching its binary).
 #[allow(clippy::too_many_arguments)]
 async fn upgrade_agents(
     config: &Config,
@@ -701,10 +730,14 @@ async fn upgrade_agents(
         // CLI already knows the host is current from the `Health` RPC read that classified it.
         let mut managed_binary_changed = false;
         let binary_path = match (&binary_source, status) {
-            (AgentBinarySource::Local(path), VersionStatus::Current | VersionStatus::Outdated) => {
-                Some(path.clone())
-            }
-            (AgentBinarySource::Managed(_), VersionStatus::Outdated) => {
+            (
+                AgentBinarySource::Local(path),
+                VersionStatus::Current | VersionStatus::Outdated | VersionStatus::NotResponding,
+            ) => Some(path.clone()),
+            (
+                AgentBinarySource::Managed(_),
+                VersionStatus::Outdated | VersionStatus::NotResponding,
+            ) => {
                 let script = remote_install_script
                     .as_ref()
                     .expect("remote script is rendered whenever managed mode is used");
@@ -766,10 +799,17 @@ async fn upgrade_agents(
                     // upgraded through managed mode was reported as merely "already current".
                     let upgraded_detail = format!(
                         "upgraded {} -> v{}",
-                        describe_found(&read.and_then(|read| read.found.clone())),
+                        read.map(describe_found)
+                            .unwrap_or_else(|| "unknown".to_string()),
                         crate::version_requirements::AGENT_BUILD_VERSION
                     );
-                    let detail = match (status, agent_result) {
+                    let binary_replaced = agent_result.binary_replaced || managed_binary_changed;
+                    let detail = match (status, agent_result.status) {
+                        (VersionStatus::NotResponding, _) if binary_replaced => format!(
+                            "reinstalled v{} and restarted",
+                            crate::version_requirements::AGENT_BUILD_VERSION
+                        ),
+                        (VersionStatus::NotResponding, _) => "restarted".to_string(),
                         (VersionStatus::Outdated, agent_install::AgentStatus::Upgraded) => {
                             upgraded_detail
                         }
@@ -975,9 +1015,9 @@ mod tests {
     }
 
     #[test]
-    fn classify_maps_a_read_error_to_unavailable() {
+    fn classify_maps_a_read_error_to_not_responding() {
         let read = classify(Err("connection refused".to_string()), "0.6.4");
-        assert_eq!(read.status, VersionStatus::Unavailable);
+        assert_eq!(read.status, VersionStatus::NotResponding);
         assert_eq!(read.found, None);
     }
 

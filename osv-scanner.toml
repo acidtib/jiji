@@ -7,6 +7,10 @@ id = "RUSTSEC-2024-0388"
 reason = "Informational unmaintained advisory for derivative, a compile-time proc-macro used by pingora-core/pingora-load-balancing (latest release, no fixed version). It produces Debug/Clone derives at build time only and has no runtime code path in jiji-proxy; replacement requires an upstream pingora change."
 
 [[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+reason = "Informational unmaintained notice for chrono with no vulnerable code: the advisory lists no affected functions and no fixed version. chrono is pulled in only by pingora-core (jiji-proxy) and russh-sftp (jiji-ssh), both at their latest releases; jiji code never calls chrono directly, and replacing it needs those crates to drop it."
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2024-0449"
 reason = "unsafe-libyaml remains only through Pingora's serde_yaml dependency. Jiji parses its own configuration with yaml_serde/libyaml-rs and constructs Pingora with Server::new_with_opt_and_conf and an explicit ServerConf, so Pingora's legacy YAML loading/serialization APIs are never called. No Jiji configuration or network input reaches unsafe-libyaml."
 

@@ -408,6 +408,10 @@ pub async fn remove_image_if_present(
     }
     let command = format!("{engine} rmi {image}");
     let result = session.execute(&command).await?;
+    // jiji-agent's own retention can remove it between the check above and this rmi.
+    if !result.success && jiji_network::is_missing_image_error(&result.stderr) {
+        return Ok(false);
+    }
     ensure_success(session, &command, &result)?;
     Ok(true)
 }

@@ -1,235 +1,210 @@
 name: binary release
 
-# Shared build-matrix + GitHub Release logic for the native-binary release
-# workflows (jiji, jiji-agent). jiji-proxy is a Docker image with no binaries
-# and no GitHub Release step, so it stays a separate workflow rather than
-# being folded in here.
+# Builds jiji or jiji-agent for a release tag and publishes its GitHub Release. release.yml calls
+# it after tagging; dispatch it by hand to rebuild an existing tag in place.
 
 on:
   workflow_call:
     inputs:
+      binary:
+        type: string
+        required: true
       tag:
-        description: "Tag to check out, build, and release (short name, e.g. v0.5.2)"
-        required: true
         type: string
-      tag_prefix:
-        description: "Prefix to strip from the tag to get the version, e.g. v or jiji-agent-v"
         required: true
-        type: string
-      bin_name:
-        description: "Cargo --bin name to build"
-        required: true
-        type: string
-      changelog_crate:
-        description: "Crate directory under crates/ whose CHANGELOG.md and expand-dependency-changelog.sh argument this release uses"
-        required: true
-        type: string
-      matrix_json:
-        description: "JSON-encoded build matrix: [{os, target, artifact}, ...]"
-        required: true
-        type: string
-      checksum:
-        description: "Generate a sha256 file alongside each binary"
-        required: false
-        type: boolean
-        default: false
-      install_instructions:
-        description: "Append the curl install snippet to the release body"
-        required: false
-        type: boolean
-        default: false
-      notify_website:
-        description: "Dispatch a jiji-website release notification"
-        required: false
-        type: boolean
-        default: false
-      refresh_changelog_script:
-        description: "Re-checkout the changelog script from main (workflow_dispatch backfill only)"
-        required: false
-        type: boolean
-        default: false
     secrets:
       RELEASE_APP_PRIVATE_KEY:
         required: false
+  workflow_dispatch:
+    inputs:
+      binary:
+        description: Binary to build
+        type: choice
+        options: [jiji, jiji-agent]
+        required: true
+      tag:
+        description: Existing tag to rebuild, e.g. v0.14.0 or jiji-agent-v0.7.7
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      crate: ${{ steps.plan.outputs.crate }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - id: plan
+        env:
+          BINARY: ${{ inputs.binary }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          linux='{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","artifact":"%s-linux-x86_64","linux":true},{"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","artifact":"%s-linux-arm64","linux":true}'
+          macos='{"os":"macos-15","target":"x86_64-apple-darwin","artifact":"%s-macos-x86_64"},{"os":"macos-15","target":"aarch64-apple-darwin","artifact":"%s-macos-arm64"}'
+          case "$BINARY" in
+            jiji) prefix=v crate=jiji-cli targets="$linux,$macos" ;;
+            jiji-agent) prefix=jiji-agent-v crate=jiji-agent targets="$linux" ;;
+            *) echo "::error::Unknown binary '$BINARY'"; exit 1 ;;
+          esac
+          if [[ ! "$TAG" =~ ^${prefix}[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a $BINARY tag (expected ${prefix}X.Y.Z)"
+            exit 1
+          fi
+          {
+            echo "matrix=[${targets//%s/$BINARY}]"
+            echo "crate=$crate"
+            echo "version=${TAG#"$prefix"}"
+          } | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(inputs.matrix_json) }}
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # Linux builds run in a pinned Debian 12 image so the glibc floor (2.36) and the C compiler's
+    # default -march don't follow the runner image. The digest freezes glibc, gcc, and cmake only;
+    # rustc comes from the toolchain step. Bump it with `docker buildx imagetools inspect
+    # rust:1-bookworm`, keeping bookworm unless the documented glibc floor changes too.
+    container: ${{ matrix.linux && 'rust:1-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea' || '' }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install build dependencies
+        if: ${{ matrix.linux }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          packages=(cmake)
+          # qemu-user runs the baseline CPU check below.
+          [ "$TARGET" = x86_64-unknown-linux-gnu ] && packages+=(qemu-user)
+          apt-get update
+          apt-get install -y --no-install-recommends "${packages[@]}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.tag }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binary
+      # Without an explicit -march, bundled C code (SQLite) inherits the compiler's default.
+      - name: Build
         env:
-          BIN_NAME: ${{ inputs.bin_name }}
+          BINARY: ${{ inputs.binary }}
           TARGET: ${{ matrix.target }}
-        run: cargo build --release --bin "$BIN_NAME" --target "$TARGET"
+          CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C target-cpu=x86-64
+        run: cargo build --locked --release --bin "$BINARY" --target "$TARGET"
 
-      - name: Package binary
+      - name: Package
         env:
-          BIN_NAME: ${{ inputs.bin_name }}
+          BINARY: ${{ inputs.binary }}
           TARGET: ${{ matrix.target }}
           ARTIFACT: ${{ matrix.artifact }}
         run: |
           mkdir -p dist
-          cp "target/$TARGET/release/$BIN_NAME" "dist/$ARTIFACT"
-
-      # macOS runners have shasum but no sha256sum. Fail loudly rather than publish an empty file.
-      - name: Generate checksum
-        if: ${{ inputs.checksum }}
-        shell: bash
-        env:
-          ARTIFACT: dist/${{ matrix.artifact }}
-        run: |
-          if command -v sha256sum >/dev/null; then
-            sum=$(sha256sum "$ARTIFACT")
-          else
-            sum=$(shasum -a 256 "$ARTIFACT")
-          fi
+          cp "target/$TARGET/release/$BINARY" "dist/$ARTIFACT"
+          cd dist
+          # macOS has shasum, not sha256sum.
+          if command -v sha256sum >/dev/null; then sum=$(sha256sum "$ARTIFACT"); else sum=$(shasum -a 256 "$ARTIFACT"); fi
           hash=${sum%% *}
-          if ! [[ "$hash" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Could not compute a SHA-256 for $ARTIFACT (got '$sum')."
-            exit 1
-          fi
+          [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bad SHA-256 for $ARTIFACT: '$sum'"; exit 1; }
           echo "$hash" > "$ARTIFACT.sha256"
 
-      - name: Upload artifact
-        if: ${{ !inputs.checksum }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ inputs.bin_name }}--${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+      # qemu64 has no SSE4.2, BMI, or AVX. The agent check opens a SQLite store, which `version`
+      # alone never reaches.
+      - name: Check the binary runs on a baseline x86-64 CPU
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        env:
+          BINARY: ${{ inputs.binary }}
+          ARTIFACT: dist/${{ matrix.artifact }}
+        run: |
+          qemu-x86_64 -cpu qemu64 "$ARTIFACT" version
+          if [ "$BINARY" = jiji-agent ]; then
+            state_dir=$(mktemp -d)
+            qemu-x86_64 -cpu qemu64 "$ARTIFACT" membership-export --state-dir "$state_dir" >/dev/null
+          fi
 
-      - name: Upload artifact with checksum
-        if: ${{ inputs.checksum }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ inputs.bin_name }}--${{ matrix.artifact }}
-          path: |
-            dist/${{ matrix.artifact }}
-            dist/${{ matrix.artifact }}.sha256
+          name: ${{ inputs.binary }}--${{ matrix.artifact }}
+          path: dist/
+          if-no-files-found: error
 
   release:
-    needs: build
+    needs: [plan, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      # When backfilling an old tag, the checkout above reverts this whole
-      # tree, including this script, back to whatever existed at that
-      # historical commit -- confirmed live, this shadowed a bugfix that
-      # only existed on main. Always use main's current copy instead.
-      - name: Use current changelog script
-        if: ${{ inputs.refresh_changelog_script }}
-        run: git checkout ${{ github.sha }} -- .github/scripts/expand-dependency-changelog.sh
-
-      - name: Get tag version
-        id: get_tag_version
+      # An old tag's checkout carries an old copy of this script.
+      - name: Use the current changelog script
         env:
-          TAG: ${{ inputs.tag }}
-          TAG_PREFIX: ${{ inputs.tag_prefix }}
-        run: echo "TAG_VERSION=${TAG#"$TAG_PREFIX"}" >> "$GITHUB_OUTPUT"
+          CURRENT: ${{ github.sha }}
+        run: git checkout "$CURRENT" -- .github/scripts/expand-dependency-changelog.sh
 
-      - name: Download artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          # A release.yml run builds several binaries; take only this one's.
-          pattern: ${{ inputs.bin_name }}--*
+          pattern: ${{ inputs.binary }}--*
           path: dist
           merge-multiple: true
 
-      # Reads the crate's CHANGELOG.md directly rather than the GitHub
-      # release's current body: the release body is mutated by this same
-      # job on every run (see "Create GitHub Release" below), so using it
-      # as the starting point is not idempotent -- confirmed live, running
-      # this job twice for the same tag duplicated the whole release body.
-      - name: Extract this release's changelog section
-        id: changelog
+      # Built from CHANGELOG.md, never the existing release body, so reruns don't duplicate it.
+      - name: Write release notes
         env:
-          CHANGELOG_CRATE: ${{ inputs.changelog_crate }}
+          BINARY: ${{ inputs.binary }}
+          CRATE: ${{ needs.plan.outputs.crate }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          NOTES: ${{ runner.temp }}/release-notes.md
         run: |
-          delimiter="CHANGELOG_EOF_$(openssl rand -hex 8)"
-          {
-            echo "body<<$delimiter"
-            awk '/^## / { n++ } n==1' "crates/$CHANGELOG_CRATE/CHANGELOG.md"
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
+          awk '/^## / { n++ } n==1' "crates/$CRATE/CHANGELOG.md" \
+            | .github/scripts/expand-dependency-changelog.sh "$CRATE" > "$NOTES"
+          if [ "$BINARY" = jiji ]; then
+            # Backticks are Markdown, not command substitution.
+            # shellcheck disable=SC2016
+            printf '\n## Installation\n\n```bash\ncurl -fsSL https://get.jiji.run/install.sh | VERSION=v%s sh\n```\n' "$VERSION" >> "$NOTES"
+          fi
+          cat "$NOTES"
 
-      - name: Expand bumped crates' actual changelog content
-        id: expanded
-        env:
-          CHANGELOG_BODY: ${{ steps.changelog.outputs.body }}
-          CHANGELOG_CRATE: ${{ inputs.changelog_crate }}
-        run: |
-          delimiter="EXPANDED_EOF_$(openssl rand -hex 8)"
-          {
-            echo "body<<$delimiter"
-            printf '%s' "$CHANGELOG_BODY" | \
-              .github/scripts/expand-dependency-changelog.sh "$CHANGELOG_CRATE"
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Compose release body
-        id: body
-        env:
-          EXPANDED_BODY: ${{ steps.expanded.outputs.body }}
-          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
-          INSTALL_INSTRUCTIONS: ${{ inputs.install_instructions }}
-        run: |
-          delimiter="BODY_EOF_$(openssl rand -hex 8)"
-          {
-            echo "body<<$delimiter"
-            printf '%s\n' "$EXPANDED_BODY"
-            if [ "$INSTALL_INSTRUCTIONS" = "true" ]; then
-              # Backticks and $ stay literal in the Markdown body.
-              # shellcheck disable=SC2016
-              printf '\n## Installation\n\n```bash\ncurl -fsSL https://get.jiji.run/install.sh | VERSION=v%s sh\n```\n' "$TAG_VERSION"
-            fi
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
+      - uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ inputs.tag_prefix }}${{ steps.get_tag_version.outputs.TAG_VERSION }}
-          name: ${{ inputs.tag_prefix }}${{ steps.get_tag_version.outputs.TAG_VERSION }}
+          tag: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
           allowUpdates: true
           generateReleaseNotes: false
-          artifacts: "dist/*"
-          body: |
-            ${{ steps.body.outputs.body }}
+          artifacts: dist/*
+          bodyFile: ${{ runner.temp }}/release-notes.md
 
-      # A courtesy notification, not part of this repo's release: must never
-      # fail the job over it.
+      # A courtesy for the website; never fails the release.
       - name: Mint jiji-website dispatch token
         id: website-token
-        if: ${{ inputs.notify_website }}
+        if: ${{ inputs.binary == 'jiji' }}
         continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -239,13 +214,10 @@ jobs:
           repositories: jiji-website
           permission-contents: write
 
-      - name: Notify jiji-website of the new release
-        if: ${{ inputs.notify_website && steps.website-token.outcome == 'success' }}
+      - name: Notify jiji-website
+        if: ${{ steps.website-token.outcome == 'success' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.website-token.outputs.token }}
-          TAG_VERSION: ${{ steps.get_tag_version.outputs.TAG_VERSION }}
-        run: |
-          gh api repos/acidtib/jiji-website/dispatches \
-            -f event_type=jiji-release \
-            -f "client_payload[version]=v$TAG_VERSION"
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: gh api repos/acidtib/jiji-website/dispatches -f event_type=jiji-release -f "client_payload[version]=v$VERSION"

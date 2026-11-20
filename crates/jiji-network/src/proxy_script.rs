@@ -179,6 +179,13 @@ pub fn is_missing_container_error(stderr: &str) -> bool {
     stderr.contains("no such container") || stderr.contains("no container with name or id")
 }
 
+/// Docker and Podman phrase "no such image" differently; a false negative only reports an
+/// already-gone image as a failure, never the reverse.
+pub fn is_missing_image_error(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such image") || stderr.contains("image not known")
+}
+
 /// DNATs the public HTTP ports (when `include_http` is set), plus every currently-configured TCP
 /// route's public port (`tcp_ports`), to a single currently-attached jiji-proxy address. Never
 /// needs to represent every co-resident project's routes: jiji-proxy is one process listening on
@@ -405,6 +412,19 @@ pub fn surviving_proxy_address(output: &str) -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_image_errors_from_both_engines_are_recognized() {
+        assert!(is_missing_image_error(
+            "Error: No such image: localhost:31270/demo-web:v1"
+        ));
+        assert!(is_missing_image_error(
+            "Error: localhost:31270/demo-web:v2: image not known"
+        ));
+        assert!(!is_missing_image_error(
+            "Error: image is in use by a container"
+        ));
+    }
 
     fn bump_major(version: &str) -> String {
         let (major, _, _) = parse_release_version(version).expect("build version parses");

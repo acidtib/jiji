@@ -338,7 +338,7 @@ fn proxy_fingerprint_current_response() -> CannedResponse {
 fn agent_binary_install_command() -> String {
     let paths = AgentPaths::default_for_project("testproject");
     format!(
-        "install -D -m 0755 /dev/stdin {}",
+        "install -D -m 0755 /dev/stdin {}.new",
         paths.binary_path.display()
     )
 }
@@ -533,6 +533,57 @@ async fn ahead_versions_are_never_downgraded() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ahead"), "stdout: {stdout}");
     assert!(stdout.contains("not touched"), "stdout: {stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_does_not_respond_is_reinstalled_and_restarted() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = base_responses();
+    responses.insert(
+        agent_health_command(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "could not reach agent: Connection refused (os error 111)".to_string(),
+        },
+    );
+    responses.insert(
+        proxy_version_command(),
+        success(&format!("{}\n", jiji_network::PROXY_VERSION)),
+    );
+    responses.insert(
+        proxy_fingerprint_command(),
+        proxy_fingerprint_current_response(),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_server_upgrade(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("not responding"), "stdout: {stdout}");
+    assert!(stdout.contains("repair"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("reinstalled v") && stdout.contains("and restarted"),
+        "a local-binary repair reports the reinstall: {stdout}"
+    );
+
+    let commands = harness.received.lock().unwrap().clone();
+    assert!(
+        commands.contains(&agent_binary_install_command()),
+        "expected the agent binary to be reinstalled: {commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| c.contains("systemctl reset-failed") && c.contains("systemctl enable --now")),
+        "expected the failed unit to be reset and started: {commands:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

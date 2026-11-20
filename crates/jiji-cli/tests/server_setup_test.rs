@@ -530,10 +530,17 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
     );
     assert!(
         commands.contains(&format!(
-            "install -D -m 0755 /dev/stdin {}",
+            "install -D -m 0755 /dev/stdin {}.new",
             paths.binary_path.display()
         )),
-        "expected the agent binary to be uploaded: {commands:?}"
+        "expected the agent binary to be staged: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|c| c.contains(&format!(
+            "jiji_agent_self_test {}.new",
+            paths.binary_path.display()
+        ))),
+        "expected the staged agent binary to be self-tested before it is swapped in: {commands:?}"
     );
     assert!(
         commands.contains(&format!(

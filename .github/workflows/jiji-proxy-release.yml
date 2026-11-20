@@ -57,10 +57,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # No QEMU emulation: each arch builds natively on its own runner,
-      # matching this repo's existing binary release workflows -- jiji-proxy
-      # pulls in native C dependencies (clang/cmake, per its Dockerfile) that
-      # make emulated cross-builds slow and fragile.
+      # Native per-arch runners: the Dockerfile's C dependencies make emulated builds slow.
       - name: Build and push arch image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -94,8 +91,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish combined multi-arch manifest
-        run: |
-          docker buildx imagetools create \
-            -t ${{ env.IMAGE }}:v${{ steps.get_tag_version.outputs.TAG_VERSION }} \
-            ${{ env.IMAGE }}:v${{ steps.get_tag_version.outputs.TAG_VERSION }}-amd64 \
-            ${{ env.IMAGE }}:v${{ steps.get_tag_version.outputs.TAG_VERSION }}-arm64
+        env:
+          IMAGE_TAG: ${{ env.IMAGE }}:v${{ steps.get_tag_version.outputs.TAG_VERSION }}
+        run: docker buildx imagetools create -t "$IMAGE_TAG" "$IMAGE_TAG-amd64" "$IMAGE_TAG-arm64"
