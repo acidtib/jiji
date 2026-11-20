@@ -42,17 +42,25 @@ Nothing is tagged before CI passes on it.
 
 All 8 crates get an independent tag (`vX.Y.Z` for `jiji`,
 `{package}-vX.Y.Z` for the rest) and a GitHub Release. Only `jiji`,
-`jiji-agent`, and `jiji-proxy` have a build/publish workflow
-(`jiji-release.yml`, `jiji-agent-release.yml`, `jiji-proxy-release.yml`,
-called by `release.yml` or dispatched by hand to rebuild an existing tag).
+`jiji-agent`, and `jiji-proxy` have a build/publish workflow:
+`binary-release.yml` (inputs `binary: jiji|jiji-agent` and `tag`) and
+`jiji-proxy-release.yml`. `release.yml` calls them after tagging. To rebuild an
+existing tag in place, dispatch one by hand:
+
+```sh
+gh workflow run binary-release.yml -f binary=jiji-agent -f tag=jiji-agent-v0.7.7
+```
+
+`binary-release.yml` rejects a tag that doesn't match the binary, and always
+publishes a `.sha256` next to each artifact.
 The other 5 are internal-only; their tag exists purely as a release-please
 anchor.
 
 ### Native binary builds
 
 `binary-release.yml` builds the Linux `jiji` and `jiji-agent` binaries in a
-digest-pinned `rust:1-bookworm` container (matrix entries with
-`"linux": true`), never directly on the runner image. That fixes two things
+digest-pinned `rust:1-bookworm` container, never directly on the runner
+image. That fixes two things
 the runner image otherwise decides:
 
 - **glibc floor.** Binaries link against Debian 12's glibc 2.36, so they run
