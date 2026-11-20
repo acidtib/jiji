@@ -446,6 +446,71 @@ fn render_tcp_apply_args(target: &TcpRouteTarget) -> Vec<String> {
 }
 
 /// Mirrors `runtime_specs_for_service` for raw TCP routes.
+/// Every route this project's services want on `server`'s jiji-proxy, as stored in the agent's
+/// mesh config and routes file.
+pub fn runtime_route_specs_for_server(
+    config: &jiji_config::Config,
+    server: &str,
+) -> anyhow::Result<jiji_agent::runtime::RouteSpecs> {
+    let mut specs = jiji_agent::runtime::RouteSpecs::default();
+    for (service_name, service) in &config.services {
+        if !service.servers.iter().any(|name| name == server) {
+            continue;
+        }
+        let Some(proxy) = service.proxy.as_ref() else {
+            continue;
+        };
+        specs.proxy_routes.extend(runtime_specs_for_service(
+            &config.project,
+            service_name,
+            Some(proxy),
+        )?);
+        specs.tcp_routes.extend(runtime_tcp_specs_for_service(
+            &config.project,
+            service_name,
+            Some(proxy),
+        )?);
+    }
+    Ok(specs)
+}
+
+/// Writes beside the file and renames it into place, so the agent's per-tick read never sees a
+/// partial file.
+pub fn route_specs_write_command(project: &str) -> String {
+    let path = jiji_agent::AgentPaths::default_for_project(project).proxy_routes_path;
+    format!(
+        "install -D -m 0600 /dev/stdin {path}.tmp && mv -f {path}.tmp {path}",
+        path = path.display()
+    )
+}
+
+/// Saves `specs` where the project's jiji-agent reads them every tick, so it re-applies them
+/// after jiji-proxy is recreated.
+pub async fn write_route_specs(
+    session: &SshSession,
+    project: &str,
+    specs: &jiji_agent::runtime::RouteSpecs,
+) -> anyhow::Result<()> {
+    let path = jiji_agent::AgentPaths::default_for_project(project).proxy_routes_path;
+    let result = session
+        .execute_with_input(
+            &route_specs_write_command(project),
+            &serde_json::to_vec(specs)?,
+        )
+        .await?;
+    if !result.success {
+        anyhow::bail!(
+            "Could not save the route list for jiji-agent at {} on {}: {}. The routes are live, \
+             but jiji-agent will not restore them if jiji-proxy is recreated; fix the host error \
+             and run the command again.",
+            path.display(),
+            session.host(),
+            result.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
 pub fn runtime_tcp_specs_for_service(
     project: &str,
     service_name: &str,
@@ -1001,6 +1066,60 @@ pub async fn reconcile_catalog_routes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_specs_for_a_server_cover_only_its_own_proxied_services() {
+        let config: jiji_config::Config = serde_yaml::from_str(
+            r#"
+project: demo
+builder:
+  engine: docker
+servers:
+  web1:
+    host: 10.0.0.1
+  web2:
+    host: 10.0.0.2
+services:
+  site:
+    image: nginx
+    servers: [web1]
+    proxy:
+      hosts: [site.example.com]
+      port: 3000
+  db:
+    image: postgres
+    servers: [web1]
+    proxy:
+      listen_port: 5432
+      port: 5432
+  api:
+    image: api
+    servers: [web2]
+    proxy:
+      hosts: [api.example.com]
+      port: 8080
+  worker:
+    image: worker
+    servers: [web1]
+"#,
+        )
+        .expect("parse config");
+
+        let specs = runtime_route_specs_for_server(&config, "web1").expect("specs");
+
+        let hosts: Vec<&str> = specs
+            .proxy_routes
+            .iter()
+            .map(|route| route.host.as_str())
+            .collect();
+        assert_eq!(hosts, vec!["site.example.com"]);
+        let ports: Vec<u16> = specs
+            .tcp_routes
+            .iter()
+            .map(|route| route.listen_port)
+            .collect();
+        assert_eq!(ports, vec![5432]);
+    }
 
     fn dns_server() -> SocketAddr {
         "100.64.0.2:53".parse().unwrap()

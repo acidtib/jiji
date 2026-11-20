@@ -2493,6 +2493,25 @@ async fn first_deployment_with_a_tcp_route_applies_and_verifies_it() {
             .any(|c| c.contains("jiji-proxy route apply")),
         "a TCP-only target must not also produce an HTTP route apply: {received:?}"
     );
+    // The agent re-applies routes from this file after jiji-proxy is recreated.
+    let routes_file = format!(
+        "install -D -m 0600 /dev/stdin {path}.tmp && mv -f {path}.tmp {path}",
+        path = jiji_agent::AgentPaths::default_for_project("demo")
+            .proxy_routes_path
+            .display()
+    );
+    let apply_index = received
+        .iter()
+        .rposition(|c| c.contains("jiji-proxy tcp-route apply"))
+        .expect("tcp route applied");
+    let save_index = received
+        .iter()
+        .rposition(|c| c == &routes_file)
+        .unwrap_or_else(|| panic!("expected the route list to be saved: {received:?}"));
+    assert!(
+        save_index > apply_index,
+        "the route list is saved after the routes are live: {received:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

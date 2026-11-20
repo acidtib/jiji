@@ -679,26 +679,10 @@ pub(crate) async fn enroll_agent_targets(
             server_plan,
         )
         .peer_public_ips()?;
-        let mut proxy_routes = Vec::new();
-        let mut tcp_routes = Vec::new();
-        for (service_name, service) in &config.services {
-            if !service.servers.contains(name) {
-                continue;
-            }
-            let Some(proxy) = service.proxy.as_ref() else {
-                continue;
-            };
-            proxy_routes.extend(crate::proxy_routes::runtime_specs_for_service(
-                &config.project,
-                service_name,
-                Some(proxy),
-            )?);
-            tcp_routes.extend(crate::proxy_routes::runtime_tcp_specs_for_service(
-                &config.project,
-                service_name,
-                Some(proxy),
-            )?);
-        }
+        let jiji_agent::runtime::RouteSpecs {
+            proxy_routes,
+            tcp_routes,
+        } = crate::proxy_routes::runtime_route_specs_for_server(config, name)?;
         let mesh_config = MeshConfig {
             project_id: config.project.clone(),
             recovery_epoch,

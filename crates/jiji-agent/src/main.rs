@@ -394,6 +394,7 @@ async fn run(
         engine,
         config.clone(),
         startup_candidates,
+        mesh_config_path.with_file_name(jiji_agent::paths::PROXY_ROUTES_FILE),
     ));
     let mut mesh = tokio::spawn(jiji_agent::runtime::run(config, Arc::clone(&store)));
     // Must complete before the API starts accepting `CronRun` requests (the plan's "Address

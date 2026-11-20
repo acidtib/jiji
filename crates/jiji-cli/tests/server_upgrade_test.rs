@@ -17,6 +17,9 @@ use russh::server::{self, Auth, ChannelOpenHandle, Server as _, Session, Verifie
 use russh::{Channel, ChannelId};
 use tokio::net::TcpListener;
 
+/// A response key starting with this matches any command containing the rest.
+const CONTAINS_PREFIX: &str = "contains:";
+
 #[derive(Clone, Default)]
 struct CannedResponse {
     success: bool,
@@ -132,6 +135,13 @@ impl server::Handler for TestServer {
             self.responses
                 .get(&format!("{command}#{occurrence}"))
                 .or_else(|| self.responses.get(&command))
+                .or_else(|| {
+                    self.responses.iter().find_map(|(key, response)| {
+                        key.strip_prefix(CONTAINS_PREFIX)
+                            .filter(|needle| command.contains(needle))
+                            .map(|_| response)
+                    })
+                })
                 .cloned()
                 .unwrap_or_else(|| success(""))
         };
@@ -522,7 +532,9 @@ async fn ahead_versions_are_never_downgraded() {
     // re-imported -- `ensure_agent` runs all three unconditionally whenever it's called at all,
     // regardless of `binary_path`, so the only way to honor this is to never call it here.
     assert!(
-        !commands.iter().any(|c| c.contains("systemctl")),
+        !commands
+            .iter()
+            .any(|c| c.contains("systemctl") && !c.contains("systemctl list-unit-files")),
         "an ahead host's agent unit must never be touched at all: {commands:?}"
     );
     assert!(
@@ -583,6 +595,49 @@ async fn an_agent_that_does_not_respond_is_reinstalled_and_restarted() {
             .iter()
             .any(|c| c.contains("systemctl reset-failed") && c.contains("systemctl enable --now")),
         "expected the failed unit to be reset and started: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_co_resident_agent_is_reported_before_upgrading() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = base_responses();
+    responses.insert(agent_health_command(), agent_health_response("0.0.1"));
+    responses.insert(
+        proxy_version_command(),
+        success(&format!("{}\n", jiji_network::PROXY_VERSION)),
+    );
+    responses.insert(
+        proxy_fingerprint_command(),
+        proxy_fingerprint_current_response(),
+    );
+    responses.insert(
+        format!("{CONTAINS_PREFIX}systemctl list-unit-files"),
+        success(&format!(
+            "{} active 0.0.1\njiji-agent-saca-1234.service active 0.6.5\n",
+            AgentPaths::default_for_project("testproject").unit_name
+        )),
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), harness.addr, &key_path);
+
+    let output = run_jiji_server_upgrade(&config_path, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let all = format!("{stdout}{stderr}");
+    assert!(
+        all.contains("jiji-agent-saca-1234.service (jiji-agent v0.6.5, active)"),
+        "{all}"
+    );
+    assert!(all.contains("Upgrade that project first"), "{all}");
+    assert!(
+        !all.contains("jiji-agent-testproject"),
+        "this project's own unit is not a co-resident: {all}"
     );
 }
 

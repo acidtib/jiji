@@ -21,6 +21,9 @@ pub enum ConfigError {
     #[error("Configuration validation failed:\n{0}")]
     Invalid(String),
 
+    #[error("{path} uses configuration keys that were removed:\n{details}")]
+    RemovedKeys { path: String, details: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

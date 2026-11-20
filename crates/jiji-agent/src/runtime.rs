@@ -59,7 +59,7 @@ pub struct LocalRuntimeConfig {
 /// `local_reconcile.rs` fills in
 /// `--dns-server` itself (always this agent's own local `.jiji` resolver
 /// address) when rendering the actual `jiji-proxy route apply` command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyRouteSpec {
     pub host: String,
     #[serde(default)]
@@ -86,7 +86,7 @@ pub struct ProxyRouteSpec {
 /// pattern `reconcile_proxy_routes` already uses for HTTP, so there is no
 /// need to separately query jiji-proxy's own live route table just to learn
 /// the ingress port list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpRouteSpec {
     pub listen_port: u16,
     /// The aggregate DNS name jiji-proxy re-resolves on its own schedule:
@@ -98,6 +98,17 @@ pub struct TcpRouteSpec {
     /// already explicit fields above.
     #[serde(default)]
     pub apply_args: Vec<String>,
+}
+
+/// The routes this host's jiji-proxy should carry for this project. `server setup` and every
+/// `deploy` that touches routes rewrite it, so it can be newer than `mesh.json`, which the agent
+/// reads only at startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteSpecs {
+    #[serde(default)]
+    pub proxy_routes: Vec<ProxyRouteSpec>,
+    #[serde(default)]
+    pub tcp_routes: Vec<TcpRouteSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,10 +547,10 @@ async fn delete_routes(interface: &str, allowed_ips: &[String]) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn config() -> MeshConfig {
+    pub(crate) fn config() -> MeshConfig {
         MeshConfig {
             project_id: "demo".into(),
             recovery_epoch: 1,

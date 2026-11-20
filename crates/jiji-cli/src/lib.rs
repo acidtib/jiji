@@ -9,6 +9,7 @@ mod build_executor;
 mod build_plan;
 mod cascade;
 mod cli;
+mod co_resident;
 mod commands;
 mod config_loading;
 mod container_ops;

@@ -7,7 +7,7 @@ use jiji_network::NetworkPlanner;
 use jiji_ssh::SshSession;
 use jiji_tui::Ui;
 
-use crate::ssh_adapter;
+use crate::{co_resident, ssh_adapter};
 
 pub async fn run(
     environment: Option<&str>,
@@ -68,12 +68,18 @@ pub async fn run(
         let response =
             crate::agent_client::call(&session, &config.project, None, RequestBody::Diagnostics)
                 .await;
+        let host_warnings =
+            shared_proxy_warnings(&session, &config.project, config.builder.engine).await;
         session.close().await;
         match response {
             Ok(response) if json => {
                 println!(
                     "{}",
-                    serde_json::json!({"server": name, "diagnostics": response})
+                    serde_json::json!({
+                        "server": name,
+                        "diagnostics": response,
+                        "host_warnings": host_warnings,
+                    })
                 );
             }
             Ok(ResponseBody::Diagnostics {
@@ -115,7 +121,8 @@ pub async fn run(
                         peer_sync.len(),
                         components.len(),
                     );
-                let unhealthy = !stale_peers.is_empty()
+                let unhealthy = !host_warnings.is_empty()
+                    || !stale_peers.is_empty()
                     || peer_sync.iter().any(|peer| peer.consecutive_failures > 0)
                     || components
                         .iter()
@@ -124,6 +131,9 @@ pub async fn run(
                     Ui::result_warn(name, &summary);
                 } else {
                     Ui::result_ok(name, &summary);
+                }
+                for warning in &host_warnings {
+                    Ui::say(&format!("{name}: {warning}"), 2);
                 }
                 for peer in stale_peers {
                     let age = peer
@@ -217,6 +227,32 @@ pub async fn run(
         anyhow::bail!("Diagnostics failed on {} server(s)", failures.len());
     }
     Ok(())
+}
+
+/// Host-level problems no single project's agent reports: jiji-proxy recreate churn and other
+/// projects' agents that fight over it or were left behind.
+async fn shared_proxy_warnings(
+    session: &SshSession,
+    project: &str,
+    engine: jiji_config::ContainerEngine,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    match co_resident::recent_proxy_creations(session, engine).await {
+        Ok(count) if count >= co_resident::PROXY_CREATION_WARN_COUNT => {
+            warnings.push(format!(
+                "jiji-proxy was created {count} times in the last {} minutes, dropping every \
+                 route on this host each time; check the other projects' agents below",
+                co_resident::PROXY_CREATION_WINDOW_SECS / 60
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => warnings.push(error.to_string()),
+    }
+    match co_resident::inspect(session, project).await {
+        Ok(agents) => warnings.extend(co_resident::warnings(&agents)),
+        Err(error) => warnings.push(error.to_string()),
+    }
+    warnings
 }
 
 fn split(value: Option<&str>) -> Vec<String> {
