@@ -16,5 +16,8 @@ filter = "binary(deploy_test) | binary(server_setup_test) | binary(remote_build_
 test-group = "heavy"
 
 [[profile.default.overrides]]
-filter = "binary(docker_server_lifecycle_test) | binary(docker_deploy_test) | binary(docker_build_deploy_test) | binary(docker_rolling_deploy_test) | binary(docker_mesh_deploy_test) | binary(docker_network_mode_test) | binary(docker_cron_test) | binary(docker_image_retention_test) | binary(docker_load_balancer_test) | binary(docker_cron_ownership_transfer_test) | binary(docker_scale_test) | binary(docker_stop_first_test) | binary(docker_service_restart_rollback_test)"
+filter = "binary(/^docker_/)"
 test-group = "docker-integration"
+# The first test on a fresh vm1 installs the engine with apt, which alone can pass 3 minutes on a
+# slow mirror. A killed test leaves apt holding vm1's lock and fails every test after it.
+slow-timeout = { period = "60s", terminate-after = 6 }
