@@ -803,14 +803,9 @@ async fn upgrade_agents(
                             .unwrap_or_else(|| "unknown".to_string()),
                         crate::version_requirements::AGENT_BUILD_VERSION
                     );
-                    let detail = match (status, agent_result) {
-                        (VersionStatus::NotResponding, agent_install::AgentStatus::Upgraded) => {
-                            format!(
-                                "reinstalled v{} and restarted",
-                                crate::version_requirements::AGENT_BUILD_VERSION
-                            )
-                        }
-                        (VersionStatus::NotResponding, _) if managed_binary_changed => format!(
+                    let binary_replaced = agent_result.binary_replaced || managed_binary_changed;
+                    let detail = match (status, agent_result.status) {
+                        (VersionStatus::NotResponding, _) if binary_replaced => format!(
                             "reinstalled v{} and restarted",
                             crate::version_requirements::AGENT_BUILD_VERSION
                         ),

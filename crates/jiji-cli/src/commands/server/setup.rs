@@ -858,6 +858,7 @@ async fn setup_agents(
             &records,
         )
         .await
+        .map(|outcome| outcome.status)
         {
             Ok(agent_install::AgentStatus::AlreadyRunning) => {
                 Ui::say(&format!("{name}: jiji agent already running"), 1);

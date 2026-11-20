@@ -217,7 +217,7 @@ tmp=$(mktemp -d); \
 trap 'rm -rf \"$tmp\"' EXIT; \
 curl -fsSL --retry 3 \"{base}/releases/download/jiji-agent-v{version}/$asset.sha256\" -o \"$tmp/$asset.sha256\"; \
 expected=$(awk '{{print $1}}' \"$tmp/$asset.sha256\"); \
-if [ -f {binary} ] && [ \"$(sha256sum {binary} | awk '{{print $1}}')\" = \"$expected\" ]; then jiji_agent_self_test {binary}; echo JIJI_AGENT_BINARY_CHANGED=0; exit 0; fi; \
+if [ -f {binary} ] && [ \"$(sha256sum {binary} | awk '{{print $1}}')\" = \"$expected\" ]; then jiji_agent_self_test {binary}; rm -f {staged}; echo JIJI_AGENT_BINARY_CHANGED=0; exit 0; fi; \
 curl -fsSL --retry 3 \"{base}/releases/download/jiji-agent-v{version}/$asset\" -o \"$tmp/$asset\"; \
 actual=$(sha256sum \"$tmp/$asset\" | awk '{{print $1}}'); \
 if [ \"$expected\" != \"$actual\" ]; then echo \"jiji-agent: sha256 mismatch for $asset (expected $expected, got $actual)\" >&2; exit 1; fi; \
@@ -281,6 +281,150 @@ mod tests {
         assert!(script.contains(
             "cp -p /etc/jiji/agent/demo/bin/jiji-agent /etc/jiji/agent/demo/bin/jiji-agent.previous"
         ));
+    }
+
+    /// Runs the whole rendered script with `curl` stubbed to serve `release` files by name, so
+    /// `set -eu`, the self-test, the hash-match branch, and the promote run together.
+    struct ScriptFixture {
+        dir: tempfile::TempDir,
+        binary: PathBuf,
+    }
+
+    impl ScriptFixture {
+        fn new(release_binary: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let write = |path: &Path, body: &str| {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, body).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            };
+            let asset = match std::env::consts::ARCH {
+                "aarch64" => "jiji-agent-linux-arm64",
+                _ => "jiji-agent-linux-x86_64",
+            };
+            let release = dir.path().join("release");
+            let binary_body = format!("#!/bin/sh\n{release_binary}\n");
+            write(&release.join(asset), &binary_body);
+            write(
+                &release.join(format!("{asset}.sha256")),
+                &format!(
+                    "{}  {asset}\n",
+                    crate::agent_install::hex_sha256(binary_body.as_bytes())
+                ),
+            );
+            write(
+                &dir.path().join("stubs/curl"),
+                &format!(
+                    "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=$2; shift 2;; \
+                     --retry) shift 2;; -*) shift;; *) url=$1; shift;; esac; done\n\
+                     cp {}/\"$(basename \"$url\")\" \"$out\"\n",
+                    release.display()
+                ),
+            );
+            let binary = dir.path().join("agent/bin/jiji-agent");
+            Self { dir, binary }
+        }
+
+        fn install(&self, body: &str) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(self.binary.parent().unwrap()).unwrap();
+            std::fs::write(&self.binary, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&self.binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn run(&self) -> std::process::Output {
+            let agent = self.dir.path().join("agent");
+            let script = remote_install_script(
+                "https://example.invalid",
+                "0.0.0",
+                &agent,
+                self.binary.parent().unwrap(),
+                &agent.join("state"),
+                &self.binary,
+            );
+            let path = std::env::var("PATH").unwrap_or_default();
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .env(
+                    "PATH",
+                    format!("{}:{path}", self.dir.path().join("stubs").display()),
+                )
+                .output()
+                .expect("run script")
+        }
+
+        fn read(&self, path: &Path) -> String {
+            std::fs::read_to_string(path).unwrap_or_default()
+        }
+
+        fn previous(&self) -> PathBuf {
+            crate::agent_install::previous_binary_path(&self.binary)
+        }
+
+        fn staged(&self) -> PathBuf {
+            crate::agent_install::staged_binary_path(&self.binary)
+        }
+    }
+
+    #[test]
+    fn the_install_script_swaps_in_a_release_that_passes_the_self_test() {
+        let fixture = ScriptFixture::new("echo new");
+        fixture.install("echo old");
+
+        let output = fixture.run();
+
+        assert!(output.status.success(), "{output:?}");
+        assert!(remote_install_script_changed_binary(
+            &String::from_utf8_lossy(&output.stdout)
+        ));
+        assert!(fixture.read(&fixture.binary).contains("echo new"));
+        assert!(fixture.read(&fixture.previous()).contains("echo old"));
+        assert!(!fixture.staged().exists());
+    }
+
+    #[test]
+    fn the_install_script_keeps_the_installed_binary_when_the_release_dies_with_sigill() {
+        let fixture = ScriptFixture::new("kill -ILL $$");
+        fixture.install("echo old");
+
+        let output = fixture.run();
+
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains("JIJI_AGENT_BINARY_CHANGED"), "{stdout}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("needs a newer CPU"), "{stderr}");
+        assert!(fixture.read(&fixture.binary).contains("echo old"));
+        assert!(!fixture.previous().exists());
+        assert!(!fixture.staged().exists());
+    }
+
+    #[test]
+    fn the_install_script_fails_when_the_installed_release_dies_with_sigill() {
+        let fixture = ScriptFixture::new("kill -ILL $$");
+        fixture.install("kill -ILL $$");
+
+        let output = fixture.run();
+
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("JIJI_AGENT_BINARY_CHANGED"));
+    }
+
+    #[test]
+    fn the_install_script_clears_a_stale_staged_binary_when_already_current() {
+        let fixture = ScriptFixture::new("echo current");
+        fixture.install("echo current");
+        std::fs::write(fixture.staged(), "leftover").unwrap();
+
+        let output = fixture.run();
+
+        assert!(output.status.success(), "{output:?}");
+        assert!(!remote_install_script_changed_binary(
+            &String::from_utf8_lossy(&output.stdout)
+        ));
+        assert!(!fixture.staged().exists());
     }
 
     #[test]

@@ -568,6 +568,10 @@ async fn an_agent_that_does_not_respond_is_reinstalled_and_restarted() {
     );
     assert!(stdout.contains("not responding"), "stdout: {stdout}");
     assert!(stdout.contains("repair"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("reinstalled v") && stdout.contains("and restarted"),
+        "a local-binary repair reports the reinstall: {stdout}"
+    );
 
     let commands = harness.received.lock().unwrap().clone();
     assert!(

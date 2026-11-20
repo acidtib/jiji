@@ -22,6 +22,14 @@ pub enum AgentStatus {
     AlreadyRunning,
 }
 
+/// `status` alone cannot say whether an upload happened: a crashed agent's unit is inactive, so
+/// it reports `Installed` either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentOutcome {
+    pub status: AgentStatus,
+    pub binary_replaced: bool,
+}
+
 fn to_agent_engine(engine: ContainerEngine) -> jiji_agent::Engine {
     match engine {
         ContainerEngine::Docker => jiji_agent::Engine::Docker,
@@ -93,18 +101,20 @@ pub async fn ensure_agent(
     binary_path: Option<&Path>,
     mesh_config: &jiji_agent::runtime::MeshConfig,
     membership: &[jiji_agent::membership::MembershipRecord],
-) -> anyhow::Result<AgentStatus> {
+) -> anyhow::Result<AgentOutcome> {
     let paths = AgentPaths::default_for_project(project);
 
     let bin_dir = paths
         .binary_path
         .parent()
         .expect("binary path always has a parent directory");
+    // An interrupted earlier run can leave a staged binary behind.
     let setup = format!(
-        "install -d -m 0700 {} {} {}",
+        "install -d -m 0700 {} {} {}; rm -f {}",
         paths.project_dir.display(),
         bin_dir.display(),
         paths.state_dir.display(),
+        staged_binary_path(&paths.binary_path).display(),
     );
     run_required(session, &setup, "create the jiji agent's directories").await?;
 
@@ -176,12 +186,16 @@ pub async fn ensure_agent(
         );
     }
 
-    Ok(if !was_active {
+    let status = if !was_active {
         AgentStatus::Installed
     } else if uploaded {
         AgentStatus::Upgraded
     } else {
         AgentStatus::AlreadyRunning
+    };
+    Ok(AgentOutcome {
+        status,
+        binary_replaced: uploaded,
     })
 }
 
@@ -202,7 +216,8 @@ pub(crate) fn previous_binary_path(binary: &Path) -> PathBuf {
 /// Defines `jiji_agent_self_test BINARY`, which opens a throwaway SQLite store with it.
 /// `version` alone is not enough: it never reaches the bundled C code.
 pub(crate) const SELF_TEST_FUNCTION: &str = "jiji_agent_self_test() { \
-jiji_self_test_dir=$(mktemp -d) || return 1; \
+jiji_self_test_dir=$(mktemp -d) || { echo \"jiji-agent self-test could not create a temporary \
+directory; check that /tmp is writable and has free space\" >&2; return 1; }; \
 if \"$1\" membership-export --state-dir \"$jiji_self_test_dir\" >/dev/null 2>\"$jiji_self_test_dir/stderr\"; \
 then rm -rf \"$jiji_self_test_dir\"; return 0; else jiji_self_test_status=$?; fi; \
 jiji_self_test_detail=$(tail -n 3 \"$jiji_self_test_dir/stderr\"); \
