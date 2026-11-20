@@ -140,3 +140,39 @@ impl Config {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact config.yml every released jiji-agent and jiji-cli writes before (re)creating the
+    /// shared proxy, so an older one can start a newer image with it. Unknown keys are ignored
+    /// rather than rejected, so check the values: a renamed key would silently fall back to its
+    /// default.
+    #[test]
+    fn the_daemon_config_released_agents_write_still_loads_the_same() {
+        let config: Config = serde_yaml::from_str(
+            "http_listen: \"0.0.0.0:8080\"\n\
+             https_listen: \"0.0.0.0:8443\"\n\
+             cert_dir: /etc/jiji/certs\n\
+             admin_socket: /run/jiji-proxy/admin.sock\n\
+             acme:\n\
+             \x20\x20directory_url: \"https://acme-v02.api.letsencrypt.org/directory\"\n",
+        )
+        .expect("released daemon config must parse");
+
+        assert_eq!(config.http_listen, "0.0.0.0:8080".parse().unwrap());
+        assert_eq!(config.https_listen, Some("0.0.0.0:8443".parse().unwrap()));
+        assert_eq!(config.cert_dir, PathBuf::from("/etc/jiji/certs"));
+        assert_eq!(
+            config.admin_socket,
+            PathBuf::from("/run/jiji-proxy/admin.sock")
+        );
+        let acme = config.acme.expect("acme enabled");
+        assert_eq!(
+            acme.directory_url,
+            "https://acme-v02.api.letsencrypt.org/directory"
+        );
+        assert_eq!(acme.contact_email, None);
+    }
+}
