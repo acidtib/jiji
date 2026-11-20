@@ -2495,8 +2495,8 @@ async fn first_deployment_with_a_tcp_route_applies_and_verifies_it() {
     );
     // The agent re-applies routes from this file after jiji-proxy is recreated.
     let routes_file = format!(
-        "install -D -m 0600 /dev/stdin {}",
-        jiji_agent::AgentPaths::default_for_project("demo")
+        "install -D -m 0600 /dev/stdin {path}.tmp && mv -f {path}.tmp {path}",
+        path = jiji_agent::AgentPaths::default_for_project("demo")
             .proxy_routes_path
             .display()
     );

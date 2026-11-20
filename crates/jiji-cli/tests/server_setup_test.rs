@@ -550,6 +550,13 @@ async fn installs_the_jiji_agent_when_a_local_binary_is_available() {
         "expected the agent systemd unit to be written: {commands:?}"
     );
     assert!(
+        commands.contains(&format!(
+            "install -D -m 0600 /dev/stdin {path}.tmp && mv -f {path}.tmp {path}",
+            path = paths.proxy_routes_path.display()
+        )),
+        "expected the agent's route list to be saved: {commands:?}"
+    );
+    assert!(
         commands
             .iter()
             .any(|c| c.contains(&format!("systemctl enable --now {}", paths.unit_name))),

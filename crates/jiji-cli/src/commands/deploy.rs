@@ -1159,9 +1159,25 @@ async fn save_route_specs(
     sessions: &BTreeMap<String, Arc<SshSession>>,
     config: &jiji_config::Config,
 ) -> anyhow::Result<()> {
+    let mut writes = tokio::task::JoinSet::new();
     for (server, session) in sessions {
         let specs = proxy_routes::runtime_route_specs_for_server(config, server)?;
-        proxy_routes::write_route_specs(session, &config.project, &specs).await?;
+        writes.spawn({
+            let session = Arc::clone(session);
+            let project = config.project.clone();
+            async move { proxy_routes::write_route_specs(&session, &project, &specs).await }
+        });
+    }
+    let mut problems = Vec::new();
+    while let Some(joined) = writes.join_next().await {
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => problems.push(error.to_string()),
+            Err(error) => problems.push(format!("route list save task failed: {error}")),
+        }
+    }
+    if !problems.is_empty() {
+        anyhow::bail!("{}", problems.join("\n"));
     }
     Ok(())
 }

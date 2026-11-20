@@ -474,6 +474,16 @@ pub fn runtime_route_specs_for_server(
     Ok(specs)
 }
 
+/// Writes beside the file and renames it into place, so the agent's per-tick read never sees a
+/// partial file.
+pub fn route_specs_write_command(project: &str) -> String {
+    let path = jiji_agent::AgentPaths::default_for_project(project).proxy_routes_path;
+    format!(
+        "install -D -m 0600 /dev/stdin {path}.tmp && mv -f {path}.tmp {path}",
+        path = path.display()
+    )
+}
+
 /// Saves `specs` where the project's jiji-agent reads them every tick, so it re-applies them
 /// after jiji-proxy is recreated.
 pub async fn write_route_specs(
@@ -482,9 +492,11 @@ pub async fn write_route_specs(
     specs: &jiji_agent::runtime::RouteSpecs,
 ) -> anyhow::Result<()> {
     let path = jiji_agent::AgentPaths::default_for_project(project).proxy_routes_path;
-    let command = format!("install -D -m 0600 /dev/stdin {}", path.display());
     let result = session
-        .execute_with_input(&command, &serde_json::to_vec(specs)?)
+        .execute_with_input(
+            &route_specs_write_command(project),
+            &serde_json::to_vec(specs)?,
+        )
         .await?;
     if !result.success {
         anyhow::bail!(
