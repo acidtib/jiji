@@ -267,6 +267,39 @@ async fn prune_removes_images_past_the_retained_count() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_image_removed_by_the_agent_mid_prune_is_not_a_failure() {
+    let (dir, key_path, client_key) = setup_test_dir();
+    let mut responses = HashMap::new();
+    responses.insert(
+        IMAGES_LIST_COMMAND.to_string(),
+        success("id2 localhost:31270/demo-web:v2\nid1 localhost:31270/demo-web:v1\n"),
+    );
+    responses.insert(
+        "docker rmi localhost:31270/demo-web:v1".to_string(),
+        CannedResponse {
+            success: false,
+            stdout: String::new(),
+            stderr: "Error: No such image: localhost:31270/demo-web:v1".to_string(),
+        },
+    );
+
+    let harness = spawn_test_server(client_key.public_key().clone(), responses).await;
+    let config_path = write_config(dir.path(), &config_yaml(harness.addr, &key_path, 1));
+
+    let output = run_jiji_service_prune(&config_path, &["-S", "web"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("demo:web:app: 0 image(s) removed"),
+        "stdout: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn prune_retains_an_image_still_referenced_by_a_container() {
     let (dir, key_path, client_key) = setup_test_dir();
     let mut responses = HashMap::new();

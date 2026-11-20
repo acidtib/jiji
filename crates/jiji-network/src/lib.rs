@@ -22,7 +22,7 @@ pub use planner::{
 };
 pub use proxy_script::{
     attached_address, classify_proxy, config_fingerprint, image, is_missing_container_error,
-    render_daemon_config, render_forward_accept_script, render_nftables,
+    is_missing_image_error, render_daemon_config, render_forward_accept_script, render_nftables,
     render_relay_netns_apply_script, render_run_command, surviving_proxy_address, ProxyRunNetwork,
     ProxyState, CERTS_DIR, CONFIG_DIR, CONTAINER_NAME, INGRESS_RULES_DIR, INGRESS_TABLE,
     INTERNAL_HTTPS_PORT, INTERNAL_HTTP_PORT, PROXY_VERSION,

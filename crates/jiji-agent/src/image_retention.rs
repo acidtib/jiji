@@ -138,7 +138,7 @@ async fn remove_image(binary: &str, engine: Engine, image: &str) -> Option<Strin
         Ok(output) if output.status.success() => None,
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if is_missing_image_error(&stderr) {
+            if jiji_network::is_missing_image_error(&stderr) {
                 None
             } else {
                 Some(stderr)
@@ -149,13 +149,6 @@ async fn remove_image(binary: &str, engine: Engine, image: &str) -> Option<Strin
             Some(error.to_string())
         }
     }
-}
-
-/// Docker and Podman phrase "no such image" differently; a `false`-negative here just means an
-/// already-gone image is reported as a failure instead of being skipped, never the reverse.
-fn is_missing_image_error(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    lower.contains("no such image") || lower.contains("image not known")
 }
 
 #[cfg(test)]
