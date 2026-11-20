@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.1](https://github.com/acidtib/jiji/compare/v0.14.0...v0.14.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **agent:** stop shared jiji-proxy recreate loops and restore routes after recreation ([#142](https://github.com/acidtib/jiji/issues/142)) ([52facd6](https://github.com/acidtib/jiji/commit/52facd689cbbc5cfe026a488e7dcc5167e12f3b6))
+* **cli:** pin release build baseline and make agent upgrades self-test and roll back ([#141](https://github.com/acidtib/jiji/issues/141)) ([fa70a17](https://github.com/acidtib/jiji/commit/fa70a17dbfc4a5abbb372c12f18f68fa341a98f2))
+
 ## [0.14.0](https://github.com/acidtib/jiji/compare/v0.13.0...v0.14.0) (2026-11-14)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/acidtib/jiji/compare/jiji-config-v0.13.0...jiji-config-v0.13.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **agent:** stop shared jiji-proxy recreate loops and restore routes after recreation ([#142](https://github.com/acidtib/jiji/issues/142)) ([52facd6](https://github.com/acidtib/jiji/commit/52facd689cbbc5cfe026a488e7dcc5167e12f3b6))
+
 ## [0.13.0](https://github.com/acidtib/jiji/compare/jiji-config-v0.12.0...jiji-config-v0.13.0) (2026-11-14)
 
 
