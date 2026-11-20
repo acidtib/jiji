@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.6](https://github.com/acidtib/jiji/compare/jiji-network-v0.9.5...jiji-network-v0.9.6) (2026-11-20)
+
+
+### Bug Fixes
+
+* **cli:** pin release build baseline and make agent upgrades self-test and roll back ([#141](https://github.com/acidtib/jiji/issues/141)) ([fa70a17](https://github.com/acidtib/jiji/commit/fa70a17dbfc4a5abbb372c12f18f68fa341a98f2))
+
 ## [0.9.5](https://github.com/acidtib/jiji/compare/jiji-network-v0.9.4...jiji-network-v0.9.5) (2026-11-14)
 
 ## [0.9.4](https://github.com/acidtib/jiji/compare/jiji-network-v0.9.3...jiji-network-v0.9.4) (2026-10-29)
